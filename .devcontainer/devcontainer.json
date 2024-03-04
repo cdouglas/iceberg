@@ -1,0 +1,23 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/java
+{
+  "name": "iceberg-dev",
+ // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+ //"image": "mcr.microsoft.com/devcontainers/java:1-17-bullseye",
+  "build": {
+    "dockerfile": "./Dockerfile"
+  },
+
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "none",
+      "installMaven": "false",
+      "installGradle": "true"
+    }
+  },
+  // TODO find a property for the checkout
+  "onCreateCommand": "cd /IdeaProjects/iceberg ; ./gradlew build -x test -x integrationTest"
+}
