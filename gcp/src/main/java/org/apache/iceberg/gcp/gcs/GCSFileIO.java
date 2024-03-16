@@ -35,6 +35,7 @@ import org.apache.iceberg.io.DelegateFileIO;
 import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterators;
 import org.apache.iceberg.relocated.com.google.common.collect.Streams;
@@ -55,7 +56,7 @@ import org.slf4j.LoggerFactory;
  * <p>See <a href="https://cloud.google.com/storage/docs/folders#overview">Cloud Storage
  * Overview</a>
  */
-public class GCSFileIO implements DelegateFileIO {
+public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
   private static final Logger LOG = LoggerFactory.getLogger(GCSFileIO.class);
   private static final String DEFAULT_METRICS_IMPL =
       "org.apache.iceberg.hadoop.HadoopMetricsContext";
@@ -101,6 +102,11 @@ public class GCSFileIO implements DelegateFileIO {
   @Override
   public OutputFile newOutputFile(String path) {
     return GCSOutputFile.fromLocation(path, client(), gcpProperties, metrics);
+  }
+
+  @Override
+  public OutputFile newOutputFile(InputFile replace) {
+    return GCSOutputFile.fromBlobId(((GCSInputFile) replace).blobId(), client(), gcpProperties, metrics);
   }
 
   @Override
