@@ -40,7 +40,7 @@ abstract class BaseGCSFile {
   }
 
   public String location() {
-    return blobId.toGsUtilUri();
+    return blobId().toGsUtilUri();
   }
 
   Storage storage() {
@@ -48,11 +48,12 @@ abstract class BaseGCSFile {
   }
 
   URI uri() {
-    return URI.create(blobId.toGsUtilUri());
+    return URI.create(location());
   }
 
   BlobId blobId() {
-    return blobId;
+    BlobId b = getBlob().getBlobId();
+    return null == b ? blobId : b;
   }
 
   protected GCPProperties gcpProperties() {
@@ -77,6 +78,6 @@ abstract class BaseGCSFile {
 
   @Override
   public String toString() {
-    return blobId.toString();
+    return blobId().toString();
   }
 }

@@ -36,6 +36,11 @@ class GCSOutputFile extends BaseGCSFile implements OutputFile {
     return new GCSOutputFile(storage, BlobId.fromGsUtilUri(location), gcpProperties, metrics);
   }
 
+  static GCSOutputFile fromBlobId(
+      BlobId blobId, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
+    return new GCSOutputFile(storage, blobId, gcpProperties, metrics);
+  }
+
   GCSOutputFile(
       Storage storage, BlobId blobId, GCPProperties gcpProperties, MetricsContext metrics) {
     super(storage, blobId, gcpProperties, metrics);
@@ -59,6 +64,7 @@ class GCSOutputFile extends BaseGCSFile implements OutputFile {
   @Override
   public PositionOutputStream createOrOverwrite() {
     try {
+      // implicitly checks generation on the blobId, if specified
       return new GCSOutputStream(storage(), blobId(), gcpProperties(), metrics());
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to create output stream for location: " + uri(), e);

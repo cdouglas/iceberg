@@ -79,10 +79,6 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
 
     createStack = Thread.currentThread().getStackTrace();
 
-    openStream();
-  }
-
-  private void openStream() {
     channel = openChannel();
   }
 
@@ -95,6 +91,7 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
     gcpProperties
         .userProject()
         .ifPresent(userProject -> sourceOptions.add(BlobSourceOption.userProject(userProject)));
+    sourceOptions.add(BlobSourceOption.generationMatch());
 
     ReadChannel result = storage.reader(blobId, sourceOptions.toArray(new BlobSourceOption[0]));
 

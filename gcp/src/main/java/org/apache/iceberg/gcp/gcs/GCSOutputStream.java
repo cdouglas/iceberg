@@ -109,6 +109,7 @@ class GCSOutputStream extends PositionOutputStream {
     gcpProperties
         .userProject()
         .ifPresent(userProject -> writeOptions.add(BlobWriteOption.userProject(userProject)));
+    writeOptions.add(BlobWriteOption.generationMatch());
 
     WriteChannel channel =
         storage.writer(
