@@ -18,6 +18,28 @@
  */
 package org.apache.iceberg.io;
 
-public interface SupportsAtomicOperations extends FileIO {
-  OutputFile newOutputFile(InputFile replace);
+import java.util.List;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.TableIdentifier;
+
+public class FileIOCatalog implements Catalog {
+  @Override
+  public List<TableIdentifier> listTables(Namespace namespace) {
+    return null;
+  }
+
+  @Override
+  public boolean dropTable(TableIdentifier identifier, boolean purge) {
+    return false;
+  }
+
+  @Override
+  public void renameTable(TableIdentifier from, TableIdentifier to) {}
+
+  @Override
+  public Table loadTable(TableIdentifier identifier) {
+    return null;
+  }
 }

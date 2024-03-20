@@ -106,7 +106,8 @@ public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
 
   @Override
   public OutputFile newOutputFile(InputFile replace) {
-    return GCSOutputFile.fromBlobId(((GCSInputFile) replace).blobId(), client(), gcpProperties, metrics);
+    // !#! TODO
+    return null;
   }
 
   @Override
