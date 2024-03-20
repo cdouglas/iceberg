@@ -30,7 +30,7 @@ class GCSInputFile extends BaseGCSFile implements InputFile {
 
   static GCSInputFile fromLocation(
       String location, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
-    return new GCSInputFile(storage, BlobId.fromGsUtilUri(location), null, gcpProperties, metrics);
+    return fromLocation(location, -1, storage, gcpProperties, metrics);
   }
 
   static GCSInputFile fromLocation(
@@ -39,9 +39,26 @@ class GCSInputFile extends BaseGCSFile implements InputFile {
       Storage storage,
       GCPProperties gcpProperties,
       MetricsContext metrics) {
+    return fromBlobId(BlobId.fromGsUtilUri(location), length, storage, gcpProperties, metrics);
+  }
+
+  static GCSInputFile fromBlobId(
+          BlobId blobId,
+          Storage storage,
+          GCPProperties gcpProperties,
+          MetricsContext metrics) {
+    return fromBlobId(blobId, -1, storage, gcpProperties, metrics);
+  }
+
+  static GCSInputFile fromBlobId(
+      BlobId blobId,
+      long length,
+      Storage storage,
+      GCPProperties gcpProperties,
+      MetricsContext metrics) {
     return new GCSInputFile(
         storage,
-        BlobId.fromGsUtilUri(location),
+        blobId,
         length > 0 ? length : null,
         gcpProperties,
         metrics);
