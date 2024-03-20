@@ -27,6 +27,7 @@ import static org.mockito.Mockito.spy;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
 import java.io.IOException;
 import java.io.InputStream;
@@ -47,6 +48,7 @@ import org.apache.iceberg.io.ResolvingFileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -103,6 +105,75 @@ public class GCSFileIOTest {
     io.deleteFile(in);
 
     assertThat(io.newInputFile(location).exists()).isFalse();
+  }
+
+  @Test
+  public void newOutputFileMatch() throws IOException {
+    final String location = format("gs://%s/path/to/file.txt", TEST_BUCKET);
+    final byte[] expected = new byte[1024 * 1024];
+    random.nextBytes(expected);
+
+    final OutputFile out = io.newOutputFile(location);
+    try (OutputStream os = out.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
+    }
+
+    final InputFile in = io.newInputFile(location);
+    assertThat(in.exists()).isTrue();
+    final byte[] actual = new byte[1024 * 1024];
+
+    try (InputStream is = in.newStream()) {
+      IOUtil.readFully(is, actual, 0, actual.length);
+    }
+    assertThat(actual).isEqualTo(expected);
+
+    OutputFile overwrite = io.newOutputFile(in);
+    final byte[] overbytes = new byte[1024 * 1024];
+    random.nextBytes(overbytes);
+    try (OutputStream os = overwrite.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
+    }
+    try (InputStream is = in.newStream()) {
+      IOUtil.readFully(is, actual, 0, actual.length);
+    }
+    assertThat(actual).isEqualTo(overbytes);
+  }
+
+  @Test
+  public void newOutputFileMatchFail() throws IOException {
+    final String location = format("gs://%s/path/to/file.txt", TEST_BUCKET);
+    final byte[] expected = new byte[1024 * 1024];
+    random.nextBytes(expected);
+
+    final OutputFile out = io.newOutputFile(location);
+    try (OutputStream os = out.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
+    }
+
+    final InputFile in = io.newInputFile(location);
+    assertThat(in.exists()).isTrue();
+    final byte[] actual = new byte[1024 * 1024];
+    try (InputStream is = in.newStream()) {
+      IOUtil.readFully(is, actual, 0, actual.length);
+    }
+    assertThat(actual).isEqualTo(expected);
+
+    // overwrite succeeds, because generation matches InputFile
+    final OutputFile overwrite = io.newOutputFile(in);
+    final byte[] overbytes = new byte[1024 * 1024];
+    random.nextBytes(overbytes);
+    try (OutputStream os = overwrite.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
+    }
+    // overwrite fails, object has been overwritten
+    StorageException generationFailure = Assertions.assertThrows(
+            StorageException.class,
+            () -> {
+              try (OutputStream os = overwrite.createOrOverwrite()) {
+                IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
+              }
+            });
+    assertThat(generationFailure.getMessage()).startsWith("Generation mismatch");
   }
 
   @Test
