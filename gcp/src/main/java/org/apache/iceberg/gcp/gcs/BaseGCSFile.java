@@ -52,8 +52,8 @@ abstract class BaseGCSFile {
   }
 
   BlobId blobId() {
-    BlobId b = getBlob().getBlobId();
-    return null == b ? blobId : b;
+    Blob blob = getBlob();
+    return null == blob ? blobId : blob.getBlobId();
   }
 
   protected GCPProperties gcpProperties() {
