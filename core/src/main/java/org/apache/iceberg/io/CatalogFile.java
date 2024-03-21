@@ -17,9 +17,10 @@
  * under the License.
  */
 package org.apache.iceberg.io;
-
+import java.io.IOException;
 import java.util.List;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.types.Types;
 
@@ -42,6 +43,17 @@ public interface CatalogFile {
 
   static Schema schema() {
     return SCHEMA;
+  }
+
+  static class Writer {
+    // Serialize the CatalogFile to the given OutputFile using Avro
+    public void write(CatalogFile catalogFile, OutputFile outputFile) throws IOException {
+      Avro.write(outputFile)
+          .schema(SCHEMA)
+          .named("catalog")
+          .build()
+          .add(catalogFile);
+    }
   }
 
   List<TableIdentifier> tables();
