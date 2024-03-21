@@ -56,5 +56,16 @@ public interface CatalogFile {
     }
   }
 
+  static class Reader {
+    public CatalogFile read(InputFile file) throws IOException {
+      return (CatalogFile) Avro.read(file)
+          .project(SCHEMA)
+          .reuseContainers()
+          .build()
+          .iterator()
+          .next();
+    }
+  }
+
   List<TableIdentifier> tables();
 }
