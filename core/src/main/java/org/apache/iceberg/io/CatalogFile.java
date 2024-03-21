@@ -17,6 +17,7 @@
  * under the License.
  */
 package org.apache.iceberg.io;
+
 import java.io.IOException;
 import java.util.List;
 import org.apache.iceberg.Schema;
@@ -45,25 +46,27 @@ public interface CatalogFile {
     return SCHEMA;
   }
 
-  static class Writer {
+  class Writer {
     // Serialize the CatalogFile to the given OutputFile using Avro
     public void write(CatalogFile catalogFile, OutputFile outputFile) throws IOException {
-      Avro.write(outputFile)
+      try (FileAppender<CatalogFile> out = Avro.write(outputFile)
           .schema(SCHEMA)
           .named("catalog")
-          .build()
-          .add(catalogFile);
+          .build()) {
+        out.add(catalogFile);
+      }
     }
   }
 
-  static class Reader {
+  class Reader {
     public CatalogFile read(InputFile file) throws IOException {
-      return (CatalogFile) Avro.read(file)
+      try (CloseableIterable<CatalogFile> in = Avro.read(file)
           .project(SCHEMA)
           .reuseContainers()
-          .build()
-          .iterator()
-          .next();
+          .build()) {
+        CatalogFile x = in.iterator().next();
+      }
+      return null;
     }
   }
 
