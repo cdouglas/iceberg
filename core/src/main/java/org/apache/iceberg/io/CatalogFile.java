@@ -18,27 +18,31 @@
  */
 package org.apache.iceberg.io;
 
+import java.util.List;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.types.Types;
 
 public interface CatalogFile {
-    // TODO tombstone table data? Or allow ABA?
-    Types.StructType TABLE =
-            Types.StructType.of(
-                    Types.NestedField.required(100, "table", Types.StructType.of(
-                    Types.NestedField.required(102, "namespace", Types.StringType.get()),
-                    Types.NestedField.required(103, "tableName", Types.StringType.get()),
-                    Types.NestedField.required(104, "location", Types.StringType.get()),
-                    Types.NestedField.optional(105, "metadata", Types.StringType.get())
-            )));
-    Types.NestedField TABLES =
-            Types.NestedField.optional(106,
-                "tables",
-                Types.ListType.ofRequired(107, TABLE),
-                "list of tables");
-    Schema SCHEMA = new Schema();
+  // TODO tombstone table data? Or allow ABA?
+  Types.StructType TABLE =
+      Types.StructType.of(
+          Types.NestedField.required(
+              100,
+              "table",
+              Types.StructType.of(
+                  Types.NestedField.required(102, "namespace", Types.StringType.get()),
+                  Types.NestedField.required(103, "tableName", Types.StringType.get()),
+                  Types.NestedField.required(104, "location", Types.StringType.get()),
+                  Types.NestedField.optional(105, "metadata", Types.StringType.get()))));
+  Types.NestedField TABLES =
+      Types.NestedField.optional(
+          106, "tables", Types.ListType.ofRequired(107, TABLE), "list of tables");
+  Schema SCHEMA = new Schema(TABLES);
 
-    static Schema schema() {
-        return SCHEMA;
-    }
+  static Schema schema() {
+    return SCHEMA;
+  }
+
+  List<TableIdentifier> tables();
 }

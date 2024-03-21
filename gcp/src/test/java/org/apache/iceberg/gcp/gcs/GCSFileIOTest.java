@@ -166,7 +166,8 @@ public class GCSFileIOTest {
       IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
     }
     // overwrite fails, object has been overwritten
-    StorageException generationFailure = Assertions.assertThrows(
+    StorageException generationFailure =
+        Assertions.assertThrows(
             StorageException.class,
             () -> {
               try (OutputStream os = overwrite.createOrOverwrite()) {
