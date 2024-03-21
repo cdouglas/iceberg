@@ -25,7 +25,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.BaseMetastoreCatalog;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.CatalogUtil;
-import org.apache.iceberg.Table;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -37,10 +36,6 @@ public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable 
 
   private Configuration conf;
   private FileIO fileIO;
-
-  FileIOCatalog() {
-    super();
-  }
 
   @Override
   public void setConf(Configuration conf) {
@@ -56,8 +51,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable 
   public void initialize(String name, Map<String, String> properties) {
     super.initialize(name, properties);
     String fileIOImpl =
-            properties.getOrDefault(
-                    CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.hadoop.HadoopFileIO");
+        properties.getOrDefault(
+            CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.hadoop.HadoopFileIO");
 
     this.fileIO = CatalogUtil.loadFileIO(fileIOImpl, properties, conf);
   }
