@@ -18,27 +18,32 @@
  */
 package org.apache.iceberg.io;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.OutputStream;
 import java.io.Serializable;
+import java.io.UncheckedIOException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-
 import org.apache.avro.generic.IndexedRecord;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.StructLike;
-import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.avro.AvroSchemaUtil;
-import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.types.Types;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.FileNotFoundException;
 
 public class CatalogFile implements StructLike, IndexedRecord, Serializable {
+  // TODO use serialization idioms from the project
+
   // TODO tombstone table data? Or allow ABA?
   static Types.StructType TABLE =
       Types.StructType.of(
@@ -54,10 +59,26 @@ public class CatalogFile implements StructLike, IndexedRecord, Serializable {
       Types.NestedField.optional(
           106, "tables", Types.ListType.ofRequired(107, TABLE), "list of tables");
   static Schema SCHEMA = new Schema(TABLES);
+
   private List<StructLike> tables; // list of tables
+  private final Map<TableIdentifier, String> fqti; // fully qualified table identifiers
+
+  public CatalogFile(Map<TableIdentifier, String> fqti) {
+    this.fqti = fqti;
+  }
+
+  public CatalogFile() {
+    this(new HashMap<>());
+  }
 
   public CatalogFile(List<StructLike> tables) {
     this.tables = tables;
+    this.fqti = null;
+  }
+
+  public Map<TableIdentifier, String> fqti() {
+    // TODO shouldn't expose internal state like this
+    return fqti;
   }
 
   public List<StructLike> tables() {
@@ -68,33 +89,65 @@ public class CatalogFile implements StructLike, IndexedRecord, Serializable {
     return SCHEMA;
   }
 
-  static class Writer {
-    // Serialize the CatalogFile to the given OutputFile using Avro
-    public void write(CatalogFile catalogFile, OutputFile outputFile) throws IOException {
-      try (FileAppender<CatalogFile> out = Avro.write(outputFile)
-          .schema(SCHEMA)
-          .named("catalog")
-          .build()) {
-        out.add(catalogFile);
+  public int write(OutputStream out) {
+    try (DataOutputStream dos = new DataOutputStream(out)) {
+      dos.writeInt(fqti.size());
+      for (Map.Entry<TableIdentifier, String> e : fqti.entrySet()) {
+        TableIdentifier tid = e.getKey();
+        Namespace namespace = tid.namespace();
+        dos.writeInt(namespace.length());
+        for (String n : namespace.levels()) {
+          dos.writeUTF(n);
+        }
+        dos.writeUTF(tid.name());
+        dos.writeUTF(e.getValue()); // location
       }
+      return dos.size();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
     }
   }
 
-  static class Reader {
-    public CatalogFile read(InputFile file) throws IOException {
-      try (CloseableIterable<CatalogFile> in = Avro.read(file)
-          .project(SCHEMA)
-          .reuseContainers()
-          .build()) {
-        CatalogFile x = in.iterator().next();
-        return x;
+  public void read(InputStream in) {
+    fqti.clear();
+    try (DataInputStream din = new DataInputStream(in)) {
+      int size = din.readInt();
+      for (int i = 0; i < size; i++) {
+        int nlen = din.readInt();
+        String[] levels = new String[nlen];
+        for (int j = 0; j < nlen; j++) {
+          levels[j] = din.readUTF();
+        }
+        Namespace namespace = Namespace.of(levels);
+        TableIdentifier tid = TableIdentifier.of(namespace, din.readUTF());
+        fqti.put(tid, din.readUTF());
       }
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
     }
+  }
+
+  @Override
+  public boolean equals(Object other) {
+    if (this == other) {
+      return true;
+    }
+    if (other == null || getClass() != other.getClass()) {
+      return false;
+    }
+    CatalogFile that = (CatalogFile) other;
+    return fqti.equals(that.fqti());
+  }
+
+  @Override
+  public int hashCode() {
+    return fqti.hashCode();
   }
 
   static class SimpleWriter {
     // Write the class just using java's POJO serialization
-    public void write(CatalogFile catalogFile, OutputFile outputFile) throws IOException, FileNotFoundException {
+    public void write(CatalogFile catalogFile, OutputFile outputFile)
+        throws IOException, FileNotFoundException {
       ByteArrayOutputStream baos = new ByteArrayOutputStream();
       ObjectOutputStream out = new ObjectOutputStream(baos);
       try {
@@ -134,31 +187,36 @@ public class CatalogFile implements StructLike, IndexedRecord, Serializable {
 
     // Constructor
     public TableStruct(String namespace, String tableName, String location, String metadata) {
-        this.namespace = namespace;
-        this.tableName = tableName;
-        this.location = location;
-        this.metadata = metadata;
+      this.namespace = namespace;
+      this.tableName = tableName;
+      this.location = location;
+      this.metadata = metadata;
     }
 
     // Default constructor
-    public TableStruct() {
-    }
+    public TableStruct() {}
 
     // Implement the StructLike methods
     @Override
     public int size() {
-        return 4; // Corresponding to the number of fields: namespace, tableName, location, and metadata
+      return 4; // Corresponding to the number of fields: namespace, tableName, location, and
+      // metadata
     }
 
     @Override
     public Object get(int i) {
       int pos = i;
       switch (pos) {
-          case 0: return namespace;
-          case 1: return tableName;
-          case 2: return location;
-          case 3: return metadata;
-          default: throw new IllegalArgumentException("Invalid position: " + pos);
+        case 0:
+          return namespace;
+        case 1:
+          return tableName;
+        case 2:
+          return location;
+        case 3:
+          return metadata;
+        default:
+          throw new IllegalArgumentException("Invalid position: " + pos);
       }
     }
 
@@ -166,7 +224,7 @@ public class CatalogFile implements StructLike, IndexedRecord, Serializable {
     public <T> T get(int pos, Class<T> javaClass) {
       Object value = get(pos);
       if (value == null) {
-          return null;
+        return null;
       }
       return javaClass.cast(value);
     }
@@ -174,11 +232,20 @@ public class CatalogFile implements StructLike, IndexedRecord, Serializable {
     @Override
     public void set(int pos, Object value) {
       switch (pos) {
-        case 0: this.namespace = (String) value.toString(); break;
-        case 1: this.tableName = (String) value.toString(); break;
-        case 2: this.location = (String) value.toString(); break;
-        case 3: this.metadata = (String) value.toString(); break;
-        default: throw new IllegalArgumentException("Invalid position: " + pos);
+        case 0:
+          this.namespace = (String) value.toString();
+          break;
+        case 1:
+          this.tableName = (String) value.toString();
+          break;
+        case 2:
+          this.location = (String) value.toString();
+          break;
+        case 3:
+          this.metadata = (String) value.toString();
+          break;
+        default:
+          throw new IllegalArgumentException("Invalid position: " + pos);
       }
       return; // Return the current instance for method chaining
     }
@@ -187,18 +254,22 @@ public class CatalogFile implements StructLike, IndexedRecord, Serializable {
 
     @Override
     public int hashCode() {
-        return Objects.hash(namespace, tableName, location, metadata);
+      return Objects.hash(namespace, tableName, location, metadata);
     }
 
     @Override
     public boolean equals(Object obj) {
-        if (this == obj) return true;
-        if (obj == null || getClass() != obj.getClass()) return false;
-        TableStruct other = (TableStruct) obj;
-        return Objects.equals(namespace, other.namespace)
-            && Objects.equals(tableName, other.tableName)
-            && Objects.equals(location, other.location)
-            && Objects.equals(metadata, other.metadata);
+      if (this == obj) {
+        return true;
+      }
+      if (obj == null || getClass() != obj.getClass()) {
+        return false;
+      }
+      TableStruct other = (TableStruct) obj;
+      return Objects.equals(namespace, other.namespace)
+          && Objects.equals(tableName, other.tableName)
+          && Objects.equals(location, other.location)
+          && Objects.equals(metadata, other.metadata);
     }
 
     @Override
@@ -219,7 +290,8 @@ public class CatalogFile implements StructLike, IndexedRecord, Serializable {
 
   @Override
   public Object get(int i) {
-    // Since the schema only defines one top-level field ("tables"), we only need to handle that one case
+    // Since the schema only defines one top-level field ("tables"), we only need to handle that one
+    // case
     if (i != 0) {
       throw new IndexOutOfBoundsException("CatalogFile has only one field.");
     }
