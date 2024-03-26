@@ -1,27 +1,67 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 package org.apache.iceberg.io;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.util.Arrays;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.inmemory.InMemoryOutputFile;
+import org.apache.iceberg.io.CatalogFile.TableStruct;
 import org.junit.Test;
 
-import java.util.Arrays;
-
-import org.apache.iceberg.inmemory.InMemoryOutputFile;
-import org.apache.iceberg.io.CatalogFile;
-import org.apache.iceberg.io.CatalogFile.TableStruct;
-
 public class TestCatalogFile {
-    // Test our ability to write and read a CatalogFile
-    @Test
-    public void testCatalogFile() throws Exception {
-        TableStruct table = new TableStruct("ns", "name", "loc", "meta");
-        TableStruct table2 = new TableStruct("ns2", "name2", "loc2", "meta2");
-        CatalogFile catalogFile = new CatalogFile(Arrays.asList(table, table2));
-        CatalogFile.SimpleWriter writer = new CatalogFile.SimpleWriter();
-        InMemoryOutputFile out = new InMemoryOutputFile("catalog.avro");
-        writer.write(catalogFile, out);
-        CatalogFile.SimpleReader reader = new CatalogFile.SimpleReader();
-        CatalogFile readCatalogFile = reader.read(out.toInputFile());
-        for (int i = 0; i < catalogFile.tables().size(); i++) {
-            assert catalogFile.tables().get(i).equals(readCatalogFile.tables().get(i));
-        }
+  // Test our ability to write and read a CatalogFile
+  @Test
+  public void testCatalogFile() throws Exception {
+    TableStruct table = new TableStruct("ns", "name", "loc", "meta");
+    TableStruct table2 = new TableStruct("ns2", "name2", "loc2", "meta2");
+    CatalogFile catalogFile = new CatalogFile(Arrays.asList(table, table2));
+    CatalogFile.SimpleWriter writer = new CatalogFile.SimpleWriter();
+    InMemoryOutputFile out = new InMemoryOutputFile("catalog.avro");
+    writer.write(catalogFile, out);
+    CatalogFile.SimpleReader reader = new CatalogFile.SimpleReader();
+    CatalogFile readCatalogFile = reader.read(out.toInputFile());
+    for (int i = 0; i < catalogFile.tables().size(); i++) {
+      assert catalogFile.tables().get(i).equals(readCatalogFile.tables().get(i));
     }
+  }
+
+  @Test
+  public void testCatalogFileDirectSerialization() throws Exception {
+    CatalogFile catalogFile =
+        new CatalogFile(
+            Stream.of(
+                    new Object[][] {
+                      {new String[] {"db", "dingos", "yaks", "prod"}, "gs://bucket0/chinchillas"},
+                      {new String[] {"db", "dingos", "yaks", "qa"}, "gs://bucket1/chinchillas"},
+                    })
+                .collect(
+                    Collectors.toMap(
+                        x -> TableIdentifier.of((String[]) x[0]), x -> (String) x[1])));
+    ByteArrayOutputStream ser = new ByteArrayOutputStream();
+    catalogFile.write(ser);
+    ByteArrayInputStream deser = new ByteArrayInputStream(ser.toByteArray());
+    CatalogFile deserCatalogFile = new CatalogFile();
+    deserCatalogFile.read(deser);
+    assert catalogFile.equals(deserCatalogFile);
+  }
 }
