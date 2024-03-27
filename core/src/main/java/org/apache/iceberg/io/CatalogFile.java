@@ -24,8 +24,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import org.apache.commons.compress.utils.Lists;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 
@@ -35,15 +37,32 @@ public class CatalogFile {
   private final Map<TableIdentifier, String> fqti; // fully qualified table identifiers
 
   public CatalogFile() {
-    this(new HashMap<>());
+    // consistent iteration order
+    this(new LinkedHashMap<>());
   }
 
-  public CatalogFile(Map<TableIdentifier, String> fqti) {
+  CatalogFile(Map<TableIdentifier, String> fqti) {
     this.fqti = fqti;
   }
 
-  public Map<TableIdentifier, String> fqti() {
-    // TODO shouldn't expose internal state like this
+  public List<TableIdentifier> tables() {
+    return Lists.newArrayList(fqti.keySet().iterator());
+  }
+
+  public boolean add(TableIdentifier table, String location) {
+    return null == fqti.putIfAbsent(table, location);
+  }
+
+  /**
+   * Remove the table from the catalog file.
+   *
+   * @return the location of the table, or null if the table is not found
+   */
+  public String drop(TableIdentifier table) {
+    return fqti.remove(table);
+  }
+
+  Map<TableIdentifier, String> fqti() {
     return fqti;
   }
 
@@ -101,5 +120,4 @@ public class CatalogFile {
   public int hashCode() {
     return fqti.hashCode();
   }
-
 }
