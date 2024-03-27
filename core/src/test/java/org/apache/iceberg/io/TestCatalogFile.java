@@ -33,12 +33,19 @@ public class TestCatalogFile {
         new CatalogFile(
             Stream.of(
                     new Object[][] {
-                      {new String[] {"db", "dingos", "yaks", "prod"}, "gs://bucket0/chinchillas"},
-                      {new String[] {"db", "dingos", "yaks", "qa"}, "gs://bucket1/chinchillas"},
+                      {
+                        new String[] {"db", "dingos", "yaks", "prod"},
+                        new CatalogFile.TableInfo(3, "gs://bucket0/chinchillas")
+                      },
+                      {
+                        new String[] {"db", "dingos", "yaks", "qa"},
+                        new CatalogFile.TableInfo(3, "gs://bucket1/chinchillas")
+                      },
                     })
                 .collect(
                     Collectors.toMap(
-                        x -> TableIdentifier.of((String[]) x[0]), x -> (String) x[1])));
+                        x -> TableIdentifier.of((String[]) x[0]),
+                        x -> (CatalogFile.TableInfo) x[1])));
     ByteArrayOutputStream ser = new ByteArrayOutputStream();
     catalogFile.write(ser);
     ByteArrayInputStream deser = new ByteArrayInputStream(ser.toByteArray());

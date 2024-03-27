@@ -27,7 +27,6 @@ import java.io.UncheckedIOException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.zip.CRC32;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
@@ -36,9 +35,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 public class CatalogFile {
   // TODO use serialization idioms from the project, handle evolution, etc.
 
-  private int lastCommit;   // or retain deleted TableIdentifiers unless/until not the max
-  private long tblChecksum; // checksum of the table identifiers
-  private int[] versions;   // versions of the catalog file
+  private int nextCommit; // or retain deleted TableIdentifiers unless/until not the max
   // TODO handle empty namespaces
   private final Map<TableIdentifier, TableInfo> fqti; // fully qualified table identifiers
 
@@ -49,6 +46,23 @@ public class CatalogFile {
     TableInfo(int version, String location) {
       this.version = version;
       this.location = location;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (this == other) {
+        return true;
+      }
+      if (other == null || getClass() != other.getClass()) {
+        return false;
+      }
+      TableInfo that = (TableInfo) other;
+      return version == that.version && location.equals(that.location);
+    }
+
+    @Override
+    public int hashCode() {
+      return 31 * version + location.hashCode();
     }
   }
 
@@ -64,18 +78,12 @@ public class CatalogFile {
 
   public String location(TableIdentifier table) {
     final TableInfo info = fqti.get(table);
-    if (info != null) {
-      return info.location;
-    }
-    return null;
+    return info != null ? info.location : null;
   }
 
   public int version(TableIdentifier table) {
     final TableInfo info = fqti.get(table);
-    if (info != null) {
-      return info.version;
-    }
-    return -1;
+    return info != null ? info.version : -1;
   }
 
   public List<TableIdentifier> tables() {
@@ -84,7 +92,7 @@ public class CatalogFile {
 
   public boolean add(TableIdentifier table, String location) {
     // Bad API. Create a Builder?
-    return null == fqti.putIfAbsent(table, location);
+    return null == fqti.putIfAbsent(table, new TableInfo(nextCommit, location));
   }
 
   /**
@@ -93,54 +101,44 @@ public class CatalogFile {
    * @return the location of the table, or null if the table is not found
    */
   public String drop(TableIdentifier table) {
-    return fqti.remove(table);
+    TableInfo info = fqti.get(table);
+    return null == info ? null : info.location;
   }
 
-  @VisibleForTesting
-  Map<TableIdentifier, String> fqti() {
+  Map<TableIdentifier, TableInfo> fqti() {
     return fqti;
   }
 
-  // table CRC
-  // n tables
-  //   table version
-  //   table namespace
-  //   table name
-  //   location
-
-  // TODO replace this w/ static init and immutable CatalogFile instances
+  // TODO replace this w/ static init, tracking changes within the instance
+  // TODO tracking changes should preserve which tables need to be updated with nextCommit, req
+  // update on conflict
   public void read(InputStream in) {
     fqti.clear();
     try (DataInputStream din = new DataInputStream(in)) {
-      tblChecksum = din.readLong();
       int size = din.readInt();
-      versions = new int[size];
       for (int i = 0; i < size; i++) {
+        int version = din.readInt();
         int nlen = din.readInt();
         String[] levels = new String[nlen];
-        versions[i] = din.readInt();
         for (int j = 0; j < nlen; j++) {
           levels[j] = din.readUTF();
         }
         Namespace namespace = Namespace.of(levels);
         TableIdentifier tid = TableIdentifier.of(namespace, din.readUTF());
-        fqti.put(tid, new TableInfo(versions[i], in.readUTF());
+        fqti.put(tid, new TableInfo(version, din.readUTF()));
       }
-      lastCommit = din.readInt();
+      nextCommit = din.readInt() + 1;
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
   }
 
   public int write(OutputStream out) {
-    // versions
     try (DataOutputStream dos = new DataOutputStream(out)) {
-      final long chksum = tableChecksum(fqti.keySet());
-      dos.writeLong(chksum);
       dos.writeInt(fqti.size());
-      int ordinal = 0;
-      for (Map.Entry<TableIdentifier, String> e : fqti.entrySet()) {
-        dos.writeInt(versions[ordinal++]);
+      for (Map.Entry<TableIdentifier, TableInfo> e : fqti.entrySet()) {
+        TableInfo info = e.getValue();
+        dos.writeInt(info.version);
         TableIdentifier tid = e.getKey();
         Namespace namespace = tid.namespace();
         dos.writeInt(namespace.length());
@@ -148,9 +146,9 @@ public class CatalogFile {
           dos.writeUTF(n);
         }
         dos.writeUTF(tid.name());
-        dos.writeUTF(e.getValue()); // location
+        dos.writeUTF(info.location);
       }
-      dos.writeInt(lastCommit);
+      dos.writeInt(nextCommit);
       return dos.size();
     } catch (IOException e) {
       throw new UncheckedIOException(e);
@@ -173,18 +171,4 @@ public class CatalogFile {
   public int hashCode() {
     return fqti.hashCode();
   }
-
-  private static long tableChecksum(Iterable<TableIdentifier> fqti) {
-    final CRC32 chksum = new CRC32();
-    for (TableIdentifier tid : fqti) {
-      for (String n : tid.namespace().levels()) {
-        final byte[] nsbytes = n.getBytes();
-        chksum.update(nsbytes, 0, nsbytes.length);
-      }
-      final byte[] nameBytes = tid.name().getBytes();
-      chksum.update(nameBytes, 0, nameBytes.length);
-    }
-    return chksum.getValue();
-  }
-
 }

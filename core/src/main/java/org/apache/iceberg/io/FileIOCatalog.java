@@ -43,7 +43,8 @@ import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.hadoop.HadoopTableOperations;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 
-public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable, SupportsNamespaces {
+public class FileIOCatalog extends BaseMetastoreCatalog
+    implements Configurable, SupportsNamespaces {
   // TODO SupportsNamespaces
   // TODO audit loadTable in BaseMetastoreCatalog
   // TODO buildTable overridden in BaseMetastoreCatalog?
@@ -146,10 +147,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable,
   // SupportsNamespaces
   //
 
-  @Override
-  public void createNamespace(Namespace namespace, Map<String, String> metadata) {
+  // TODO: add namespaces (including empty tables)
+  // TODO: add namespace metadata (namespace -> Map<String,String>)
 
-  }
+  @Override
+  public void createNamespace(Namespace namespace, Map<String, String> metadata) {}
 
   @Override
   public List<Namespace> listNamespaces(Namespace namespace) throws NoSuchNamespaceException {
@@ -157,7 +159,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable,
   }
 
   @Override
-  public Map<String, String> loadNamespaceMetadata(Namespace namespace) throws NoSuchNamespaceException {
+  public Map<String, String> loadNamespaceMetadata(Namespace namespace)
+      throws NoSuchNamespaceException {
     return null;
   }
 
@@ -167,12 +170,14 @@ public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable,
   }
 
   @Override
-  public boolean setProperties(Namespace namespace, Map<String, String> properties) throws NoSuchNamespaceException {
+  public boolean setProperties(Namespace namespace, Map<String, String> properties)
+      throws NoSuchNamespaceException {
     return false;
   }
 
   @Override
-  public boolean removeProperties(Namespace namespace, Set<String> properties) throws NoSuchNamespaceException {
+  public boolean removeProperties(Namespace namespace, Set<String> properties)
+      throws NoSuchNamespaceException {
     return false;
   }
 
@@ -190,7 +195,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable,
     private final TableIdentifier tableId;
     private final String tblLocation;
 
-    FileIOTableOperations(TableIdentifier tableId, String tblLocation, FileIO fileIO, Configuration conf) {
+    FileIOTableOperations(
+        TableIdentifier tableId, String tblLocation, FileIO fileIO, Configuration conf) {
       super(null, fileIO, conf, new NullLockManager());
       this.tblLocation = tblLocation;
       this.tableId = tableId;
@@ -208,6 +214,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable,
     @Override
     public void commit(TableMetadata base, TableMetadata metadata) {
       try (FileIO io = io()) {
+        throw new UnsupportedOperationException();
       }
     }
   }
@@ -233,5 +240,4 @@ public class FileIOCatalog extends BaseMetastoreCatalog implements Configurable,
       // ignore
     }
   }
-
 }
