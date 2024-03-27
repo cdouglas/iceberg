@@ -90,7 +90,7 @@ public class HadoopTableOperations implements TableOperations {
     return Pair.of(version, currentMetadata);
   }
 
-  private synchronized void updateVersionAndMetadata(int newVersion, String metadataFile) {
+  protected synchronized void updateVersionAndMetadata(int newVersion, String metadataFile) {
     // update if the current version is out of date
     if (version == null || version != newVersion) {
       this.version = newVersion;
