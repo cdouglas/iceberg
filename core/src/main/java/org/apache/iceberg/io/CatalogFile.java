@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 
 public class CatalogFile {
@@ -41,6 +42,7 @@ public class CatalogFile {
     this(new LinkedHashMap<>());
   }
 
+  @VisibleForTesting
   CatalogFile(Map<TableIdentifier, String> fqti) {
     this.fqti = fqti;
   }
@@ -62,6 +64,7 @@ public class CatalogFile {
     return fqti.remove(table);
   }
 
+  @VisibleForTesting
   Map<TableIdentifier, String> fqti() {
     return fqti;
   }
