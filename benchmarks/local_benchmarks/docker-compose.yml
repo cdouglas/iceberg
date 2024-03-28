@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  spark-master:
+    container_name: da-spark-master
+    build: .
+    image: da-spark-image
+    entrypoint: ['/opt/spark/sbin/entrypoint.sh', 'master']
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080" ]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - data:/opt/spark/data
+      - spark-logs:/opt/spark/spark-events
+      #- lst-bench-configs:/home/spark/lst-bench/conf
+    env_file:
+      - .env.spark
+    ports:
+      - '9090:8080'
+      - '7077:7077'
+
+
+  spark-history-server:
+    container_name: da-spark-history
+    image: da-spark-image
+    entrypoint: ['/opt/spark/sbin/entrypoint.sh', 'history']
+    depends_on:
+      - spark-master
+    env_file:
+      - .env.spark
+    volumes:
+      - spark-logs:/opt/spark/spark-events
+      - data:/opt/spark/data
+    ports:
+      - '18080:18080'
+
+  spark-worker:
+    container_name: da-spark-worker
+    image: da-spark-image
+    entrypoint: ['/opt/spark/sbin/entrypoint.sh', 'worker']
+    depends_on:
+      - spark-master
+    env_file:
+      - .env.spark
+    volumes:
+      - data:/opt/spark/data
+      #- ./spark_apps:/opt/spark/apps
+      - spark-logs:/opt/spark/spark-events
+
+  spark-thrift:
+    container_name: da-spark-thrift
+    image: da-spark-image
+    entrypoint: ['/opt/spark/sbin/entrypoint.sh', 'thrift']
+    depends_on:
+      - spark-master
+    env_file:
+      - .env.spark
+    volumes:
+      - spark-logs:/opt/spark/spark-events
+      - warehouse:/opt/spark/warehouse
+      - data:/opt/spark/data
+
+  #hiveserver2:
+  #  image: apache/hive:3.1.3
+  #  restart: unless-stopped
+  #  container_name: hiveserver2
+  #  environment:
+  #    HIVE_SERVER2_THRIFT_PORT: 10000
+  #    SERVICE_OPTS: '-Xmx1G -Dhive.metastore.uris=thrift://metastore:9083'
+  #    IS_RESUME: 'true'
+  #    SERVICE_NAME: 'hiveserver2'
+  #  ports:
+  #    - '10000:10000'
+  #    - '10002:10002'
+  #  volumes:
+  #    - warehouse:/opt/hive/data/warehouse
+
+volumes:
+  spark-logs:
+  lst-bench-configs:
+  data:
+  warehouse:
