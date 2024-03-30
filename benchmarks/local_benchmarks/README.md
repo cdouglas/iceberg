@@ -14,25 +14,57 @@ make down
 
 ## Generating data for loading
 
-TPCDS with given scale factor
+TPCDS with given scale factor X and Y maintenance streams
 ```shell
-make tpcs sf=1
+make tpcds-gen SF=X MTS=Y
 ```
 
-TODO: create script for data generation
-```
-cd /home/spark/tpcds-kit/tools
-mkdir /opt/spark/data/sf_XXX
-./dsdgen -param ~/lst-bench/conf/tpcds_generation/data_gen_sf1.conf
-```
-
-## Benchmarks
+## Benchmarks using lst-bench
 
 ### Fast benchmark of iceberg
 
-```shell
-./launcher.sh -c conf/connections_config.yaml -t conf/telemetry_config.yaml -l run/spark-3.3.1/config/tpcds/library.yaml -w conf/fast_test_iceberg/workload_config.yaml -e conf/fast_test_iceberg/experiment_config.yaml
-```
+Run a short tpcds with scale factor 1: `make fast-tpcds`
+
+__TODO__: Continue setup of tpcds / lst-bench
+
+### Notes on the benchmark configuration
+
+#### Catalogs
+Currently Spark is configured with hadoop file based catalogs in spark-defaults.conf.
+These catalogs can be used in the experiments.yaml's. Later we can setup further catalogs to use object stores, ...
+
+#### connection_config.yaml
+The connection_config can be used for all local experiments on the Spark Cluster deployed via docker-compose.It setup to connect to Spark Cluster deloyed by the docker-compose via jdbc.
+Connection to several spark clusters and direct connection to the Spark master are possible. Within the docker container hostnames are the names specified in the docker-compose, e.g., spark-master or spark-thrift.
+
+#### telemetry_config.yaml
+Likewise the telemetry_config can be shared, but it is not tested yet.
+
+#### library.yaml's
+
+Each type of workload (e.g. tpcsd) and cluster setup requires their distict library.yaml.
+These libraries implement the tasks of the workloads that can later be used in the workload.yaml.
+The library spark/tpcds/library.yaml is setup to work with file based catalogs.
+
+#### workload.yaml's
+
+Workload.yaml's specify the sequence of workload steps (tasks, sessions, ...).
+These can contain parameters to be specified in a experiment.yaml
+
+#### experiment.yaml's
+
+experiment.yaml's specifiy the parameters, e.g., the catalogs to be used.
+
+#### Debugging of setup
+
+Logging:
+- Turn on detailed logging of thrift by commenting in spark-default.conf the line `spark.sql.thriftServer.log.level`
+- Rebuild the image: `make build`
+- Start the Spark cluster in foreground: `make run`
+
+Attach to the master: `make attach`
+
+Attach to Thrift SQL: `make attach-sql`
 
 # Running basic Spark
 You can run the spark standalone cluster by running:
@@ -44,12 +76,12 @@ or with 3 workers using:
 make run-scaled
 ```
 
-There are a number of commands to build the standalone cluster,
-you should check the Makefile to see them all. But the
-simplest one is:
-```shell
-make build
-```
+- Build the image: `make build`
+- Delete the Spark Cluster: `make down`
+- Attach to the master: `make attach`
+- Open a SQL session: `make attach-sql`
+- Attach to any container: `docker exec -it CONTAINER bash`
+- See Makefile
 
 ## Web UIs
 The master node can be accessed on:
@@ -59,7 +91,9 @@ The spark history server is accessible through:
 
 # TODOs
 
+- Continue setup of tpcds / lst-bench
 - Provide persistence for raw data and metastore via volumes if required
+- Implement verification of tpcds tables? The tpcds generator provides facilities.
 
 # About the repo
 

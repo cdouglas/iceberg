@@ -2,6 +2,9 @@ FROM apache/spark:3.3.3-scala2.12-java11-python3-r-ubuntu as spark-base
 #https://hub.docker.com/r/apache/spark/
 
 ARG LST_BENCH_COMMIT=2475787fb196fab4defeee0290a91a504fe2a2c2
+ENV SPARK_VERSION=3.3.3
+ENV SPARK_MAJOR_VERSION=3.3
+ENV ICEBERG_VERSION=1.5.0
 
 USER spark
 
@@ -14,10 +17,10 @@ ENV SPARK_MASTER="spark://spark-master:7077"
 ENV SPARK_MASTER_HOST spark-master
 ENV SPARK_MASTER_PORT 7077
 ENV PYSPARK_PYTHON python3
+# ENV PYTHONPATH=$SPARK_HOME/python/:$PYTHONPATH
 
 # Copy the default configurations into $SPARK_HOME/conf
 RUN mkdir -p "$SPARK_HOME/conf" && mkdir -p "$SPARK_HOME/spark-events" && mkdir -p "$SPARK_HOME/data" && mkdir -p "$SPARK_HOME/warehouse"
-COPY --chown=spark:spark conf/spark-defaults.conf "$SPARK_HOME/conf/spark-defaults.conf"
 
 # Copy appropriate entrypoint script
 COPY --chown=spark:spark entrypoint.sh /opt/spark/sbin/
@@ -25,9 +28,13 @@ COPY --chown=spark:spark entrypoint.sh /opt/spark/sbin/
 RUN chmod u+x /opt/spark/sbin/* && \
     chmod u+x /opt/spark/bin/*
 
-ENV PYTHONPATH=$SPARK_HOME/python/:$PYTHONPATH
-
 ENTRYPOINT ["/opt/spark/sbin/entrypoint.sh"]
+
+# Download iceberg spark runtime
+RUN curl https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12/${ICEBERG_VERSION}/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12-${ICEBERG_VERSION}.jar -Lo /opt/spark/jars/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12-${ICEBERG_VERSION}.jar
+
+# Add iceberg spark runtime jar to IJava classpath
+ENV IJAVA_CLASSPATH=/opt/spark/jars/*
 
 FROM spark-base as lst-bench
 
@@ -65,3 +72,19 @@ RUN git checkout -q $LST_BENCH_COMMIT && \
 
 # Copy over the configurations (change to bind mount in future)
 COPY --chown=spark:spark conf/lst-bench/* /home/spark/lst-bench/conf/
+COPY --chown=spark:spark conf/tpcds_generation/tpcds_data_gen.sh /home/spark/
+
+# For development
+RUN mkdir /home/spark/my-lst-bench && \
+    chown spark:spark /home/spark/my-lst-bench
+
+USER root
+# Set password for spark user
+RUN echo "spark:password" | chpasswd && echo "root:password" | chpasswd && \
+    apt-get install -qq -y sudo
+RUN echo "spark ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+USER spark
+WORKDIR /home/spark/my-lst-bench
+
+COPY --chown=spark:spark conf/spark-defaults.conf "$SPARK_HOME/conf/spark-defaults.conf"

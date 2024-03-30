@@ -14,6 +14,10 @@ services:
     volumes:
       - data:/opt/spark/data
       - spark-logs:/opt/spark/spark-events
+      - warehouse:/opt/spark/warehouse
+      - /data/tbang/git/lst-bench:/home/spark/my-lst-bench:rw
+      - /data/tbang/git/iceberg/benchmarks/local_benchmarks/conf/lst-bench:/home/spark/lst-bench/conf/:rw
+      - /data/tbang/git/iceberg/benchmarks/local_benchmarks/conf/lst-bench:/home/spark/my-lst-bench/conf/:rw
       #- lst-bench-configs:/home/spark/lst-bench/conf
     env_file:
       - .env.spark
@@ -33,6 +37,7 @@ services:
     volumes:
       - spark-logs:/opt/spark/spark-events
       - data:/opt/spark/data
+      - warehouse:/opt/spark/warehouse
     ports:
       - '18080:18080'
 
@@ -48,6 +53,7 @@ services:
       - data:/opt/spark/data
       #- ./spark_apps:/opt/spark/apps
       - spark-logs:/opt/spark/spark-events
+      - warehouse:/opt/spark/warehouse
 
   spark-thrift:
     container_name: da-spark-thrift

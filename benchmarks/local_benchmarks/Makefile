@@ -30,3 +30,12 @@ attach:
 
 run-terminal: build
 	docker run -it --rm da-spark-image:latest bash
+
+tpcds-gen:
+	docker exec da-spark-master /home/spark/tpcds_data_gen.sh $(SF) $(MTS)
+
+attach-sql:
+	docker exec -it da-spark-thrift beeline -u jdbc:hive2://localhost:10000
+
+fast-tpcds:
+	docker exec da-spark-master ./launcher.sh -c conf/connections_config.yaml -t conf/telemetry_config.yaml -l conf/library/spark/tpcds/library.yaml -w conf/fast_test_iceberg/workload.yaml -e conf/fast_test_iceberg/experiment.yaml
