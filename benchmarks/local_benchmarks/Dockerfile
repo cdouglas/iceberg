@@ -74,6 +74,10 @@ RUN git checkout -q $LST_BENCH_COMMIT && \
 COPY --chown=spark:spark conf/lst-bench/* /home/spark/lst-bench/conf/
 COPY --chown=spark:spark conf/tpcds_generation/tpcds_data_gen.sh /home/spark/
 
+# Mount point to write out results
+RUN mkdir /home/spark/results && \
+    chown spark:spark /home/spark/results
+
 # For development
 RUN mkdir /home/spark/my-lst-bench && \
     chown spark:spark /home/spark/my-lst-bench

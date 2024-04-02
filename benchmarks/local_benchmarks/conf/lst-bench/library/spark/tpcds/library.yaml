@@ -198,7 +198,7 @@ task_templates:
   - conf/library/spark/tpcds/scripts/single_user/query97.sql
   - conf/library/spark/tpcds/scripts/single_user/query98.sql
   - conf/library/spark/tpcds/scripts/single_user/query99.sql
-  permutation_orders_path: run/auxiliary/tpcds/single_user/permutation_orders/
+  permutation_orders_path: conf/library/spark/tpcds/auxiliary/single_user/permutation_orders/
   supports_time_travel: true
 # Execution of TPC-DS data maintenance queries (Delta)
 - id: data_maintenance_delta
@@ -214,7 +214,7 @@ task_templates:
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_SS.sql
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_WR.sql
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_WS.sql
-  parameter_values_file: run/auxiliary/tpcds/data_maintenance/parameter_values.dat
+  parameter_values_file: conf/library/spark/tpcds/auxiliary/data_maintenance/parameter_values.dat
 # Execution of TPC-DS data maintenance queries (Iceberg)
 - id: data_maintenance_iceberg
   files:
@@ -229,7 +229,7 @@ task_templates:
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_SS.sql
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_WR.sql
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_WS.sql
-  parameter_values_file: run/auxiliary/tpcds/data_maintenance/parameter_values.dat
+  parameter_values_file: conf/library/spark/tpcds/auxiliary/data_maintenance/parameter_values.dat
 # Execution of TPC-DS data maintenance queries (Hudi)
 - id: data_maintenance_hudi
   files:
@@ -244,7 +244,7 @@ task_templates:
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_SS.sql
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_WR.sql
   - conf/library/spark/tpcds/scripts/data_maintenance/LF_WS.sql
-  parameter_values_file: run/auxiliary/tpcds/data_maintenance/parameter_values.dat
+  parameter_values_file: conf/library/spark/tpcds/auxiliary/data_maintenance/parameter_values.dat
 # Execution of optimize on all benchmark tables (Delta)
 - id: optimize_delta
   files:
@@ -529,4 +529,4 @@ task_templates:
   - conf/library/spark/tpcds/scripts/data_maintenance_dependent/LF_WS_2.sql
   - conf/library/spark/tpcds/scripts/data_maintenance_dependent/LF_WS_3.sql
   - conf/library/spark/tpcds/scripts/data_maintenance_dependent/LF_WS_insert.sql
-  parameter_values_file: run/auxiliary/tpcds/data_maintenance/parameter_values.dat
+  parameter_values_file: conf/library/spark/tpcds/auxiliary/data_maintenance/parameter_values.dat

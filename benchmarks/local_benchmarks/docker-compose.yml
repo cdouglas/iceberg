@@ -15,6 +15,7 @@ services:
       - data:/opt/spark/data
       - spark-logs:/opt/spark/spark-events
       - warehouse:/opt/spark/warehouse
+      - ./results:/home/spark/results:rw
       - /data/tbang/git/lst-bench:/home/spark/my-lst-bench:rw
       - /data/tbang/git/iceberg/benchmarks/local_benchmarks/conf/lst-bench:/home/spark/lst-bench/conf/:rw
       - /data/tbang/git/iceberg/benchmarks/local_benchmarks/conf/lst-bench:/home/spark/my-lst-bench/conf/:rw

@@ -16,8 +16,8 @@ run: down build
 run-scaled: build
 	make down && docker-compose up --scale spark-worker=4
 
-run-d:
-	make down && docker-compose up -d
+run-d: down
+	docker-compose up -d
 
 stop:
 	docker-compose stop
@@ -38,4 +38,4 @@ attach-sql:
 	docker exec -it da-spark-thrift beeline -u jdbc:hive2://localhost:10000
 
 fast-tpcds:
-	docker exec da-spark-master ./launcher.sh -c conf/connections_config.yaml -t conf/telemetry_config.yaml -l conf/library/spark/tpcds/library.yaml -w conf/fast_test_iceberg/workload.yaml -e conf/fast_test_iceberg/experiment.yaml
+	docker exec da-spark-master ./launcher.sh -c conf/connections_config.yaml -t conf/fast_test_iceberg/telemetry_config.yaml -l conf/library/spark/tpcds/library.yaml -w conf/fast_test_iceberg/workload.yaml -e conf/fast_test_iceberg/experiment.yaml

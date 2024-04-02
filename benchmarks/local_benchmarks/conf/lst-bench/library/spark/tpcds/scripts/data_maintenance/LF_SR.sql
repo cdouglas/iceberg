@@ -2,7 +2,7 @@ DROP
     VIEW IF EXISTS ${external_catalog}_${external_database}_srv_${stream_num};
 
 CREATE
-    VIEW ${external_catalog}_${external_database}_srv_${stream_num} AS SELECT
+    TEMP VIEW ${external_catalog}_${external_database}_srv_${stream_num} AS SELECT
         d_date_sk sr_returned_date_sk,
         t_time_sk sr_return_time_sk,
         i_item_sk sr_item_sk,

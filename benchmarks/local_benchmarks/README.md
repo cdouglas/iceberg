@@ -37,9 +37,6 @@ These catalogs can be used in the experiments.yaml's. Later we can setup further
 The connection_config can be used for all local experiments on the Spark Cluster deployed via docker-compose.It setup to connect to Spark Cluster deloyed by the docker-compose via jdbc.
 Connection to several spark clusters and direct connection to the Spark master are possible. Within the docker container hostnames are the names specified in the docker-compose, e.g., spark-master or spark-thrift.
 
-#### telemetry_config.yaml
-Likewise the telemetry_config can be shared, but it is not tested yet.
-
 #### library.yaml's
 
 Each type of workload (e.g. tpcsd) and cluster setup requires their distict library.yaml.
@@ -54,6 +51,9 @@ These can contain parameters to be specified in a experiment.yaml
 #### experiment.yaml's
 
 experiment.yaml's specifiy the parameters, e.g., the catalogs to be used.
+
+#### telemetry_config.yaml
+ telemetry_config should be configured per experiment: Give the telemetry database file a unique name
 
 #### Debugging of setup
 
@@ -91,7 +91,7 @@ The spark history server is accessible through:
 
 # TODOs
 
-- Continue setup of tpcds / lst-bench
+- TPCDS: Setup query execution and dependent maitenance
 - Provide persistence for raw data and metastore via volumes if required
 - Implement verification of tpcds tables? The tpcds generator provides facilities.
 
