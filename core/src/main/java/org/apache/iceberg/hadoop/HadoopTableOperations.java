@@ -86,8 +86,7 @@ public class HadoopTableOperations implements TableOperations {
     return currentMetadata;
   }
 
-  // TODO: !#! move back to private after removing HadoopTableOpeations dependency
-  protected synchronized Pair<Integer, TableMetadata> versionAndMetadata() {
+  private synchronized Pair<Integer, TableMetadata> versionAndMetadata() {
     return Pair.of(version, currentMetadata);
   }
 
@@ -122,7 +121,9 @@ public class HadoopTableOperations implements TableOperations {
       updateVersionAndMetadata(ver, metadataFile.toString());
 
       this.shouldRefresh = false;
-      // TODO: data race; update synchronization does not cover this read
+      // TODO !#!: data race; update synchronization does not cover this read, could get
+      // metadata/version mismatch
+      // TODO !#!: however, it should be safe, as the commit will still fail
       return currentMetadata;
     } catch (IOException e) {
       throw new RuntimeIOException(e, "Failed to refresh the table");

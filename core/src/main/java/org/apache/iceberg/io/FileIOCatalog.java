@@ -104,9 +104,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     this.location = LocationUtil.stripTrailingSlash(inputWarehouseLocation);
     String fileIOImpl =
         properties.getOrDefault(
-            CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.hadoop.HadoopFileIO");
+            CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.gcp.gcs.GcsFileIO");
 
-    // TODO handle this more gracefully
+    // TODO handle this more gracefully; use listings/HadoopCatalog
     this.fileIO =
         (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
   }
