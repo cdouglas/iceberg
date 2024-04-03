@@ -24,10 +24,12 @@ import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
 import java.util.Random;
 import org.apache.iceberg.catalog.CatalogTests;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "TEST_BUCKET";
@@ -83,5 +85,12 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   @Override
   protected boolean supportsNamesWithDot() {
     return true;
+  }
+
+  @Test
+  public void testBasicFunctionality() {
+    FileIOCatalog underTest = catalog();
+    underTest.initialize("test", Maps.newHashMap());
+    underTest.createNamespace(Namespace.of("ns1"));
   }
 }

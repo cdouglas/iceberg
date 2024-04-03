@@ -22,31 +22,61 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.io.OutputStream;
 import java.util.Collections;
+import org.apache.commons.io.output.NullOutputStream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.junit.Test;
 
 public class TestCatalogFile {
 
+  private static final Namespace ns1 = Namespace.of("db", "dingos", "yaks", "prod");
+  private static final Namespace ns2 = Namespace.of("db", "dingos", "yaks", "qa");
+  private static final TableIdentifier tbl1 = TableIdentifier.of(ns1, "table1");
+  private static final TableIdentifier tbl2 = TableIdentifier.of(ns1, "table2");
+  private static final TableIdentifier tbl3 = TableIdentifier.of(ns1, "table3");
+  private static final TableIdentifier tbl4 = TableIdentifier.of(ns1, "table4");
+
   @Test
-  public void testCatalogFileDirectSerialization() throws IOException {
-    TableIdentifier tbl1 =
-        TableIdentifier.of(Namespace.of("db", "dingos", "yaks", "prod"), "table1");
-    TableIdentifier tbl2 =
-        TableIdentifier.of(Namespace.of("db", "dingos", "yaks", "prod"), "table2");
+  public void testCatalogFileDirectSerialization() {
     ByteArrayOutputStream ser = new ByteArrayOutputStream();
     CatalogFile catalogFile =
         CatalogFile.empty()
-            .addNamespace(Namespace.of("db", "dingos", "yaks", "prod"), Collections.emptyMap())
-            .addNamespace(Namespace.of("db", "dingos", "yaks", "qa"), Collections.emptyMap())
+            .createNamespace(ns1, Collections.emptyMap())
+            .createNamespace(ns2, Collections.emptyMap())
             .createTable(tbl1, "gs://bucket/path/to/table1")
             .createTable(tbl2, "gs://bucket/path/to/table2")
             .commit(ser);
-    catalogFile.write(ser);
     ByteArrayInputStream deser = new ByteArrayInputStream(ser.toByteArray());
     CatalogFile deserCatalogFile = CatalogFile.read(deser);
     assertThat(deserCatalogFile).isEqualTo(catalogFile);
+    assertThat(deserCatalogFile.namespaces())
+        .containsExactlyInAnyOrder(Namespace.empty(), ns1, ns2);
+    assertThat(deserCatalogFile.tables()).containsExactlyInAnyOrder(tbl1, tbl2);
+  }
+
+  @Test
+  public void testCatalogBasicDerived() {
+    OutputStream nullOut = NullOutputStream.NULL_OUTPUT_STREAM;
+    CatalogFile catalogFile =
+        CatalogFile.empty()
+            .createNamespace(ns1, Collections.emptyMap())
+            .createNamespace(ns2, Collections.emptyMap())
+            .createTable(tbl1, "gs://bucket/path/to/table1")
+            .createTable(tbl2, "gs://bucket/path/to/table2")
+            .commit(nullOut);
+    ByteArrayOutputStream ser = new ByteArrayOutputStream();
+    CatalogFile derived =
+        CatalogFile.from(catalogFile)
+            .createTable(tbl3, "gs://bucket/path/to/table3")
+            .createTable(tbl4, "gs://bucket/path/to/table4")
+            .commit(ser);
+    ByteArrayInputStream deser = new ByteArrayInputStream(ser.toByteArray());
+    CatalogFile deserCatalogFile = CatalogFile.read(deser);
+    assertThat(derived).isEqualTo(deserCatalogFile);
+    assertThat(deserCatalogFile.namespaces())
+        .containsExactlyInAnyOrder(Namespace.empty(), ns1, ns2);
+    assertThat(deserCatalogFile.tables()).containsExactlyInAnyOrder(tbl1, tbl2, tbl3, tbl4);
   }
 }
