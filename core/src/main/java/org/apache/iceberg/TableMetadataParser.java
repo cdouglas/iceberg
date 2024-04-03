@@ -122,15 +122,21 @@ public class TableMetadataParser {
   public static void internalWrite(
       TableMetadata metadata, OutputFile outputFile, boolean overwrite) {
     boolean isGzip = Codec.fromFileName(outputFile.location()) == Codec.GZIP;
-    OutputStream stream = overwrite ? outputFile.createOrOverwrite() : outputFile.create();
-    try (OutputStream ou = isGzip ? new GZIPOutputStream(stream) : stream;
-        OutputStreamWriter writer = new OutputStreamWriter(ou, StandardCharsets.UTF_8)) {
+    try (OutputStream stream = overwrite ? outputFile.createOrOverwrite() : outputFile.create()) {
+      internalWrite(metadata, stream, isGzip);
+    } catch (IOException e) {
+      throw new RuntimeIOException(e, "Failed to write json to file: %s", outputFile);
+    }
+  }
+
+  public static void internalWrite(TableMetadata metadata, OutputStream out, boolean gzip)
+      throws IOException {
+    try (OutputStreamWriter writer =
+        new OutputStreamWriter(gzip ? new GZIPOutputStream(out) : out, StandardCharsets.UTF_8)) {
       JsonGenerator generator = JsonUtil.factory().createGenerator(writer);
       generator.useDefaultPrettyPrinter();
       toJson(metadata, generator);
       generator.flush();
-    } catch (IOException e) {
-      throw new RuntimeIOException(e, "Failed to write json to file: %s", outputFile);
     }
   }
 

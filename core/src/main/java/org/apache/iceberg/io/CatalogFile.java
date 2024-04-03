@@ -42,10 +42,12 @@ public class CatalogFile {
   static class TableInfo {
     private final int version;
     private final String location;
+    private final Map<String, String> metadata;
 
     TableInfo(int version, String location) {
       this.version = version;
       this.location = location;
+      this.metadata = new LinkedHashMap<>();
     }
 
     @Override
@@ -57,7 +59,9 @@ public class CatalogFile {
         return false;
       }
       TableInfo that = (TableInfo) other;
-      return version == that.version && location.equals(that.location);
+      return version == that.version
+          && location.equals(that.location)
+          && metadata.equals(that.metadata);
     }
 
     @Override
@@ -86,6 +90,11 @@ public class CatalogFile {
     return info != null ? info.version : -1;
   }
 
+  public String metadata(TableIdentifier table, String key) {
+    final TableInfo info = fqti.get(table);
+    return info != null ? info.metadata.get(key) : null;
+  }
+
   public List<TableIdentifier> tables() {
     return Lists.newArrayList(fqti.keySet().iterator());
   }
@@ -93,6 +102,10 @@ public class CatalogFile {
   public boolean add(TableIdentifier table, String location) {
     // Bad API. Create a Builder?
     return null == fqti.putIfAbsent(table, new TableInfo(nextCommit, location));
+  }
+
+  public int nextCommit() {
+    return nextCommit;
   }
 
   /**
@@ -134,6 +147,11 @@ public class CatalogFile {
   }
 
   public int write(OutputStream out) {
+    // TODO: delete this method
+    return write(out, nextCommit);
+  }
+
+  public int write(OutputStream out, int commit) {
     try (DataOutputStream dos = new DataOutputStream(out)) {
       dos.writeInt(fqti.size());
       for (Map.Entry<TableIdentifier, TableInfo> e : fqti.entrySet()) {
@@ -148,7 +166,7 @@ public class CatalogFile {
         dos.writeUTF(tid.name());
         dos.writeUTF(info.location);
       }
-      dos.writeInt(nextCommit);
+      dos.writeInt(commit);
       return dos.size();
     } catch (IOException e) {
       throw new UncheckedIOException(e);
