@@ -27,10 +27,13 @@ import java.io.UncheckedIOException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 public class CatalogFile {
   // TODO use serialization idioms from the project, handle evolution, etc.
@@ -38,6 +41,75 @@ public class CatalogFile {
   private int nextCommit; // or retain deleted TableIdentifiers unless/until not the max
   // TODO handle empty namespaces
   private final Map<TableIdentifier, TableInfo> fqti; // fully qualified table identifiers
+
+  // catalog
+  //   name
+  //   table
+  //     name
+  //     namespace
+  //     location
+
+  // namespaces
+  //   namespace
+  //     name
+  //     key -> value
+  //   catalog name
+  //   name
+
+  public static CatalogFile from(InputFile in) {
+    CatalogFile catalogFile = new CatalogFile();
+    catalogFile.read(in.newStream());
+    return catalogFile;
+  }
+
+  public static class CatalogFileBuilder {
+    private final Map<TableIdentifier, String> newTables = Maps.newHashMap();
+    private final Map<TableIdentifier, String> newNamespaces = Maps.newHashMap();
+    private final Set<TableIdentifier> droppedTables = Sets.newHashSet();
+    private final Set<TableIdentifier> droppedNamespaces = Sets.newHashSet();
+
+    private final CatalogFile orig;
+
+    CatalogFileBuilder() {
+      this.orig = null;
+    }
+
+    CatalogFileBuilder(CatalogFile orig) {
+      this.orig = orig;
+    }
+
+    public TableBuilder table(TableIdentifier table, String location) {
+      return new TableBuilder(table, location);
+    }
+
+    public CatalogFile build() {
+      CatalogFile catalogFile = new CatalogFile(orig.fqti());
+      newTables.forEach(catalogFile::add);
+      newNamespaces.forEach(catalogFile::add);
+      droppedTables.forEach(catalogFile::drop);
+      droppedNamespaces.forEach(catalogFile::drop);
+      return catalogFile;
+    }
+
+    class TableBuilder {
+      private final TableIdentifier table;
+      private final String location;
+
+      TableBuilder(TableIdentifier table, String location) {
+        this.table = table;
+        this.location = location;
+      }
+
+    }
+  }
+
+  public static CatalogFileBuilder from(CatalogFile catalogFile) {
+    return new CatalogFileBuilder(catalogFile);
+  }
+
+  public static CatalogFileBuilder empty() {
+    return null;
+  }
 
   static class TableInfo {
     private final int version;
@@ -77,6 +149,7 @@ public class CatalogFile {
 
   @VisibleForTesting
   CatalogFile(Map<TableIdentifier, TableInfo> fqti) {
+    // TODO used by builder
     this.fqti = fqti;
   }
 
