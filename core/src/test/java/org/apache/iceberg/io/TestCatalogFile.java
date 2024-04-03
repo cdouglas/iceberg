@@ -18,39 +18,35 @@
  */
 package org.apache.iceberg.io;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import java.io.IOException;
+import java.util.Collections;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.junit.Test;
 
 public class TestCatalogFile {
 
   @Test
-  public void testCatalogFileDirectSerialization() {
-    CatalogFile catalogFile =
-        new CatalogFile(
-            Stream.of(
-                    new Object[][] {
-                      {
-                        new String[] {"db", "dingos", "yaks", "prod"},
-                        new CatalogFile.TableInfo(3, "gs://bucket0/chinchillas")
-                      },
-                      {
-                        new String[] {"db", "dingos", "yaks", "qa"},
-                        new CatalogFile.TableInfo(3, "gs://bucket1/chinchillas")
-                      },
-                    })
-                .collect(
-                    Collectors.toMap(
-                        x -> TableIdentifier.of((String[]) x[0]),
-                        x -> (CatalogFile.TableInfo) x[1])));
+  public void testCatalogFileDirectSerialization() throws IOException {
+    TableIdentifier tbl1 =
+        TableIdentifier.of(Namespace.of("db", "dingos", "yaks", "prod"), "table1");
+    TableIdentifier tbl2 =
+        TableIdentifier.of(Namespace.of("db", "dingos", "yaks", "prod"), "table2");
     ByteArrayOutputStream ser = new ByteArrayOutputStream();
+    CatalogFile catalogFile =
+        CatalogFile.empty()
+            .addNamespace(Namespace.of("db", "dingos", "yaks", "prod"), Collections.emptyMap())
+            .addNamespace(Namespace.of("db", "dingos", "yaks", "qa"), Collections.emptyMap())
+            .createTable(tbl1, "gs://bucket/path/to/table1")
+            .createTable(tbl2, "gs://bucket/path/to/table2")
+            .commit(ser);
     catalogFile.write(ser);
     ByteArrayInputStream deser = new ByteArrayInputStream(ser.toByteArray());
-    CatalogFile deserCatalogFile = new CatalogFile();
-    deserCatalogFile.read(deser);
-    assert catalogFile.equals(deserCatalogFile);
+    CatalogFile deserCatalogFile = CatalogFile.read(deser);
+    assertThat(deserCatalogFile).isEqualTo(catalogFile);
   }
 }

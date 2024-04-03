@@ -175,6 +175,9 @@ public class GCSFileIOTest {
               }
             });
     assertThat(generationFailure.getMessage()).startsWith("Generation mismatch");
+    // XXX Why does a generation mismatch return 404 (not found), and not 409 (Conflict) or 412
+    // (Precondition)?
+    // assertThat(generationFailure.getCode()).isEqualTo(412);
   }
 
   @Test
