@@ -113,6 +113,7 @@ class GCSOutputStream extends PositionOutputStream {
       writeOptions.add(BlobWriteOption.generationMatch());
     }
 
+    // try {
     WriteChannel channel =
         storage.writer(
             BlobInfo.newBuilder(blobId).build(), writeOptions.toArray(new BlobWriteOption[0]));
@@ -120,6 +121,15 @@ class GCSOutputStream extends PositionOutputStream {
     gcpProperties.channelWriteChunkSize().ifPresent(channel::setChunkSize);
 
     stream = Channels.newOutputStream(channel);
+    // } catch (StorageException e) {
+    //    if (e.getCode() == 412) {
+    //        //
+    // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
+    //        throw new SupportsAtomicOperations.StorageVersionException("File was modified during
+    // write", e);
+    //    }
+    //    throw e;
+    // }
   }
 
   @Override
