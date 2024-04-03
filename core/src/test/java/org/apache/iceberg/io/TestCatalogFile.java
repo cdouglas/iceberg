@@ -53,27 +53,4 @@ public class TestCatalogFile {
     deserCatalogFile.read(deser);
     assert catalogFile.equals(deserCatalogFile);
   }
-
-  @Test
-  public void testCatalogFileBuilder() {
-      CatalogFile catalogFile = CatalogFile.empty()
-              .namespace("db", "dingos", "yaks", "prod")
-                  .table("name")
-                  .location("gs://bucket0/chinchillas")
-                  .table("name2")
-                  .location("gs://bucket0/chinchillas2"
-              .namespace("db", "dingos", "yaks", "qa")
-                  .table("name")
-                  .location("gs://bucket1/chinchillas");
-      CatalogFile fromCF = CatalogFile.from(catalogFile)
-              .namespace("db", "dingos", "yaks", "prod")
-                  .rename("db", "bison", "yaks", "prod")
-                  .addProperty("key", "value")
-                  .addProperty("key", "value")
-                  .addTable("name")
-                  .location("gs://bucket0/chinchillas")
-                  .deleteTable("name2")
-              .prepare() // validation?
-              .write(); // tryWrite()?
-  }
 }
