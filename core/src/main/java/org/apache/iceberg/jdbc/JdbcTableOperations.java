@@ -67,7 +67,7 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
   }
 
   @Override
-  public void doRefresh() {
+  protected void doRefresh() {
     Map<String, String> table;
 
     try {
@@ -203,6 +203,7 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
     }
   }
 
+  // XXX only called when base != null
   private void validateMetadataLocation(Map<String, String> table, TableMetadata base) {
     String catalogMetadataLocation = table.get(METADATA_LOCATION_PROP);
     String baseMetadataLocation = base != null ? base.metadataFileLocation() : null;

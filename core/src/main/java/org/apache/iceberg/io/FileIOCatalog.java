@@ -28,9 +28,9 @@ import java.util.Set;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.BaseMetastoreCatalog;
+import org.apache.iceberg.BaseMetastoreTableOperations;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.CatalogUtil;
-import org.apache.iceberg.LockManager;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.catalog.Namespace;
@@ -40,8 +40,11 @@ import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
-import org.apache.iceberg.hadoop.HadoopTableOperations;
+import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.base.Strings;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.util.LocationUtil;
 
 public class FileIOCatalog extends BaseMetastoreCatalog
     implements Configurable, SupportsNamespaces {
@@ -49,18 +52,28 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   // TODO audit loadTable in BaseMetastoreCatalog
   // TODO buildTable overridden in BaseMetastoreCatalog?
 
+  private String catalogName = "fileio";
+  private String location;
   private Configuration conf;
   private SupportsAtomicOperations fileIO;
-  private String location;
+  private Map<String, String> catalogProperties;
 
   public FileIOCatalog() {
-    this(false);
+    // XXX Isn't using Maps.newHashMap() deprecated after Java7?
+    catalogProperties = Maps.newHashMap();
   }
 
-  public FileIOCatalog(boolean createCatalog) {
-    if (createCatalog) {
-      throw new UnsupportedOperationException("TODO");
-    }
+  public FileIOCatalog(
+      String catalogName,
+      String location,
+      Configuration conf,
+      SupportsAtomicOperations fileIO,
+      Map<String, String> catalogProperties) {
+    this.catalogName = catalogName;
+    this.location = location;
+    this.conf = conf;
+    this.fileIO = fileIO;
+    this.catalogProperties = catalogProperties;
   }
 
   @Override
@@ -76,12 +89,26 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public void initialize(String name, Map<String, String> properties) {
     super.initialize(name, properties);
+    Preconditions.checkNotNull(properties, "Properties are required");
+    this.catalogProperties.putAll(properties);
+    String uri = properties.get(CatalogProperties.URI);
+
+    if (name != null) {
+      catalogName = name;
+    }
+
+    String inputWarehouseLocation = properties.get(CatalogProperties.WAREHOUSE_LOCATION);
+    Preconditions.checkArgument(
+        !Strings.isNullOrEmpty(inputWarehouseLocation),
+        "Cannot initialize FileIOCatalog because warehousePath must not be null or empty");
+    this.location = LocationUtil.stripTrailingSlash(inputWarehouseLocation);
     String fileIOImpl =
         properties.getOrDefault(
             CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.hadoop.HadoopFileIO");
 
     // TODO handle this more gracefully
-    this.fileIO = (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, conf);
+    this.fileIO =
+        (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
   }
 
   @Override
@@ -128,8 +155,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   @Override
   protected TableOperations newTableOps(TableIdentifier tableIdentifier) {
-    // TODO extend HadoopTableOperations, as most should be shared
-    return null;
+    return new FileIOTableOperations(tableIdentifier, location, fileIO);
   }
 
   @Override
@@ -191,53 +217,75 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     return catalogFile;
   }
 
-  static class FileIOTableOperations extends HadoopTableOperations {
+  static class FileIOTableOperations extends BaseMetastoreTableOperations {
+    private final String catalogLocation;
     private final TableIdentifier tableId;
-    private final String tblLocation;
+    private final SupportsAtomicOperations fileIO;
+
+    private volatile int catalogVersion = -1;
 
     FileIOTableOperations(
-        TableIdentifier tableId, String tblLocation, FileIO fileIO, Configuration conf) {
-      super(null, fileIO, conf, new NullLockManager());
-      this.tblLocation = tblLocation;
+        TableIdentifier tableId, String catalogLocation, SupportsAtomicOperations fileIO) {
+      this.fileIO = fileIO;
       this.tableId = tableId;
+      this.catalogLocation = catalogLocation;
     }
 
     @Override
-    public TableMetadata refresh() {
+    public SupportsAtomicOperations io() {
+      return fileIO;
+    }
+
+    // version 0 reserved for empty catalog; tables created in subsequent commits
+    protected synchronized void updateVersionAndMetadata(int newVersion, String metadataFile) {
+      // update if table exists and version lags newVersion
+      if (null == metadataFile) {
+        if (currentMetadataLocation() != null) {
+          // table used to exist, but not found in CatalogFile
+          throw new NoSuchTableException("Table %s was deleted", tableId);
+        } else {
+          disableRefresh(); // table does not exist, yet; no need to refresh
+          return;
+        }
+      }
+      catalogVersion = newVersion;
+      refreshFromMetadataLocation(metadataFile);
+    }
+
+    @Override
+    protected String tableName() {
+      return tableId.toString();
+    }
+
+    @Override
+    protected void doRefresh() {
       try (FileIO io = io()) {
-        CatalogFile catalogFile = getCatalogFile(io.newInputFile(tblLocation));
+        CatalogFile catalogFile = getCatalogFile(io.newInputFile(catalogLocation));
         updateVersionAndMetadata(catalogFile.version(tableId), catalogFile.location(tableId));
       }
-      return current();
     }
 
     @Override
-    public void commit(TableMetadata base, TableMetadata metadata) {
-      try (FileIO io = io()) {
-        throw new UnsupportedOperationException();
+    public void doCommit(TableMetadata base, TableMetadata metadata) {
+      // TODO: if base == null, table is being relocated? created?
+      final boolean isCreate = null == base;
+      final String newMetadataLocation = writeNewMetadataIfRequired(isCreate, metadata);
+      try (SupportsAtomicOperations io = io()) {
+        final InputFile catalog = io.newInputFile(catalogLocation);
+        final CatalogFile catalogFile = getCatalogFile(catalog);
+        try (OutputStream out = io.newOutputFile(catalog).createOrOverwrite()) {
+          boolean exists = catalogFile.add(tableId, newMetadataLocation);
+          if (isCreate && exists) {
+            throw new AlreadyExistsException("Table already exists: %s", tableId);
+          } else if (!isCreate && !exists) {
+            throw new NoSuchTableException("Table not found: %s", tableId);
+          }
+          // additional validation?
+          catalogFile.write(out);
+        } catch (IOException e) {
+          throw new RuntimeIOException(e);
+        }
       }
-    }
-  }
-
-  private static class NullLockManager implements LockManager {
-    @Override
-    public boolean acquire(String entityId, String ownerId) {
-      return true;
-    }
-
-    @Override
-    public boolean release(String entityId, String ownerId) {
-      return true;
-    }
-
-    @Override
-    public void initialize(Map<String, String> properties) {
-      // ignore
-    }
-
-    @Override
-    public void close() throws Exception {
-      // ignore
     }
   }
 }
