@@ -183,7 +183,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = getCatalogFile(catalog);
     final CatalogFile.MutCatalogFile mut =
-        CatalogFile.from(getCatalogFile(catalog)).addNamespace(namespace, metadata);
+        CatalogFile.from(getCatalogFile(catalog)).createNamespace(namespace, metadata);
     try (OutputStream out = fileIO.newOutputFile(catalog).createOrOverwrite()) {
       catalogFile.write(out);
     } catch (IOException e) {

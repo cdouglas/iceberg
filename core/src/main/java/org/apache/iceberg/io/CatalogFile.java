@@ -29,6 +29,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -41,7 +43,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 public class CatalogFile {
   // TODO use serialization idioms from the project, handle evolution, etc.
 
-  private final int nextCommit; // or retain deleted TableIdentifiers unless/until not the max
+  private final int seqno; // or retain deleted TableIdentifiers unless/until not the max
   private final UUID uuid;
   private final Map<TableIdentifier, TableInfo> fqti; // fully qualified table identifiers
   private final Map<Namespace, Map<String, String>> namespaces;
@@ -81,8 +83,7 @@ public class CatalogFile {
     return new MutCatalogFile(file);
   }
 
-  static class MutCatalogFile {
-    private static final Map<String, String> DELETED = Collections.emptyMap();
+  public static class MutCatalogFile {
 
     private final CatalogFile original;
     private final Map<TableIdentifier, String> tables;
@@ -99,18 +100,18 @@ public class CatalogFile {
       namespaces.put(Namespace.empty(), Collections.emptyMap());
     }
 
-    public MutCatalogFile addNamespace(Namespace namespace) {
-      return addNamespace(namespace, Collections.emptyMap());
+    public MutCatalogFile createNamespace(Namespace namespace) {
+      return createNamespace(namespace, Collections.emptyMap());
     }
 
-    public MutCatalogFile addNamespace(Namespace namespace, Map<String, String> properties) {
+    public MutCatalogFile createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
-      if (original.namespaceProperties(namespace) != null
-          || namespaces.put(namespace, properties) != null) {
+      if (original.namespaceProperties(namespace) != null || namespaces.containsKey(namespace)) {
         throw new AlreadyExistsException(
             "Cannot create namespace %s. Namespace already exists", namespace);
       }
+      namespaces.put(namespace, properties);
       return this;
     }
 
@@ -118,7 +119,7 @@ public class CatalogFile {
       // note: merges w/ existing
       // TODO: legal to update properties of empty/root namespace?
       final Map<String, String> mutProp = namespaces.get(namespace);
-      if (DELETED == mutProp) { // could just ignore
+      if (null == mutProp) { // could just ignore
         throw new NoSuchNamespaceException("Namespace marked for deletion: %s", namespace);
       }
       final Map<String, String> originalProp = original.namespaceProperties(namespace);
@@ -140,9 +141,10 @@ public class CatalogFile {
 
     public MutCatalogFile dropNamespace(Namespace namespace) {
       // TODO check for tables, refuse if not empty
-      if (null == namespaces.computeIfPresent(namespace, (ns, props) -> DELETED)) {
+      if (null == original.namespaceProperties(namespace) && !namespaces.containsKey(namespace)) {
         throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
       }
+      namespaces.put(namespace, null);
       return this;
     }
 
@@ -152,13 +154,6 @@ public class CatalogFile {
         throw new AlreadyExistsException("Table already exists: %s", table);
       }
       tables.put(table, location);
-      return this;
-    }
-
-    public MutCatalogFile renameTable(TableIdentifier oldTable, TableIdentifier newTable) {
-      if (null == original.location(oldTable)) {
-        throw new NoSuchNamespaceException("Table does not exist: %s", oldTable);
-      }
       return this;
     }
 
@@ -179,34 +174,32 @@ public class CatalogFile {
     }
 
     public CatalogFile commit(OutputStream out) {
-      final Map<Namespace, Map<String, String>> newNamespaces = Maps.newHashMap();
-      for (Map.Entry<Namespace, Map<String, String>> entry : namespaces.entrySet()) {
-        final Namespace namespace = entry.getKey();
-        final Map<String, String> properties = entry.getValue();
-        if (DELETED == properties) {
-          continue;
-        }
-        newNamespaces.put(namespace, properties);
-      }
-      final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap();
-      for (Map.Entry<TableIdentifier, String> entry : tables.entrySet()) {
-        final TableIdentifier table = entry.getKey();
-        final String location = entry.getValue();
-        if (null == location) {
-          continue;
-        }
-        final TableInfo info = new TableInfo(original.nextCommit, location);
-        newFqti.put(table, info);
-      }
+      final Map<Namespace, Map<String, String>> newNamespaces =
+          Maps.newHashMap(original.namespaces);
+      merge(newNamespaces, namespaces, Function.identity());
 
-      CatalogFile catalog =
-          new CatalogFile(original.uuid, original.nextCommit, newNamespaces, newFqti);
+      final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
+      merge(newFqti, tables, location -> new TableInfo(original.seqno, location));
+
+      CatalogFile catalog = new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
       try {
         catalog.write(out);
       } catch (IOException e) {
         throw new CommitFailedException(e, "Failed to commit catalog file");
       }
       return catalog;
+    }
+
+    private static <K, V, U> void merge(
+        Map<K, V> original, Map<K, U> update, Function<U, V> valueMapper) {
+      for (Map.Entry<K, U> entry : update.entrySet()) {
+        final U value = entry.getValue();
+        if (null == value) {
+          original.remove(entry.getKey());
+          continue;
+        }
+        original.put(entry.getKey(), valueMapper.apply(value));
+      }
     }
   }
 
@@ -221,7 +214,7 @@ public class CatalogFile {
       Map<Namespace, Map<String, String>> namespaces,
       Map<TableIdentifier, TableInfo> fqti) {
     this.uuid = uuid;
-    this.nextCommit = seqno;
+    this.seqno = seqno;
     this.fqti = fqti;
     this.namespaces = namespaces;
   }
@@ -242,17 +235,11 @@ public class CatalogFile {
 
   public Map<String, String> namespaceProperties(Namespace namespace) {
     Map<String, String> props = namespaces.get(namespace);
-    return props != null
-        ? Collections.unmodifiableMap(namespaces.get(namespace))
-        : null;
+    return props != null ? Collections.unmodifiableMap(props) : null;
   }
 
   public List<TableIdentifier> tables() {
     return Lists.newArrayList(fqti.keySet().iterator());
-  }
-
-  Map<TableIdentifier, TableInfo> fqti() {
-    return fqti;
   }
 
   static CatalogFile read(InputStream in) {
@@ -261,30 +248,16 @@ public class CatalogFile {
     try (DataInputStream din = new DataInputStream(in)) {
       int nNamespaces = din.readInt();
       for (int i = 0; i < nNamespaces; ++i) {
-        int nlen = din.readInt();
-        String[] levels = new String[nlen];
-        for (int j = 0; j < nlen; j++) {
-          levels[j] = din.readUTF();
-        }
-        Namespace namespace = Namespace.of(levels);
-        Map<String, String> props = Maps.newHashMap();
-        int nprops = din.readInt();
-        for (int j = 0; j < nprops; j++) {
-          props.put(din.readUTF(), din.readUTF());
-        }
+        Namespace namespace = readNamespace(din);
+        Map<String, String> props = readProperties(din);
         namespaces.put(namespace, props);
       }
       int nTables = din.readInt();
       for (int i = 0; i < nTables; i++) {
-        int version = din.readInt();
-        int nlen = din.readInt();
-        String[] levels = new String[nlen];
-        for (int j = 0; j < nlen; j++) {
-          levels[j] = din.readUTF();
-        }
-        Namespace namespace = Namespace.of(levels);
+        int tableVersion = din.readInt();
+        Namespace namespace = readNamespace(din);
         TableIdentifier tid = TableIdentifier.of(namespace, din.readUTF());
-        fqti.put(tid, new TableInfo(version, din.readUTF()));
+        fqti.put(tid, new TableInfo(tableVersion, din.readUTF()));
       }
       int seqno = din.readInt();
       long msb = din.readLong();
@@ -295,10 +268,28 @@ public class CatalogFile {
     }
   }
 
+  private static Map<String, String> readProperties(DataInputStream in) throws IOException {
+    int nprops = in.readInt();
+    Map<String, String> props = nprops > 0 ? Maps.newHashMap() : Collections.emptyMap();
+    for (int j = 0; j < nprops; j++) {
+      props.put(in.readUTF(), in.readUTF());
+    }
+    return props;
+  }
+
+  private static Namespace readNamespace(DataInputStream in) throws IOException {
+    int nlen = in.readInt();
+    String[] levels = new String[nlen];
+    for (int j = 0; j < nlen; j++) {
+      levels[j] = in.readUTF();
+    }
+    return Namespace.of(levels);
+  }
+
   public int write(OutputStream out) throws IOException {
     try (DataOutputStream dos = new DataOutputStream(out)) {
       dos.writeInt(namespaces.size());
-      for (Map.Entry<Namespace, Map<String,String>> e : namespaces.entrySet()) {
+      for (Map.Entry<Namespace, Map<String, String>> e : namespaces.entrySet()) {
         Namespace namespace = e.getKey();
         dos.writeInt(namespace.length());
         for (String n : namespace.levels()) {
@@ -324,7 +315,7 @@ public class CatalogFile {
         dos.writeUTF(tid.name());
         dos.writeUTF(info.location);
       }
-      dos.writeInt(nextCommit);
+      dos.writeInt(seqno);
       dos.writeLong(uuid.getMostSignificantBits());
       dos.writeLong(uuid.getLeastSignificantBits());
       return dos.size();
@@ -340,7 +331,15 @@ public class CatalogFile {
       return false;
     }
     CatalogFile that = (CatalogFile) other;
-    return nextCommit == that.nextCommit && uuid.equals(that.uuid) && fqti.equals(that.fqti()) && namespaces.equals(that.namespaces);
+    boolean b1 = seqno == that.seqno;
+    boolean b2 = uuid.equals(that.uuid);
+    boolean b3 = fqti.equals(that.fqti);
+    boolean b4 = namespaces.equals(that.namespaces);
+    return b1 && b2 && b3 && b4;
+    // return seqno == that.seqno
+    //     && uuid.equals(that.uuid)
+    //     && fqti.equals(that.fqti)
+    //     && namespaces.equals(that.namespaces);
   }
 
   @Override
@@ -351,11 +350,16 @@ public class CatalogFile {
   @Override
   public String toString() {
     StringBuilder sb = new StringBuilder();
-    sb.append("CatalogFile{");
-    sb.append("uuid=\"").append(uuid).append("\",");
-    sb.append("nextCommit=").append(nextCommit).append(",");
-    sb.append("fqti=").append(fqti).append(",");
-    sb.append("namespaces=").append(namespaces);
+    sb.append("{");
+    sb.append("\"uuid\" : \"").append(uuid).append("\",");
+    sb.append("\"seqno\" : ").append(seqno).append(",");
+    sb.append("\"tables\" : [");
+    sb.append(fqti.keySet().stream().map(id -> "\"" + id + "\"").collect(Collectors.joining(",")))
+        .append("],");
+    sb.append("\"namespaces\" : [");
+    sb.append(
+        namespaces.keySet().stream().map(id -> "\"" + id + "\"").collect(Collectors.joining(",")));
+    sb.append("]").append("}");
     return sb.toString();
   }
 }
