@@ -25,6 +25,7 @@ import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
@@ -87,6 +88,7 @@ public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
   public GCSFileIO(SerializableSupplier<Storage> storageSupplier, GCPProperties gcpProperties) {
     this.storageSupplier = storageSupplier;
     this.gcpProperties = gcpProperties;
+    this.properties = SerializableMap.copyOf(Collections.emptyMap()); // FFS
   }
 
   @Override

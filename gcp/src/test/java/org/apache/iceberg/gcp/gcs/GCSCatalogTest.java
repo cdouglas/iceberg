@@ -22,6 +22,7 @@ package org.apache.iceberg.gcp.gcs;
 
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Random;
 import org.apache.iceberg.CatalogProperties;
@@ -49,6 +50,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @BeforeEach
   public void before(TestInfo info) {
+    // XXX don't call io.initialize(), as it will overwrite this config
     io = new GCSFileIO(() -> storage, new GCPProperties());
     Map<String, String> properties = Maps.newHashMap();
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
@@ -61,6 +63,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @Override
   protected boolean requiresNamespaceCreate() {
+    // TODO fix
     return true;
   }
 
