@@ -18,11 +18,13 @@
  */
 package org.apache.iceberg.gcp.gcs;
 
-import static org.mockito.Mockito.spy;
+// import static org.mockito.Mockito.spy;
 
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
+import java.util.Map;
 import java.util.Random;
+import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.gcp.GCPProperties;
@@ -30,21 +32,36 @@ import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
 public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "TEST_BUCKET";
   private final Random random = new Random(1);
 
-  private final Storage storage = spy(LocalStorageHelper.getOptions().getService());
+  private final Storage storage = LocalStorageHelper.getOptions().getService();
   private GCSFileIO io;
   private FileIOCatalog catalog;
 
+  // private static String warehouseLocation;
+
+  // @TempDir
+  // java.nio.file.Path tableDir;
+
   @BeforeEach
-  public void before() {
+  public void before(TestInfo info) {
     io = new GCSFileIO(() -> storage, new GCPProperties());
-    // testname
-    final String location = String.format("gs://%s/path/to/file.txt", TEST_BUCKET);
+    Map<String, String> properties = Maps.newHashMap();
+    final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
+    final String warehouseLocation = "gs://" + TEST_BUCKET + "/" + testName;
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
+    final String location = warehouseLocation + "/catalog";
     catalog = new FileIOCatalog("test", location, null, io, Maps.newHashMap());
+    catalog.initialize(testName, properties);
+  }
+
+  @Override
+  protected boolean requiresNamespaceCreate() {
+    return true;
   }
 
   @Override
@@ -52,45 +69,9 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
     return catalog;
   }
 
-  @Override
-  protected boolean supportsNamespaceProperties() {
-    return false;
-  }
-
-  @Override
-  protected boolean supportsNestedNamespaces() {
-    return false;
-  }
-
-  @Override
-  protected boolean requiresNamespaceCreate() {
-    return false;
-  }
-
-  @Override
-  protected boolean supportsServerSideRetry() {
-    return false;
-  }
-
-  @Override
-  protected boolean overridesRequestedLocation() {
-    return false;
-  }
-
-  @Override
-  protected boolean supportsNamesWithSlashes() {
-    return true;
-  }
-
-  @Override
-  protected boolean supportsNamesWithDot() {
-    return true;
-  }
-
   @Test
   public void testBasicFunctionality() {
     FileIOCatalog underTest = catalog();
-    underTest.initialize("test", Maps.newHashMap());
     underTest.createNamespace(Namespace.of("ns1"));
   }
 }

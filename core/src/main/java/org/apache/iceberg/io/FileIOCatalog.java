@@ -48,13 +48,13 @@ import org.apache.iceberg.util.LocationUtil;
 
 public class FileIOCatalog extends BaseMetastoreCatalog
     implements Configurable, SupportsNamespaces {
-  // TODO SupportsNamespaces
   // TODO audit loadTable in BaseMetastoreCatalog
   // TODO buildTable overridden in BaseMetastoreCatalog?
 
   private Configuration conf; // TODO: delete
   private String catalogName = "fileio";
   private String catalogLocation;
+  private String warehouseLocation;
   private SupportsAtomicOperations fileIO;
   private Map<String, String> catalogProperties;
 
@@ -90,42 +90,44 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   public void initialize(String name, Map<String, String> properties) {
     super.initialize(name, properties);
     Preconditions.checkNotNull(properties, "Properties are required");
-    this.catalogProperties.putAll(properties);
+    catalogProperties.putAll(properties);
     String uri = properties.get(CatalogProperties.URI);
 
     if (name != null) {
       catalogName = name;
     }
 
-    String inputWarehouseLocation = properties.get(CatalogProperties.WAREHOUSE_LOCATION);
-    Preconditions.checkArgument(
-        !Strings.isNullOrEmpty(inputWarehouseLocation),
-        "Cannot initialize FileIOCatalog because warehousePath must not be null or empty");
-    this.catalogLocation = LocationUtil.stripTrailingSlash(inputWarehouseLocation);
-    String fileIOImpl =
-        properties.getOrDefault(
-            CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.gcp.gcs.GcsFileIO");
+    warehouseLocation = properties.get(CatalogProperties.WAREHOUSE_LOCATION);
+    if (null == catalogLocation) {
+      Preconditions.checkArgument(
+          !Strings.isNullOrEmpty(warehouseLocation),
+          "Cannot initialize FileIOCatalog because warehousePath must not be null or empty");
+      catalogLocation = LocationUtil.stripTrailingSlash(warehouseLocation) + "/catalog";
+    }
+    if (null == fileIO) {
+      String fileIOImpl =
+          properties.getOrDefault(
+              CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.gcp.gcs.GCSFileIO");
 
-    // TODO handle this more gracefully; use listings/HadoopCatalog
-    this.fileIO =
-        (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
+      // TODO handle this more gracefully; use listings/HadoopCatalog
+      fileIO = (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
+    }
     // TODO: create empty catalog if not exists
-    // try (SupportsAtomicOperations io = fileIO) {
-    //  if (!io.newInputFile(catalogLocation).exists()) {
-    //    CatalogFile init = CatalogFile.empty();
-    //    try (OutputStream out = io.newOutputFile(catalogLocation).create()) {
-    //      init.write(out);
-    //    } catch (IOException e) {
-    //        throw new UncheckedIOException(e);
-    //    }
-    //  }
-    // }
+    try (SupportsAtomicOperations io = fileIO) {
+      if (!io.newInputFile(catalogLocation).exists()) {
+        try (OutputStream out = io.newOutputFile(catalogLocation).create()) {
+          CatalogFile init = CatalogFile.empty().commit(out);
+        } catch (IOException e) {
+          // ignore
+        }
+      }
+    }
   }
 
   @Override
   public List<TableIdentifier> listTables(Namespace namespace) {
     Preconditions.checkArgument(Namespace.empty().equals(namespace), "Namespaces not supported");
-    return readCatalogFileFromStorage().tables();
+    return getCatalogFile().tables();
   }
 
   @Override
@@ -162,11 +164,18 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   @Override
   protected String defaultWarehouseLocation(TableIdentifier tableIdentifier) {
-    // TODO undocumented semantics, but seems to be joining on a namespace
-    throw new UnsupportedOperationException("Unsupported operation: defaultWarehouseLocation");
+    return String.join(
+        "/", defaultNamespaceLocation(tableIdentifier.namespace()), tableIdentifier.name());
   }
 
-  private CatalogFile readCatalogFileFromStorage() {
+  private String defaultNamespaceLocation(Namespace namespace) {
+    if (namespace.isEmpty()) {
+      return warehouseLocation;
+    }
+    return warehouseLocation + "/" + String.join("/", namespace.levels());
+  }
+
+  private CatalogFile getCatalogFile() {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     return getCatalogFile(catalog);
   }
@@ -175,17 +184,12 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   // SupportsNamespaces
   //
 
-  // TODO: add namespaces (including empty tables)
-  // TODO: add namespace metadata (namespace -> Map<String,String>)
-
   @Override
   public void createNamespace(Namespace namespace, Map<String, String> metadata) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = getCatalogFile(catalog);
-    final CatalogFile.MutCatalogFile mut =
-        CatalogFile.from(getCatalogFile(catalog)).createNamespace(namespace, metadata);
     try (OutputStream out = fileIO.newOutputFile(catalog).createOrOverwrite()) {
-      catalogFile.write(out);
+      CatalogFile.from(catalogFile).createNamespace(namespace, metadata).commit(out);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
@@ -193,13 +197,13 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   @Override
   public List<Namespace> listNamespaces(Namespace namespace) throws NoSuchNamespaceException {
-    return Lists.newArrayList(readCatalogFileFromStorage().namespaces().iterator());
+    return Lists.newArrayList(getCatalogFile().namespaces().iterator());
   }
 
   @Override
   public Map<String, String> loadNamespaceMetadata(Namespace namespace)
       throws NoSuchNamespaceException {
-    return readCatalogFileFromStorage().namespaceProperties(namespace);
+    return getCatalogFile().namespaceProperties(namespace);
   }
 
   @Override
@@ -237,13 +241,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   }
 
   private static CatalogFile getCatalogFile(InputFile catalogLocation) {
-    final CatalogFile catalogFile = new CatalogFile();
     try (InputStream in = catalogLocation.newStream()) {
-      catalogFile.read(in);
+      return CatalogFile.read(in);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
-    return catalogFile;
   }
 
   static class FileIOTableOperations extends BaseMetastoreTableOperations {
@@ -303,7 +305,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
         final InputFile catalog = io.newInputFile(catalogLocation);
         final CatalogFile catalogFile = getCatalogFile(catalog);
         try (OutputStream out = io.newOutputFile(catalog).createOrOverwrite()) {
-          CatalogFile.from(catalogFile).createTable(tableId, newMetadataLocation).commit(out);
+          if (null == base) {
+            CatalogFile.from(catalogFile).createTable(tableId, newMetadataLocation).commit(out);
+          } else {
+            CatalogFile.from(catalogFile).updateTable(tableId, newMetadataLocation).commit(out);
+          }
         } catch (IOException e) {
           throw new RuntimeIOException(e);
         }
