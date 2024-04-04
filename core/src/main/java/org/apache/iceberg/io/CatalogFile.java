@@ -201,9 +201,9 @@ public class CatalogFile {
         final U value = entry.getValue();
         if (null == value) {
           original.remove(entry.getKey());
-          continue;
+        } else {
+          original.put(entry.getKey(), valueMapper.apply(value));
         }
-        original.put(entry.getKey(), valueMapper.apply(value));
       }
     }
   }

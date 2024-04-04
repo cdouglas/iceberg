@@ -18,13 +18,9 @@
  */
 package org.apache.iceberg.gcp.gcs;
 
-// import static org.mockito.Mockito.spy;
-
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
-import java.util.Collections;
 import java.util.Map;
-import java.util.Random;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
@@ -37,19 +33,18 @@ import org.junit.jupiter.api.TestInfo;
 
 public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "TEST_BUCKET";
-  private final Random random = new Random(1);
 
   private final Storage storage = LocalStorageHelper.getOptions().getService();
-  private GCSFileIO io;
   private FileIOCatalog catalog;
 
   @BeforeEach
   public void before(TestInfo info) {
     // XXX don't call io.initialize(), as it will overwrite this config
-    io = new GCSFileIO(() -> storage, new GCPProperties());
-    Map<String, String> properties = Maps.newHashMap();
+    GCSFileIO io = new GCSFileIO(() -> storage, new GCPProperties());
+
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
     final String warehouseLocation = "gs://" + TEST_BUCKET + "/" + testName;
+    final Map<String, String> properties = Maps.newHashMap();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
     final String location = warehouseLocation + "/catalog";
     catalog = new FileIOCatalog("test", location, null, io, Maps.newHashMap());
