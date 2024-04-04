@@ -27,6 +27,7 @@ import java.io.UncheckedIOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -107,7 +108,7 @@ public class CatalogFile {
     public MutCatalogFile createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
-      if (original.namespaceProperties(namespace) != null || namespaces.containsKey(namespace)) {
+      if (original.containsNamespace(namespace) || namespaces.containsKey(namespace)) {
         throw new AlreadyExistsException(
             "Cannot create namespace %s. Namespace already exists", namespace);
       }
@@ -116,15 +117,19 @@ public class CatalogFile {
     }
 
     public MutCatalogFile updateProperties(Namespace namespace, Map<String, String> properties) {
-      // note: merges w/ existing
+      Preconditions.checkNotNull(namespace, "Namespace cannot be null");
+      Preconditions.checkNotNull(properties, "Properties cannot be null");
       // TODO: legal to update properties of empty/root namespace?
-      final Map<String, String> mutProp = namespaces.get(namespace);
-      if (null == mutProp) { // could just ignore
-        throw new NoSuchNamespaceException("Namespace marked for deletion: %s", namespace);
-      }
-      final Map<String, String> originalProp = original.namespaceProperties(namespace);
-      if (null == originalProp && null == mutProp) {
-        throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
+      if (namespaces.containsKey(namespace)) {
+        final Map<String, String> mutProp = namespaces.get(namespace);
+        if (null == mutProp) { // could just ignore
+          throw new NoSuchNamespaceException("Namespace marked for deletion: %s", namespace);
+        }
+      } else {
+        final Map<String, String> originalProp = original.namespaceProperties(namespace);
+        if (null == originalProp) {
+          throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
+        }
       }
       namespaces.compute(
           namespace,
@@ -141,7 +146,7 @@ public class CatalogFile {
 
     public MutCatalogFile dropNamespace(Namespace namespace) {
       // TODO check for tables, refuse if not empty
-      if (null == original.namespaceProperties(namespace) && !namespaces.containsKey(namespace)) {
+      if (!original.containsNamespace(namespace) && !namespaces.containsKey(namespace)) {
         throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
       }
       namespaces.put(namespace, null);
@@ -233,9 +238,12 @@ public class CatalogFile {
     return Collections.unmodifiableSet(namespaces.keySet());
   }
 
+  public boolean containsNamespace(Namespace namespace) {
+    return namespaces.containsKey(namespace);
+  }
+
   public Map<String, String> namespaceProperties(Namespace namespace) {
-    Map<String, String> props = namespaces.get(namespace);
-    return props != null ? Collections.unmodifiableMap(props) : null;
+    return Collections.unmodifiableMap(namespaces.get(namespace));
   }
 
   public List<TableIdentifier> tables() {
@@ -290,28 +298,15 @@ public class CatalogFile {
     try (DataOutputStream dos = new DataOutputStream(out)) {
       dos.writeInt(namespaces.size());
       for (Map.Entry<Namespace, Map<String, String>> e : namespaces.entrySet()) {
-        Namespace namespace = e.getKey();
-        dos.writeInt(namespace.length());
-        for (String n : namespace.levels()) {
-          dos.writeUTF(n);
-        }
-        Map<String, String> props = e.getValue();
-        dos.writeInt(props.size());
-        for (Map.Entry<String, String> p : props.entrySet()) {
-          dos.writeUTF(p.getKey());
-          dos.writeUTF(p.getValue());
-        }
+        writeNamespace(dos, e.getKey());
+        writeProperties(dos, e.getValue());
       }
       dos.writeInt(fqti.size());
       for (Map.Entry<TableIdentifier, TableInfo> e : fqti.entrySet()) {
         TableInfo info = e.getValue();
         dos.writeInt(info.version);
         TableIdentifier tid = e.getKey();
-        Namespace namespace = tid.namespace();
-        dos.writeInt(namespace.length());
-        for (String n : namespace.levels()) {
-          dos.writeUTF(n);
-        }
+        writeNamespace(dos, tid.namespace());
         dos.writeUTF(tid.name());
         dos.writeUTF(info.location);
       }
@@ -319,6 +314,22 @@ public class CatalogFile {
       dos.writeLong(uuid.getMostSignificantBits());
       dos.writeLong(uuid.getLeastSignificantBits());
       return dos.size();
+    }
+  }
+
+  private static void writeNamespace(DataOutputStream out, Namespace namespace) throws IOException {
+    out.writeInt(namespace.length());
+    for (String n : namespace.levels()) {
+      out.writeUTF(n);
+    }
+  }
+
+  private static void writeProperties(DataOutputStream out, Map<String, String> props)
+      throws IOException {
+    out.writeInt(props.size());
+    for (Map.Entry<String, String> p : props.entrySet()) {
+      out.writeUTF(p.getKey());
+      out.writeUTF(p.getValue());
     }
   }
 
@@ -331,20 +342,16 @@ public class CatalogFile {
       return false;
     }
     CatalogFile that = (CatalogFile) other;
-    boolean b1 = seqno == that.seqno;
-    boolean b2 = uuid.equals(that.uuid);
-    boolean b3 = fqti.equals(that.fqti);
-    boolean b4 = namespaces.equals(that.namespaces);
-    return b1 && b2 && b3 && b4;
-    // return seqno == that.seqno
-    //     && uuid.equals(that.uuid)
-    //     && fqti.equals(that.fqti)
-    //     && namespaces.equals(that.namespaces);
+    return seqno == that.seqno
+        && uuid.equals(that.uuid)
+        && fqti.equals(that.fqti)
+        && namespaces.equals(that.namespaces);
   }
 
   @Override
   public int hashCode() {
-    return fqti.hashCode();
+    // TODO replace with CRC during deserialization?
+    return Objects.hash(uuid, fqti.keySet(), namespaces.keySet());
   }
 
   @Override
