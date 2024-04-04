@@ -43,11 +43,6 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   private GCSFileIO io;
   private FileIOCatalog catalog;
 
-  // private static String warehouseLocation;
-
-  // @TempDir
-  // java.nio.file.Path tableDir;
-
   @BeforeEach
   public void before(TestInfo info) {
     // XXX don't call io.initialize(), as it will overwrite this config
