@@ -147,11 +147,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = getCatalogFile(catalog);
     try (OutputStream out = fileIO.newOutputFile(catalog).createOrOverwrite()) {
+      // XXX Shit. Need to abort the overwrite of the catalog; blobWriteSession?
       CatalogFile.from(catalogFile)
           .dropTable(from)
           .createTable(to, catalogFile.location(from)) // TODO preserve metadata
           .commit(out);
-      catalogFile.write(out);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
