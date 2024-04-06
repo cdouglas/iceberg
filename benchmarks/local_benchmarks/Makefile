@@ -32,10 +32,13 @@ run-terminal: build
 	docker run -it --rm da-spark-image:latest bash
 
 tpcds-gen:
-	docker exec da-spark-master /home/spark/tpcds_data_gen.sh $(SF) $(MTS)
+	docker exec da-spark-master bash /home/spark/local_benchmarks/lst-bench/conf/tpcds_generation/tpcds_data_gen.sh $(SF) $(MTS)
 
 attach-sql:
-	docker exec -it da-spark-thrift beeline -u jdbc:hive2://localhost:10000
+	docker exec -it da-spark-master spark-sql
 
 fast-tpcds:
-	docker exec da-spark-master ./launcher.sh -c conf/connections_config.yaml -t conf/fast_test_iceberg/telemetry_config.yaml -l conf/library/spark/tpcds/library.yaml -w conf/fast_test_iceberg/workload.yaml -e conf/fast_test_iceberg/experiment.yaml
+	docker exec da-spark-master bash -c 'cd /home/spark/lst-bench/ && /home/spark/lst-bench/launcher.sh -c /home/spark/local_benchmarks/lst-bench/conf/connections_config.yaml -t /home/spark/local_benchmarks/lst-bench/conf/fast_test_iceberg/telemetry_config.yaml -l /home/spark/local_benchmarks/lst-bench/conf/library/spark/tpcds/library.yaml -w /home/spark/local_benchmarks/lst-bench/conf/fast_test_iceberg/workload.yaml -e /home/spark/local_benchmarks/lst-bench/conf/fast_test_iceberg/experiment.yaml'
+
+mvcc-conflicts:
+	docker exec da-spark-master ./launcher.sh -c conf/connections_config.yaml -t conf/mvcc_conflicts/telemetry_config.yaml -l conf/library/spark/tpcds/library.yaml -w conf/mvcc_conflicts/workload.yaml -e conf/mvcc_conflicts/experiment.yaml

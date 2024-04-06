@@ -34,8 +34,11 @@ Currently Spark is configured with hadoop file based catalogs in spark-defaults.
 These catalogs can be used in the experiments.yaml's. Later we can setup further catalogs to use object stores, ...
 
 #### connection_config.yaml
-The connection_config can be used for all local experiments on the Spark Cluster deployed via docker-compose.It setup to connect to Spark Cluster deloyed by the docker-compose via jdbc.
-Connection to several spark clusters and direct connection to the Spark master are possible. Within the docker container hostnames are the names specified in the docker-compose, e.g., spark-master or spark-thrift.
+
+The connection_config specifies the connection to the local Spark Cluster and the Spark configuration.
+It specifies the catalogs and many other Spark configuration. It can be used for all local experiments.
+
+Alternatively, JDBC connections can be configured. Also several concurrent connections can be configured.
 
 #### library.yaml's
 

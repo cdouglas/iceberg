@@ -1,7 +1,7 @@
 FROM apache/spark:3.3.3-scala2.12-java11-python3-r-ubuntu as spark-base
 #https://hub.docker.com/r/apache/spark/
 
-ARG LST_BENCH_COMMIT=2475787fb196fab4defeee0290a91a504fe2a2c2
+ARG LST_BENCH_COMMIT=f99beea
 ENV SPARK_VERSION=3.3.3
 ENV SPARK_MAJOR_VERSION=3.3
 ENV ICEBERG_VERSION=1.5.0
@@ -65,23 +65,20 @@ WORKDIR /home/spark
 # TODO: Fix path to JDK for non amd64 architectures
 ENV JAVA_HOME /usr/lib/jvm/java-11-openjdk-amd64
 
-RUN git clone -q -- https://github.com/microsoft/lst-bench.git
+RUN git clone -q -- https://github.com/tiemobang/lst-bench.git
 WORKDIR /home/spark/lst-bench
 RUN git checkout -q $LST_BENCH_COMMIT && \
     ./mvnw package -Pspark-jdbc
 
 # Copy over the configurations (change to bind mount in future)
-COPY --chown=spark:spark conf/lst-bench/* /home/spark/lst-bench/conf/
-COPY --chown=spark:spark conf/tpcds_generation/tpcds_data_gen.sh /home/spark/
+#COPY --chown=spark:spark conf/lst-bench/* /home/spark/lst-bench/conf/
+#COPY --chown=spark:spark conf/tpcds_generation/tpcds_data_gen.sh /home/spark/
 
 # Mount point to write out results
-RUN mkdir /home/spark/results && \
-    chown spark:spark /home/spark/results
+RUN mkdir -p /home/spark/local_benchmarks/results && \
+    chown -R spark:spark /home/spark/local_benchmarks
 
 # For development
-RUN mkdir /home/spark/my-lst-bench && \
-    chown spark:spark /home/spark/my-lst-bench
-
 USER root
 # Set password for spark user
 RUN echo "spark:password" | chpasswd && echo "root:password" | chpasswd && \
@@ -89,6 +86,8 @@ RUN echo "spark:password" | chpasswd && echo "root:password" | chpasswd && \
 RUN echo "spark ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 USER spark
-WORKDIR /home/spark/my-lst-bench
 
-COPY --chown=spark:spark conf/spark-defaults.conf "$SPARK_HOME/conf/spark-defaults.conf"
+COPY --chown=spark:spark lst-bench/conf/spark-defaults.conf "$SPARK_HOME/conf/spark-defaults.conf"
+COPY --chown=spark:spark lst-bench/conf/spark-env.sh "$SPARK_HOME/conf/spark-env.sh"
+
+WORKDIR /home/spark/local_benchmarks

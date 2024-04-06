@@ -15,17 +15,13 @@ services:
       - data:/opt/spark/data
       - spark-logs:/opt/spark/spark-events
       - warehouse:/opt/spark/warehouse
-      - ./results:/home/spark/results:rw
-      - /data/tbang/git/lst-bench:/home/spark/my-lst-bench:rw
-      - /data/tbang/git/iceberg/benchmarks/local_benchmarks/conf/lst-bench:/home/spark/lst-bench/conf/:rw
-      - /data/tbang/git/iceberg/benchmarks/local_benchmarks/conf/lst-bench:/home/spark/my-lst-bench/conf/:rw
-      #- lst-bench-configs:/home/spark/lst-bench/conf
+      - .:/home/spark/local_benchmarks:Z
+      #- /data/tbang/git/lst-bench:/home/spark/lst-bench:Z
     env_file:
       - .env.spark
     ports:
       - '9090:8080'
       - '7077:7077'
-
 
   spark-history-server:
     container_name: da-spark-history
@@ -56,18 +52,38 @@ services:
       - spark-logs:/opt/spark/spark-events
       - warehouse:/opt/spark/warehouse
 
-  spark-thrift:
-    container_name: da-spark-thrift
-    image: da-spark-image
-    entrypoint: ['/opt/spark/sbin/entrypoint.sh', 'thrift']
+  #spark-thrift:
+  #  container_name: da-spark-thrift
+  #  image: da-spark-image
+  #  entrypoint: ['/opt/spark/sbin/entrypoint.sh', 'thrift']
+  #  depends_on:
+  #    - spark-master
+  #  env_file:
+  #    - .env.spark
+  #  volumes:
+  #    - spark-logs:/opt/spark/spark-events
+  #    - warehouse:/opt/spark/warehouse
+  #    - data:/opt/spark/data
+
+  metastore:
+    image: apache/hive:3.1.3
     depends_on:
       - spark-master
-    env_file:
-      - .env.spark
+    restart: unless-stopped
+    container_name: metastore
+    hostname: metastore
+    environment:
+      SERVICE_NAME: 'metastore'
+    #  DB_DRIVER: postgres
+    # Ignore postgres and use the default derby metastore
+    #  SERVICE_OPTS: '-Xmx1G -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+    #                 -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore_db
+    #                 -Djavax.jdo.option.ConnectionUserName=hive
+    #                 -Djavax.jdo.option.ConnectionPassword=password'
+    ports:
+        - '9083:9083'
     volumes:
-      - spark-logs:/opt/spark/spark-events
-      - warehouse:/opt/spark/warehouse
-      - data:/opt/spark/data
+        - warehouse:/opt/hive/data/warehouse
 
   #hiveserver2:
   #  image: apache/hive:3.1.3

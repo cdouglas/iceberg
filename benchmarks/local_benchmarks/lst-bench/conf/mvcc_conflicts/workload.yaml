@@ -1,0 +1,27 @@
+# Description: Workload for test: All task types, TPC-DS, Iceberg
+---
+version: 1
+id: w_all_tpcds
+phases:
+#- id: init
+#  sessions:
+#  - tasks:
+#    - template_id: init
+#- id: build
+#  sessions:
+#  - tasks:
+#    - template_id: setup
+#    - template_id: build
+#      replace_regex:
+#      - pattern: '(?i)options\((.|\n)*?\)'
+#        replacement: ''
+#- id: single_table_scan_only
+#  sessions:
+#  - tasks:
+#    - template_id: single_table_full_scan
+- id: single_table_scan_vs_insert
+  sessions:
+  - tasks:
+    - template_id: single_table_full_scan
+  - tasks:
+    - template_id: single_table_point_insert
