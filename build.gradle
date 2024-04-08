@@ -656,6 +656,7 @@ project(':iceberg-gcp') {
 
     testImplementation "com.google.cloud:google-cloud-nio"
 
+    testImplementation project(path: ':iceberg-bundled-guava', configuration: 'shadow')
     testImplementation project(path: ':iceberg-core', configuration: 'testArtifacts')
     testImplementation project(path: ':iceberg-api', configuration: 'testArtifacts')
 

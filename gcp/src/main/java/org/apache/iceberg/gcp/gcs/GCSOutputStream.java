@@ -27,7 +27,9 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
+import java.util.zip.Checksum;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOMetricsContext;
 import org.apache.iceberg.io.PositionOutputStream;
@@ -36,6 +38,7 @@ import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.metrics.MetricsContext.Unit;
 import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,6 +65,15 @@ class GCSOutputStream extends PositionOutputStream {
   GCSOutputStream(
       Storage storage, BlobId blobId, GCPProperties gcpProperties, MetricsContext metrics)
       throws IOException {
+    this(storage, blobId, gcpProperties, metrics, null);
+  }
+
+  GCSOutputStream(
+      Storage storage,
+      BlobId blobId,
+      GCPProperties gcpProperties,
+      MetricsContext metrics,
+      Checksum checksum) {
     this.storage = storage;
     this.blobId = blobId;
     this.gcpProperties = gcpProperties;
@@ -71,7 +83,7 @@ class GCSOutputStream extends PositionOutputStream {
     this.writeBytes = metrics.counter(FileIOMetricsContext.WRITE_BYTES, Unit.BYTES);
     this.writeOperations = metrics.counter(FileIOMetricsContext.WRITE_OPERATIONS);
 
-    openStream();
+    openStream(checksum);
   }
 
   @Override
@@ -100,7 +112,7 @@ class GCSOutputStream extends PositionOutputStream {
     writeOperations.increment();
   }
 
-  private void openStream() {
+  private void openStream(Checksum checksum) {
     List<BlobWriteOption> writeOptions = Lists.newArrayList();
 
     gcpProperties
@@ -112,11 +124,17 @@ class GCSOutputStream extends PositionOutputStream {
     if (blobId.getGeneration() != null) {
       writeOptions.add(BlobWriteOption.generationMatch());
     }
+    BlobInfo.Builder blobInfoBuilder = BlobInfo.newBuilder(blobId);
+    if (checksum != null) {
+      final String checksumB64 =
+          Base64.getEncoder().encodeToString(Ints.toByteArray((int) (0xFFFF & checksum.getValue())));
+      blobInfoBuilder.setCrc32c(checksumB64);
+      writeOptions.add(BlobWriteOption.crc32cMatch());
+    }
 
     // try {
     WriteChannel channel =
-        storage.writer(
-            BlobInfo.newBuilder(blobId).build(), writeOptions.toArray(new BlobWriteOption[0]));
+        storage.writer(blobInfoBuilder.build(), writeOptions.toArray(new BlobWriteOption[0]));
 
     gcpProperties.channelWriteChunkSize().ifPresent(channel::setChunkSize);
 
@@ -125,6 +143,8 @@ class GCSOutputStream extends PositionOutputStream {
     //    if (e.getCode() == 412) {
     //        //
     // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
+    // https://cloud.google.com/storage/docs/samples/storage-upload-file#storage_upload_file-java
+    // !#! However, code from LocalStorageHelper is 404?
     //        throw new SupportsAtomicOperations.StorageVersionException("File was modified during
     // write", e);
     //    }
