@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 import org.apache.iceberg.common.DynConstructors;
 import org.apache.iceberg.gcp.GCPProperties;
+import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.DelegateFileIO;
 import org.apache.iceberg.io.FileInfo;
@@ -107,7 +108,7 @@ public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
   }
 
   @Override
-  public OutputFile newOutputFile(InputFile replace) {
+  public AtomicOutputFile newOutputFile(InputFile replace) {
     if (replace instanceof GCSInputFile) {
       return GCSOutputFile.fromBlobId(
           ((GCSInputFile) replace).blobId(), client(), gcpProperties, metrics);

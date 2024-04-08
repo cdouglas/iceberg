@@ -20,10 +20,13 @@ package org.apache.iceberg.gcp.gcs;
 
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
+import com.google.cloud.RestorableState;
+import com.google.cloud.WriteChannel;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
@@ -33,13 +36,18 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Random;
 import java.util.stream.StreamSupport;
+import java.util.zip.Checksum;
+import org.apache.commons.codec.digest.PureJavaCrc32C;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.common.DynMethods;
 import org.apache.iceberg.gcp.GCPProperties;
+import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.InputFile;
@@ -48,9 +56,12 @@ import org.apache.iceberg.io.ResolvingFileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.primitives.Longs;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatcher;
+import org.mockito.internal.matchers.VarargMatcher;
 
 public class GCSFileIOTest {
   private static final String TEST_BUCKET = "TEST_BUCKET";
@@ -75,8 +86,76 @@ public class GCSFileIOTest {
             })
         .when(storage)
         .delete(any(Iterable.class));
+    // LocalStorageHelper doesn't support checksums, so mock that here
+    /*
+    doAnswer(
+            invoke -> {
+              Object[] args = invoke.getArguments();
+              System.out.println("blobid: " + args[0]);
+              final WriteChannel out = (WriteChannel) invoke.callRealMethod();
+              if (args.length == 1) {
+                System.out.println("DEBUG0: NO CRC32C");
+                return out;
+              } else {
+                System.out.println("DEBUG1: CRC32C");
+              }
+              System.out.println("options: " + args[1]);
+              long crc32c =
+                  Longs.fromByteArray(
+                      Base64.getDecoder().decode(((BlobInfo) invoke.getArgument(0)).getCrc32c()));
+              return new WriteChannel() {
+                final Checksum actual = new PureJavaCrc32C();
+
+                @Override
+                public void setChunkSize(int i) {
+                  out.setChunkSize(i);
+                }
+
+                @Override
+                public RestorableState<WriteChannel> capture() {
+                  return out.capture();
+                }
+
+                @Override
+                public int write(ByteBuffer src) throws IOException {
+                  actual.update(src.array(), src.position(), src.remaining());
+                  return out.write(src);
+                }
+
+                @Override
+                public boolean isOpen() {
+                  return out.isOpen();
+                }
+
+                @Override
+                public void close() throws IOException {
+                  if (crc32c != actual.getValue()) {
+                    throw new IOException("CRC32C mismatch");
+                  }
+                  out.close();
+                }
+              };
+            })
+        .when(storage)
+        .writer(
+            //argThat(info -> {
+            //  System.out.println("info: " + info);
+            //  return info.getCrc32c() != null;
+            //}),
+            any(BlobInfo.class),
+            argThat(new BlobOptionMatcher()));
+
+     */
 
     io = new GCSFileIO(() -> storage, new GCPProperties());
+  }
+
+  // Suppress deprecation? Without VarargMatcher, the test fails with a ClassCastException for custom vararg matcher
+  static class BlobOptionMatcher implements ArgumentMatcher<Storage.BlobWriteOption[]>, VarargMatcher {
+      @Override
+      public boolean matches(Storage.BlobWriteOption[] options) {
+          return Arrays.stream(options).anyMatch(o -> o.equals(Storage.BlobWriteOption.crc32cMatch()));
+      }
   }
 
   @Test
@@ -178,6 +257,31 @@ public class GCSFileIOTest {
     // XXX Why does a generation mismatch return 404 (not found), and not 409 (Conflict) or 412
     // (Precondition)?
     // assertThat(generationFailure.getCode()).isEqualTo(412);
+  }
+
+  @Test
+  public void testAtomicPartialWrite() throws IOException {
+    final String location = format("gs://%s/path/to/file.txt", TEST_BUCKET);
+    final byte[] expected = new byte[1024 * 1024];
+    random.nextBytes(expected);
+
+    final OutputFile out = io.newOutputFile(location);
+    try (OutputStream os = out.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
+    }
+
+    final InputFile in = io.newInputFile(location);
+    assertThat(in.exists()).isTrue();
+
+    // overwrite fails, checksum does not match
+    final AtomicOutputFile overwrite = io.newOutputFile(in);
+    final byte[] overbytes = new byte[1024 * 1024];
+    random.nextBytes(overbytes);
+    final Checksum chk = overwrite.checksum();
+    chk.update(overbytes, 0, 1024 * 1024);
+    try (OutputStream os = overwrite.createAtomic(chk)) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
+    }
   }
 
   @Test
