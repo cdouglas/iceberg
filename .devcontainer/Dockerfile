@@ -18,6 +18,14 @@ RUN apt-get update && \
       build-essential \
       software-properties-common \
       docker \
-      ssh && \
+      ssh \
+      ps \
+      libxext \
+      libxrender \
+      libxtst \
+      libxi \
+      freetype \
+      procps \
+      gcompat && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
