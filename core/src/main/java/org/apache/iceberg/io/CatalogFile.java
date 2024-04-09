@@ -32,6 +32,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.zip.CheckedOutputStream;
+import java.util.zip.Checksum;
+import org.apache.commons.io.output.NullOutputStream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -178,7 +181,7 @@ public class CatalogFile {
       return this;
     }
 
-    public CatalogFile commit(OutputStream out) {
+    public CatalogFile commit(AtomicOutputFile outputFile) {
       final Map<Namespace, Map<String, String>> newNamespaces =
           Maps.newHashMap(original.namespaces);
       merge(newNamespaces, namespaces, Function.identity());
@@ -187,6 +190,25 @@ public class CatalogFile {
       merge(newFqti, tables, location -> new TableInfo(original.seqno, location));
 
       CatalogFile catalog = new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
+      try (OutputStream out = outputFile.createAtomic(catalog.checksum(outputFile.checksum()))) {
+        catalog.write(out);
+      } catch (IOException e) {
+        throw new CommitFailedException(e, "Failed to commit catalog file");
+      }
+      return catalog;
+    }
+
+    // XXX TODO remove this
+    public CatalogFile commit(OutputStream out) {
+      final Map<Namespace, Map<String, String>> newNamespaces =
+          Maps.newHashMap(original.namespaces);
+      merge(newNamespaces, namespaces, Function.identity());
+
+      final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
+      merge(newFqti, tables, location -> new TableInfo(original.seqno, location));
+
+      final CatalogFile catalog =
+          new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
       try {
         catalog.write(out);
       } catch (IOException e) {
@@ -248,6 +270,17 @@ public class CatalogFile {
 
   public List<TableIdentifier> tables() {
     return Lists.newArrayList(fqti.keySet().iterator());
+  }
+
+  public Checksum checksum(Checksum checksum) {
+    try (NullOutputStream nullOutputStream = new NullOutputStream();
+        CheckedOutputStream checkedOutputStream =
+            new CheckedOutputStream(nullOutputStream, checksum)) {
+      write(checkedOutputStream);
+      return checksum;
+    } catch (IOException e) {
+      throw new CommitFailedException(e, "Failed to commit catalog file");
+    }
   }
 
   static CatalogFile read(InputStream in) {

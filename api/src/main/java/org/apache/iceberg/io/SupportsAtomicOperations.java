@@ -19,7 +19,7 @@
 package org.apache.iceberg.io;
 
 public interface SupportsAtomicOperations extends FileIO {
-  OutputFile newOutputFile(InputFile replace);
+  AtomicOutputFile newOutputFile(InputFile replace);
 
   // thrown if underlying storage detects a version mismatch on CAS
   class StorageVersionException extends RuntimeException {
