@@ -20,12 +20,11 @@ RUN apt-get update && \
       docker \
       ssh \
       ps \
-      libxext \
-      libxrender \
-      libxtst \
-      libxi \
-      freetype \
-      procps \
-      gcompat && \
+      libxext6 \
+      libxrender-dev \
+      libxtst6 \
+      libxi-dev \
+      freetype* \
+      procps && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
