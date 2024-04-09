@@ -6,10 +6,8 @@ ENV JAVA_HOME=/usr/lib/jvm/msopenjdk-current
 
 RUN mkdir /usr/local/sdkman/candidates/java
 
-RUN mkdir /usr/local/sdkman/candidates/java/current
-
 # Create a Symlink from /usr/local/sdkman/candidates/java/current to /usr/lib/jvm/msopenjdk-current
-RUN ln -s /usr/local/sdkman/candidates/java/current /usr/lib/jvm/msopenjdk-current
+RUN ln -s /usr/lib/jvm/msopenjdk-current /usr/local/sdkman/candidates/java/current
 
 RUN apt-get update && \
     TZ=Etc/UTC DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
