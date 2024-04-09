@@ -15,7 +15,8 @@
     "ghcr.io/devcontainers/features/java:1": {
       "version": "none",
       "installMaven": "true",
-      "installGradle": "true"
+      "installGradle": "true",
+      "installJava": "true"
     }
   },
   // TODO find a property for the checkout
