@@ -58,8 +58,6 @@ import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentMatcher;
-import org.mockito.internal.matchers.VarargMatcher;
 
 public class GCSFileIOTest {
   private static final String TEST_BUCKET = "TEST_BUCKET";
@@ -88,34 +86,19 @@ public class GCSFileIOTest {
     doAnswer(
             invoke -> {
               Object[] args = invoke.getArguments();
-              System.out.println("blobid: " + args[0]);
-              BlobInfo info = (BlobInfo) args[0];
-              System.out.println("  CRC32C: " + info.getCrc32c());
+              final BlobInfo info = (BlobInfo) args[0];
+              final String crc32cStr = info.getCrc32c();
               final WriteChannel out = (WriteChannel) invoke.callRealMethod();
-              if (args.length == 1 || null == info.getCrc32c()) {
-                System.out.println("DEBUG0: NO CRC32C");
+              if (args.length == 1 || null == crc32cStr) {
                 return out;
               }
-              long crc32c = Ints.fromByteArray(Base64.getDecoder().decode(info.getCrc32c()));
+              long crc32c = Ints.fromByteArray(Base64.getDecoder().decode(crc32cStr));
               return new CRCWriteChannel(out, crc32c);
             })
         .when(storage)
-        .writer(
-            // GCS client strips the CRC32C from the BlobInfo, so we can't match
-            // https://github.com/googleapis/java-storage/blob/main/google-cloud-storage/src/main/java/com/google/cloud/storage/StorageImpl.java#L702
-            any(BlobInfo.class),
-            any(Storage.BlobWriteOption[].class));
+        .writer(any(BlobInfo.class), any(Storage.BlobWriteOption[].class));
 
     io = new GCSFileIO(() -> storage, new GCPProperties());
-  }
-
-  // Suppress deprecation? Without VarargMatcher, the test fails with a ClassCastException for custom vararg matcher
-  static class BlobOptionMatcher implements ArgumentMatcher<Storage.BlobWriteOption[]>, VarargMatcher {
-      @Override
-      public boolean matches(Storage.BlobWriteOption[] options) {
-          System.out.println("options: " + Arrays.toString(options));
-          return Arrays.stream(options).anyMatch(o -> o.equals(Storage.BlobWriteOption.crc32cMatch()));
-      }
   }
 
   @Test
@@ -239,16 +222,16 @@ public class GCSFileIOTest {
     random.nextBytes(overbytes);
     final Checksum chk = overwrite.checksum();
     chk.update(overbytes, 0, 1024 * 1024);
-    IOException generationFailure =
-            Assertions.assertThrows(
-                    IOException.class,
-                    () -> {
-                      try (OutputStream os = overwrite.createOrOverwrite()) {
-                        IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
-                      }
-                    });
-    // HACK This is purely for unit tests and both should be updated with the real behavior is known
-    assertThat(generationFailure.getMessage()).startsWith("CRC32C mismatch");
+    IOException hackFailure =
+        Assertions.assertThrows(
+            IOException.class,
+            () -> {
+              try (OutputStream os = overwrite.createAtomic(chk)) {
+                IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
+              }
+            });
+    // HACK this is purely for the unit test, need to validate against GCP and change both to match
+    assertThat(hackFailure.getMessage()).isEqualTo("CRC32C mismatch");
   }
 
   @Test
