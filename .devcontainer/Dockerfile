@@ -4,6 +4,9 @@ FROM mcr.microsoft.com/devcontainers/java:1-17-bullseye
 # jdk not installed/managed by sdkman
 ENV JAVA_HOME=/usr/lib/jvm/msopenjdk-current
 
+# Create a Symlink from /usr/local/sdkman/candidates/java/current to /usr/lib/jvm/msopenjdk-current
+RUN ln -s /usr/local/sdkman/candidates/java/current /usr/lib/jvm/msopenjdk-current
+
 RUN apt-get update && \
     TZ=Etc/UTC DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       sudo \
