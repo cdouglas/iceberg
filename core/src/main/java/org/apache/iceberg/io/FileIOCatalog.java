@@ -36,10 +36,10 @@ import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
-import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.base.Strings;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -116,7 +116,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     try (SupportsAtomicOperations io = fileIO) {
       if (!io.newInputFile(catalogLocation).exists()) {
         try (OutputStream out = io.newOutputFile(catalogLocation).create()) {
-          CatalogFile init = CatalogFile.empty().commit(out);
+          CatalogFile.empty().commit(out);
         } catch (IOException e) {
           // ignore
         }
@@ -134,10 +134,10 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   public boolean dropTable(TableIdentifier identifier, boolean purge) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = getCatalogFile(catalog);
-    try (OutputStream out = fileIO.newOutputFile(catalog).createOrOverwrite()) {
-      CatalogFile.from(catalogFile).dropTable(identifier).commit(out);
+    try {
+      CatalogFile.from(catalogFile).dropTable(identifier).commit(fileIO.newOutputFile(catalog));
       return true;
-    } catch (IOException e) {
+    } catch (CommitFailedException e) {
       return false;
     }
   }
@@ -146,15 +146,10 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   public void renameTable(TableIdentifier from, TableIdentifier to) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = getCatalogFile(catalog);
-    try (OutputStream out = fileIO.newOutputFile(catalog).createOrOverwrite()) {
-      // XXX Shit. Need to abort the overwrite of the catalog; blobWriteSession?
-      CatalogFile.from(catalogFile)
-          .dropTable(from)
-          .createTable(to, catalogFile.location(from)) // TODO preserve metadata
-          .commit(out);
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
+    CatalogFile.from(catalogFile)
+        .dropTable(from)
+        .createTable(to, catalogFile.location(from)) // TODO preserve metadata
+        .commit(fileIO.newOutputFile(catalog));
   }
 
   @Override
@@ -188,11 +183,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   public void createNamespace(Namespace namespace, Map<String, String> metadata) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = getCatalogFile(catalog);
-    try (OutputStream out = fileIO.newOutputFile(catalog).createOrOverwrite()) {
-      CatalogFile.from(catalogFile).createNamespace(namespace, metadata).commit(out);
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
+    CatalogFile.from(catalogFile)
+        .createNamespace(namespace, metadata)
+        .commit(fileIO.newOutputFile(catalog));
   }
 
   @Override
@@ -210,9 +203,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   public boolean dropNamespace(Namespace namespace) throws NamespaceNotEmptyException {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = getCatalogFile(catalog);
-    try (OutputStream out = fileIO.newOutputFile(catalog).createOrOverwrite()) {
-      CatalogFile.from(catalogFile).dropNamespace(namespace).commit(out);
-    } catch (IOException e) {
+    try {
+      CatalogFile.from(catalogFile).dropNamespace(namespace).commit(fileIO.newOutputFile(catalog));
+    } catch (CommitFailedException e) {
       // sigh.
       return false;
     }
@@ -224,9 +217,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       throws NoSuchNamespaceException {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = getCatalogFile(catalog);
-    try (OutputStream out = fileIO.newOutputFile(catalog).createOrOverwrite()) {
-      CatalogFile.from(catalogFile).updateProperties(namespace, properties).commit(out);
-    } catch (IOException e) {
+    try {
+      CatalogFile.from(catalogFile)
+          .updateProperties(namespace, properties)
+          .commit(fileIO.newOutputFile(catalog));
+    } catch (CommitFailedException e) {
       return false; // sigh.
     }
     return false;
@@ -304,14 +299,14 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       try (SupportsAtomicOperations io = io()) {
         final InputFile catalog = io.newInputFile(catalogLocation);
         final CatalogFile catalogFile = getCatalogFile(catalog);
-        try (OutputStream out = io.newOutputFile(catalog).createOrOverwrite()) {
-          if (null == base) {
-            CatalogFile.from(catalogFile).createTable(tableId, newMetadataLocation).commit(out);
-          } else {
-            CatalogFile.from(catalogFile).updateTable(tableId, newMetadataLocation).commit(out);
-          }
-        } catch (IOException e) {
-          throw new RuntimeIOException(e);
+        if (null == base) {
+          CatalogFile.from(catalogFile)
+              .createTable(tableId, newMetadataLocation)
+              .commit(fileIO.newOutputFile(catalog));
+        } else {
+          CatalogFile.from(catalogFile)
+              .updateTable(tableId, newMetadataLocation)
+              .commit(fileIO.newOutputFile(catalog));
         }
       }
     }
