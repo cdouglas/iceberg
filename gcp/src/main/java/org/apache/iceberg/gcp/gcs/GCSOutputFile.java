@@ -22,7 +22,6 @@ import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.function.Function;
 import java.util.zip.Checksum;
 import org.apache.commons.codec.digest.PureJavaCrc32C;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
