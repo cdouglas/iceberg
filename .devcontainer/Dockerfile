@@ -19,7 +19,6 @@ RUN apt-get update && \
       software-properties-common \
       docker \
       ssh \
-      ps \
       libxext6 \
       libxrender-dev \
       libxtst6 \
