@@ -127,7 +127,7 @@ class GCSOutputStream extends PositionOutputStream {
     BlobInfo.Builder blobInfoBuilder = BlobInfo.newBuilder(blobId);
     if (checksum != null) {
       final String checksumB64 =
-          Base64.getEncoder().encodeToString(Ints.toByteArray((int) (0xFFFF & checksum.getValue())));
+          Base64.getEncoder().encodeToString(Ints.toByteArray((int) checksum.getValue()));
       blobInfoBuilder.setCrc32c(checksumB64);
       writeOptions.add(BlobWriteOption.crc32cMatch());
     }

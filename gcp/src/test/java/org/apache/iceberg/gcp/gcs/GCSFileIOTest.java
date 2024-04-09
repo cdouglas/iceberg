@@ -20,15 +20,14 @@ package org.apache.iceberg.gcp.gcs;
 
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
-import com.google.cloud.RestorableState;
 import com.google.cloud.WriteChannel;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.CRCWriteChannel;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
@@ -42,7 +41,6 @@ import java.util.List;
 import java.util.Random;
 import java.util.stream.StreamSupport;
 import java.util.zip.Checksum;
-import org.apache.commons.codec.digest.PureJavaCrc32C;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.common.DynMethods;
@@ -56,7 +54,7 @@ import org.apache.iceberg.io.ResolvingFileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.apache.iceberg.relocated.com.google.common.primitives.Longs;
+import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -87,65 +85,26 @@ public class GCSFileIOTest {
         .when(storage)
         .delete(any(Iterable.class));
     // LocalStorageHelper doesn't support checksums, so mock that here
-    /*
     doAnswer(
             invoke -> {
               Object[] args = invoke.getArguments();
               System.out.println("blobid: " + args[0]);
+              BlobInfo info = (BlobInfo) args[0];
+              System.out.println("  CRC32C: " + info.getCrc32c());
               final WriteChannel out = (WriteChannel) invoke.callRealMethod();
-              if (args.length == 1) {
+              if (args.length == 1 || null == info.getCrc32c()) {
                 System.out.println("DEBUG0: NO CRC32C");
                 return out;
-              } else {
-                System.out.println("DEBUG1: CRC32C");
               }
-              System.out.println("options: " + args[1]);
-              long crc32c =
-                  Longs.fromByteArray(
-                      Base64.getDecoder().decode(((BlobInfo) invoke.getArgument(0)).getCrc32c()));
-              return new WriteChannel() {
-                final Checksum actual = new PureJavaCrc32C();
-
-                @Override
-                public void setChunkSize(int i) {
-                  out.setChunkSize(i);
-                }
-
-                @Override
-                public RestorableState<WriteChannel> capture() {
-                  return out.capture();
-                }
-
-                @Override
-                public int write(ByteBuffer src) throws IOException {
-                  actual.update(src.array(), src.position(), src.remaining());
-                  return out.write(src);
-                }
-
-                @Override
-                public boolean isOpen() {
-                  return out.isOpen();
-                }
-
-                @Override
-                public void close() throws IOException {
-                  if (crc32c != actual.getValue()) {
-                    throw new IOException("CRC32C mismatch");
-                  }
-                  out.close();
-                }
-              };
+              long crc32c = Ints.fromByteArray(Base64.getDecoder().decode(info.getCrc32c()));
+              return new CRCWriteChannel(out, crc32c);
             })
         .when(storage)
         .writer(
-            //argThat(info -> {
-            //  System.out.println("info: " + info);
-            //  return info.getCrc32c() != null;
-            //}),
+            // GCS client strips the CRC32C from the BlobInfo, so we can't match
+            // https://github.com/googleapis/java-storage/blob/main/google-cloud-storage/src/main/java/com/google/cloud/storage/StorageImpl.java#L702
             any(BlobInfo.class),
-            argThat(new BlobOptionMatcher()));
-
-     */
+            any(Storage.BlobWriteOption[].class));
 
     io = new GCSFileIO(() -> storage, new GCPProperties());
   }
@@ -154,6 +113,7 @@ public class GCSFileIOTest {
   static class BlobOptionMatcher implements ArgumentMatcher<Storage.BlobWriteOption[]>, VarargMatcher {
       @Override
       public boolean matches(Storage.BlobWriteOption[] options) {
+          System.out.println("options: " + Arrays.toString(options));
           return Arrays.stream(options).anyMatch(o -> o.equals(Storage.BlobWriteOption.crc32cMatch()));
       }
   }
@@ -279,9 +239,16 @@ public class GCSFileIOTest {
     random.nextBytes(overbytes);
     final Checksum chk = overwrite.checksum();
     chk.update(overbytes, 0, 1024 * 1024);
-    try (OutputStream os = overwrite.createAtomic(chk)) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
-    }
+    IOException generationFailure =
+            Assertions.assertThrows(
+                    IOException.class,
+                    () -> {
+                      try (OutputStream os = overwrite.createOrOverwrite()) {
+                        IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
+                      }
+                    });
+    // HACK This is purely for unit tests and both should be updated with the real behavior is known
+    assertThat(generationFailure.getMessage()).startsWith("CRC32C mismatch");
   }
 
   @Test
