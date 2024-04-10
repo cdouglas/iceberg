@@ -48,7 +48,7 @@ RUN apt-get update -qq && \
 
 # Setup databricks' tpcds data generator
 USER root
-RUN apt-get update -qq && apt-get install  -qq -y gcc make flex bison git byacc
+RUN apt-get update -qq && apt-get install  -qq -y gcc make flex bison git byacc maven
 WORKDIR /home/spark
 USER spark
 RUN git clone https://github.com/databricks/tpcds-kit.git && \
@@ -73,6 +73,16 @@ RUN git checkout -q $LST_BENCH_COMMIT && \
 # Copy over the configurations (change to bind mount in future)
 #COPY --chown=spark:spark conf/lst-bench/* /home/spark/lst-bench/conf/
 #COPY --chown=spark:spark conf/tpcds_generation/tpcds_data_gen.sh /home/spark/
+
+ARG GS_KEYFILE
+COPY --chown=spark:spark ${GS_KEYFILE} "$SPARK_HOME/conf/gs_keyfile.json"
+
+WORKDIR /home/spark
+RUN mkdir gcs_deps
+COPY --chown=spark:spark gcs_deps_pom.xml gcs_deps/pom.xml
+WORKDIR gcs_deps
+RUN mvn dependency:copy-dependencies \
+    && cp -n target/dependency/*.jar $SPARK_HOME/jars/.
 
 # Mount point to write out results
 RUN mkdir -p /home/spark/local_benchmarks/results && \
