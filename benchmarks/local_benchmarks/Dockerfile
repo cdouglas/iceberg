@@ -74,15 +74,15 @@ RUN git checkout -q $LST_BENCH_COMMIT && \
 #COPY --chown=spark:spark conf/lst-bench/* /home/spark/lst-bench/conf/
 #COPY --chown=spark:spark conf/tpcds_generation/tpcds_data_gen.sh /home/spark/
 
-ARG GS_KEYFILE
-COPY --chown=spark:spark ${GS_KEYFILE} "$SPARK_HOME/conf/gs_keyfile.json"
-
 WORKDIR /home/spark
-RUN mkdir gcs_deps
-COPY --chown=spark:spark gcs_deps_pom.xml gcs_deps/pom.xml
-WORKDIR gcs_deps
-RUN mvn dependency:copy-dependencies \
-    && cp -n target/dependency/*.jar $SPARK_HOME/jars/.
+# Build google cloud connector from source (takes few minutes)
+# The shaded jar contains all the dependencies
+RUN git clone -q https://github.com/GoogleCloudDataproc/hadoop-connectors.git && \
+    cd hadoop-connectors && \
+    mvn package -q -DskipTests && \
+    cp -v gcs/target/gcs-connector-*-shaded.jar $SPARK_HOME/jars && \
+    cd ${HOME} && \
+    rm -rf hadoop-connectors
 
 # Mount point to write out results
 RUN mkdir -p /home/spark/local_benchmarks/results && \
@@ -96,6 +96,9 @@ RUN echo "spark:password" | chpasswd && echo "root:password" | chpasswd && \
 RUN echo "spark ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 USER spark
+
+ARG GS_KEYFILE=".secrets/gs_keyfile.json"
+COPY --chown=spark:spark ${GS_KEYFILE} "$SPARK_HOME/conf/gs_keyfile.json"
 
 COPY --chown=spark:spark lst-bench/conf/spark-defaults.conf "$SPARK_HOME/conf/spark-defaults.conf"
 COPY --chown=spark:spark lst-bench/conf/spark-env.sh "$SPARK_HOME/conf/spark-env.sh"

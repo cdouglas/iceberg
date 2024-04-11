@@ -1,0 +1,1 @@
+Put your secret files in this folder. These files are excluded form git commits.
