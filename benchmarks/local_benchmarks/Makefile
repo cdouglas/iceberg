@@ -45,3 +45,11 @@ run-micro:
 
 setup-micro:
 	docker exec da-spark-master bash -c 'cd /home/spark/lst-bench/ && /home/spark/lst-bench/launcher.sh -l /home/spark/local_benchmarks/lst-bench/conf/library/spark/tpcds/library.yaml -c /home/spark/local_benchmarks/lst-bench/conf/connections_config_all_cores.yaml -t /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/telemetry_config.yaml -w /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/workload_setup.yaml -e /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/experiment.yaml'
+
+update-spark-config:
+	docker cp ./lst-bench/conf/spark-defaults.conf da-spark-master:/opt/spark/conf/spark-defaults.conf
+	docker exec da-spark-master sudo chown spark:spark /opt/spark/conf/spark-defaults.conf
+	docker cp ./lst-bench/conf/spark-defaults.conf da-spark-worker:/opt/spark/conf/spark-defaults.conf
+	docker exec da-spark-worker sudo chown spark:spark /opt/spark/conf/spark-defaults.conf
+	docker cp ./lst-bench/conf/spark-defaults.conf da-spark-history:/opt/spark/conf/spark-defaults.conf
+	docker exec da-spark-history sudo chown spark:spark /opt/spark/conf/spark-defaults.conf
