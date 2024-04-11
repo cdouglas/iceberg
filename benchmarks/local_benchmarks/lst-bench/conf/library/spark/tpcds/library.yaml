@@ -5,14 +5,11 @@ task_templates:
 # Create external tables needed for benchmark
 - id: setup
   files:
-  #- ${LIB_PATH}/scripts/setup/ddl-external-tables.sql
-  # The CSV parser silently replaces varchar with string and causes a schema mismatch!
-  - ${LIB_PATH}/scripts/setup/ddl-external-tables-string.sql
+  - ${LIB_PATH}/scripts/setup/ddl-external-tables.sql
 # Create data maintenance external tables needed for benchmark
 - id: setup_data_maintenance
   files:
-  #- ${LIB_PATH}/scripts/setup_data_maintenance/ddl-external-tables-refresh.sql
-  - ${LIB_PATH}/scripts/setup_data_maintenance/ddl-external-tables-refresh-string.sql
+  - ${LIB_PATH}/scripts/setup_data_maintenance/ddl-external-tables-refresh.sql
   parameter_values_file: ${LIB_PATH}/auxiliary/setup_data_maintenance/parameter_values.dat
 # Create schema and drop existing tables
 - id: init
@@ -69,6 +66,11 @@ task_templates:
   - ${LIB_PATH}/scripts/build/2_load_web_returns.sql
   - ${LIB_PATH}/scripts/build/2_load_web_sales.sql
   - ${LIB_PATH}/scripts/build/2_load_web_site.sql
+# Create a subset for microbenchmarking
+- id: build_micro
+  files:
+  - ${LIB_PATH}/scripts/build/1_create_store_sales.sql
+  - ${LIB_PATH}/scripts/build/2_load_store_sales.sql
 # Compute statistics for tables
 - id: analyze
   files:

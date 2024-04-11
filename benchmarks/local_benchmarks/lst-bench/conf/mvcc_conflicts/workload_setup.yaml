@@ -1,0 +1,23 @@
+# Description: Workload for test: All task types, TPC-DS, Iceberg
+---
+version: 1
+id: w_all_tpcds
+phases:
+## Loading TPCDS tables
+- id: init
+  sessions:
+  - tasks:
+    - template_id: init
+- id: build
+  sessions:
+  - tasks:
+    - template_id: setup
+      replace_regex:
+      - pattern: '(?i)varchar\(.*\)|char\(.*\)'
+        replacement: 'string'
+      - pattern: '(?i)smallint'
+        replacement: 'INTEGER'
+    - template_id: build_micro
+      replace_regex:
+      - pattern: '(?i)options\((.|\n)*?\)'
+        replacement: ''

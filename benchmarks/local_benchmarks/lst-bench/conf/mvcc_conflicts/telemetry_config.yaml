@@ -4,10 +4,10 @@ version: 1
 connection:
   id: duckdb_0
   driver: org.duckdb.DuckDBDriver
-  url: jdbc:duckdb:/home/spark/results/mvcc_conflicts.duckdb
+  url: jdbc:duckdb:${HOME}/local_benchmarks/lst-bench/results/microbenchmarks.duckdb
 execute_ddl: true
-ddl_file: 'src/main/resources/scripts/logging/duckdb/ddl.sql'
-insert_file: 'src/main/resources/scripts/logging/duckdb/insert.sql'
+ddl_file: ${LST_BENCH_HOME}/src/main/resources/scripts/logging/duckdb/ddl.sql
+insert_file: ${LST_BENCH_HOME}/src/main/resources/scripts/logging/duckdb/insert.sql
 # The following parameter values will be used to replace the variables in the logging statements.
 parameter_values:
   data_path: ''

@@ -14,12 +14,12 @@ metadata:
   mode: cow
 # The following parameter values will be used to replace the variables in the workload statements.
 parameter_values:
-  external_catalog: external_catalog
-  external_database: sf_1
+  external_catalog: local_original_iceberg
+  external_database: w_all_iceberg_sf_1
   external_table_format: csv
   external_data_path: '/opt/spark/data/tpcds/sf_1/'
   external_options_suffix: ', header = "false", mode = "PERMISSIVE", sep = "|", treatEmptyValuesAsNulls = "true"'
-  external_tblproperties_suffix: ''
+  external_tblproperties_suffix: '"format-version"="2", "write.delete.mode"="copy-on-write", "write.update.mode"="copy-on-write", "write.merge.mode"="copy-on-write"'
   catalog: local_original_iceberg
   database: w_all_iceberg_sf_1
   table_format: iceberg

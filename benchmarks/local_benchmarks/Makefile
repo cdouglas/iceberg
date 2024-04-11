@@ -40,5 +40,8 @@ attach-sql:
 fast-tpcds:
 	docker exec da-spark-master bash -c 'cd /home/spark/lst-bench/ && /home/spark/lst-bench/launcher.sh -c /home/spark/local_benchmarks/lst-bench/conf/connections_config.yaml -t /home/spark/local_benchmarks/lst-bench/conf/fast_test_iceberg/telemetry_config.yaml -l /home/spark/local_benchmarks/lst-bench/conf/library/spark/tpcds/library.yaml -w /home/spark/local_benchmarks/lst-bench/conf/fast_test_iceberg/workload.yaml -e /home/spark/local_benchmarks/lst-bench/conf/fast_test_iceberg/experiment.yaml'
 
-mvcc-conflicts:
-	docker exec da-spark-master ./launcher.sh -c conf/connections_config.yaml -t conf/mvcc_conflicts/telemetry_config.yaml -l conf/library/spark/tpcds/library.yaml -w conf/mvcc_conflicts/workload.yaml -e conf/mvcc_conflicts/experiment.yaml
+run-micro:
+	docker exec da-spark-master bash -c 'cd /home/spark/lst-bench/ && /home/spark/lst-bench/launcher.sh -l /home/spark/local_benchmarks/lst-bench/conf/library/spark/tpcds/library.yaml -c /home/spark/local_benchmarks/lst-bench/conf/connections_config.yaml -t /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/telemetry_config.yaml -w /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/workload.yaml -e /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/experiment.yaml'
+
+setup-micro:
+	docker exec da-spark-master bash -c 'cd /home/spark/lst-bench/ && /home/spark/lst-bench/launcher.sh -l /home/spark/local_benchmarks/lst-bench/conf/library/spark/tpcds/library.yaml -c /home/spark/local_benchmarks/lst-bench/conf/connections_config_all_cores.yaml -t /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/telemetry_config.yaml -w /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/workload_setup.yaml -e /home/spark/local_benchmarks/lst-bench/conf/mvcc_conflicts/experiment.yaml'

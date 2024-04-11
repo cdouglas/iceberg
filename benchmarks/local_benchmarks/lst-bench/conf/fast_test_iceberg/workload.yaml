@@ -17,10 +17,32 @@ phases:
   sessions:
   - tasks:
     - template_id: init
+- id: test
+  sessions:
+  - tasks:
+    - template_id: setup_data_maintenance
+      # Our Spark stack complains out varchar, char, smallint!
+      replace_regex:
+      - pattern: '(?i)varchar\(.*\)|char\(.*\)'
+        replacement: 'string'
+      - pattern: '(?i)smallint'
+        replacement: 'INTEGER'
+    - template_id: setup_data_maintenance
+      # Our Spark stack complains out varchar, char, smallint!
+      replace_regex:
+      - pattern: '(?i)varchar\(.*\)|char\(.*\)'
+        replacement: 'string'
+      - pattern: '(?i)smallint'
+        replacement: 'INTEGER'
 - id: build
   sessions:
   - tasks:
     - template_id: setup
+      replace_regex:
+      - pattern: '(?i)varchar\(.*\)|char\(.*\)'
+        replacement: 'string'
+      - pattern: '(?i)smallint'
+        replacement: 'INTEGER'
     - template_id: build
       replace_regex:
       - pattern: '(?i)options\((.|\n)*?\)'
@@ -29,11 +51,11 @@ phases:
 #  sessions:
 #  - tasks:
 #    - template_id: single_user
-- id: data_maintenance
-  sessions:
-  - tasks:
-    - template_id: setup_data_maintenance
-    - template_id: data_maintenance_iceberg
+#- id: data_maintenance
+#  sessions:
+#  - tasks:
+#    - template_id: setup_data_maintenance
+#    - template_id: data_maintenance_iceberg
 #- id: data_maintenance_dependent
 #  sessions:
 #  - tasks:

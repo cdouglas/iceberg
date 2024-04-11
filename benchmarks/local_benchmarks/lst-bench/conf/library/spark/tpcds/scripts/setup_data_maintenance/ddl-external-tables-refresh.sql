@@ -24,6 +24,11 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_catalog_page_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_catalog_page_${stream_num};
+
 CREATE
     TEMP VIEW
         ${external_catalog}_${external_database}_s_zip_to_gmt_${stream_num}(
@@ -43,6 +48,11 @@ CREATE
             locale = "en-US",
             lineSep = "\n"
         );
+
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_zip_to_gmt_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_zip_to_gmt_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -75,6 +85,11 @@ CREATE
             locale = "en-US",
             lineSep = "\n"
         );
+
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_purchase_lineitem_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_purchase_lineitem_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -137,6 +152,11 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_customer_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_customer_${stream_num};
+
 CREATE
     TEMP VIEW
         ${external_catalog}_${external_database}_s_customer_address_${stream_num}(
@@ -166,6 +186,11 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_customer_address_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_customer_address_${stream_num};
+
 CREATE
     TEMP VIEW
         ${external_catalog}_${external_database}_s_purchase_${stream_num}(
@@ -192,6 +217,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_purchase_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_purchase_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -219,6 +248,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_catalog_order_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_catalog_order_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -246,6 +279,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_web_order_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_web_order_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -281,6 +318,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_item_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_item_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -321,6 +362,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_catalog_order_lineitem_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_catalog_order_lineitem_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -360,6 +405,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_web_order_lineitem_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_web_order_lineitem_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -393,6 +442,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_store_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_store_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -425,6 +478,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_call_center_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_call_center_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -454,6 +511,10 @@ CREATE
                         lineSep = "\n"
                     );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_web_site_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_web_site_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -476,6 +537,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_warehouse_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_warehouse_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -505,6 +570,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_web_page_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_web_page_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -548,6 +617,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_promotion_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_promotion_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -605,6 +678,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_store_returns_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_store_returns_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -665,6 +742,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_catalog_returns_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_catalog_returns_${stream_num};
 
 CREATE
     TEMP VIEW
@@ -722,6 +803,10 @@ CREATE
             lineSep = "\n"
         );
 
+CREATE OR REPLACE TABLE ${external_catalog}.${external_database}.s_web_returns_${stream_num}
+    USING ${table_format}
+    TBLPROPERTIES(${external_tblproperties_suffix})
+    AS SELECT * FROM ${external_catalog}_${external_database}_s_web_returns_${stream_num};
 
 CREATE
     TEMP VIEW
