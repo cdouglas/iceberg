@@ -240,8 +240,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     CatalogFile catalogFile = getCatalogFile();
     if (catalogFile.namespaces().contains(namespace)) {
       return setProperties(
-              namespace,
-              properties.stream().collect(Maps::newHashMap, (m, k) -> m.put(k, null), Map::putAll));
+          namespace,
+          properties.stream().collect(Maps::newHashMap, (m, k) -> m.put(k, null), Map::putAll));
     } else {
       throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
     }
