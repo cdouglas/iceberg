@@ -22,11 +22,16 @@ import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
 import java.util.Map;
 import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.Transaction;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.assertj.core.api.Assertions;
+import org.junit.Ignore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -49,6 +54,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
     final String location = warehouseLocation + "/catalog";
     catalog = new FileIOCatalog("test", location, null, io, Maps.newHashMap());
     catalog.initialize(testName, properties);
+    this.tableLocation = "gs://bucket/blob";
   }
 
   @Override
@@ -67,4 +73,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
     FileIOCatalog underTest = catalog();
     underTest.createNamespace(Namespace.of("ns1"));
   }
+
+  // Tests to Ignore: testConcurrentReplaceTransactionSchemaConflict
+
 }

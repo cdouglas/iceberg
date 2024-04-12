@@ -139,6 +139,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       return true;
     } catch (CommitFailedException e) {
       return false;
+    } catch (NoSuchNamespaceException e) {
+      return false;
     }
   }
 
@@ -196,7 +198,12 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public Map<String, String> loadNamespaceMetadata(Namespace namespace)
       throws NoSuchNamespaceException {
-    return getCatalogFile().namespaceProperties(namespace);
+    CatalogFile catalogFile = getCatalogFile();
+    if (catalogFile.namespaces().contains(namespace)) {
+      return getCatalogFile().namespaceProperties(namespace);
+    } else {
+      throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
+    }
   }
 
   @Override
@@ -205,7 +212,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     final CatalogFile catalogFile = getCatalogFile(catalog);
     try {
       CatalogFile.from(catalogFile).dropNamespace(namespace).commit(fileIO.newOutputFile(catalog));
-    } catch (CommitFailedException e) {
+    } catch (NoSuchNamespaceException e) {
       // sigh.
       return false;
     }
@@ -230,9 +237,14 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public boolean removeProperties(Namespace namespace, Set<String> properties)
       throws NoSuchNamespaceException {
-    return setProperties(
-        namespace,
-        properties.stream().collect(Maps::newHashMap, (m, k) -> m.put(k, null), Map::putAll));
+    CatalogFile catalogFile = getCatalogFile();
+    if (catalogFile.namespaces().contains(namespace)) {
+      return setProperties(
+              namespace,
+              properties.stream().collect(Maps::newHashMap, (m, k) -> m.put(k, null), Map::putAll));
+    } else {
+      throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
+    }
   }
 
   private static CatalogFile getCatalogFile(InputFile catalogLocation) {

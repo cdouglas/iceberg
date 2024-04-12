@@ -40,6 +40,7 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
+import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -129,8 +130,7 @@ public class CatalogFile {
           throw new NoSuchNamespaceException("Namespace marked for deletion: %s", namespace);
         }
       } else {
-        final Map<String, String> originalProp = original.namespaceProperties(namespace);
-        if (null == originalProp) {
+        if (!original.containsNamespace(namespace)) {
           throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
         }
       }
@@ -175,7 +175,7 @@ public class CatalogFile {
 
     public MutCatalogFile dropTable(TableIdentifier tableId) {
       if (null == original.location(tableId)) {
-        throw new NoSuchNamespaceException("Table does not exist: %s", tableId);
+        throw new NoSuchTableException("Table does not exist: %s", tableId);
       }
       tables.put(tableId, null);
       return this;
