@@ -1,7 +1,7 @@
 FROM apache/spark:3.3.3-scala2.12-java11-python3-r-ubuntu as spark-base
 #https://hub.docker.com/r/apache/spark/
 
-ARG LST_BENCH_COMMIT=f99beea
+ARG LST_BENCH_COMMIT=fac17ef52a5f04cb0d9d12e874da365dffef8cec
 ENV SPARK_VERSION=3.3.3
 ENV SPARK_MAJOR_VERSION=3.3
 ENV ICEBERG_VERSION=1.5.0
