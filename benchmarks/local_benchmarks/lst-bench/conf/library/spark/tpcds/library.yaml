@@ -69,7 +69,7 @@ task_templates:
 # Create a subset for microbenchmarking
 - id: build_micro
   files:
-  - ${LIB_PATH}/scripts/build/1_create_store_sales.sql
+  - ${LIB_PATH}/scripts/build/1_create_store_sales_item_partition.sql
   - ${LIB_PATH}/scripts/build/2_load_store_sales.sql
 # Compute statistics for tables
 - id: analyze
@@ -532,9 +532,14 @@ task_templates:
   - ${LIB_PATH}/scripts/data_maintenance_dependent/LF_WS_3.sql
   - ${LIB_PATH}/scripts/data_maintenance_dependent/LF_WS_insert.sql
   parameter_values_file: ${LIB_PATH}/auxiliary/data_maintenance/parameter_values.dat
-- id: single_table_full_scan
+- id: scan_point_modification_single_table
   files:
-  - ${LIB_PATH}/scripts/mvcc_conflicts/single_table_full_scan.sql
+  - ${LIB_PATH}/scripts/micro_benchmarks/scan_point_modification.sql
+  parameter_values_file: ${LIB_PATH}/auxiliary/micro_benchmarks/table_pairs.dat
+- id: setup_table_copies
+  files:
+  - ${LIB_PATH}/scripts/build/copy_store_sales.sql
+  parameter_values_file: ${LIB_PATH}/auxiliary/micro_benchmarks/table_pairs.dat
 - id: single_table_point_insert
   files:
   - ${LIB_PATH}/scripts/mvcc_conflicts/single_table_point_insert.sql

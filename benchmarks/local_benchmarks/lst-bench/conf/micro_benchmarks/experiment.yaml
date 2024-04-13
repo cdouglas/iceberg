@@ -15,15 +15,19 @@ metadata:
 # The following parameter values will be used to replace the variables in the workload statements.
 parameter_values:
   external_catalog: local_original_iceberg
-  external_database: mvcc_conflicts
+  external_database: micro_bench
   external_table_format: csv
   external_data_path: '/opt/spark/data/tpcds/sf_10/'
   external_options_suffix: ', header = "false", mode = "PERMISSIVE", sep = "|", treatEmptyValuesAsNulls = "true"'
-  external_tblproperties_suffix: '"format-version"="2", "write.delete.mode"="copy-on-write", "write.update.mode"="copy-on-write", "write.merge.mode"="copy-on-write"'
+  tblproperties_suffix: ', "format-version"="2", "write.delete.mode"="merge-on-read", "write.update.mode"="merge-on-read", "write.merge.mode"="merge-on-read"'
   catalog: local_original_iceberg
-  database: mvcc_conflicts
+  database: micro_bench
   table_format: iceberg
   options_suffix: ''
   #tblproperties_suffix: ', "format-version"="2", "write.delete.mode"="copy-on-write", "write.update.mode"="copy-on-write", "write.merge.mode"="copy-on-write"'
   tblproperties_suffix: ', "format-version"="2", "write.delete.mode"="merge-on-read", "write.update.mode"="merge-on-read", "write.merge.mode"="merge-on-read"'
-  scale_factor: 1
+  #scale_factor: 1
+  # Controls the amount of data scanned per table
+  item_max : 50000
+  # Control whether insert or update modification
+  do_update: 0

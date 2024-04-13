@@ -1,0 +1,17 @@
+# Description: Workload for test: All task types, TPC-DS, Iceberg
+---
+version: 1
+id: physical_conflicts
+phases:
+- id: single_table_scan_vs_insert
+  sessions:
+  - tasks:
+    - template_id: scan_point_modification_single_table
+  - tasks:
+    - template_id: scan_point_modification_single_table
+  - tasks:
+    - template_id: scan_point_modification_single_table
+  - tasks:
+    - template_id: scan_point_modification_single_table
+  - tasks:
+    - template_id: scan_point_modification_single_table
