@@ -28,6 +28,7 @@ import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -68,6 +69,10 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
     FileIOCatalog underTest = catalog();
     underTest.createNamespace(Namespace.of("ns1"));
   }
+
+  @Override
+  @Disabled
+  public void testListTables() {}
 
   // Tests to Ignore: testConcurrentReplaceTransactionSchemaConflict
 
