@@ -139,7 +139,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       return true;
     } catch (CommitFailedException e) {
       return false;
-    } catch (NoSuchNamespaceException e) {
+    } catch (NoSuchTableException e) {
       return false;
     }
   }
