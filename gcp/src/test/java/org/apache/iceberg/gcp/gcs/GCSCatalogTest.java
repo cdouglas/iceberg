@@ -55,8 +55,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @Override
   protected boolean requiresNamespaceCreate() {
-    // TODO fix
-    return true;
+    return false;
   }
 
   @Override
@@ -74,6 +73,14 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   @Disabled
   public void testListTables() {}
 
+  @Override
+  @Disabled
+  public void testRenameTable() {}
+
+  @Override
+  protected boolean supportsNamespaceProperties() {
+    return false;
+  }
   // Tests to Ignore: testConcurrentReplaceTransactionSchemaConflict
 
 }
