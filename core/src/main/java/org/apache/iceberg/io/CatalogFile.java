@@ -154,20 +154,25 @@ public class CatalogFile {
 
     public MutCatalogFile dropNamespace(Namespace namespace) {
       // TODO check for tables, refuse if not empty
-      if (!original.containsNamespace(namespace) && !namespaces.containsKey(namespace)) {
-        throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
-      }
+      checkNamespaceExists(namespace);
       namespaces.put(namespace, null);
       return this;
     }
 
     public MutCatalogFile createTable(TableIdentifier table, String location) {
       // TODO: fix for swap (a -> b; b -> a)
+      checkNamespaceExists(table.namespace());
       if (original.location(table) != null || tables.get(table) != null) {
         throw new AlreadyExistsException("Table already exists: %s", table);
       }
       tables.put(table, location);
       return this;
+    }
+
+    private void checkNamespaceExists(Namespace namespace) {
+      if (!original.containsNamespace(namespace) && !namespaces.containsKey(namespace)) {
+        throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
+      }
     }
 
     public MutCatalogFile updateTable(TableIdentifier table, String location) {
@@ -385,8 +390,10 @@ public class CatalogFile {
 
   private static void writeProperties(DataOutputStream out, Map<String, String> props)
       throws IOException {
-    out.writeInt(props.size());
-    for (Map.Entry<String, String> p : props.entrySet()) {
+    Map<String,String> writeProps = props.entrySet().stream().filter(e -> e.getValue() != null)
+        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    out.writeInt(writeProps.size());
+    for (Map.Entry<String, String> p : writeProps.entrySet()) {
       out.writeUTF(p.getKey());
       out.writeUTF(p.getValue());
     }
