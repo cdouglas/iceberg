@@ -309,6 +309,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog
               .updateTable(tableId, newMetadataLocation)
               .commit(io);
         }
+      } catch (SupportsAtomicOperations.CASException e) {
+        throw new CommitFailedException(e, "Failed to commit metadata for table %s", tableId);
       }
     }
   }

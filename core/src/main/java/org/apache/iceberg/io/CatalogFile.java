@@ -188,8 +188,12 @@ public class CatalogFile {
     }
 
     public CatalogFile commit(SupportsAtomicOperations fileIO) {
-      final AtomicOutputFile outputFile = fileIO.newOutputFile(original.fromFile);
-      return commit(outputFile);
+      try {
+        final AtomicOutputFile outputFile = fileIO.newOutputFile(original.fromFile);
+        return commit(outputFile);
+      } catch (SupportsAtomicOperations.CASException e) {
+        throw new CommitFailedException(e, "Cannot commit");
+      }
     }
 
     public CatalogFile commit(AtomicOutputFile outputFile) {
