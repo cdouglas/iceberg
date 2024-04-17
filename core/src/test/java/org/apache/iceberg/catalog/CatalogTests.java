@@ -72,8 +72,6 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
   protected static final TableIdentifier TABLE = TableIdentifier.of(NS, "table");
   private static final TableIdentifier RENAMED_TABLE = TableIdentifier.of(NS, "table_renamed");
 
-  protected String tableLocation = "file:/tmp/ns/table";
-
   // Schema passed to create tables
   protected static final Schema SCHEMA =
       new Schema(
@@ -168,6 +166,10 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
 
   protected boolean supportsNamesWithDot() {
     return true;
+  }
+
+  protected String cannedTableLocation() {
+    return "file:/tmp/ns/table";
   }
 
   @Test
@@ -621,7 +623,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     Table table =
         catalog
             .buildTable(ident, SCHEMA)
-            .withLocation(tableLocation)
+            .withLocation(cannedTableLocation())
             .withPartitionSpec(SPEC)
             .withSortOrder(WRITE_ORDER)
             .withProperties(properties)
@@ -665,7 +667,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
         ImmutableMap.of("user", "someone", "created-at", "2022-02-25T00:38:19");
     catalog
         .buildTable(ident, SCHEMA)
-        .withLocation(tableLocation)
+        .withLocation(cannedTableLocation())
         .withPartitionSpec(SPEC)
         .withSortOrder(WRITE_ORDER)
         .withProperties(properties)
@@ -1542,7 +1544,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     Transaction create =
         catalog
             .buildTable(TABLE, SCHEMA)
-            .withLocation(tableLocation)
+            .withLocation(cannedTableLocation())
             .withPartitionSpec(SPEC)
             .withSortOrder(WRITE_ORDER)
             .withProperties(properties)
@@ -1580,7 +1582,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     if (!overridesRequestedLocation()) {
       Assertions.assertThat(table.location())
           .as("Table location should match requested")
-          .isEqualTo(tableLocation);
+          .isEqualTo(cannedTableLocation());
     }
     assertFiles(table, FILE_A);
     assertFilesPartitionSpec(table);
@@ -1600,7 +1602,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     Transaction create =
         catalog
             .buildTable(TABLE, SCHEMA)
-            .withLocation(tableLocation)
+            .withLocation(cannedTableLocation())
             .withPartitionSpec(SPEC)
             .withSortOrder(WRITE_ORDER)
             .withProperties(properties)
@@ -1678,7 +1680,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     if (!overridesRequestedLocation()) {
       Assertions.assertThat(table.location())
           .as("Table location should match requested")
-          .isEqualTo(tableLocation);
+          .isEqualTo(cannedTableLocation());
     }
     assertFiles(table, FILE_A, anotherFile);
     assertFilePartitionSpec(table, FILE_A, initialSpecId);
@@ -1701,7 +1703,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     Transaction create =
         catalog
             .buildTable(TABLE, SCHEMA)
-            .withLocation(tableLocation)
+            .withLocation(cannedTableLocation())
             .withPartitionSpec(SPEC)
             .withSortOrder(WRITE_ORDER)
             .withProperties(properties)
@@ -1746,7 +1748,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     if (!overridesRequestedLocation()) {
       Assertions.assertThat(table.location())
           .as("Table location should match requested")
-          .isEqualTo(tableLocation);
+          .isEqualTo(cannedTableLocation());
     }
 
     assertFiles(table, FILE_A);
@@ -1837,7 +1839,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     Transaction createOrReplace =
         catalog
             .buildTable(TABLE, SCHEMA)
-            .withLocation(tableLocation)
+            .withLocation(cannedTableLocation())
             .withPartitionSpec(SPEC)
             .withSortOrder(WRITE_ORDER)
             .withProperties(properties)
@@ -1876,7 +1878,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     if (!overridesRequestedLocation()) {
       Assertions.assertThat(table.location())
           .as("Table location should match requested")
-          .isEqualTo(tableLocation);
+          .isEqualTo(cannedTableLocation());
     }
 
     assertFiles(table, FILE_A);
@@ -1953,7 +1955,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     Transaction createOrReplace =
         catalog
             .buildTable(TABLE, SCHEMA)
-            .withLocation(tableLocation)
+            .withLocation(cannedTableLocation())
             .withPartitionSpec(SPEC)
             .withSortOrder(WRITE_ORDER)
             .withProperties(properties)
@@ -2005,7 +2007,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     if (!overridesRequestedLocation()) {
       Assertions.assertThat(table.location())
           .as("Table location should be replaced")
-          .isEqualTo(tableLocation);
+          .isEqualTo(cannedTableLocation());
     }
 
     assertUUIDsMatch(original, loaded);
@@ -2123,7 +2125,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     Transaction replace =
         catalog
             .buildTable(TABLE, SCHEMA)
-            .withLocation(tableLocation)
+            .withLocation(cannedTableLocation())
             .withPartitionSpec(SPEC)
             .withSortOrder(WRITE_ORDER)
             .withProperties(properties)
@@ -2177,7 +2179,7 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     if (!overridesRequestedLocation()) {
       Assertions.assertThat(table.location())
           .as("Table location should be replaced")
-          .isEqualTo(tableLocation);
+          .isEqualTo(cannedTableLocation());
     }
 
     assertUUIDsMatch(original, loaded);

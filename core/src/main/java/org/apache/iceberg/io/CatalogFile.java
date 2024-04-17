@@ -41,6 +41,7 @@ import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -186,6 +187,11 @@ public class CatalogFile {
       return this;
     }
 
+    public CatalogFile commit(SupportsAtomicOperations fileIO) {
+      final AtomicOutputFile outputFile = fileIO.newOutputFile(original.fromFile);
+      return commit(outputFile);
+    }
+
     public CatalogFile commit(AtomicOutputFile outputFile) {
       final Map<Namespace, Map<String, String>> newNamespaces =
           Maps.newHashMap(original.namespaces);
@@ -195,7 +201,6 @@ public class CatalogFile {
       merge(newFqti, tables, location -> new TableInfo(original.seqno, location));
 
       CatalogFile catalog = new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
-      // original.InputFile
       try (OutputStream out =
           outputFile.createAtomic(catalog.checksum(outputFile.checksum()), catalog::setFromFile)) {
         catalog.write(out);
@@ -239,17 +244,27 @@ public class CatalogFile {
 
   CatalogFile() {
     // consistent iteration order
-    this(UUID.randomUUID(), 0, Maps.newHashMap(), Maps.newHashMap());
+    this(UUID.randomUUID(), 0, Maps.newHashMap(), Maps.newHashMap(), null);
+  }
+
+  CatalogFile(
+          UUID uuid,
+          int seqno,
+          Map<Namespace, Map<String, String>> namespaces,
+          Map<TableIdentifier, TableInfo> fqti) {
+    this(uuid, seqno, namespaces, fqti, null);
   }
 
   CatalogFile(
       UUID uuid,
       int seqno,
       Map<Namespace, Map<String, String>> namespaces,
-      Map<TableIdentifier, TableInfo> fqti) {
+      Map<TableIdentifier, TableInfo> fqti,
+      InputFile fromFile) {
     this.uuid = uuid;
     this.seqno = seqno;
     this.fqti = fqti;
+    this.fromFile = fromFile;
     this.namespaces = namespaces;
   }
 
@@ -290,18 +305,11 @@ public class CatalogFile {
     }
   }
 
-  static CatalogFile read(InputFile inputFile) {
-    try (InputStream in = inputFile.newStream()) {
-      return read(in);
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
-  }
-
-  static CatalogFile read(InputStream in) {
+  static CatalogFile read(InputFile catalogLocation) {
     final Map<TableIdentifier, TableInfo> fqti = Maps.newHashMap();
     final Map<Namespace, Map<String, String>> namespaces = Maps.newHashMap();
-    try (DataInputStream din = new DataInputStream(in)) {
+    try (InputStream in = catalogLocation.newStream();
+         DataInputStream din = new DataInputStream(in)) {
       int nNamespaces = din.readInt();
       for (int i = 0; i < nNamespaces; ++i) {
         Namespace namespace = readNamespace(din);
@@ -318,7 +326,7 @@ public class CatalogFile {
       int seqno = din.readInt();
       long msb = din.readLong();
       long lsb = din.readLong();
-      return new CatalogFile(new UUID(msb, lsb), seqno, namespaces, fqti);
+      return new CatalogFile(new UUID(msb, lsb), seqno, namespaces, fqti, catalogLocation);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
@@ -342,7 +350,7 @@ public class CatalogFile {
     return Namespace.of(levels);
   }
 
-  public int write(OutputStream out) throws IOException {
+  int write(OutputStream out) throws IOException {
     try (DataOutputStream dos = new DataOutputStream(out)) {
       dos.writeInt(namespaces.size());
       for (Map.Entry<Namespace, Map<String, String>> e : namespaces.entrySet()) {

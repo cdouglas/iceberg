@@ -19,9 +19,7 @@
 package org.apache.iceberg.io;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -133,9 +131,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public boolean dropTable(TableIdentifier identifier, boolean purge) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = getCatalogFile(catalog);
+    final CatalogFile catalogFile = CatalogFile.read(catalog);
     try {
-      CatalogFile.from(catalogFile).dropTable(identifier).commit(fileIO.newOutputFile(catalog));
+      CatalogFile.from(catalogFile).dropTable(identifier).commit(fileIO);
       return true;
     } catch (CommitFailedException | NoSuchTableException e) {
       return false;
@@ -145,11 +143,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public void renameTable(TableIdentifier from, TableIdentifier to) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = getCatalogFile(catalog);
+    final CatalogFile catalogFile = CatalogFile.read(catalog);
     CatalogFile.from(catalogFile)
         .dropTable(from)
         .createTable(to, catalogFile.location(from)) // TODO preserve metadata
-        .commit(fileIO.newOutputFile(catalog));
+        .commit(fileIO);
   }
 
   @Override
@@ -172,7 +170,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   private CatalogFile getCatalogFile() {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    return getCatalogFile(catalog);
+    return CatalogFile.read(catalog);
   }
 
   //
@@ -182,10 +180,10 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public void createNamespace(Namespace namespace, Map<String, String> metadata) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = getCatalogFile(catalog);
+    final CatalogFile catalogFile = CatalogFile.read(catalog);
     CatalogFile.from(catalogFile)
         .createNamespace(namespace, metadata)
-        .commit(fileIO.newOutputFile(catalog));
+        .commit(fileIO);
   }
 
   @Override
@@ -210,9 +208,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     // XXX TODO wait, wtf?
     //     TODO catalog ops must also follow the refresh cycle, or only TableOperations detect
     // concurrent changes?
-    final CatalogFile catalogFile = getCatalogFile(catalog);
+    final CatalogFile catalogFile = CatalogFile.read(catalog);
     try {
-      CatalogFile.from(catalogFile).dropNamespace(namespace).commit(fileIO.newOutputFile(catalog));
+      CatalogFile.from(catalogFile).dropNamespace(namespace).commit(fileIO);
     } catch (NoSuchNamespaceException e) {
       // sigh.
       return false;
@@ -224,11 +222,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   public boolean setProperties(Namespace namespace, Map<String, String> properties)
       throws NoSuchNamespaceException {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = getCatalogFile(catalog);
+    final CatalogFile catalogFile = CatalogFile.read(catalog);
     try {
       CatalogFile.from(catalogFile)
           .updateProperties(namespace, properties)
-          .commit(fileIO.newOutputFile(catalog));
+          .commit(fileIO);
     } catch (CommitFailedException e) {
       return false; // sigh.
     }
@@ -245,14 +243,6 @@ public class FileIOCatalog extends BaseMetastoreCatalog
           properties.stream().collect(Maps::newHashMap, (m, k) -> m.put(k, null), Map::putAll));
     } else {
       throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
-    }
-  }
-
-  private static CatalogFile getCatalogFile(InputFile catalogLocation) {
-    try (InputStream in = catalogLocation.newStream()) {
-      return CatalogFile.read(in);
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
     }
   }
 
@@ -298,7 +288,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     @Override
     protected void doRefresh() {
       try (FileIO io = io()) {
-        final CatalogFile updatedCatalogFile = getCatalogFile(io.newInputFile(catalogLocation));
+        final CatalogFile updatedCatalogFile = CatalogFile.read(io.newInputFile(catalogLocation));
         updateVersionAndMetadata(
             updatedCatalogFile.version(tableId), updatedCatalogFile.location(tableId));
         lastCatalogFile = updatedCatalogFile;
@@ -309,18 +299,15 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     public void doCommit(TableMetadata base, TableMetadata metadata) {
       final boolean isCreate = null == base;
       final String newMetadataLocation = writeNewMetadataIfRequired(isCreate, metadata);
-      // XXX TODO save the InputFile metadata from doRefresh in CatalogFile
-      //     TODO include retries
       try (SupportsAtomicOperations io = io()) {
-        final InputFile catalog = io.newInputFile(catalogLocation);
         if (null == base) {
           CatalogFile.from(lastCatalogFile)
               .createTable(tableId, newMetadataLocation)
-              .commit(fileIO.newOutputFile(catalog));
+              .commit(io);
         } else {
           CatalogFile.from(lastCatalogFile)
               .updateTable(tableId, newMetadataLocation)
-              .commit(fileIO.newOutputFile(catalog));
+              .commit(io);
         }
       }
     }
