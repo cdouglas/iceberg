@@ -134,6 +134,7 @@ public abstract class BaseMetastoreTableOperations implements TableOperations {
     long start = System.currentTimeMillis();
     doCommit(base, metadata);
     deleteRemovedMetadataFiles(base, metadata);
+    // !#! failed UUID check not related to disabled refresh (reenabled here)
     requestRefresh();
 
     LOG.info(

@@ -16,15 +16,18 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.iceberg.io;
+package com.google.cloud.storage;
 
-// TODO using InputFile is imprecise. It should be resolved.
-public interface SupportsAtomicOperations extends FileIO {
-  /**
-   * Create a new atomic output file that will replace the given input file.
-   *
-   * @param replace an input file to replace
-   * @return a new atomic output file
-   */
-  AtomicOutputFile newOutputFile(InputFile replace);
+import com.google.cloud.WriteChannel;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+// TODO rewrite GCSFileIO using the V2 google-cloud-storage APIs
+public class FFS {
+  public static BlobInfo extractFile(WriteChannel channel)
+      throws ExecutionException, InterruptedException, TimeoutException {
+    StorageWriteChannel downcast = (StorageWriteChannel) channel;
+    return downcast.getObject().get(5, TimeUnit.SECONDS);
+  }
 }
