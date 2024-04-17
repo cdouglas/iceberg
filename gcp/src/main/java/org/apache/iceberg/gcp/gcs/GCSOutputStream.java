@@ -24,6 +24,7 @@ import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.FFS;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BlobWriteOption;
+import com.google.cloud.storage.StorageException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
@@ -38,6 +39,7 @@ import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOMetricsContext;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.Counter;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.metrics.MetricsContext.Unit;
@@ -143,23 +145,20 @@ class GCSOutputStream extends PositionOutputStream {
       writeOptions.add(BlobWriteOption.crc32cMatch());
     }
 
-    // try {
-    channel = storage.writer(blobInfoBuilder.build(), writeOptions.toArray(new BlobWriteOption[0]));
+    try {
+      channel = storage.writer(blobInfoBuilder.build(), writeOptions.toArray(new BlobWriteOption[0]));
 
-    gcpProperties.channelWriteChunkSize().ifPresent(channel::setChunkSize);
+      gcpProperties.channelWriteChunkSize().ifPresent(channel::setChunkSize);
 
-    stream = Channels.newOutputStream(channel);
-    // } catch (StorageException e) {
-    //    if (e.getCode() == 412) {
-    //        //
-    // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
-    // https://cloud.google.com/storage/docs/samples/storage-upload-file#storage_upload_file-java
-    // !#! However, code from LocalStorageHelper is 404?
-    //        throw new SupportsAtomicOperations.StorageVersionException("File was modified during
-    // write", e);
-    //    }
-    //    throw e;
-    // }
+      stream = Channels.newOutputStream(channel);
+     } catch (StorageException e) {
+        if (e.getCode() == 412) { // precondition failed
+          // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
+          // note: LocalStorageHelper throws 404,
+          throw new SupportsAtomicOperations.CASException("File was modified during write", e);
+        }
+        throw e;
+     }
   }
 
   @Override
@@ -168,18 +167,27 @@ class GCSOutputStream extends PositionOutputStream {
       return;
     }
 
-    super.close();
-    closed = true;
-    stream.close();
-    if (closed) {
-      // XXX hack. We need to extract the BlobInfo from the closed channel
-      try {
-        // TODO verify; that info correctly includes the generation in the BlobId
-        final BlobInfo info = FFS.extractFile(channel);
-        onClose.accept(GCSInputFile.fromBlobId(info.getBlobId(), storage, gcpProperties, metrics));
-      } catch (ExecutionException | InterruptedException | TimeoutException e) {
-        throw new RuntimeException("Failed to extract BlobInfo from closed stream");
+    try {
+      super.close();
+      closed = true;
+      stream.close();
+      if (closed) {
+        // XXX hack. We need to extract the BlobInfo from the closed channel
+        try {
+          // TODO verify; that info correctly includes the generation in the BlobId
+          final BlobInfo info = FFS.extractFile(channel);
+          onClose.accept(GCSInputFile.fromBlobId(info.getBlobId(), storage, gcpProperties, metrics));
+        } catch (ExecutionException | InterruptedException | TimeoutException e) {
+          throw new RuntimeException("Failed to extract BlobInfo from closed stream");
+        }
       }
+    } catch (StorageException e) {
+      if (e.getCode() == 412) { // precondition failed
+        // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
+        // note: LocalStorageHelper throws 404,
+        throw new SupportsAtomicOperations.CASException("File was modified during write", e);
+      }
+      throw e;
     }
   }
 

@@ -31,6 +31,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.Map;
 import java.util.List;
+import org.apache.commons.lang.RandomStringUtils;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
@@ -38,14 +39,19 @@ import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.junit.jupiter.api.extension.TestWatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@ExtendWith(GCSCatalogTest.SuccessCleanupExtension.class)
 public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
   private static final Logger LOG = LoggerFactory.getLogger(GCSCatalogTest.class);
@@ -53,13 +59,33 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   // private final Storage storage =
   private static Storage storage;
   private FileIOCatalog catalog;
-  private String warehouseLocation;
+  private static String warehouseLocation;
+  private static String uniqTestRun;
+
+  // Don't keep artifacts from successful tests
+  static class SuccessCleanupExtension implements TestWatcher {
+    @Override
+    public void testSuccessful(ExtensionContext ctxt) {
+      cleanupWarehouseLocation();
+    }
+  }
+
+  static void cleanupWarehouseLocation() {
+    try (GCSFileIO io = new GCSFileIO(() -> storage, new GCPProperties())) {
+      if (io.listPrefix(warehouseLocation).iterator().hasNext()) {
+        System.out.println("DEBUG2: " + warehouseLocation);
+        io.deletePrefix(warehouseLocation);
+      }
+    }
+  }
 
   @BeforeAll
   public static void initStorage() throws IOException {
+    uniqTestRun = RandomStringUtils.randomAlphabetic(8);
+    LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
     final File credFile =
-        new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json_local");
+        new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
       try (FileInputStream creds = new FileInputStream(credFile)) {
         storage = RemoteStorageHelper.create("lst-consistency", creds).getOptions().getService();
@@ -81,6 +107,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
               .delete(any(Iterable.class));
       LOG.info("Using local storage");
     }
+    Assertions.setMaxStackTraceElementsDisplayed(1000);
   }
 
   @BeforeEach
@@ -89,15 +116,14 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
     GCSFileIO io = new GCSFileIO(() -> storage, new GCPProperties());
 
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
-    warehouseLocation = "gs://" + TEST_BUCKET + "/" + testName;
+    warehouseLocation = "gs://" + TEST_BUCKET + "/" + uniqTestRun + "/" + testName;
+    cleanupWarehouseLocation();
+
     final Map<String, String> properties = Maps.newHashMap();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
     final String location = warehouseLocation + "/catalog";
     catalog = new FileIOCatalog("test", location, null, io, Maps.newHashMap());
     catalog.initialize(testName, properties);
-    if (io.newInputFile(warehouseLocation).exists()) {
-      io.deletePrefix(warehouseLocation);
-    }
   }
 
   @Override
@@ -113,12 +139,6 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   @Override
   protected FileIOCatalog catalog() {
     return catalog;
-  }
-
-  @Test
-  public void testBasicFunctionality() {
-    FileIOCatalog underTest = catalog();
-    underTest.createNamespace(Namespace.of("ns1"));
   }
 
   @Override

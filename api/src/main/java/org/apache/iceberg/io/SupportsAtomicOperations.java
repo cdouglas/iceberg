@@ -27,4 +27,10 @@ public interface SupportsAtomicOperations extends FileIO {
    * @return a new atomic output file
    */
   AtomicOutputFile newOutputFile(InputFile replace);
+
+  class CASException extends RuntimeException {
+    public CASException(String message, Exception cause) {
+      super(message, cause);
+    }
+  }
 }
