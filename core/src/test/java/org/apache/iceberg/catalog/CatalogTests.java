@@ -1019,7 +1019,14 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
       catalog.createNamespace(NS);
     }
 
+    // !#! Wait, wtf?
+    // !#! BaseTable has a reference to TableOperations
+    // !#! When is it refreshed? Of course, there's a refresh method on Table, too.
+    // !#! What is the lifecycle for this bullshit? Only in fucking Java could this complexity be
+    // maintained...
     Table table = catalog.buildTable(TABLE, SCHEMA).create();
+    // !#! should inherit an instance of TableOperations tied to a particular version of the catalog
+    // !#! at commit, use the version from TableOperations, not the catalog
     UpdateSchema update = table.updateSchema().addColumn("new_col", Types.LongType.get());
 
     Assertions.assertThat(catalog.dropTable(TABLE)).as("Should successfully drop table").isTrue();

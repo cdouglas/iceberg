@@ -226,7 +226,7 @@ public class GCSFileIOTest {
         Assertions.assertThrows(
             IOException.class,
             () -> {
-              try (OutputStream os = overwrite.createAtomic(chk)) {
+              try (OutputStream os = overwrite.createAtomic(chk, inputFile -> {})) {
                 IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
               }
             });

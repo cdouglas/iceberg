@@ -20,6 +20,10 @@ package org.apache.iceberg.gcp.gcs;
 
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
+import com.google.cloud.storage.testing.RemoteStorageHelper;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.util.Map;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTests;
@@ -27,16 +31,37 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
-  private static final String TEST_BUCKET = "TEST_BUCKET";
+  private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
+  private static final Logger LOG = LoggerFactory.getLogger(GCSCatalogTest.class);
 
-  private final Storage storage = LocalStorageHelper.getOptions().getService();
+  // private final Storage storage =
+  private static Storage storage;
   private FileIOCatalog catalog;
+
+  @BeforeAll
+  public static void initStorage() throws IOException {
+    // TODO get from env
+    final File credFile =
+        new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.jsonblah");
+    if (credFile.exists()) {
+      try (FileInputStream creds = new FileInputStream(credFile)) {
+        storage = RemoteStorageHelper.create("lst-consistency", creds).getOptions().getService();
+        LOG.info("Using remote storage");
+      }
+    } else {
+      storage = LocalStorageHelper.getOptions().getService();
+      LOG.info("Using local storage");
+    }
+  }
 
   @BeforeEach
   public void before(TestInfo info) {

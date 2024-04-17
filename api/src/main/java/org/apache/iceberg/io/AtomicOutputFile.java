@@ -18,10 +18,20 @@
  */
 package org.apache.iceberg.io;
 
+import java.util.function.Consumer;
 import java.util.zip.Checksum;
 
 public interface AtomicOutputFile extends OutputFile {
   Checksum checksum();
 
-  PositionOutputStream createAtomic(Checksum checksum);
+  /**
+   * Create a stream that- if the content written matches the checksum- will replace this file.
+   * Callback may return the InputFile corresponding to what was written, on close. This API is bad;
+   * the semantics are ambiguous. The callback only happens if the file closes. The V2 APIs include
+   * a Future-like API, which should admit a cleaner API.
+   *
+   * @param checksum the checksum to validate the content
+   * @param onClose the callback to run on close
+   */
+  PositionOutputStream createAtomic(Checksum checksum, Consumer<InputFile> onClose);
 }

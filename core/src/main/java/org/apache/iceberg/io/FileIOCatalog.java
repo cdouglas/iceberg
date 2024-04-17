@@ -56,7 +56,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   private String catalogLocation;
   private String warehouseLocation;
   private SupportsAtomicOperations fileIO;
-  private Map<String, String> catalogProperties;
+  private final Map<String, String> catalogProperties;
 
   public FileIOCatalog() {
     // XXX Isn't using Maps.newHashMap() deprecated after Java7?
@@ -137,9 +137,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     try {
       CatalogFile.from(catalogFile).dropTable(identifier).commit(fileIO.newOutputFile(catalog));
       return true;
-    } catch (CommitFailedException e) {
-      return false;
-    } catch (NoSuchTableException e) {
+    } catch (CommitFailedException | NoSuchTableException e) {
       return false;
     }
   }
@@ -209,6 +207,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public boolean dropNamespace(Namespace namespace) throws NamespaceNotEmptyException {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
+    // XXX TODO wait, wtf?
+    //     TODO catalog ops must also follow the refresh cycle, or only TableOperations detect
+    // concurrent changes?
     final CatalogFile catalogFile = getCatalogFile(catalog);
     try {
       CatalogFile.from(catalogFile).dropNamespace(namespace).commit(fileIO.newOutputFile(catalog));
@@ -259,8 +260,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     private final String catalogLocation;
     private final TableIdentifier tableId;
     private final SupportsAtomicOperations fileIO;
-
-    private volatile int catalogVersion = -1;
+    private volatile CatalogFile lastCatalogFile = null;
 
     FileIOTableOperations(
         TableIdentifier tableId, String catalogLocation, SupportsAtomicOperations fileIO) {
@@ -275,7 +275,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     }
 
     // version 0 reserved for empty catalog; tables created in subsequent commits
-    protected synchronized void updateVersionAndMetadata(int newVersion, String metadataFile) {
+    private synchronized void updateVersionAndMetadata(int newVersion, String metadataFile) {
       // update if table exists and version lags newVersion
       if (null == metadataFile) {
         if (currentMetadataLocation() != null) {
@@ -286,7 +286,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
           return;
         }
       }
-      catalogVersion = newVersion;
+      // checks for UUID match
       refreshFromMetadataLocation(metadataFile);
     }
 
@@ -298,25 +298,27 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     @Override
     protected void doRefresh() {
       try (FileIO io = io()) {
-        CatalogFile catalogFile = getCatalogFile(io.newInputFile(catalogLocation));
-        updateVersionAndMetadata(catalogFile.version(tableId), catalogFile.location(tableId));
+        final CatalogFile updatedCatalogFile = getCatalogFile(io.newInputFile(catalogLocation));
+        updateVersionAndMetadata(
+            updatedCatalogFile.version(tableId), updatedCatalogFile.location(tableId));
+        lastCatalogFile = updatedCatalogFile;
       }
     }
 
     @Override
     public void doCommit(TableMetadata base, TableMetadata metadata) {
-      // TODO: if base == null, table is being relocated? created?
       final boolean isCreate = null == base;
       final String newMetadataLocation = writeNewMetadataIfRequired(isCreate, metadata);
+      // XXX TODO save the InputFile metadata from doRefresh in CatalogFile
+      //     TODO include retries
       try (SupportsAtomicOperations io = io()) {
         final InputFile catalog = io.newInputFile(catalogLocation);
-        final CatalogFile catalogFile = getCatalogFile(catalog);
         if (null == base) {
-          CatalogFile.from(catalogFile)
+          CatalogFile.from(lastCatalogFile)
               .createTable(tableId, newMetadataLocation)
               .commit(fileIO.newOutputFile(catalog));
         } else {
-          CatalogFile.from(catalogFile)
+          CatalogFile.from(lastCatalogFile)
               .updateTable(tableId, newMetadataLocation)
               .commit(fileIO.newOutputFile(catalog));
         }

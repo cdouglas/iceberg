@@ -21,6 +21,7 @@ package org.apache.iceberg.gcp.gcs;
 import com.google.cloud.WriteChannel;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.FFS;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BlobWriteOption;
 import java.io.IOException;
@@ -29,9 +30,13 @@ import java.nio.channels.Channels;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.zip.Checksum;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOMetricsContext;
+import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.metrics.Counter;
 import org.apache.iceberg.metrics.MetricsContext;
@@ -53,8 +58,11 @@ class GCSOutputStream extends PositionOutputStream {
   private final Storage storage;
   private final BlobId blobId;
   private final GCPProperties gcpProperties;
+  private final MetricsContext metrics;
+  private final Consumer<InputFile> onClose;
 
   private OutputStream stream;
+  private WriteChannel channel;
 
   private final Counter writeBytes;
   private final Counter writeOperations;
@@ -65,7 +73,7 @@ class GCSOutputStream extends PositionOutputStream {
   GCSOutputStream(
       Storage storage, BlobId blobId, GCPProperties gcpProperties, MetricsContext metrics)
       throws IOException {
-    this(storage, blobId, gcpProperties, metrics, null);
+    this(storage, blobId, gcpProperties, metrics, null, blobInfo -> {});
   }
 
   GCSOutputStream(
@@ -73,16 +81,19 @@ class GCSOutputStream extends PositionOutputStream {
       BlobId blobId,
       GCPProperties gcpProperties,
       MetricsContext metrics,
-      Checksum checksum) {
+      Checksum checksum,
+      Consumer<InputFile> onClose) {
     this.storage = storage;
     this.blobId = blobId;
     this.gcpProperties = gcpProperties;
 
     createStack = Thread.currentThread().getStackTrace();
 
+    this.metrics = metrics; // XXX hack, save for InputFile extraction
     this.writeBytes = metrics.counter(FileIOMetricsContext.WRITE_BYTES, Unit.BYTES);
     this.writeOperations = metrics.counter(FileIOMetricsContext.WRITE_OPERATIONS);
 
+    this.onClose = onClose;
     openStream(checksum);
   }
 
@@ -133,8 +144,7 @@ class GCSOutputStream extends PositionOutputStream {
     }
 
     // try {
-    WriteChannel channel =
-        storage.writer(blobInfoBuilder.build(), writeOptions.toArray(new BlobWriteOption[0]));
+    channel = storage.writer(blobInfoBuilder.build(), writeOptions.toArray(new BlobWriteOption[0]));
 
     gcpProperties.channelWriteChunkSize().ifPresent(channel::setChunkSize);
 
@@ -161,6 +171,16 @@ class GCSOutputStream extends PositionOutputStream {
     super.close();
     closed = true;
     stream.close();
+    if (closed) {
+      // XXX hack. We need to extract the BlobInfo from the closed channel
+      try {
+        // TODO verify; that info correctly includes the generation in the BlobId
+        final BlobInfo info = FFS.extractFile(channel);
+        onClose.accept(GCSInputFile.fromBlobId(info.getBlobId(), storage, gcpProperties, metrics));
+      } catch (ExecutionException | InterruptedException | TimeoutException e) {
+        throw new RuntimeException("Failed to extract BlobInfo from closed stream");
+      }
+    }
   }
 
   @SuppressWarnings("checkstyle:NoFinalizer")

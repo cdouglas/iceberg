@@ -52,6 +52,11 @@ public class CatalogFile {
   private final UUID uuid;
   private final Map<TableIdentifier, TableInfo> fqti; // fully qualified table identifiers
   private final Map<Namespace, Map<String, String>> namespaces;
+  private InputFile fromFile;
+
+  private void setFromFile(InputFile fromFile) {
+    this.fromFile = fromFile;
+  }
 
   static class TableInfo {
     private final int version;
@@ -190,7 +195,9 @@ public class CatalogFile {
       merge(newFqti, tables, location -> new TableInfo(original.seqno, location));
 
       CatalogFile catalog = new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
-      try (OutputStream out = outputFile.createAtomic(catalog.checksum(outputFile.checksum()))) {
+      // original.InputFile
+      try (OutputStream out =
+          outputFile.createAtomic(catalog.checksum(outputFile.checksum()), catalog::setFromFile)) {
         catalog.write(out);
       } catch (IOException e) {
         throw new CommitFailedException(e, "Failed to commit catalog file");
@@ -280,6 +287,14 @@ public class CatalogFile {
       return checksum;
     } catch (IOException e) {
       throw new CommitFailedException(e, "Failed to commit catalog file");
+    }
+  }
+
+  static CatalogFile read(InputFile inputFile) {
+    try (InputStream in = inputFile.newStream()) {
+      return read(in);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
     }
   }
 
