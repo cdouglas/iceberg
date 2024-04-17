@@ -41,7 +41,6 @@ import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
-import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -252,10 +251,10 @@ public class CatalogFile {
   }
 
   CatalogFile(
-          UUID uuid,
-          int seqno,
-          Map<Namespace, Map<String, String>> namespaces,
-          Map<TableIdentifier, TableInfo> fqti) {
+      UUID uuid,
+      int seqno,
+      Map<Namespace, Map<String, String>> namespaces,
+      Map<TableIdentifier, TableInfo> fqti) {
     this(uuid, seqno, namespaces, fqti, null);
   }
 
@@ -313,7 +312,7 @@ public class CatalogFile {
     final Map<TableIdentifier, TableInfo> fqti = Maps.newHashMap();
     final Map<Namespace, Map<String, String>> namespaces = Maps.newHashMap();
     try (InputStream in = catalogLocation.newStream();
-         DataInputStream din = new DataInputStream(in)) {
+        DataInputStream din = new DataInputStream(in)) {
       int nNamespaces = din.readInt();
       for (int i = 0; i < nNamespaces; ++i) {
         Namespace namespace = readNamespace(din);

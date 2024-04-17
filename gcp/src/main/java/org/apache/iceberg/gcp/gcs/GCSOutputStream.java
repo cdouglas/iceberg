@@ -146,19 +146,20 @@ class GCSOutputStream extends PositionOutputStream {
     }
 
     try {
-      channel = storage.writer(blobInfoBuilder.build(), writeOptions.toArray(new BlobWriteOption[0]));
+      channel =
+          storage.writer(blobInfoBuilder.build(), writeOptions.toArray(new BlobWriteOption[0]));
 
       gcpProperties.channelWriteChunkSize().ifPresent(channel::setChunkSize);
 
       stream = Channels.newOutputStream(channel);
-     } catch (StorageException e) {
-        if (e.getCode() == 412) { // precondition failed
-          // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
-          // note: LocalStorageHelper throws 404,
-          throw new SupportsAtomicOperations.CASException("File was modified during write", e);
-        }
-        throw e;
-     }
+    } catch (StorageException e) {
+      if (e.getCode() == 412) { // precondition failed
+        // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
+        // note: LocalStorageHelper throws 404,
+        throw new SupportsAtomicOperations.CASException("File was modified during write", e);
+      }
+      throw e;
+    }
   }
 
   @Override
@@ -176,7 +177,8 @@ class GCSOutputStream extends PositionOutputStream {
         try {
           // TODO verify; that info correctly includes the generation in the BlobId
           final BlobInfo info = FFS.extractFile(channel);
-          onClose.accept(GCSInputFile.fromBlobId(info.getBlobId(), storage, gcpProperties, metrics));
+          onClose.accept(
+              GCSInputFile.fromBlobId(info.getBlobId(), storage, gcpProperties, metrics));
         } catch (ExecutionException | InterruptedException | TimeoutException e) {
           throw new RuntimeException("Failed to extract BlobInfo from closed stream");
         }

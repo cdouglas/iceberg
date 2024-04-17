@@ -20,9 +20,11 @@ package org.apache.iceberg.io;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.BaseMetastoreCatalog;
@@ -124,8 +126,14 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   @Override
   public List<TableIdentifier> listTables(Namespace namespace) {
-    Preconditions.checkArgument(Namespace.empty().equals(namespace), "Namespaces not supported");
-    return getCatalogFile().tables();
+    if (!namespaceExists(namespace) && !namespace.isEmpty()) {
+      throw new NoSuchNamespaceException(
+          "Cannot list tables for namespace. Namespace does not exist: %s", namespace);
+    }
+    return getCatalogFile().tables().stream()
+        .filter(t -> t.namespace().isEmpty() || t.namespace().equals(namespace))
+        .sorted(Comparator.comparing(TableIdentifier::toString))
+        .collect(Collectors.toList());
   }
 
   @Override
@@ -181,9 +189,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   public void createNamespace(Namespace namespace, Map<String, String> metadata) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = CatalogFile.read(catalog);
-    CatalogFile.from(catalogFile)
-        .createNamespace(namespace, metadata)
-        .commit(fileIO);
+    CatalogFile.from(catalogFile).createNamespace(namespace, metadata).commit(fileIO);
   }
 
   @Override
@@ -196,7 +202,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       throws NoSuchNamespaceException {
     CatalogFile catalogFile = getCatalogFile();
     if (catalogFile.namespaces().contains(namespace)) {
-      return getCatalogFile().namespaceProperties(namespace);
+      return catalogFile.namespaceProperties(namespace);
     } else {
       throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
     }
@@ -224,9 +230,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
     final CatalogFile catalogFile = CatalogFile.read(catalog);
     try {
-      CatalogFile.from(catalogFile)
-          .updateProperties(namespace, properties)
-          .commit(fileIO);
+      CatalogFile.from(catalogFile).updateProperties(namespace, properties).commit(fileIO);
     } catch (CommitFailedException e) {
       return false; // sigh.
     }
@@ -301,13 +305,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       final String newMetadataLocation = writeNewMetadataIfRequired(isCreate, metadata);
       try (SupportsAtomicOperations io = io()) {
         if (null == base) {
-          CatalogFile.from(lastCatalogFile)
-              .createTable(tableId, newMetadataLocation)
-              .commit(io);
+          CatalogFile.from(lastCatalogFile).createTable(tableId, newMetadataLocation).commit(io);
         } else {
-          CatalogFile.from(lastCatalogFile)
-              .updateTable(tableId, newMetadataLocation)
-              .commit(io);
+          CatalogFile.from(lastCatalogFile).updateTable(tableId, newMetadataLocation).commit(io);
         }
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Failed to commit metadata for table %s", tableId);
