@@ -70,7 +70,6 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   static void cleanupWarehouseLocation() {
     try (GCSFileIO io = new GCSFileIO(() -> storage, new GCPProperties())) {
       if (io.listPrefix(warehouseLocation).iterator().hasNext()) {
-        System.out.println("DEBUG2: " + warehouseLocation);
         io.deletePrefix(warehouseLocation);
       }
     }
@@ -130,7 +129,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @Override
   protected boolean requiresNamespaceCreate() {
-    return false;
+    return true;
   }
 
   @Override
