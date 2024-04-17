@@ -29,21 +29,18 @@ import com.google.cloud.storage.testing.RemoteStorageHelper;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.Map;
 import java.util.List;
+import java.util.Map;
 import org.apache.commons.lang.RandomStringUtils;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTests;
-import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
-import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.ExtensionContext;
@@ -98,13 +95,13 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
                 Iterable<BlobId> iter = invoke.getArgument(0);
                 List<Boolean> answer = Lists.newArrayList();
                 iter.forEach(
-                        blobId -> {
-                          answer.add(storage.delete(blobId));
-                        });
+                    blobId -> {
+                      answer.add(storage.delete(blobId));
+                    });
                 return answer;
               })
-              .when(storage)
-              .delete(any(Iterable.class));
+          .when(storage)
+          .delete(any(Iterable.class));
       LOG.info("Using local storage");
     }
     Assertions.setMaxStackTraceElementsDisplayed(1000);
@@ -140,23 +137,4 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   protected FileIOCatalog catalog() {
     return catalog;
   }
-
-  @Override
-  @Disabled
-  public void testListTables() {
-    // XXX why is this test disabled?
-  }
-
-  @Override
-  @Disabled
-  public void testRenameTable() {
-    // XXX why is this test disabled?
-  }
-
-  @Override
-  protected boolean supportsNamespaceProperties() {
-    return false;
-  }
-  // Tests to Ignore: testConcurrentReplaceTransactionSchemaConflict
-
 }
