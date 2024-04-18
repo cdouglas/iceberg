@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.zip.CheckedOutputStream;
@@ -203,10 +204,17 @@ public class CatalogFile {
     public CatalogFile commit(AtomicOutputFile outputFile) {
       final Map<Namespace, Map<String, String>> newNamespaces =
           Maps.newHashMap(original.namespaces);
-      merge(newNamespaces, namespaces, Function.identity());
+      merge(newNamespaces, namespaces, (orig, next) -> {
+        Map<String,String> ns_properties = null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
+        merge(ns_properties, next, (x, y) -> y);
+        return ns_properties;
+      });
 
       final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
-      merge(newFqti, tables, location -> new TableInfo(original.seqno, location));
+      merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
+
+      // TODO need to merge namespace properties
+      // TODO not using table versions...
 
       CatalogFile catalog = new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
       try (OutputStream out =
@@ -222,10 +230,10 @@ public class CatalogFile {
     public CatalogFile commit(OutputStream out) {
       final Map<Namespace, Map<String, String>> newNamespaces =
           Maps.newHashMap(original.namespaces);
-      merge(newNamespaces, namespaces, Function.identity());
+      merge(newNamespaces, namespaces, (x, y) -> y);
 
       final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
-      merge(newFqti, tables, location -> new TableInfo(original.seqno, location));
+      merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
 
       final CatalogFile catalog =
           new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
@@ -238,13 +246,14 @@ public class CatalogFile {
     }
 
     private static <K, V, U> void merge(
-        Map<K, V> original, Map<K, U> update, Function<U, V> valueMapper) {
+        Map<K, V> original, Map<K, U> update, BiFunction<V, U, V> valueMapper) {
       for (Map.Entry<K, U> entry : update.entrySet()) {
+        final K key = entry.getKey();
         final U value = entry.getValue();
         if (null == value) {
-          original.remove(entry.getKey());
+          original.remove(key);
         } else {
-          original.put(entry.getKey(), valueMapper.apply(value));
+          original.put(key, valueMapper.apply(original.get(key), value));
         }
       }
     }
