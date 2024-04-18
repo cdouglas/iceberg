@@ -31,7 +31,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiFunction;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.zip.CheckedOutputStream;
 import java.util.zip.Checksum;
@@ -195,35 +194,31 @@ public class CatalogFile {
     public CatalogFile commit(SupportsAtomicOperations fileIO) {
       try {
         final AtomicOutputFile outputFile = fileIO.newOutputFile(original.fromFile);
-        return commit(outputFile);
+        final Map<Namespace, Map<String, String>> newNamespaces =
+            Maps.newHashMap(original.namespaces);
+        merge(newNamespaces, namespaces, (orig, next) -> {
+          Map<String,String> ns_properties = null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
+          merge(ns_properties, next, (x, y) -> y);
+          return ns_properties;
+        });
+
+        final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
+        merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
+
+        // TODO need to merge namespace properties
+        // TODO not using table versions...
+
+        CatalogFile catalog = new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
+        try (OutputStream out =
+            outputFile.createAtomic(catalog.checksum(outputFile.checksum()), catalog::setFromFile)) {
+          catalog.write(out);
+        } catch (IOException e) {
+          throw new CommitFailedException(e, "Failed to commit catalog file");
+        }
+        return catalog;
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Cannot commit");
       }
-    }
-
-    public CatalogFile commit(AtomicOutputFile outputFile) {
-      final Map<Namespace, Map<String, String>> newNamespaces =
-          Maps.newHashMap(original.namespaces);
-      merge(newNamespaces, namespaces, (orig, next) -> {
-        Map<String,String> ns_properties = null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
-        merge(ns_properties, next, (x, y) -> y);
-        return ns_properties;
-      });
-
-      final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
-      merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
-
-      // TODO need to merge namespace properties
-      // TODO not using table versions...
-
-      CatalogFile catalog = new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
-      try (OutputStream out =
-          outputFile.createAtomic(catalog.checksum(outputFile.checksum()), catalog::setFromFile)) {
-        catalog.write(out);
-      } catch (IOException e) {
-        throw new CommitFailedException(e, "Failed to commit catalog file");
-      }
-      return catalog;
     }
 
     // XXX TODO remove this

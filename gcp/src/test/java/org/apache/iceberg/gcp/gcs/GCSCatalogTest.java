@@ -103,7 +103,8 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
           .delete(any(Iterable.class));
       LOG.info("Using local storage");
     }
-    Assertions.setMaxStackTraceElementsDisplayed(1000);
+    // show ridiculous stack traces
+    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
   }
 
   @BeforeEach
