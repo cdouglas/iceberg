@@ -1,0 +1,78 @@
+# Description: Workload for test: All task types, TPC-DS, Iceberg
+---
+version: 1
+id: w_all_tpcds
+phases:
+# Moved into build for temp views to be in the same session
+#- id: setup
+#  sessions:
+#  - tasks:
+#    - template_id: setup
+# Move into session for data management
+#- id: setup_data_maintenance
+#  sessions:
+#  - tasks:
+#    - template_id: setup_data_maintenance
+- id: init
+  sessions:
+  - tasks:
+    - template_id: init
+- id: test
+  sessions:
+  - tasks:
+    - template_id: setup_data_maintenance
+      # Our Spark stack complains out varchar, char, smallint!
+      replace_regex:
+      - pattern: '(?i)varchar\(.*\)|char\(.*\)'
+        replacement: 'string'
+      - pattern: '(?i)smallint'
+        replacement: 'INTEGER'
+    - template_id: setup_data_maintenance
+      # Our Spark stack complains out varchar, char, smallint!
+      replace_regex:
+      - pattern: '(?i)varchar\(.*\)|char\(.*\)'
+        replacement: 'string'
+      - pattern: '(?i)smallint'
+        replacement: 'INTEGER'
+- id: build
+  sessions:
+  - tasks:
+    - template_id: setup
+      replace_regex:
+      - pattern: '(?i)varchar\(.*\)|char\(.*\)'
+        replacement: 'string'
+      - pattern: '(?i)smallint'
+        replacement: 'INTEGER'
+    - template_id: build
+      replace_regex:
+      - pattern: '(?i)options\((.|\n)*?\)'
+        replacement: ''
+#- id: single_user
+#  sessions:
+#  - tasks:
+#    - template_id: single_user
+#- id: data_maintenance
+#  sessions:
+#  - tasks:
+#    - template_id: setup_data_maintenance
+#    - template_id: data_maintenance_iceberg
+#- id: data_maintenance_dependent
+#  sessions:
+#  - tasks:
+#    - template_id: data_maintenance_dependent
+#      task_executor_arguments:
+#        dependent_task_batch_size: 100
+#        # TODO: Remove this once #182 is fixed
+#        skip_erroneous_query_strings: "Cannot parse predicates in where option"
+#- id: optimize
+#  sessions:
+#  - tasks:
+#    - template_id: optimize_iceberg
+#- id: optimize_split
+#  sessions:
+#  - tasks:
+#    - template_id: optimize_split_iceberg
+#      task_executor_arguments:
+#        dependent_task_batch_size: 100
+#        # TODO: Remove this once #182 is fixed
+#        skip_erroneous_query_strings: "Cannot parse predicates in where option"

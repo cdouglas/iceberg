@@ -1,0 +1,62 @@
+# Description: Workload for test: All task types, TPC-DS, Iceberg
+---
+version: 1
+id: w_all_tpcds
+phases:
+## Loading TPCDS tables
+- id: init
+  sessions:
+  - tasks:
+    - template_id: init
+- id: build
+  sessions:
+  - tasks:
+    - template_id: setup
+      replace_regex:
+      - pattern: '(?i)varchar\(.*\)|char\(.*\)'
+        replacement: 'string'
+      - pattern: '(?i)smallint'
+        replacement: 'INTEGER'
+    - template_id: build_micro
+      replace_regex:
+      - pattern: '(?i)options\((.|\n)*?\)'
+        replacement: ''
+## Set up copies in parallel
+- id: copy_tables
+  sessions:
+  - tasks:
+    - template_id: setup_table_copies
+      replace_regex:
+      - pattern: '(?i)options\((.|\n)*?\)'
+        replacement: ''
+      - pattern: 'SOURCE_TABLE'
+        replacement: 'store_sales'
+      - pattern: 'TARGET_TABLE'
+        replacement: 'store_sales_2'
+  - tasks:
+    - template_id: setup_table_copies
+      replace_regex:
+      - pattern: '(?i)options\((.|\n)*?\)'
+        replacement: ''
+      - pattern: 'SOURCE_TABLE'
+        replacement: 'store_sales'
+      - pattern: 'TARGET_TABLE'
+        replacement: 'store_sales_3'
+  - tasks:
+    - template_id: setup_table_copies
+      replace_regex:
+      - pattern: '(?i)options\((.|\n)*?\)'
+        replacement: ''
+      - pattern: 'SOURCE_TABLE'
+        replacement: 'store_sales'
+      - pattern: 'TARGET_TABLE'
+        replacement: 'store_sales_4'
+  - tasks:
+    - template_id: setup_table_copies
+      replace_regex:
+      - pattern: '(?i)options\((.|\n)*?\)'
+        replacement: ''
+      - pattern: 'SOURCE_TABLE'
+        replacement: 'store_sales'
+      - pattern: 'TARGET_TABLE'
+        replacement: 'store_sales_5'
