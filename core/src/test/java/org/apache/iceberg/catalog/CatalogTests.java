@@ -1778,14 +1778,16 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
 
     catalog.buildTable(TABLE, OTHER_SCHEMA).create();
 
+    final Class<? extends Throwable> expectedException =
+        supportsServerSideRetry() ? AlreadyExistsException.class : CommitFailedException.class;
     Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
     String expectedMessage =
-        supportsServerSideRetry()
-            ? "Requirement failed: table already exists"
-            : "Table already exists";
+            supportsServerSideRetry()
+                    ? "Requirement failed: table already exists"
+                    : "Table already exists";
     Assertions.assertThatThrownBy(create::commitTransaction)
-        .isInstanceOf(AlreadyExistsException.class)
-        .hasMessageStartingWith(expectedMessage);
+            .isInstanceOf(expectedException)
+            .hasMessageStartingWith(expectedMessage);
 
     // validate the concurrently created table is unmodified
     Table table = catalog.loadTable(TABLE);
