@@ -172,6 +172,10 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     return "file:/tmp/ns/table";
   }
 
+  protected boolean supportsConcurrentCreate() {
+    return true;
+  }
+
   @Test
   public void testCreateNamespace() {
     C catalog = catalog();
@@ -1778,16 +1782,21 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
 
     catalog.buildTable(TABLE, OTHER_SCHEMA).create();
 
-    final Class<? extends Throwable> expectedException =
-        supportsServerSideRetry() ? AlreadyExistsException.class : CommitFailedException.class;
+    // concurrent create may fail the commit without finer-grained information
     Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
-    String expectedMessage =
-            supportsServerSideRetry()
-                    ? "Requirement failed: table already exists"
-                    : "Table already exists";
-    Assertions.assertThatThrownBy(create::commitTransaction)
-            .isInstanceOf(expectedException)
-            .hasMessageStartingWith(expectedMessage);
+    if (supportsConcurrentCreate()) {
+      String expectedMessage =
+              supportsServerSideRetry()
+                      ? "Requirement failed: table already exists"
+                      : "Table already exists";
+      Assertions.assertThatThrownBy(create::commitTransaction)
+          .isInstanceOf(AlreadyExistsException.class)
+          .hasMessageStartingWith(expectedMessage);
+    } else {
+      Assertions.assertThatThrownBy(create::commitTransaction)
+          .isInstanceOf(CommitFailedException.class)
+          .hasMessageStartingWith("Cannot commit");
+    }
 
     // validate the concurrently created table is unmodified
     Table table = catalog.loadTable(TABLE);
