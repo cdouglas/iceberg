@@ -227,8 +227,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public boolean setProperties(Namespace namespace, Map<String, String> properties)
       throws NoSuchNamespaceException {
-    final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = CatalogFile.read(catalog);
+    final CatalogFile catalogFile = getCatalogFile();
     try {
       CatalogFile.from(catalogFile).updateProperties(namespace, properties).commit(fileIO);
     } catch (CommitFailedException e) {
@@ -240,14 +239,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public boolean removeProperties(Namespace namespace, Set<String> properties)
       throws NoSuchNamespaceException {
-    CatalogFile catalogFile = getCatalogFile();
-    if (catalogFile.namespaces().contains(namespace)) {
-      return setProperties(
-          namespace,
-          properties.stream().collect(Maps::newHashMap, (m, k) -> m.put(k, null), Map::putAll));
-    } else {
-      throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
-    }
+    return setProperties(
+        namespace,
+        properties.stream().collect(Maps::newHashMap, (m, k) -> m.put(k, null), Map::putAll));
   }
 
   static class FileIOTableOperations extends BaseMetastoreTableOperations {
