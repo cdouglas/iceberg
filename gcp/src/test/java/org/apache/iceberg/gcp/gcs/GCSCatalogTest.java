@@ -134,6 +134,11 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   }
 
   @Override
+  protected boolean supportsConcurrentCreate() {
+    return false;
+  }
+
+  @Override
   protected FileIOCatalog catalog() {
     return catalog;
   }

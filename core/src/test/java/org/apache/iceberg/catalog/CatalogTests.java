@@ -1786,9 +1786,9 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
     if (supportsConcurrentCreate()) {
       String expectedMessage =
-              supportsServerSideRetry()
-                      ? "Requirement failed: table already exists"
-                      : "Table already exists";
+          supportsServerSideRetry()
+              ? "Requirement failed: table already exists"
+              : "Table already exists";
       Assertions.assertThatThrownBy(create::commitTransaction)
           .isInstanceOf(AlreadyExistsException.class)
           .hasMessageStartingWith(expectedMessage);

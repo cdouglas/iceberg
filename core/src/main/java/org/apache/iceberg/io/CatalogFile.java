@@ -196,11 +196,15 @@ public class CatalogFile {
         final AtomicOutputFile outputFile = fileIO.newOutputFile(original.fromFile);
         final Map<Namespace, Map<String, String>> newNamespaces =
             Maps.newHashMap(original.namespaces);
-        merge(newNamespaces, namespaces, (orig, next) -> {
-          Map<String,String> ns_properties = null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
-          merge(ns_properties, next, (x, y) -> y);
-          return ns_properties;
-        });
+        merge(
+            newNamespaces,
+            namespaces,
+            (orig, next) -> {
+              Map<String, String> ns_properties =
+                  null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
+              merge(ns_properties, next, (x, y) -> y);
+              return ns_properties;
+            });
 
         final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
         merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
@@ -208,9 +212,11 @@ public class CatalogFile {
         // TODO need to merge namespace properties
         // TODO not using table versions...
 
-        CatalogFile catalog = new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
+        CatalogFile catalog =
+            new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
         try (OutputStream out =
-            outputFile.createAtomic(catalog.checksum(outputFile.checksum()), catalog::setFromFile)) {
+            outputFile.createAtomic(
+                catalog.checksum(outputFile.checksum()), catalog::setFromFile)) {
           catalog.write(out);
         } catch (IOException e) {
           throw new CommitFailedException(e, "Failed to commit catalog file");
@@ -394,8 +400,10 @@ public class CatalogFile {
 
   private static void writeProperties(DataOutputStream out, Map<String, String> props)
       throws IOException {
-    Map<String,String> writeProps = props.entrySet().stream().filter(e -> e.getValue() != null)
-        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    Map<String, String> writeProps =
+        props.entrySet().stream()
+            .filter(e -> e.getValue() != null)
+            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     out.writeInt(writeProps.size());
     for (Map.Entry<String, String> p : writeProps.entrySet()) {
       out.writeUTF(p.getKey());
