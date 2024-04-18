@@ -31,7 +31,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import org.apache.commons.lang.RandomStringUtils;
+import java.util.UUID;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.gcp.GCPProperties;
@@ -77,7 +77,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @BeforeAll
   public static void initStorage() throws IOException {
-    uniqTestRun = RandomStringUtils.randomAlphabetic(8);
+    uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
     final File credFile =

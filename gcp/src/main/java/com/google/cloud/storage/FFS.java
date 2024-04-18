@@ -25,6 +25,8 @@ import java.util.concurrent.TimeoutException;
 
 // TODO rewrite GCSFileIO using the V2 google-cloud-storage APIs
 public class FFS {
+  private FFS() {}
+
   public static BlobInfo extractFile(WriteChannel channel)
       throws ExecutionException, InterruptedException, TimeoutException {
     StorageWriteChannel downcast = (StorageWriteChannel) channel;

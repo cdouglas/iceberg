@@ -200,10 +200,10 @@ public class CatalogFile {
             newNamespaces,
             namespaces,
             (orig, next) -> {
-              Map<String, String> ns_properties =
+              Map<String, String> nsProps =
                   null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
-              merge(ns_properties, next, (x, y) -> y);
-              return ns_properties;
+              merge(nsProps, next, (x, y) -> y);
+              return nsProps;
             });
 
         final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
