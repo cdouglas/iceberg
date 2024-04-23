@@ -33,7 +33,10 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableOperations;
+import org.apache.iceberg.catalog.BaseCatalogTransaction;
+import org.apache.iceberg.catalog.CatalogTransaction;
 import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.SupportsCatalogTransactions;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
@@ -47,7 +50,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.LocationUtil;
 
 public class FileIOCatalog extends BaseMetastoreCatalog
-    implements Configurable, SupportsNamespaces {
+    implements Configurable, SupportsNamespaces, SupportsCatalogTransactions {
   // TODO audit loadTable in BaseMetastoreCatalog
   // TODO buildTable overridden in BaseMetastoreCatalog?
 
@@ -307,5 +310,12 @@ public class FileIOCatalog extends BaseMetastoreCatalog
         throw new CommitFailedException(e, "Failed to commit metadata for table %s", tableId);
       }
     }
+  }
+
+  // SupportsCatalogTransaction
+
+  @Override
+  public CatalogTransaction createTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    return new BaseCatalogTransaction(this, isolationLevel);
   }
 }

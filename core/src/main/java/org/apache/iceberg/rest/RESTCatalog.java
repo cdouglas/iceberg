@@ -287,6 +287,7 @@ public class RESTCatalog
     return new BaseCatalogTransaction(this, isolationLevel);
   }
 
+  @Override
   public List<TableIdentifier> listViews(Namespace namespace) {
     return viewSessionCatalog.listViews(namespace);
   }
