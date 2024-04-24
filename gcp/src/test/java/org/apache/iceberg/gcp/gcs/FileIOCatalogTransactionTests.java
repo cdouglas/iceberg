@@ -31,7 +31,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import org.apache.commons.lang3.RandomStringUtils;
+import java.util.Random;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTransactionTests;
 import org.apache.iceberg.gcp.GCPProperties;
@@ -75,7 +75,7 @@ public class FileIOCatalogTransactionTests extends CatalogTransactionTests<FileI
 
   @BeforeAll
   public static void initStorage() throws IOException {
-    uniqTestRun = RandomStringUtils.randomAlphabetic(8);
+    uniqTestRun = randomAlphabetic(8);
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
     final File credFile =
@@ -123,5 +123,16 @@ public class FileIOCatalogTransactionTests extends CatalogTransactionTests<FileI
   @Override
   protected FileIOCatalog catalog() {
     return catalog;
+  }
+
+  static final Random random = new Random();
+
+  static String randomAlphabetic(int count) {
+    assert count >= 0;
+    StringBuilder ret = new StringBuilder();
+    for (int i = 0; i < count; ++i) {
+      ret.append((char) ('a' + random.nextInt(26)));
+    }
+    return ret.toString();
   }
 }
