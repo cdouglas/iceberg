@@ -18,7 +18,9 @@
  */
 package org.apache.iceberg.catalog;
 
+import java.util.List;
 import org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 
 public interface SupportsCatalogTransactions {
 
@@ -29,4 +31,10 @@ public interface SupportsCatalogTransactions {
    * @return A new {@link CatalogTransaction}.
    */
   CatalogTransaction createTransaction(IsolationLevel isolationLevel);
+
+  void commitTransaction(List<TableCommit> commits);
+
+  default void commitTransaction(TableCommit... commits) {
+    commitTransaction(ImmutableList.<TableCommit>builder().add(commits).build());
+  }
 }
