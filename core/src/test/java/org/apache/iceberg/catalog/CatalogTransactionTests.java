@@ -19,7 +19,6 @@
 package org.apache.iceberg.catalog;
 
 import static org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel.SERIALIZABLE;
-import static org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel.SNAPSHOT;
 import static org.apache.iceberg.types.Types.NestedField.required;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -102,17 +101,19 @@ public abstract class CatalogTransactionTests<
         .hasMessage("Invalid isolation level: null");
   }
 
-  @Test
-  public void catalogTransactionSupport() {
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void catalogTransactionSupport(CatalogTransaction.IsolationLevel isolationLevel) {
     assertThatThrownBy(
-            () -> new BaseCatalogTransaction(new TestCatalogUtil.TestCatalog(), SERIALIZABLE))
+            () -> new BaseCatalogTransaction(new TestCatalogUtil.TestCatalog(), isolationLevel))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Origin catalog does not support catalog transactions");
   }
 
-  @Test
-  public void multipleCommits() {
-    CatalogTransaction catalogTx = catalog().createTransaction(SERIALIZABLE);
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void multipleCommits(CatalogTransaction.IsolationLevel isolationLevel) {
+    CatalogTransaction catalogTx = catalog().createTransaction(isolationLevel);
     catalogTx.commitTransaction();
     assertThatThrownBy(catalogTx::commitTransaction)
         .isInstanceOf(IllegalStateException.class)
@@ -262,15 +263,18 @@ public abstract class CatalogTransactionTests<
     assertThat(baseMetadataThree).isNotSameAs(((BaseTable) three).operations().refresh());
     assertThat(((BaseTable) three).operations().refresh().schema().findField("data")).isNull();
 
-    if (SERIALIZABLE == isolationLevel) {
-      assertThatThrownBy(catalogTransaction::commitTransaction)
-          .isInstanceOf(ValidationException.class)
-          .hasMessageContaining(
-              "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.c' after it was read");
-    } else {
-      assertThatThrownBy(catalogTransaction::commitTransaction)
-          .isInstanceOf(CommitFailedException.class)
-          .hasMessageContaining("Requirement failed: current schema changed: expected id 0 != 1");
+    switch (isolationLevel) {
+      case SERIALIZABLE:
+        assertThatThrownBy(catalogTransaction::commitTransaction)
+            .isInstanceOf(ValidationException.class)
+            .hasMessageContaining(
+                "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.c' after it was read");
+        break;
+      case SNAPSHOT:
+        assertThatThrownBy(catalogTransaction::commitTransaction)
+            .isInstanceOf(CommitFailedException.class)
+            .hasMessageContaining("Requirement failed: current schema changed: expected id 0 != 1");
+        break;
     }
 
     assertThat(baseMetadataOne).isSameAs(((BaseTable) one).operations().refresh());
@@ -328,15 +332,18 @@ public abstract class CatalogTransactionTests<
     assertThat(baseMetadataTwo).isSameAs(((BaseTable) two).operations().refresh());
     assertThat(baseMetadataThree).isNotSameAs(((BaseTable) three).operations().refresh());
 
-    if (SERIALIZABLE == isolationLevel) {
-      assertThatThrownBy(catalogTransaction::commitTransaction)
-          .isInstanceOf(ValidationException.class)
-          .hasMessageContaining(
-              "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.c' after it was read");
-    } else {
-      assertThatThrownBy(catalogTransaction::commitTransaction)
-          .isInstanceOf(CommitFailedException.class)
-          .hasMessageContaining("Requirement failed: branch main was created concurrently");
+    switch (isolationLevel) {
+      case SERIALIZABLE:
+        assertThatThrownBy(catalogTransaction::commitTransaction)
+            .isInstanceOf(ValidationException.class)
+            .hasMessageContaining(
+                "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.c' after it was read");
+        break;
+      case SNAPSHOT:
+        assertThatThrownBy(catalogTransaction::commitTransaction)
+            .isInstanceOf(CommitFailedException.class)
+            .hasMessageContaining("Requirement failed: branch main was created concurrently");
+        break;
     }
 
     // the third update in the catalog TX fails, so we need to make sure that all changes from the
@@ -410,19 +417,22 @@ public abstract class CatalogTransactionTests<
     // catalog TX should still the version of the table it initially read (with 0 files)
     assertThat(Iterables.size(txCatalog.loadTable(second).newScan().planFiles())).isEqualTo(0);
 
-    if (SERIALIZABLE == isolationLevel) {
-      assertThatThrownBy(catalogTransaction::commitTransaction)
-          .isInstanceOf(ValidationException.class)
-          .hasMessage(
-              "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.b' after it was read");
+    switch (isolationLevel) {
+      case SERIALIZABLE:
+        assertThatThrownBy(catalogTransaction::commitTransaction)
+            .isInstanceOf(ValidationException.class)
+            .hasMessage(
+                "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.b' after it was read");
 
-      assertThat(Iterables.size(catalog().loadTable(first).newScan().planFiles())).isEqualTo(0);
-      assertThat(Iterables.size(catalog().loadTable(second).newScan().planFiles())).isEqualTo(3);
-    } else {
-      catalogTransaction.commitTransaction();
+        assertThat(Iterables.size(catalog().loadTable(first).newScan().planFiles())).isEqualTo(0);
+        assertThat(Iterables.size(catalog().loadTable(second).newScan().planFiles())).isEqualTo(3);
+        break;
+      case SNAPSHOT:
+        catalogTransaction.commitTransaction();
 
-      assertThat(Iterables.size(catalog().loadTable(first).newScan().planFiles())).isEqualTo(2);
-      assertThat(Iterables.size(catalog().loadTable(second).newScan().planFiles())).isEqualTo(3);
+        assertThat(Iterables.size(catalog().loadTable(first).newScan().planFiles())).isEqualTo(2);
+        assertThat(Iterables.size(catalog().loadTable(second).newScan().planFiles())).isEqualTo(3);
+        break;
     }
   }
 
@@ -619,23 +629,26 @@ public abstract class CatalogTransactionTests<
     assertThat(Iterables.size(txCatalog.loadTable(second).newScan().useRef(branch).planFiles()))
         .isEqualTo(1);
 
-    if (SERIALIZABLE == isolationLevel) {
-      assertThatThrownBy(catalogTransaction::commitTransaction)
-          .isInstanceOf(ValidationException.class)
-          .hasMessage(
-              "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.a' after it was read on branch 'branch'");
+    switch (isolationLevel) {
+      case SERIALIZABLE:
+        assertThatThrownBy(catalogTransaction::commitTransaction)
+            .isInstanceOf(ValidationException.class)
+            .hasMessage(
+                "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.a' after it was read on branch 'branch'");
 
-      assertThat(Iterables.size(catalog().loadTable(first).newScan().useRef(branch).planFiles()))
-          .isEqualTo(1);
-      assertThat(Iterables.size(catalog().loadTable(second).newScan().useRef(branch).planFiles()))
-          .isEqualTo(2);
-    } else {
-      catalogTransaction.commitTransaction();
+        assertThat(Iterables.size(catalog().loadTable(first).newScan().useRef(branch).planFiles()))
+            .isEqualTo(1);
+        assertThat(Iterables.size(catalog().loadTable(second).newScan().useRef(branch).planFiles()))
+            .isEqualTo(2);
+        break;
+      case SNAPSHOT:
+        catalogTransaction.commitTransaction();
 
-      assertThat(Iterables.size(catalog().loadTable(first).newScan().useRef(branch).planFiles()))
-          .isEqualTo(2);
-      assertThat(Iterables.size(catalog().loadTable(second).newScan().useRef(branch).planFiles()))
-          .isEqualTo(2);
+        assertThat(Iterables.size(catalog().loadTable(first).newScan().useRef(branch).planFiles()))
+            .isEqualTo(2);
+        assertThat(Iterables.size(catalog().loadTable(second).newScan().useRef(branch).planFiles()))
+            .isEqualTo(2);
+        break;
     }
   }
 
