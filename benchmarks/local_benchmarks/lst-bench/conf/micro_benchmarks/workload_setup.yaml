@@ -60,3 +60,12 @@ phases:
         replacement: 'store_sales'
       - pattern: 'TARGET_TABLE'
         replacement: 'store_sales_5'
+  - tasks:
+      - template_id: setup_table_copies
+        replace_regex:
+          - pattern: '(?i)options\((.|\n)*?\)'
+            replacement: ''
+          - pattern: 'SOURCE_TABLE'
+            replacement: 'store_sales'
+          - pattern: 'TARGET_TABLE'
+            replacement: 'store_sales_6'

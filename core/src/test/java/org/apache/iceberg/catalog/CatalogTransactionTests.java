@@ -44,6 +44,8 @@ import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 public abstract class CatalogTransactionTests<
     C extends SupportsCatalogTransactions & SupportsNamespaces & Catalog> {
@@ -124,17 +126,9 @@ public abstract class CatalogTransactionTests<
         .hasMessage("Invalid isolation level: null");
   }
 
-  @Test
-  public void catalogTxWithSingleOp() {
-    catalogTxWithSingleOp(CatalogTransaction.IsolationLevel.SNAPSHOT);
-  }
-
-  @Test
-  public void catalogTxWithSingleOpWithSerializable() {
-    catalogTxWithSingleOp(SERIALIZABLE);
-  }
-
-  private void catalogTxWithSingleOp(CatalogTransaction.IsolationLevel isolationLevel) {
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void catalogTxWithSingleOp(CatalogTransaction.IsolationLevel isolationLevel) {
     TableIdentifier identifier = TableIdentifier.of("ns", "tx-with-single-op");
     catalog().createNamespace(identifier.namespace());
     catalog().createTable(identifier, SCHEMA, SPEC);
@@ -159,17 +153,9 @@ public abstract class CatalogTransactionTests<
     assertThat(snapshot.summary().get(SnapshotSummary.ADDED_RECORDS_PROP)).isEqualTo("2");
   }
 
-  @Test
-  public void txAgainstMultipleTables() {
-    txAgainstMultipleTables(SNAPSHOT);
-  }
-
-  @Test
-  public void txAgainstMultipleTablesWithSerializable() {
-    txAgainstMultipleTables(SERIALIZABLE);
-  }
-
-  private void txAgainstMultipleTables(CatalogTransaction.IsolationLevel isolationLevel) {
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void txAgainstMultipleTables(CatalogTransaction.IsolationLevel isolationLevel) {
     catalog().createNamespace(Namespace.of("ns"));
 
     List<String> tables = Arrays.asList("a", "b", "c");
@@ -231,17 +217,9 @@ public abstract class CatalogTransactionTests<
     assertThat(three.currentSnapshot().addedDataFiles(three.io())).hasSize(1);
   }
 
-  @Test
-  public void txAgainstMultipleTablesLastOneSchemaConflict() {
-    txAgainstMultipleTablesLastOneSchemaConflict(SNAPSHOT);
-  }
-
-  @Test
-  public void txAgainstMultipleTablesLastOneSchemaConflictWithSerializable() {
-    txAgainstMultipleTablesLastOneSchemaConflict(SERIALIZABLE);
-  }
-
-  private void txAgainstMultipleTablesLastOneSchemaConflict(
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void txAgainstMultipleTablesLastOneSchemaConflict(
       CatalogTransaction.IsolationLevel isolationLevel) {
     catalog().createNamespace(Namespace.of("ns"));
 
@@ -304,17 +282,9 @@ public abstract class CatalogTransactionTests<
     assertThat(((BaseTable) three).operations().refresh().schema().columns()).hasSize(1);
   }
 
-  @Test
-  public void txAgainstMultipleTablesLastOneFails() {
-    txAgainstMultipleTablesLastOneFails(SNAPSHOT);
-  }
-
-  @Test
-  public void txAgainstMultipleTablesLastOneFailsWithSerializable() {
-    txAgainstMultipleTablesLastOneFails(SERIALIZABLE);
-  }
-
-  private void txAgainstMultipleTablesLastOneFails(
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void txAgainstMultipleTablesLastOneFails(
       CatalogTransaction.IsolationLevel isolationLevel) {
     catalog().createNamespace(Namespace.of("ns"));
 
@@ -380,17 +350,9 @@ public abstract class CatalogTransactionTests<
     assertThat(((BaseTable) three).operations().refresh().currentSnapshot()).isEqualTo(snapshot);
   }
 
-  @Test
-  public void schemaUpdateVisibility() {
-    schemaUpdateVisibility(CatalogTransaction.IsolationLevel.SNAPSHOT);
-  }
-
-  @Test
-  public void schemaUpdateVisibilityWithSerializable() {
-    schemaUpdateVisibility(SERIALIZABLE);
-  }
-
-  private void schemaUpdateVisibility(CatalogTransaction.IsolationLevel isolationLevel) {
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void schemaUpdateVisibility(CatalogTransaction.IsolationLevel isolationLevel) {
     Namespace namespace = Namespace.of("test");
     TableIdentifier identifier = TableIdentifier.of(namespace, "table");
 
@@ -422,17 +384,9 @@ public abstract class CatalogTransactionTests<
     assertThat(txCatalog.loadTable(identifier).schema().findField(column)).isNotNull();
   }
 
-  @Test
-  public void readTableAfterLoadTableInsideTx() {
-    readTableAfterLoadTableInsideTx(SNAPSHOT);
-  }
-
-  @Test
-  public void readTableAfterLoadTableInsideTxWithSerializable() {
-    readTableAfterLoadTableInsideTx(SERIALIZABLE);
-  }
-
-  private void readTableAfterLoadTableInsideTx(CatalogTransaction.IsolationLevel isolationLevel) {
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void readTableAfterLoadTableInsideTx(CatalogTransaction.IsolationLevel isolationLevel) {
     catalog().createNamespace(Namespace.of("ns"));
 
     for (String tbl : Arrays.asList("a", "b")) {
@@ -472,17 +426,9 @@ public abstract class CatalogTransactionTests<
     }
   }
 
-  @Test
-  public void concurrentTx() {
-    concurrentTx(SNAPSHOT);
-  }
-
-  @Test
-  public void concurrentTxWithSerializable() {
-    concurrentTx(SERIALIZABLE);
-  }
-
-  private void concurrentTx(CatalogTransaction.IsolationLevel isolationLevel) {
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void concurrentTx(CatalogTransaction.IsolationLevel isolationLevel) {
     TableIdentifier identifier = TableIdentifier.of("ns", "tbl");
     catalog().createNamespace(identifier.namespace());
     catalog().createTable(identifier, SCHEMA);
@@ -594,17 +540,9 @@ public abstract class CatalogTransactionTests<
         .isEqualTo(4);
   }
 
-  @Test
-  public void concurrentTxOnBranch() {
-    concurrentTxOnBranch(SNAPSHOT);
-  }
-
-  @Test
-  public void concurrentTxOnBranchWithSerializable() {
-    concurrentTxOnBranch(SERIALIZABLE);
-  }
-
-  private void concurrentTxOnBranch(CatalogTransaction.IsolationLevel isolationLevel) {
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void concurrentTxOnBranch(CatalogTransaction.IsolationLevel isolationLevel) {
     String branch = "branch";
     TableIdentifier identifier = TableIdentifier.of("ns", "tbl");
 
@@ -648,17 +586,9 @@ public abstract class CatalogTransactionTests<
         .isEqualTo("5");
   }
 
-  @Test
-  public void readTableAfterLoadTableInsideTxOnBranch() {
-    readTableAfterLoadTableInsideTxOnBranch(SNAPSHOT);
-  }
-
-  @Test
-  public void readTableAfterLoadTableInsideTxOnBranchWithSerializable() {
-    readTableAfterLoadTableInsideTxOnBranch(SERIALIZABLE);
-  }
-
-  private void readTableAfterLoadTableInsideTxOnBranch(
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void readTableAfterLoadTableInsideTxOnBranch(
       CatalogTransaction.IsolationLevel isolationLevel) {
     catalog().createNamespace(Namespace.of("ns"));
     String branch = "branch";
@@ -709,17 +639,9 @@ public abstract class CatalogTransactionTests<
     }
   }
 
-  @Test
-  public void txAgainstDifferentBranches() {
-    txAgainstDifferentBranchesWithSerializable(SNAPSHOT);
-  }
-
-  @Test
-  public void txAgainstDifferentBranchesWithSerializable() {
-    txAgainstDifferentBranchesWithSerializable(SERIALIZABLE);
-  }
-
-  private void txAgainstDifferentBranchesWithSerializable(
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void txAgainstDifferentBranchesWithSerializable(
       CatalogTransaction.IsolationLevel isolationLevel) {
     TableIdentifier identifier = TableIdentifier.of("ns", "table");
     catalog().createNamespace(identifier.namespace());

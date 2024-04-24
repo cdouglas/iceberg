@@ -1,5 +1,8 @@
 /* This query scans the leading part of the source store_sales tables until ss_item_sk < X.  The amount of work is independent of the source tables. */
 /* Then it makes a non-conflicting modification, an update when the predicate in line 36 evaluates true otherwise an insert */
+/* update key outside read range when you do an update */
+/* either global in query file, or per-query in parameter file */
+/* doupdate flag: switch between updates/inserts (updates conflict, but inserts do not) */
 MERGE INTO ${catalog}.${database}.${target} target
     USING (
         SELECT
