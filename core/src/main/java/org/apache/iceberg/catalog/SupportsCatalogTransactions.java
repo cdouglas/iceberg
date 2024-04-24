@@ -16,21 +16,17 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.iceberg.io;
+package org.apache.iceberg.catalog;
 
-// TODO using InputFile is imprecise. It should be resolved.
-public interface SupportsAtomicOperations extends FileIO {
+import org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel;
+
+public interface SupportsCatalogTransactions {
+
   /**
-   * Create a new atomic output file that will replace the given input file.
+   * Create a new {@link CatalogTransaction} with the given {@link IsolationLevel}.
    *
-   * @param replace an input file to replace
-   * @return a new atomic output file
+   * @param isolationLevel The isolation level to use.
+   * @return A new {@link CatalogTransaction}.
    */
-  AtomicOutputFile newOutputFile(InputFile replace);
-
-  class CASException extends RuntimeException {
-    public CASException(String message, Exception cause) {
-      super(message, cause);
-    }
-  }
+  CatalogTransaction createTransaction(IsolationLevel isolationLevel);
 }
