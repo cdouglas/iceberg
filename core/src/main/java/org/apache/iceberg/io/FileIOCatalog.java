@@ -340,20 +340,12 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   public void commitTransaction(List<TableCommit> commits) {
     // TableCommit validations check the table UUID and snapshot ref for each table
     // if all validations pass for the current CatalogFile, then attempt atomic replace
-    // TODO load CatalogFile
-    // TODO for each TableCommit, run validations over the particular table version from this file
-    // TODO write its metadata if it validates
-    // TODO record that metadata location in the CatalogFile
-    // TODO attempt to replace the CatalogFile atomically
-
     final CatalogFile current = getCatalogFile();
     final CatalogFile.MutCatalogFile newCatalog = CatalogFile.from(current);
     for (TableCommit commit : commits) {
       final TableIdentifier tableId = commit.identifier();
-      // TODO: should load TableOperations with fixed CatalogFile?
-      // TODO: it would simplify commit, which can use writeNewMetadataIfRequired
+      // use fixed catalog snapshot for validation
       FileIOTableOperations ops = newTableOps(tableId, current);
-      // final TableMetadata currentMetadata = current.metadata(tableId, fileIO);
       final TableMetadata currentMetadata = ops.current();
       commit.requirements().forEach(req -> req.validate(currentMetadata));
 

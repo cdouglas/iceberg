@@ -54,9 +54,6 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.immutables.value.Value;
 
-// !#! Lazily and consistently resolves tables to a particular version. Groups operations by table.
-// !#! BUT assumes a REST server will order and do per-table validations.
-// !#! TODO commitTransaciton
 public class BaseCatalogTransaction implements CatalogTransaction {
   private final Map<TableIdentifier, Transaction> txByTable;
   private final Map<TableRef, TableMetadata> initiallyReadTableMetadataByRef;
@@ -68,7 +65,6 @@ public class BaseCatalogTransaction implements CatalogTransaction {
   public BaseCatalogTransaction(Catalog origin, IsolationLevel isolationLevel) {
     Preconditions.checkArgument(null != origin, "Invalid origin catalog: null");
     Preconditions.checkArgument(null != isolationLevel, "Invalid isolation level: null");
-    // !#! runtime check, b/c Catalog not a subtype of SuportsCatalogTransactions
     Preconditions.checkArgument(
         origin instanceof SupportsCatalogTransactions,
         "Origin catalog does not support catalog transactions");
@@ -224,7 +220,6 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     return TableIdentifier.parse(tableWithCatalog);
   }
 
-  // !#! lazily resolve each table to a consistent version
   public class AsTransactionalCatalog implements Catalog {
     @Override
     public Table loadTable(TableIdentifier identifier) {
@@ -272,15 +267,12 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     }
   }
 
-  // !#! why? to ensure either a TransactionTable or a BaseTable?
   private static TableOperations opsFromTable(Table table) {
     return table instanceof BaseTransaction.TransactionTable
         ? ((BaseTransaction.TransactionTable) table).operations()
         : ((BaseTable) table).operations();
   }
 
-  // !#! consistently resolve to a map in the outer class
-  // !#! note TransactionAL not BaseTransaction.Transaction
   private class TransactionalTable extends BaseTable {
     private final Table table;
 
