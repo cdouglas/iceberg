@@ -52,7 +52,6 @@ import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.apache.iceberg.rest.RESTCatalog;
 import org.immutables.value.Value;
 
 public class BaseCatalogTransaction implements CatalogTransaction {
@@ -66,6 +65,7 @@ public class BaseCatalogTransaction implements CatalogTransaction {
   public BaseCatalogTransaction(Catalog origin, IsolationLevel isolationLevel) {
     Preconditions.checkArgument(null != origin, "Invalid origin catalog: null");
     Preconditions.checkArgument(null != isolationLevel, "Invalid isolation level: null");
+    // !#! runtime check, b/c Catalog not a subtype of SuportsCatalogTransactions
     Preconditions.checkArgument(
         origin instanceof SupportsCatalogTransactions,
         "Origin catalog does not support catalog transactions");
@@ -102,7 +102,7 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       // only commit if there were change
       if (!tableCommits.isEmpty()) {
         // TODO: remove this cast once commitTransaction(..) is defined at the Catalog level
-        ((RESTCatalog) origin).commitTransaction(tableCommits);
+        ((SupportsCatalogTransactions) origin).commitTransaction(tableCommits);
       }
 
       // TODO: we should probably be refreshing metadata from all affected tables after the TX
@@ -140,10 +140,10 @@ public class BaseCatalogTransaction implements CatalogTransaction {
    * initially read.
    */
   private void validateSerializableIsolation() {
-    for (TableRef readTable : initiallyReadTableMetadataByRef.keySet()) {
-      // check all read tables to determine whether they changed outside the catalog
-      // TX after they were initially read on a particular branch
-      if (IsolationLevel.SERIALIZABLE == isolationLevel) {
+    if (IsolationLevel.SERIALIZABLE == isolationLevel) {
+      for (TableRef readTable : initiallyReadTableMetadataByRef.keySet()) {
+        // check all read tables to determine whether they changed outside the catalog
+        // TX after they were initially read on a particular branch
         BaseTable table = (BaseTable) origin.loadTable(readTable.identifier());
         SnapshotRef snapshotRef = table.operations().current().ref(readTable.ref());
         SnapshotRef snapshotRefInsideTx =

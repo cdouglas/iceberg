@@ -18,26 +18,38 @@
  */
 package org.apache.iceberg.io;
 
+import static org.apache.iceberg.TableProperties.COMMIT_MAX_RETRY_WAIT_MS_DEFAULT;
+import static org.apache.iceberg.TableProperties.COMMIT_MIN_RETRY_WAIT_MS_DEFAULT;
+import static org.apache.iceberg.TableProperties.COMMIT_NUM_RETRIES_DEFAULT;
+import static org.apache.iceberg.TableProperties.COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.BaseMetastoreCatalog;
 import org.apache.iceberg.BaseMetastoreTableOperations;
+import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.BaseTransaction;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.CatalogUtil;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableOperations;
+import org.apache.iceberg.Transaction;
+import org.apache.iceberg.Transactions;
 import org.apache.iceberg.catalog.BaseCatalogTransaction;
 import org.apache.iceberg.catalog.CatalogTransaction;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsCatalogTransactions;
 import org.apache.iceberg.catalog.SupportsNamespaces;
+import org.apache.iceberg.catalog.TableCommit;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
@@ -48,6 +60,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Strings;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.LocationUtil;
+import org.apache.iceberg.util.Tasks;
 
 public class FileIOCatalog extends BaseMetastoreCatalog
     implements Configurable, SupportsNamespaces, SupportsCatalogTransactions {
@@ -61,7 +74,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   private SupportsAtomicOperations fileIO;
   private final Map<String, String> catalogProperties;
 
-  public FileIOCatalog() {
+  @SuppressWarnings("unused") // reflection cstr
+  FileIOCatalog() {
     // XXX Isn't using Maps.newHashMap() deprecated after Java7?
     catalogProperties = Maps.newHashMap();
   }
@@ -94,7 +108,6 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     super.initialize(name, properties);
     Preconditions.checkNotNull(properties, "Properties are required");
     catalogProperties.putAll(properties);
-    String uri = properties.get(CatalogProperties.URI);
 
     if (name != null) {
       catalogName = name;
@@ -312,10 +325,143 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     }
   }
 
+  static class PartialFileIOTableOperations extends FileIOTableOperations {
+
+    private String metadataLocation;
+    private TableMetadata partialCommit;
+
+    PartialFileIOTableOperations(
+        TableIdentifier tableId, String catalogLocation, SupportsAtomicOperations fileIO) {
+      super(tableId, catalogLocation, fileIO);
+    }
+
+    @Override
+    public String currentMetadataLocation() {
+      return metadataLocation;
+    }
+
+    @Override
+    public void doRefresh() {
+      // do nothing
+    }
+
+    @Override
+    public TableMetadata current() {
+      return partialCommit;
+    }
+
+    @Override
+    public void doCommit(TableMetadata base, TableMetadata metadata) {
+      // always succeeds
+      assert base != null;
+      metadataLocation = writeNewMetadataIfRequired(false, metadata);
+      partialCommit = metadata;
+    }
+  }
+
   // SupportsCatalogTransaction
+
+  @Override
+  public void commitTransaction(List<TableCommit> commits) {
+    Map<TableIdentifier, String> tableTxnMetadata = Maps.newHashMap();
+    // for each TableCommit, find the TableMetadata associated w/ its TableOperations
+    List<Transaction> transactions = Lists.newArrayList();
+    // OK... this creates separate TableOperations for each commit?
+    for (TableCommit commit : commits) {
+      Table table = loadTable(commit.identifier());
+      if (!(table instanceof BaseTable)) {
+        throw new IllegalStateException("Table is not a BaseTable: " + table);
+      }
+      BaseTable baseTable = (BaseTable) table;
+      Transaction transaction =
+          Transactions.newTransaction(commit.identifier().toString(), baseTable.operations());
+      transactions.add(transaction);
+      BaseTransaction.TransactionTable txTable =
+          (BaseTransaction.TransactionTable) transaction.table();
+      //    perform validations.
+      // TODO wrap operations; write to new location, or at least return TableMetadata, but do NOT
+      // update catalog
+      final String metadataLocation = commit(txTable.operations(), commit);
+      tableTxnMetadata.put(commit.identifier(), metadataLocation);
+    }
+    try {
+      // all validations passed; write a new metadata files and stash them
+      CatalogFile.MutCatalogFile newCatalog = CatalogFile.from(null);
+      for (Map.Entry<TableIdentifier, String> entry : tableTxnMetadata.entrySet()) {
+        newCatalog.updateTable(entry.getKey(), entry.getValue());
+      }
+      newCatalog.commit(fileIO);
+    } catch (SupportsAtomicOperations.CASException e) {
+      throw new CommitFailedException(e, "Failed to commit metadata for multi-table commit");
+    }
+    // TODO multi-table create?
+    // for all new metadata files, update the CatalogFile
+    // commit
+  }
+
+  // copied from RESTCatalogAdapter
+  static String commit(TableOperations ops, TableCommit commit) {
+    final AtomicBoolean isRetry = new AtomicBoolean(false);
+    try {
+      Tasks.foreach(ops)
+          .retry(COMMIT_NUM_RETRIES_DEFAULT)
+          .exponentialBackoff(
+              COMMIT_MIN_RETRY_WAIT_MS_DEFAULT,
+              COMMIT_MAX_RETRY_WAIT_MS_DEFAULT,
+              COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT,
+              2.0 /* exponential */)
+          .onlyRetryOn(CommitFailedException.class)
+          .run(
+              taskOps -> {
+                TableMetadata base = isRetry.get() ? taskOps.refresh() : taskOps.current();
+                isRetry.set(true);
+
+                // validate requirements
+                // try {
+                commit.requirements().forEach(requirement -> requirement.validate(base));
+                // } catch (CommitFailedException e) {
+                //   // wrap and rethrow outside of tasks to avoid unnecessary retry
+                //   throw new ValidationFailureException(e);
+                // }
+
+                // apply changes
+                TableMetadata.Builder metadataBuilder = TableMetadata.buildFrom(base);
+                commit.updates().forEach(update -> update.applyTo(metadataBuilder));
+
+                TableMetadata updated = metadataBuilder.build();
+                if (updated.changes().isEmpty()) {
+                  // do not commit if the metadata has not changed
+                  return;
+                }
+
+                // commit
+                // TODO need partialCommit?
+                taskOps.commit(base, updated);
+              });
+
+    } catch (ValidationFailureException e) {
+      throw e.wrapped();
+    }
+    // this is gross. there must be a cleaner way to implement partial commit.
+    return ((PartialFileIOTableOperations) ops).currentMetadataLocation();
+  }
 
   @Override
   public CatalogTransaction createTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
     return new BaseCatalogTransaction(this, isolationLevel);
+  }
+
+  // could use to avoid retry on failed validation?
+  private static class ValidationFailureException extends RuntimeException {
+    private final CommitFailedException wrapped;
+
+    private ValidationFailureException(CommitFailedException cause) {
+      super(cause);
+      this.wrapped = cause;
+    }
+
+    public CommitFailedException wrapped() {
+      return wrapped;
+    }
   }
 }
