@@ -18,32 +18,21 @@
  */
 package org.apache.iceberg.io;
 
-import static org.apache.iceberg.TableProperties.COMMIT_MAX_RETRY_WAIT_MS_DEFAULT;
-import static org.apache.iceberg.TableProperties.COMMIT_MIN_RETRY_WAIT_MS_DEFAULT;
-import static org.apache.iceberg.TableProperties.COMMIT_NUM_RETRIES_DEFAULT;
-import static org.apache.iceberg.TableProperties.COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.BaseMetastoreCatalog;
 import org.apache.iceberg.BaseMetastoreTableOperations;
-import org.apache.iceberg.BaseTable;
-import org.apache.iceberg.BaseTransaction;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.CatalogUtil;
-import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableOperations;
-import org.apache.iceberg.Transaction;
-import org.apache.iceberg.Transactions;
 import org.apache.iceberg.catalog.BaseCatalogTransaction;
 import org.apache.iceberg.catalog.CatalogTransaction;
 import org.apache.iceberg.catalog.Namespace;
@@ -60,7 +49,6 @@ import org.apache.iceberg.relocated.com.google.common.base.Strings;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.LocationUtil;
-import org.apache.iceberg.util.Tasks;
 
 public class FileIOCatalog extends BaseMetastoreCatalog
     implements Configurable, SupportsNamespaces, SupportsCatalogTransactions {
@@ -179,6 +167,10 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     return new FileIOTableOperations(tableIdentifier, catalogLocation, fileIO);
   }
 
+  FileIOTableOperations newTableOps(TableIdentifier tableIdentifier, CatalogFile catalogFile) {
+    return new FileIOTableOperations(tableIdentifier, catalogLocation, fileIO, catalogFile);
+  }
+
   @Override
   protected String defaultWarehouseLocation(TableIdentifier tableIdentifier) {
     return String.join(
@@ -268,9 +260,22 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
     FileIOTableOperations(
         TableIdentifier tableId, String catalogLocation, SupportsAtomicOperations fileIO) {
+      this(tableId, catalogLocation, fileIO, null);
+    }
+
+    FileIOTableOperations(
+        TableIdentifier tableId,
+        String catalogLocation,
+        SupportsAtomicOperations fileIO,
+        CatalogFile catalogFile) {
       this.fileIO = fileIO;
       this.tableId = tableId;
       this.catalogLocation = catalogLocation;
+      this.lastCatalogFile = catalogFile;
+      if (catalogFile != null) {
+        updateVersionAndMetadata(catalogFile.version(tableId), catalogFile.location(tableId));
+        disableRefresh();
+      }
     }
 
     @Override
@@ -309,10 +314,14 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       }
     }
 
+    String writeUpdateMetadata(boolean isCreate, TableMetadata metadata) {
+      return writeNewMetadataIfRequired(isCreate, metadata);
+    }
+
     @Override
     public void doCommit(TableMetadata base, TableMetadata metadata) {
       final boolean isCreate = null == base;
-      final String newMetadataLocation = writeNewMetadataIfRequired(isCreate, metadata);
+      final String newMetadataLocation = writeUpdateMetadata(isCreate, metadata);
       try (SupportsAtomicOperations io = io()) {
         if (null == base) {
           CatalogFile.from(lastCatalogFile).createTable(tableId, newMetadataLocation).commit(io);
@@ -325,143 +334,47 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     }
   }
 
-  static class PartialFileIOTableOperations extends FileIOTableOperations {
-
-    private String metadataLocation;
-    private TableMetadata partialCommit;
-
-    PartialFileIOTableOperations(
-        TableIdentifier tableId, String catalogLocation, SupportsAtomicOperations fileIO) {
-      super(tableId, catalogLocation, fileIO);
-    }
-
-    @Override
-    public String currentMetadataLocation() {
-      return metadataLocation;
-    }
-
-    @Override
-    public void doRefresh() {
-      // do nothing
-    }
-
-    @Override
-    public TableMetadata current() {
-      return partialCommit;
-    }
-
-    @Override
-    public void doCommit(TableMetadata base, TableMetadata metadata) {
-      // always succeeds
-      assert base != null;
-      metadataLocation = writeNewMetadataIfRequired(false, metadata);
-      partialCommit = metadata;
-    }
-  }
-
   // SupportsCatalogTransaction
 
   @Override
   public void commitTransaction(List<TableCommit> commits) {
-    Map<TableIdentifier, String> tableTxnMetadata = Maps.newHashMap();
-    // for each TableCommit, find the TableMetadata associated w/ its TableOperations
-    List<Transaction> transactions = Lists.newArrayList();
-    // OK... this creates separate TableOperations for each commit?
+    // TableCommit validations check the table UUID and snapshot ref for each table
+    // if all validations pass for the current CatalogFile, then attempt atomic replace
+    // TODO load CatalogFile
+    // TODO for each TableCommit, run validations over the particular table version from this file
+    // TODO write its metadata if it validates
+    // TODO record that metadata location in the CatalogFile
+    // TODO attempt to replace the CatalogFile atomically
+
+    final CatalogFile current = getCatalogFile();
+    final CatalogFile.MutCatalogFile newCatalog = CatalogFile.from(current);
     for (TableCommit commit : commits) {
-      Table table = loadTable(commit.identifier());
-      if (!(table instanceof BaseTable)) {
-        throw new IllegalStateException("Table is not a BaseTable: " + table);
+      final TableIdentifier tableId = commit.identifier();
+      // TODO: should load TableOperations with fixed CatalogFile?
+      // TODO: it would simplify commit, which can use writeNewMetadataIfRequired
+      FileIOTableOperations ops = newTableOps(tableId, current);
+      // final TableMetadata currentMetadata = current.metadata(tableId, fileIO);
+      final TableMetadata currentMetadata = ops.current();
+      commit.requirements().forEach(req -> req.validate(currentMetadata));
+
+      TableMetadata.Builder newMetadataBuilder = TableMetadata.buildFrom(currentMetadata);
+      commit.updates().forEach(update -> update.applyTo(newMetadataBuilder));
+      final TableMetadata newMetadata = newMetadataBuilder.build();
+      if (newMetadata.changes().isEmpty()) {
+        continue;
       }
-      BaseTable baseTable = (BaseTable) table;
-      Transaction transaction =
-          Transactions.newTransaction(commit.identifier().toString(), baseTable.operations());
-      transactions.add(transaction);
-      BaseTransaction.TransactionTable txTable =
-          (BaseTransaction.TransactionTable) transaction.table();
-      //    perform validations.
-      // TODO wrap operations; write to new location, or at least return TableMetadata, but do NOT
-      // update catalog
-      final String metadataLocation = commit(txTable.operations(), commit);
-      tableTxnMetadata.put(commit.identifier(), metadataLocation);
+      final String newLocation = ops.writeUpdateMetadata(false, newMetadata);
+      newCatalog.updateTable(tableId, newLocation);
     }
     try {
-      // all validations passed; write a new metadata files and stash them
-      CatalogFile.MutCatalogFile newCatalog = CatalogFile.from(null);
-      for (Map.Entry<TableIdentifier, String> entry : tableTxnMetadata.entrySet()) {
-        newCatalog.updateTable(entry.getKey(), entry.getValue());
-      }
       newCatalog.commit(fileIO);
     } catch (SupportsAtomicOperations.CASException e) {
       throw new CommitFailedException(e, "Failed to commit metadata for multi-table commit");
     }
-    // TODO multi-table create?
-    // for all new metadata files, update the CatalogFile
-    // commit
-  }
-
-  // copied from RESTCatalogAdapter
-  static String commit(TableOperations ops, TableCommit commit) {
-    final AtomicBoolean isRetry = new AtomicBoolean(false);
-    try {
-      Tasks.foreach(ops)
-          .retry(COMMIT_NUM_RETRIES_DEFAULT)
-          .exponentialBackoff(
-              COMMIT_MIN_RETRY_WAIT_MS_DEFAULT,
-              COMMIT_MAX_RETRY_WAIT_MS_DEFAULT,
-              COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT,
-              2.0 /* exponential */)
-          .onlyRetryOn(CommitFailedException.class)
-          .run(
-              taskOps -> {
-                TableMetadata base = isRetry.get() ? taskOps.refresh() : taskOps.current();
-                isRetry.set(true);
-
-                // validate requirements
-                // try {
-                commit.requirements().forEach(requirement -> requirement.validate(base));
-                // } catch (CommitFailedException e) {
-                //   // wrap and rethrow outside of tasks to avoid unnecessary retry
-                //   throw new ValidationFailureException(e);
-                // }
-
-                // apply changes
-                TableMetadata.Builder metadataBuilder = TableMetadata.buildFrom(base);
-                commit.updates().forEach(update -> update.applyTo(metadataBuilder));
-
-                TableMetadata updated = metadataBuilder.build();
-                if (updated.changes().isEmpty()) {
-                  // do not commit if the metadata has not changed
-                  return;
-                }
-
-                // commit
-                // TODO need partialCommit?
-                taskOps.commit(base, updated);
-              });
-
-    } catch (ValidationFailureException e) {
-      throw e.wrapped();
-    }
-    // this is gross. there must be a cleaner way to implement partial commit.
-    return ((PartialFileIOTableOperations) ops).currentMetadataLocation();
   }
 
   @Override
   public CatalogTransaction createTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
     return new BaseCatalogTransaction(this, isolationLevel);
-  }
-
-  // could use to avoid retry on failed validation?
-  private static class ValidationFailureException extends RuntimeException {
-    private final CommitFailedException wrapped;
-
-    private ValidationFailureException(CommitFailedException cause) {
-      super(cause);
-      this.wrapped = cause;
-    }
-
-    public CommitFailedException wrapped() {
-      return wrapped;
-    }
   }
 }

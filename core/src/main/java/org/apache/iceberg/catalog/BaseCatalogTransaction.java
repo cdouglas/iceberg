@@ -54,6 +54,9 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.immutables.value.Value;
 
+// !#! Lazily and consistently resolves tables to a particular version. Groups operations by table.
+// !#! BUT assumes a REST server will order and do per-table validations.
+// !#! TODO commitTransaciton
 public class BaseCatalogTransaction implements CatalogTransaction {
   private final Map<TableIdentifier, Transaction> txByTable;
   private final Map<TableRef, TableMetadata> initiallyReadTableMetadataByRef;
@@ -83,9 +86,7 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     try {
       // write skew is not possible in read-only transactions, so only perform that check if there
       // were any pending updates
-      if (hasUpdates()) {
-        validateSerializableIsolation();
-      }
+      validateSerializableIsolation();
 
       List<TableCommit> tableCommits =
           txByTable.entrySet().stream()
@@ -139,8 +140,8 @@ public class BaseCatalogTransaction implements CatalogTransaction {
    * branch's snapshot is available, we check whether {@link TableMetadata} changed after it was
    * initially read.
    */
-  private void validateSerializableIsolation() {
-    if (IsolationLevel.SERIALIZABLE == isolationLevel) {
+  protected void validateSerializableIsolation() {
+    if (IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()) {
       for (TableRef readTable : initiallyReadTableMetadataByRef.keySet()) {
         // check all read tables to determine whether they changed outside the catalog
         // TX after they were initially read on a particular branch
@@ -223,6 +224,7 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     return TableIdentifier.parse(tableWithCatalog);
   }
 
+  // !#! lazily resolve each table to a consistent version
   public class AsTransactionalCatalog implements Catalog {
     @Override
     public Table loadTable(TableIdentifier identifier) {
@@ -270,12 +272,15 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     }
   }
 
+  // !#! why? to ensure either a TransactionTable or a BaseTable?
   private static TableOperations opsFromTable(Table table) {
     return table instanceof BaseTransaction.TransactionTable
         ? ((BaseTransaction.TransactionTable) table).operations()
         : ((BaseTable) table).operations();
   }
 
+  // !#! consistently resolve to a map in the outer class
+  // !#! note TransactionAL not BaseTransaction.Transaction
   private class TransactionalTable extends BaseTable {
     private final Table table;
 

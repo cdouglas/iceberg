@@ -35,6 +35,8 @@ import java.util.stream.Collectors;
 import java.util.zip.CheckedOutputStream;
 import java.util.zip.Checksum;
 import org.apache.commons.io.output.NullOutputStream;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -289,6 +291,14 @@ public class CatalogFile {
   public String location(TableIdentifier table) {
     final TableInfo info = fqti.get(table);
     return info != null ? info.location : null;
+  }
+
+  public TableMetadata metadata(TableIdentifier tableName, SupportsAtomicOperations fileIO) {
+    final TableInfo info = fqti.get(tableName);
+    if (null == info) {
+      return null;
+    }
+    return TableMetadataParser.read(fileIO, info.location);
   }
 
   public int version(TableIdentifier table) {
