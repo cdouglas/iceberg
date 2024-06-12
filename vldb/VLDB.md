@@ -27,12 +27,12 @@ However, these limitations are key to the success of LSTs. Large datasets are no
 LSTs occupy a dual role, both as the unit of atomicity for data lakes and also as an export format for OLAP data warehouses. A traditional DW not only avoids oprational challenges LSTs introduce[^2], it vastly improves performance by coordinating updates for running queries in services. To close the gap, recent proposals pull more functionality from LST libraries into a more capable `Catalog` service, characterizing this as the evolution of LSTs- which provide scalable, atomic operations on storage- toward full-fledged data warehouses.
 
 <div style="text-align: center;">
-  <img src="hive_arch.png" alt="Iceberg Layout" width="70%">
+  <img src="hive_arch.png" alt="Iceberg Layout" width="60%">
 </div>
 
 This recreates the ecosystem from which LSTs emerged. Specifically, Apache Hive was the ur-framework for SQL on unstructed data in the Apache Hadoop ecosystem. Integration with Hive components and its vestigial legacy semantics was onerous and impractical not only for alternative SQL engines, but also for simple applications, utilities, and fundamental operations chores like backup and restore. LST formats decoupled these from the Hive stack, which also removed the layers of indirection necessary for access control (`HiveServer2` compiles queries and issues keys to decrypt columns), coordination (`Hive Metastore` tracks running queries and coordinates compaction), and cached execution (`LLAP` caches table data and provides consistent query results). It is not obvious that "this time will be different", and the integration challenges and vendor lock-in will not also reappear.
 
-Is it necessary to lift LSTs from storage to support the next generation of data lake workloads? Coordination through storage will always be slower, but not all LST coordination is necessary or uniform. The the narrow storage API has helped LSTs become ubiquitous, but the underlying formats can remain compatible even if the protocols updating them are customized to the storage substrate. Many scalability bottlenecks can be resolved not by rebuilding the previous generation of data lakes, but by embracing interoperability and the separation of concerns that motivated LSTs.
+Is it necessary to lift LSTs from storage to support the next generation of data lake workloads? Coordination through storage will always be slower, but not all LST coordination is necessary or uniform. The narrow storage API has helped LSTs become ubiquitous, but the underlying formats can remain compatible even if the protocols updating them are customized to the storage substrate. Many scalability bottlenecks can be resolved not by rebuilding the previous generation of data lakes, but by embracing interoperability and the separation of concerns that motivated LSTs.
 
 # Paper Outline
 
@@ -131,10 +131,12 @@ flowchart LR
 | Workload | Concern |
 |---------|----------|
 | Uniform Access      | Storing all data in the same tier misses opportunities to save on cost for infrequently accessed data, distinguish between data landing in the LST vs historical data, and does not adapt to query patterns. |
-| Ingest vs Query     |  |
-| Fixed Height        | LSTs have a fixed height. |
-| Write Amplification | LSTs have a low write amplification. |
-| False Sharing       | LSTs have a low false sharing. |
+| Fixed Height        | LST formats are the same height, regardless of the size of the table [^3]. As tables get larger, conflicts need to rewrite larger metadata objects even for false conflicts. Increasing the height of the table includes more round trips to the store. |
+| Write Amplification | Object immutability requires that updates be written separately and merged with base data either as part of the transaction or as a background activity. Rewriting data and metadata incurs avoidable overheads and costs. |
+| False Sharing       | Storing lists in immutable data structures requires re-merging on conflicts. Often(?) these conflicts are spurious. |
+| Ingest vs Query     | New data can be blindly written into tables, as ingest often need not block running queries. Treating this uniformly challenges LST design. |
+
+<!-- challenges design? wtf are you even saying? -->
 
 </div>
 
@@ -142,21 +144,47 @@ flowchart LR
 
 ### Append
 
-Object immutability vastly simplifies replication, but it also requires that any updated data be rewritten elsewhere. This has a modest overhead for writing delta files- small objects that supplement the base data- but incurs a read penalty as objects must be merged on read.
+Object immutability vastly simplifies replication, but it also requires that any updated data be rewritten elsewhere. This has a modest overhead for writing delta files- small objects that supplement the base data- but incurs a read penalty as objects must be merged on read. The `append` operation offers opportunities at every logical level to reduce write amplification and (potentially) increase concurrency.
 
-The `append` operation offers opportunities at every logical level to reduce write amplification and (potentially) increase concurrency. For example, data files like ORC and Parquet include a footer that contains metadata and pointers back into the object, identifying the offets of active regions. These regions do not need to be contiguous, so one could write a new Parquet row group ("stripe" in ORC) that replaces only the row group and writes a new footer, retaining all the existing data. If existing snapshots include the length (i.e., the offset for the old footer), then one can replace only the updated row groups. Since ORC and Parquet are column-oriented, it may be possible to update only the attributes that were updated[^1].
+#### Data files
+
+Data files like ORC and Parquet include a footer that contains metadata and pointers back into the object, identifying the offets of active regions. These regions do not need to be contiguous, so one could write a new Parquet row group ("stripe" in ORC) that replaces only the row group and writes a new footer, retaining all the existing data. If existing snapshots include the length (i.e., the offset for the old footer), then one can replace only the updated row groups. Since ORC and Parquet are column-oriented, it may be possible to update only the attributes that were updated[^1] and use offsets into the original stripe.
 
 ![Parquet Layout](FileLayout.gif)
 
-Concurrent `append` operations could leave uncollectable garbage interleaved with active data, if the transaction fails. This could be mitigated by using object leases to lock the object, so concurrent updates are written to delta files.
+Concurrent `append` operations could leave uncollectable garbage interleaved with active data if the transaction fails. This could be mitigated by using object leases to lock the object, so concurrent updates are written to delta files. Since no metadata contains the appended data, is is not visible in LST snapshots and will be eliminated during compactions.
+
+#### Manifests
+
+Manifest lists and Manifest Files both contain pointers to other objects. Since these cannot be updated in place, conflicts to unrelated partitions of the table require a merge operation. This could be avoided using a similar technique to data files, but since manifests often(?) only update a fraction of their referants, appending the changes and inferring the order (or exclusion) from the parent could reduce write amplification.
+
+#### Catalog
+
+Pointer swaps in the `Catalog` create high conflict rates. However, blind appends provide an order for committing transactions as a crude log. Under high contention, readers could reach a deterministic decision about the state of every table in the `Catalog`; each append includes a precondition for the swap, which can be interleaved. Combined with the compare-and-swap operation and/or object leases, periodic compaction could provent the `Catalog` object from becoming too large.
 
 ### Cache Paths
 
+Two paths are traversed by LST queries. The first is the path from the `Catalog` to data files. The second is the deterministic merge of files on read.
+
+#### Catalog Path
+
+As in FileSystems resolving inodes, LST paths are crabbed by readers resolving data. Caches could reduce the RTT penalty by caching full paths in the working set from the root. Validation of the path could be asynchronous if the hints are written into metadata, or even deferred to query validation (when changes to metadata must be examined, anyway).
+
+#### Merge Path
+
+To avoid write amplification from CoW objects, deletes and inserts are often written as separate files and associated with the base in a manifest. Merging these files on read follows the same sequence for every reader in a range, including skipping records. Similar to NoDB, readers could leave artifacts that describe the merge and help subsequent readers avoid the same work. To avoid updating manifests, these supplementary data could be referenced in object metadata (GCP) or appended (Azure).
+
 ### Object Lambda
 
-# Storage ideas
+Unconventionally (and kind of cheating), one could intercept `GET` requests to the `Catalog` and merge events from a FIFO queue to deterministically generate its state. In effect, readers would merge their state with "committed" updates by proxy. Successful writers would promote their own updates with other, non-conflicting table updates.
 
-The paper identifies opportunities to use existing object store features for LSTs. What other features could be useful? Other than implementing transactions.
+This could be extended to files beyond the `Catalog`, particularly metadata files.
+
+# Appendix
+
+## Storage ideas
+
+The paper identifies opportunities to use existing object store features for LSTs. What other features could be useful?
 
 * TTL for moving data between tiers (surely this already exists? At least a LFU migration policy)
 * Multi-part uploads can preserve boundaries (e.g., of row groups). Reference-counted segments could reduce duplication and write amplification.
@@ -166,3 +194,5 @@ The paper identifies opportunities to use existing object store features for LST
 [^1]: Space could be saved by making all offsets relative to the row group and/or limiting the range. If these formats made those optimizations, then it would be more difficult (or impossible) to avoid rewriting the row group. Right now, the independence of column dictionaries can produces files that are too large, but for our purposes that could be an asset (avoiding a dependency between the old and replacement row group). Parquet and ORC are now considered last-gen, so we hope to motivate future formats to admit this optimization.
 
 [^2]: The paper will be more explicit about the operational challenges LSTs introduce. For example, the client-driven update model is a source of bugs in commit logic, which are painful to extinguish in the wild. No required integration of new engines means one doesn't know what's updating the table.
+
+[^3]: Iceberg certainly. Delta/Hudi?
