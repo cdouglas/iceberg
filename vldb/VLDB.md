@@ -180,6 +180,14 @@ Unconventionally (and kind of cheating), one could intercept `GET` requests to t
 
 This could be extended to files beyond the `Catalog`, particularly metadata files.
 
+# Experiments
+
+1. **Cached resolution of paths**. Measure the RTT penalty for resolving paths in the `Catalog` and data files. Measure the improvement from caching paths in the working set.
+2. **Append**. Measure the write amplification from rewriting data files, manifests, and the `Catalog`. Measure the cost of `append` + compaction with different policies compared to CAS. Probably not on the actual data, but on synthetic objects of varying size.
+3. **Object leases** Probably not a separate experiment? As a way to make high contention less problematic for CAS and `append` if it needs it.
+4. **Object Lambda**. Measure the improvement in read latency from merging updates on read. Measure the cost of maintaining a FIFO queue of updates. More a POC for S3, since it doesn't support CAS, but could also implement it on other platforms.
+5. **YCSB Catalog**. See if Azure is as parsimonious with single-object writes as GCP.
+
 # Appendix
 
 ## Storage ideas
