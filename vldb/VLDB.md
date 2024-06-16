@@ -8,7 +8,7 @@ These assumptions are too pessimistic. Object stores are more capable than this 
 
 A LST loosely fits some classic definitions of a database (Gray, 1975):
 
-> We assume the data base consists of a **collection of records** and **constraints defined on these records**. There are physical constraints (ex: in a list of records, if a record A points to record B then record B ust exist) as well as logical constraints (ex: conservation of money in a bank checking account application). _When all such constraints are satisfied the data base is said to be consistent._
+> We assume the data base consists of a **collection of records** and **constraints defined on these records**. There are physical constraints (ex: in a list of records, if a record A points to record B then record B must exist) as well as logical constraints (ex: conservation of money in a bank checking account application). _When all such constraints are satisfied the data base is said to be consistent._
 >
 > A transaction is a series of accesses (for read or write operations) to the data base which, applied to a consistent data base, will produce a consistent data base. During the execution of a transaction, the **data base may be temporarily inconsistent**. The programs used to perform the transactions assume that they "see" a consistent data base.
 
@@ -22,9 +22,9 @@ While this has led some to describe LSTs as "the bottom half of a database", thi
 
 More precisely, an LST is a set of protocols and formats to read an update a collection of records atomically. It effects this using the aforementioned pointer swap in the `Catalog`, which does not even require that the updates are visible in the underlying store, but that they will eventually exist.
 
-However, these limitations are key to the success of LSTs. Large datasets are not only trivial to replicate, they can be queried _and updated by multiple engines_, concurrently. Integreation does not require reasoning about interactions among engines, or even specifying which engines are in use. **An LST allows engines to share data without requiring that they share state**. Consequently, the features LSTs support- a common type system, schema evolution, conventions for statistics- are the subset of database features that facilitate interoperability.
+However, these limitations are key to the success of LSTs. Large datasets are not only trivial to replicate, they can be queried _and updated by multiple engines_, concurrently. Integration does not require reasoning about interactions among engines, or even specifying which engines are in use. **An LST allows engines to share data without requiring that they share state**. Consequently, the features LSTs support- a common type system, schema evolution, conventions for statistics - are the subset of database features that facilitate interoperability.
 
-LSTs occupy a dual role, both as the unit of atomicity for data lakes and also as an export format for OLAP data warehouses. A traditional DW not only avoids oprational challenges LSTs introduce[^2], it vastly improves performance by coordinating updates for running queries in services. To close the gap, recent proposals pull more functionality from LST libraries into a more capable `Catalog` service, characterizing this as the evolution of LSTs- which provide scalable, atomic operations on storage- toward full-fledged data warehouses.
+LSTs occupy a dual role, both as the unit of atomicity for data lakes and also as an export format for OLAP data warehouses. A traditional DW not only avoids oprational challenges LSTs introduce[^2], it vastly improves performance by coordinating updates for running queries in services. To close the gap, recent proposals pull more functionality from LST libraries into a more capable `Catalog` service, characterizing this as the evolution of LSTs- which provide scalable, atomic operations on storage - toward full-fledged data warehouses.
 
 <div style="text-align: center;">
   <img src="hive_arch.png" alt="Iceberg Layout" width="60%">
@@ -111,14 +111,14 @@ flowchart LR
 |-------|---------|
 | _Heterogeneous Storage_ | LSTs ingest data in the same storage as archival data. Opportunities to store data in different tiers could improve performance for frequently accessed data and lower costs for infrequently accessed data. |
 | _Append_                | The catalog, metadata, and data files are rewritten during compactions and normal operation. Often(?) updates are much smaller than what they invalidate. [Detail](#append) |
-| _Cache paths_           | Traversal of object graphs incurs a RTT penalty for each node in a path. Either a small service that caches paths- LRC, LRU, etc.-, writing downstream paths in the object metadata, or serializing the traversal of immutable data could save the O(h) RTT penalty on access. [Detail](#cache-paths)|
+| _Cache paths_           | Traversal of object graphs incurs a RTT penalty for each node in a path. Either a small service that caches paths- LRC, LRU, etc., writing downstream paths in the object metadata, or serializing the traversal of immutable data could save the O(h) RTT penalty on access. [Detail](#cache-paths)|
 | _Partition Catalog_      | If transactions rarely (or never) span some tables, then a `Catalog` could be multiple objects updated independently. Cross-catalog transactions could be coordinated using leases and/or continuations. |
-| _Partition Table_       | The `Catalog` maintains only one pointer for the head of each table. If the `Catalog` supports atomic replacement of multiple pointers- i.e., multi-table transactions- then one could also reduce false sharing within a table by maintaining multiple head pointers to partitions of the table. This could also reduce subsequent write amplification caused by rewriting merged metadata. |
-| _Partition Attributes_  | Often(?) only some attributes are updated within a row, but the entire file needs to be rewritten. Writing frequently-updated attributes into a separate file- or in combination with `append`, appending a new stripe with metadata- could reduce write amplification during updates. |
+| _Partition Table_       | The `Catalog` maintains only one pointer for the head of each table. If the `Catalog` supports atomic replacement of multiple pointers - i.e., multi-table transactions - then one could also reduce false sharing within a table by maintaining multiple head pointers to partitions of the table. This could also reduce subsequent write amplification caused by rewriting merged metadata. |
+| _Partition Attributes_  | Often(?) only some attributes are updated within a row, but the entire file needs to be rewritten. Writing frequently-updated attributes into a separate file - or in combination with `append`, appending a new stripe with metadata - could reduce write amplification during updates. |
 | _Object Lease_          | Objects can be locked. Instead of using a service, one could use this mechanism from the object store for locks. Leases could also make `append` safer to use, by preventing interleaved appends to the object. |
 | _Object Lambda_         | By intercepting `GET` requests, one could represent the state of an object as the merge of its state in S3 and a deterministic merge of a FIFO queue of pending commits. Writers would merge their update and commit by proxy. [Detail](#object-lambda) |
 | _Object Metadata_       | Some stores allow one to update (and version) object metadata (k/v pairs) and object data separately. One could signal potential conflicts between running transactions, including compactions. |
-| _Container Exhaust_     | Object stores produce CDC streams for containers. Either by listening to exhaust across the entire container- or partitioning data/metadata to receive a subset- running transactions could learn about concurrent modifications before commit validation. |
+| _Container Exhaust_     | Object stores produce CDC streams for containers. Either by listening to exhaust across the entire container - or partitioning data/metadata to receive a subset - running transactions could learn about concurrent modifications before commit validation. |
 
 </div>
 
@@ -144,7 +144,7 @@ flowchart LR
 
 ### Append
 
-Object immutability vastly simplifies replication, but it also requires that any updated data be rewritten elsewhere. This has a modest overhead for writing delta files- small objects that supplement the base data- but incurs a read penalty as objects must be merged on read. The `append` operation offers opportunities at every logical level to reduce write amplification and (potentially) increase concurrency.
+Object immutability vastly simplifies replication, but it also requires that any updated data be rewritten elsewhere. This has a modest overhead for writing delta files - small objects that supplement the base data - but incurs a read penalty as objects must be merged on read. The `append` operation offers opportunities at every logical level to reduce write amplification and (potentially) increase concurrency.
 
 #### Data files
 
