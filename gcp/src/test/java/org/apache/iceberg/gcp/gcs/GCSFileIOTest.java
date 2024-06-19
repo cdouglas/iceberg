@@ -40,12 +40,12 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Random;
 import java.util.stream.StreamSupport;
-import java.util.zip.Checksum;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.common.DynMethods;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.InputFile;
@@ -220,7 +220,7 @@ public class GCSFileIOTest {
     final AtomicOutputFile overwrite = io.newOutputFile(in);
     final byte[] overbytes = new byte[1024 * 1024];
     random.nextBytes(overbytes);
-    final Checksum chk = overwrite.checksum();
+    final FileChecksum chk = overwrite.checksum();
     chk.update(overbytes, 0, 1024 * 1024);
     IOException hackFailure =
         Assertions.assertThrows(

@@ -23,11 +23,10 @@ import com.google.cloud.storage.Storage;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.function.Consumer;
-import java.util.zip.Checksum;
-import org.apache.commons.codec.digest.PureJavaCrc32C;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.metrics.MetricsContext;
@@ -80,12 +79,12 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
   }
 
   @Override
-  public Checksum checksum() {
-    return new PureJavaCrc32C();
+  public FileChecksum checksum() {
+    return new GCSChecksum();
   }
 
   @Override
-  public PositionOutputStream createAtomic(Checksum checksum, Consumer<InputFile> onClose) {
+  public PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose) {
     return new GCSOutputStream(storage(), blobId(), gcpProperties(), metrics(), checksum, onClose);
   }
 }

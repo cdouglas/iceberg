@@ -32,8 +32,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiFunction;
 import java.util.stream.Collectors;
-import java.util.zip.CheckedOutputStream;
-import java.util.zip.Checksum;
 import org.apache.commons.io.output.NullOutputStream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -312,10 +310,10 @@ public class CatalogFile {
     return Lists.newArrayList(fqti.keySet().iterator());
   }
 
-  public Checksum checksum(Checksum checksum) {
+  public FileChecksum checksum(FileChecksum checksum) {
     try (NullOutputStream nullOutputStream = new NullOutputStream();
-        CheckedOutputStream checkedOutputStream =
-            new CheckedOutputStream(nullOutputStream, checksum)) {
+        FileChecksumOutputStream checkedOutputStream =
+            new FileChecksumOutputStream(nullOutputStream, checksum)) {
       write(checkedOutputStream);
       return checksum;
     } catch (IOException e) {

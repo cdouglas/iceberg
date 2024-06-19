@@ -29,13 +29,12 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
-import java.util.zip.Checksum;
 import org.apache.iceberg.gcp.GCPProperties;
+import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.FileIOMetricsContext;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
@@ -45,7 +44,6 @@ import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.metrics.MetricsContext.Unit;
 import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,7 +81,7 @@ class GCSOutputStream extends PositionOutputStream {
       BlobId blobId,
       GCPProperties gcpProperties,
       MetricsContext metrics,
-      Checksum checksum,
+      FileChecksum checksum,
       Consumer<InputFile> onClose) {
     this.storage = storage;
     this.blobId = blobId;
@@ -125,7 +123,7 @@ class GCSOutputStream extends PositionOutputStream {
     writeOperations.increment();
   }
 
-  private void openStream(Checksum checksum) {
+  private void openStream(FileChecksum checksum) {
     List<BlobWriteOption> writeOptions = Lists.newArrayList();
 
     gcpProperties
@@ -139,9 +137,7 @@ class GCSOutputStream extends PositionOutputStream {
     }
     BlobInfo.Builder blobInfoBuilder = BlobInfo.newBuilder(blobId);
     if (checksum != null) {
-      final String checksumB64 =
-          Base64.getEncoder().encodeToString(Ints.toByteArray((int) checksum.getValue()));
-      blobInfoBuilder.setCrc32c(checksumB64);
+      blobInfoBuilder.setCrc32c(checksum.toHeaderString());
       writeOptions.add(BlobWriteOption.crc32cMatch());
     }
 

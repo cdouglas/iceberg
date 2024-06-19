@@ -16,21 +16,30 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.iceberg.io;
+package org.apache.iceberg.gcp.gcs;
 
-import java.util.function.Consumer;
+import java.util.Base64;
+import java.util.zip.Checksum;
+import org.apache.commons.codec.digest.PureJavaCrc32C;
+import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 
-public interface AtomicOutputFile extends OutputFile {
-  FileChecksum checksum();
+class GCSChecksum implements FileChecksum {
 
-  /**
-   * Create a stream that- if the content written matches the checksum- will replace this file.
-   * Callback may return the InputFile corresponding to what was written, on close. This API is bad;
-   * the semantics are ambiguous. The callback only happens if the file closes. The V2 APIs include
-   * a Future-like API, which should admit a cleaner API.
-   *
-   * @param checksum the checksum to validate the content
-   * @param onClose the callback to run on close
-   */
-  PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose);
+  private final Checksum crc32c = new PureJavaCrc32C();
+
+  @Override
+  public void update(byte[] bytes, int off, int len) {
+    crc32c.update(bytes, off, len);
+  }
+
+  @Override
+  public byte[] asBytes() {
+    return Ints.toByteArray((int) crc32c.getValue());
+  }
+
+  @Override
+  public String toHeaderString() {
+    return Base64.getEncoder().encodeToString(asBytes());
+  }
 }
