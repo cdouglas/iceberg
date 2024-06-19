@@ -45,7 +45,7 @@ The paper could work these "middle-out". Identify places where LST design assume
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
 flowchart LR
-  subgraph Tricks
+  subgraph Optimizations
     multistore[Het. Storage]
     append[Append]
     cache[Cache paths]
@@ -57,7 +57,7 @@ flowchart LR
     metadata[Object Metadata]
     exhaust[Container Exhaust]
   end
-  subgraph Workload
+  subgraph Workload Opportunity
     wamp[Write Amplification]
     uniform[Uniform Access]
     ingest[Ingest vs Query]
@@ -65,7 +65,7 @@ flowchart LR
     share[False Sharing]
     uncoord[Uncoordinated Access]
   end
-  subgraph Concern
+  subgraph Bottleneck
     wset[Working Set]
     wskew[Workload Skew]
     cost[Cost]
@@ -100,14 +100,14 @@ flowchart LR
   uncoord ---- wskew
 ```
 
-## Trick -> Concern
+## Optimizations -> Workload Opportunities
 
 <div style="margin-left: auto;
             margin-right: auto;
             width: 80%">
 
 
-| Trick | Concern |
+| Optimization | Workload Opportunity |
 |-------|---------|
 | _Heterogeneous Storage_ | LSTs ingest data in the same storage as archival data. Opportunities to store data in different tiers could improve performance for frequently accessed data and lower costs for infrequently accessed data. |
 | _Append_                | The catalog, metadata, and data files are rewritten during compactions and normal operation. Often(?) updates are much smaller than what they invalidate. [Detail](#append) |
@@ -122,13 +122,13 @@ flowchart LR
 
 </div>
 
-## Workload -> Concern
+## Workload Opportunity -> Bottleneck
 
 <div style="margin-left: auto;
            margin-right: auto;
            width: 80%">
 
-| Workload | Concern |
+| Workload Opportunity | Bottleneck |
 |---------|----------|
 | Uniform Access      | Storing all data in the same tier misses opportunities to save on cost for infrequently accessed data, distinguish between data landing in the LST vs historical data, and does not adapt to query patterns. |
 | Fixed Height        | LST formats are the same height, regardless of the size of the table [^3]. As tables get larger, conflicts need to rewrite larger metadata objects even for false conflicts. Increasing the height of the table includes more round trips to the store. |
@@ -189,6 +189,10 @@ This could be extended to files beyond the `Catalog`, particularly metadata file
 5. **YCSB Catalog**. See if Azure is as parsimonious with single-object writes as GCP.
 
 # Appendix
+
+## Discussion topics
+
+- Posthoc serialization verification of untrusted clients
 
 ## Storage ideas
 
