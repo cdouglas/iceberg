@@ -19,6 +19,7 @@
 package org.apache.iceberg.azure.adlsv2;
 
 import com.azure.storage.file.datalake.DataLakeFileClient;
+import com.azure.storage.file.datalake.models.PathProperties;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
@@ -27,6 +28,7 @@ abstract class BaseADLSFile {
   private final String location;
   private final DataLakeFileClient fileClient;
   private final AzureProperties azureProperties;
+  private PathProperties metadata;
   private final MetricsContext metrics;
 
   BaseADLSFile(
@@ -64,6 +66,13 @@ abstract class BaseADLSFile {
 
   public boolean exists() {
     return fileClient().exists();
+  }
+
+  protected PathProperties pathProperties() {
+    if (null == metadata) {
+      metadata = fileClient().getProperties();
+    }
+    return metadata;
   }
 
   @Override

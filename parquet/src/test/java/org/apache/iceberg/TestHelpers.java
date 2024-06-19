@@ -37,11 +37,11 @@ public class TestHelpers {
    * @param containedInMessage A String that should be contained by the thrown exception's message
    * @param callable A Callable that is expected to throw the exception
    */
-  public static void assertThrows(
+  public static <T> void assertThrows(
       String message,
       Class<? extends Exception> expected,
       String containedInMessage,
-      Callable callable) {
+      Callable<T> callable) {
     AbstractThrowableAssert<?, ? extends Throwable> check =
         assertThatThrownBy(callable::call).as(message).isInstanceOf(expected);
     if (null != containedInMessage) {

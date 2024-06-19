@@ -20,7 +20,9 @@ package org.apache.iceberg.azure.adlsv2;
 
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeFileOpenInputStreamResult;
+import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.FileRange;
+import com.azure.storage.file.datalake.models.PathProperties;
 import com.azure.storage.file.datalake.options.DataLakeFileInputStreamOptions;
 import java.io.IOException;
 import java.io.InputStream;
@@ -49,6 +51,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   private final DataLakeFileClient fileClient;
   private Long fileSize;
   private final AzureProperties azureProperties;
+  private final PathProperties pathProperties;
 
   private InputStream stream;
   private long pos;
@@ -62,9 +65,10 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       DataLakeFileClient fileClient,
       Long fileSize,
       AzureProperties azureProperties,
+      DataLakeRequestConditions conditions,
       MetricsContext metrics) {
     this.fileClient = fileClient;
-    this.fileSize = fileSize;
+    this.fileSize = fileSize; // !#! XXX in main, this is ignored and overwritten in openStream.
     this.azureProperties = azureProperties;
 
     this.readBytes = metrics.counter(FileIOMetricsContext.READ_BYTES, Unit.BYTES);
@@ -72,21 +76,47 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
 
     this.createStack = Thread.currentThread().getStackTrace();
 
-    openStream();
+    this.pathProperties = openStream(conditions);
+    // !#! XXX can't find this in the documentation, try it out
+    if (this.fileSize != pathProperties.getFileSize()) {
+      throw new IllegalStateException(
+          "Evidently PathProperties gets the current length, not limtied to spec in opt");
+    }
   }
 
-  private void openStream() {
-    DataLakeFileOpenInputStreamResult result =
-        fileClient.openInputStream(getInputOptions(new FileRange(pos)));
-    this.fileSize = result.getProperties().getFileSize();
+  private PathProperties openStream(DataLakeRequestConditions invariants) {
+    DataLakeFileInputStreamOptions options = getInputOptions();
+    if (invariants != null) { // i.e., etag
+      options.setRequestConditions(invariants);
+    }
+    if (fileSize != null) {
+      options.setRange(new FileRange(pos, fileSize - pos));
+    } else {
+      options.setRange(new FileRange(pos));
+    }
+    DataLakeFileOpenInputStreamResult result = fileClient.openInputStream(options);
     this.stream = result.getInputStream();
+    return result.getProperties();
   }
 
-  private DataLakeFileInputStreamOptions getInputOptions(FileRange range) {
+  /**
+   * Configuration method for settings (AzureProperties) that apply to all streams.
+   *
+   * @return options that apply to all streams and derived streams.
+   */
+  private DataLakeFileInputStreamOptions getInputOptions() {
     DataLakeFileInputStreamOptions options = new DataLakeFileInputStreamOptions();
     azureProperties.adlsReadBlockSize().ifPresent(options::setBlockSize);
-    options.setRange(range);
+    if (pathProperties != null) {
+      // requires all operations to be on immutable data
+      options.setRequestConditions(
+          new DataLakeRequestConditions().setIfMatch(pathProperties.getETag()));
+    }
     return options;
+  }
+
+  PathProperties pathProperties() {
+    return pathProperties;
   }
 
   @Override
@@ -153,7 +183,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
 
     // close the stream and open at desired position
     this.pos = next;
-    openStream();
+    openStream(null);
   }
 
   @Override
@@ -178,7 +208,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   }
 
   private InputStream openRange(FileRange range) {
-    return fileClient.openInputStream(getInputOptions(range)).getInputStream();
+    return fileClient.openInputStream(getInputOptions().setRange(range)).getInputStream();
   }
 
   @Override

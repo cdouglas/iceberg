@@ -19,23 +19,38 @@
 package org.apache.iceberg.azure.adlsv2;
 
 import com.azure.storage.file.datalake.DataLakeFileClient;
+import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.function.Consumer;
+import java.util.zip.Checksum;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.metrics.MetricsContext;
 
-class ADLSOutputFile extends BaseADLSFile implements OutputFile {
+class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
+
+  private final DataLakeRequestConditions conditions;
 
   ADLSOutputFile(
       String location,
       DataLakeFileClient fileClient,
       AzureProperties azureProperties,
       MetricsContext metrics) {
+    this(location, fileClient, azureProperties, null, metrics);
+  }
+
+  ADLSOutputFile(
+      String location,
+      DataLakeFileClient fileClient,
+      AzureProperties azureProperties,
+      DataLakeRequestConditions conditions,
+      MetricsContext metrics) {
     super(location, fileClient, azureProperties, metrics);
+    this.conditions = conditions;
   }
 
   /**
@@ -66,5 +81,15 @@ class ADLSOutputFile extends BaseADLSFile implements OutputFile {
   @Override
   public InputFile toInputFile() {
     return new ADLSInputFile(location(), fileClient(), azureProperties(), metrics());
+  }
+
+  @Override
+  public Checksum checksum() {
+    return new java.util.zip.Adler32(); // TODO replace with MD5
+  }
+
+  @Override
+  public PositionOutputStream createAtomic(Checksum checksum, Consumer<InputFile> onClose) {
+    return null;
   }
 }

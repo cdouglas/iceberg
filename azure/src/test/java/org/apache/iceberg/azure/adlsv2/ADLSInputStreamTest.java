@@ -55,7 +55,8 @@ public class ADLSInputStreamTest extends BaseAzuriteTest {
     setupData(data);
 
     try (SeekableInputStream in =
-        new ADLSInputStream(fileClient(), null, azureProperties, MetricsContext.nullMetrics())) {
+        new ADLSInputStream(
+            fileClient(), null, azureProperties, null, MetricsContext.nullMetrics())) {
       int readSize = 1024;
 
       readAndCheck(in, in.getPos(), readSize, data, false);
@@ -90,7 +91,8 @@ public class ADLSInputStreamTest extends BaseAzuriteTest {
     setupData(data);
 
     try (SeekableInputStream in =
-        new ADLSInputStream(fileClient(), null, azureProperties, MetricsContext.nullMetrics())) {
+        new ADLSInputStream(
+            fileClient(), null, azureProperties, null, MetricsContext.nullMetrics())) {
       assertThat(in.read()).isEqualTo(i0);
       assertThat(in.read()).isEqualTo(i1);
     }
@@ -131,7 +133,8 @@ public class ADLSInputStreamTest extends BaseAzuriteTest {
     setupData(expected);
 
     try (RangeReadable in =
-        new ADLSInputStream(fileClient(), null, azureProperties, MetricsContext.nullMetrics())) {
+        new ADLSInputStream(
+            fileClient(), null, azureProperties, null, MetricsContext.nullMetrics())) {
       // first 1k
       position = 0;
       offset = 0;
@@ -164,7 +167,8 @@ public class ADLSInputStreamTest extends BaseAzuriteTest {
   public void testClose() throws Exception {
     setupData(randomData(2));
     SeekableInputStream closed =
-        new ADLSInputStream(fileClient(), null, azureProperties, MetricsContext.nullMetrics());
+        new ADLSInputStream(
+            fileClient(), null, azureProperties, null, MetricsContext.nullMetrics());
     closed.close();
     assertThatThrownBy(() -> closed.seek(0))
         .isInstanceOf(IllegalStateException.class)
@@ -178,7 +182,8 @@ public class ADLSInputStreamTest extends BaseAzuriteTest {
     setupData(data);
 
     try (SeekableInputStream in =
-        new ADLSInputStream(fileClient(), null, azureProperties, MetricsContext.nullMetrics())) {
+        new ADLSInputStream(
+            fileClient(), null, azureProperties, null, MetricsContext.nullMetrics())) {
       in.seek(data.length / 2);
       byte[] actual = new byte[data.length / 2];
 
@@ -193,7 +198,8 @@ public class ADLSInputStreamTest extends BaseAzuriteTest {
   public void testSeekNegative() throws Exception {
     setupData(randomData(2));
     SeekableInputStream in =
-        new ADLSInputStream(fileClient(), null, azureProperties, MetricsContext.nullMetrics());
+        new ADLSInputStream(
+            fileClient(), null, azureProperties, null, MetricsContext.nullMetrics());
     assertThatThrownBy(() -> in.seek(-3))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot seek: position -3 is negative");
