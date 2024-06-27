@@ -18,6 +18,9 @@
       "installGradle": "true"
     }
   },
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
   // TODO find a property for the checkout
   "onCreateCommand": "cd /IdeaProjects/iceberg ; ./gradlew build -x test -x integrationTest -x spotlessJava -x checkstyleMain -x checkstyleTest"
 }
