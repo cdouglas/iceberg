@@ -556,9 +556,16 @@ project(':iceberg-azure') {
     compileOnly "com.azure:azure-storage-file-datalake"
     compileOnly "com.azure:azure-identity"
 
+    testImplementation project(path: ':iceberg-core', configuration: 'testArtifacts')
     testImplementation project(path: ':iceberg-api', configuration: 'testArtifacts')
     testImplementation libs.esotericsoftware.kryo
     testImplementation libs.testcontainers
+    testImplementation(libs.hadoop2.common) {
+      exclude group: 'org.apache.avro', module: 'avro'
+      exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+      exclude group: 'javax.servlet', module: 'servlet-api'
+      exclude group: 'com.google.code.gson', module: 'gson'
+    }
   }
 }
 

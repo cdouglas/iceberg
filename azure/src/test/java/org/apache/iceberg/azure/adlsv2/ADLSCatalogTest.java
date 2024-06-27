@@ -16,29 +16,24 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.iceberg.gcp.gcs;
+package org.apache.iceberg.azure.adlsv2;
 
-import static org.mockito.Mockito.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
-import com.google.cloud.storage.BlobId;
-import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
-import com.google.cloud.storage.testing.RemoteStorageHelper;
+import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.catalog.CatalogTests;
-import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
-import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
@@ -48,12 +43,50 @@ import org.junit.jupiter.api.extension.TestWatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-@ExtendWith(GCSCatalogTest.SuccessCleanupExtension.class)
-public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
+@ExtendWith(ADLSCatalogTest.SuccessCleanupExtension.class)
+public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
-  private static final Logger LOG = LoggerFactory.getLogger(GCSCatalogTest.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ADLSCatalogTest.class);
 
-  private static Storage storage;
+  // copied from BaseAzuriteTest (needs to extend CatalogTests)
+  protected static final AzuriteContainer AZURITE_CONTAINER = new AzuriteContainer();
+
+  @BeforeAll
+  public static void beforeAll() {
+    AZURITE_CONTAINER.start();
+  }
+
+  @AfterAll
+  public static void afterAll() {
+    AZURITE_CONTAINER.stop();
+  }
+
+  @BeforeEach
+  public void baseBefore() {
+    AZURITE_CONTAINER.createStorageContainer();
+  }
+
+  @AfterEach
+  public void baseAfter() {
+    AZURITE_CONTAINER.deleteStorageContainer();
+  }
+
+  protected ADLSFileIO createFileIO() {
+    AzureProperties azureProps = spy(new AzureProperties());
+
+    doAnswer(
+            invoke -> {
+              DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
+              clientBuilder.endpoint(AZURITE_CONTAINER.endpoint());
+              clientBuilder.credential(AZURITE_CONTAINER.credential());
+              return null;
+            })
+        .when(azureProps)
+        .applyClientConfiguration(any(), any());
+
+    return new ADLSFileIO(azureProps);
+  }
+
   private FileIOCatalog catalog;
   private static String warehouseLocation;
   private static String uniqTestRun;
@@ -67,39 +100,20 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
   }
 
   static void cleanupWarehouseLocation() {
-    try (GCSFileIO io = new GCSFileIO(() -> storage, new GCPProperties())) {
-      if (io.listPrefix(warehouseLocation).iterator().hasNext()) {
-        io.deletePrefix(warehouseLocation);
-      }
-    }
+    // TODO: remove test data if test passed
   }
 
   @BeforeAll
-  public static void initStorage() throws IOException {
+  public static void initStorage() {
     uniqTestRun = UUID.randomUUID().toString();
-    LOG.info("TEST RUN: " + uniqTestRun);
+    LOG.info("TEST RUN: {}", uniqTestRun);
     // TODO get from env
     final File credFile =
         new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
-      try (FileInputStream creds = new FileInputStream(credFile)) {
-        storage = RemoteStorageHelper.create("lst-consistency", creds).getOptions().getService();
-        LOG.info("Using remote storage");
-      }
+      // TODO use ADLS credentials on a real store
+      throw new UnsupportedOperationException("TODO");
     } else {
-      storage = spy(LocalStorageHelper.getOptions().getService());
-      doAnswer(
-              invoke -> {
-                Iterable<BlobId> iter = invoke.getArgument(0);
-                List<Boolean> answer = Lists.newArrayList();
-                iter.forEach(
-                    blobId -> {
-                      answer.add(storage.delete(blobId));
-                    });
-                return answer;
-              })
-          .when(storage)
-          .delete(any(Iterable.class));
       LOG.info("Using local storage");
     }
     // show ridiculous stack traces
@@ -108,10 +122,10 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @BeforeEach
   public void before(TestInfo info) {
-    // XXX don't call io.initialize(), as it will overwrite this config
-    GCSFileIO io = new GCSFileIO(() -> storage, new GCPProperties());
+    ADLSFileIO io = createFileIO(); // new ADLSFileIO(() -> storage, new GCPProperties());
 
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
+    // XXX TODO correct URI?
     warehouseLocation = "gs://" + TEST_BUCKET + "/" + uniqTestRun + "/" + testName;
     cleanupWarehouseLocation();
 
