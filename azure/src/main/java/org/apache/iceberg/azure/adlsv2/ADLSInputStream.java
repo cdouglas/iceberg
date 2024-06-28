@@ -96,6 +96,9 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
     }
     DataLakeFileOpenInputStreamResult result = fileClient.openInputStream(options);
     this.stream = result.getInputStream();
+    if (null == fileSize) {
+      fileSize = result.getProperties().getFileSize();
+    }
     return result.getProperties();
   }
 

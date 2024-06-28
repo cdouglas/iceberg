@@ -73,7 +73,6 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   protected ADLSFileIO createFileIO() {
     AzureProperties azureProps = spy(new AzureProperties());
-
     doAnswer(
             invoke -> {
               DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
@@ -83,7 +82,6 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
             })
         .when(azureProps)
         .applyClientConfiguration(any(), any());
-
     return new ADLSFileIO(azureProps);
   }
 
