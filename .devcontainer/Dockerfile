@@ -13,6 +13,7 @@ RUN apt-get update && \
       build-essential \
       software-properties-common \
       docker \
+      dbus-user-session \
       ssh && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
