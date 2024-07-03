@@ -18,7 +18,6 @@
  */
 package org.apache.iceberg.gcp.gcs;
 
-import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doAnswer;
@@ -31,6 +30,9 @@ import com.google.cloud.storage.CRCWriteChannel;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
+import com.google.cloud.storage.testing.RemoteStorageHelper;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -39,6 +41,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Random;
+import java.util.UUID;
 import java.util.stream.StreamSupport;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.TestHelpers;
@@ -56,54 +59,80 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class GCSFileIOTest {
-  private static final String TEST_BUCKET = "TEST_BUCKET";
+
+  private static final Logger LOG = LoggerFactory.getLogger(GCSFileIOTest.class);
+  private static String uniqTestRun = UUID.randomUUID().toString();
+  private static final String TEST_BUCKET = "lst-consistency";
   private final Random random = new Random(1);
 
-  private final Storage storage = spy(LocalStorageHelper.getOptions().getService());
+  private static Storage storage;
+  private String testName;
   private GCSFileIO io;
+
+  @BeforeAll
+  public static void initStorage() throws IOException {
+    uniqTestRun = UUID.randomUUID().toString();
+    LOG.info("TEST RUN: " + uniqTestRun);
+    // TODO get from env
+    final File credFile = new File("/home/xchris/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
+    // final File credFile =
+    //     new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
+    if (credFile.exists()) {
+      try (FileInputStream creds = new FileInputStream(credFile)) {
+        storage = RemoteStorageHelper.create("lst-consistency", creds).getOptions().getService();
+        LOG.info("Using remote storage");
+      }
+    } else {
+      storage = spy(LocalStorageHelper.getOptions().getService());
+      // LocalStorageHelper doesn't support batch operations, so mock that here
+      doAnswer(
+              invoke -> {
+                Iterable<BlobId> iter = invoke.getArgument(0);
+                List<Boolean> answer = Lists.newArrayList();
+                iter.forEach(
+                        blobId -> {
+                          answer.add(storage.delete(blobId));
+                        });
+                return answer;
+              })
+              .when(storage)
+              .delete(any(Iterable.class));
+      // LocalStorageHelper doesn't support checksums, so mock that here
+      doAnswer(
+              invoke -> {
+                Object[] args = invoke.getArguments();
+                final BlobInfo info = (BlobInfo) args[0];
+                final String crc32cStr = info.getCrc32c();
+                final WriteChannel out = (WriteChannel) invoke.callRealMethod();
+                if (args.length == 1 || null == crc32cStr) {
+                  return out;
+                }
+                long crc32c = Ints.fromByteArray(Base64.getDecoder().decode(crc32cStr));
+                return new CRCWriteChannel(out, crc32c);
+              })
+              .when(storage)
+              .writer(any(BlobInfo.class), any(Storage.BlobWriteOption[].class));
+    }
+  }
 
   @SuppressWarnings("unchecked")
   @BeforeEach
-  public void before() {
-    // LocalStorageHelper doesn't support batch operations, so mock that here
-    doAnswer(
-            invoke -> {
-              Iterable<BlobId> iter = invoke.getArgument(0);
-              List<Boolean> answer = Lists.newArrayList();
-              iter.forEach(
-                  blobId -> {
-                    answer.add(storage.delete(blobId));
-                  });
-              return answer;
-            })
-        .when(storage)
-        .delete(any(Iterable.class));
-    // LocalStorageHelper doesn't support checksums, so mock that here
-    doAnswer(
-            invoke -> {
-              Object[] args = invoke.getArguments();
-              final BlobInfo info = (BlobInfo) args[0];
-              final String crc32cStr = info.getCrc32c();
-              final WriteChannel out = (WriteChannel) invoke.callRealMethod();
-              if (args.length == 1 || null == crc32cStr) {
-                return out;
-              }
-              long crc32c = Ints.fromByteArray(Base64.getDecoder().decode(crc32cStr));
-              return new CRCWriteChannel(out, crc32c);
-            })
-        .when(storage)
-        .writer(any(BlobInfo.class), any(Storage.BlobWriteOption[].class));
-
+  public void before(TestInfo info) {
+    testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
     io = new GCSFileIO(() -> storage, new GCPProperties());
   }
 
   @Test
   public void newInputFile() throws IOException {
-    String location = format("gs://%s/path/to/file.txt", TEST_BUCKET);
+    String location = gsUri("/file.txt");
     byte[] expected = new byte[1024 * 1024];
     random.nextBytes(expected);
 
@@ -131,7 +160,7 @@ public class GCSFileIOTest {
 
   @Test
   public void newOutputFileMatch() throws IOException {
-    final String location = format("gs://%s/path/to/file.txt", TEST_BUCKET);
+    final String location = gsUri("file.txt");
     final byte[] expected = new byte[1024 * 1024];
     random.nextBytes(expected);
 
@@ -164,7 +193,7 @@ public class GCSFileIOTest {
 
   @Test
   public void newOutputFileMatchFail() throws IOException {
-    final String location = format("gs://%s/path/to/file.txt", TEST_BUCKET);
+    final String location = gsUri("/file.txt");
     final byte[] expected = new byte[1024 * 1024];
     random.nextBytes(expected);
 
@@ -205,7 +234,7 @@ public class GCSFileIOTest {
 
   @Test
   public void testAtomicPartialWrite() throws IOException {
-    final String location = format("gs://%s/path/to/file.txt", TEST_BUCKET);
+    final String location = gsUri("file.txt");
     final byte[] expected = new byte[1024 * 1024];
     random.nextBytes(expected);
 
@@ -237,12 +266,12 @@ public class GCSFileIOTest {
 
   @Test
   public void testDelete() {
-    String path = "delete/path/data.dat";
+    String path = testPath("delete/path/data.dat");
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path).build());
 
     // There should be one blob in the bucket
     assertThat(
-            StreamSupport.stream(storage.list(TEST_BUCKET).iterateAll().spliterator(), false)
+            StreamSupport.stream(storage.list(TEST_BUCKET, Storage.BlobListOption.prefix(testPath(""))).iterateAll().spliterator(), false)
                 .count())
         .isEqualTo(1);
 
@@ -250,50 +279,46 @@ public class GCSFileIOTest {
 
     // The bucket should now be empty
     assertThat(
-            StreamSupport.stream(storage.list(TEST_BUCKET).iterateAll().spliterator(), false)
+            StreamSupport.stream(storage.list(TEST_BUCKET, Storage.BlobListOption.prefix("delete/path")).iterateAll().spliterator(), false)
                 .count())
         .isZero();
   }
 
-  private String gsUri(String path) {
-    return format("gs://%s/%s", TEST_BUCKET, path);
-  }
-
   @Test
   public void testListPrefix() {
-    String prefix = "list/path/";
+    String prefix = testPath("list/path/");
     String path1 = prefix + "data1.dat";
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path1).build());
     String path2 = prefix + "data2.dat";
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path2).build());
-    String path3 = "list/skip/data3.dat";
+    String path3 = testPath("list/skip/data3.dat");
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path3).build());
 
     assertThat(StreamSupport.stream(io.listPrefix(gsUri("list/")).spliterator(), false).count())
         .isEqualTo(3);
 
-    assertThat(StreamSupport.stream(io.listPrefix(gsUri(prefix)).spliterator(), false).count())
+    assertThat(StreamSupport.stream(io.listPrefix(gsUri("list/path/")).spliterator(), false).count())
         .isEqualTo(2);
 
-    assertThat(StreamSupport.stream(io.listPrefix(gsUri(path1)).spliterator(), false).count())
+    assertThat(StreamSupport.stream(io.listPrefix(gsUri("list/path/data1.dat")).spliterator(), false).count())
         .isEqualTo(1);
   }
 
   @Test
   public void testDeleteFiles() {
-    String prefix = "del/path/";
+    String prefix = testPath("del/path/");
     String path1 = prefix + "data1.dat";
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path1).build());
     String path2 = prefix + "data2.dat";
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path2).build());
-    String path3 = "del/skip/data3.dat";
+    String path3 = testPath("del/skip/data3.dat");
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path3).build());
 
     assertThat(StreamSupport.stream(io.listPrefix(gsUri("del/")).spliterator(), false).count())
         .isEqualTo(3);
 
     Iterable<String> deletes =
-        () -> ImmutableList.of(gsUri(path1), gsUri(path3)).stream().iterator();
+        () -> ImmutableList.of(gsUri("del/path/data1.dat"), gsUri("del/skip/data3.dat")).stream().iterator();
     io.deleteFiles(deletes);
 
     assertThat(StreamSupport.stream(io.listPrefix(gsUri("del/")).spliterator(), false).count())
@@ -302,18 +327,18 @@ public class GCSFileIOTest {
 
   @Test
   public void testDeletePrefix() {
-    String prefix = "del/path/";
+    String prefix = testPath("del/path/");
     String path1 = prefix + "data1.dat";
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path1).build());
     String path2 = prefix + "data2.dat";
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path2).build());
-    String path3 = "del/skip/data3.dat";
+    String path3 = testPath("del/skip/data3.dat");
     storage.create(BlobInfo.newBuilder(TEST_BUCKET, path3).build());
 
     assertThat(StreamSupport.stream(io.listPrefix(gsUri("del/")).spliterator(), false).count())
         .isEqualTo(3);
 
-    io.deletePrefix(gsUri(prefix));
+    io.deletePrefix(gsUri("del/path/"));
 
     assertThat(StreamSupport.stream(io.listPrefix(gsUri("del/")).spliterator(), false).count())
         .isEqualTo(1);
@@ -352,5 +377,13 @@ public class GCSFileIOTest {
             .build(resolvingFileIO)
             .invoke("gs://foo/bar");
     assertThat(result).isInstanceOf(GCSFileIO.class);
+  }
+
+  private String gsUri(String path) {
+    return String.format("gs://%s/%s", TEST_BUCKET, testPath(path));
+  }
+
+  private String testPath(String suffix) {
+    return String.format("%s/%s/%s", uniqTestRun, testName, suffix);
   }
 }

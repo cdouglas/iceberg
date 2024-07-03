@@ -79,8 +79,9 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
-    final File credFile =
-        new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
+    final File credFile = new File("/home/chris/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
+    // final File credFile =
+    //     new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
       try (FileInputStream creds = new FileInputStream(credFile)) {
         storage = RemoteStorageHelper.create("lst-consistency", creds).getOptions().getService();

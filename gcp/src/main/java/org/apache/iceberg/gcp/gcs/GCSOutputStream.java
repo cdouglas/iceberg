@@ -172,8 +172,7 @@ class GCSOutputStream extends PositionOutputStream {
       try {
         // TODO verify; that info correctly includes the generation in the BlobId
         final BlobInfo info = FFS.extractFile(channel);
-        onClose.accept(
-            GCSInputFile.fromBlobId(info.getBlobId(), storage, gcpProperties, metrics));
+        onClose.accept(GCSInputFile.fromBlobId(info.getBlobId(), storage, gcpProperties, metrics));
       } catch (ExecutionException | InterruptedException | TimeoutException e) {
         throw new RuntimeException("Failed to extract BlobInfo from closed stream");
       }
