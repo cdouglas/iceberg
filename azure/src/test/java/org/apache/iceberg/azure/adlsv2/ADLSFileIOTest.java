@@ -83,6 +83,7 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
     io.deleteFile(location);
     assertThat(fileClient.exists()).isFalse();
   }
+
   @Test
   public void newOutputFileMatch() throws IOException {
     final String path = "path/to/file.txt";
@@ -115,14 +116,14 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
       IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
     }
     // fail precondition; contents of InputFile changed
-    BlobStorageException etagFailure = Assertions.assertThrows(
+    BlobStorageException etagFailure =
+        Assertions.assertThrows(
             BlobStorageException.class,
             () -> {
               try (InputStream is = in.newStream()) {
                 IOUtil.readFully(is, actual, 0, actual.length);
               }
-            }
-    );
+            });
     // precondition not met
     assertThat(etagFailure.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
 
@@ -162,14 +163,14 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
       IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
     }
     // overwrite fails, object has been overwritten
-    BlobStorageException etagFailure = Assertions.assertThrows(
+    BlobStorageException etagFailure =
+        Assertions.assertThrows(
             BlobStorageException.class,
             () -> {
               try (InputStream is = in.newStream()) {
                 IOUtil.readFully(is, actual, 0, actual.length);
               }
-            }
-    );
+            });
     // precondition not met
     assertThat(etagFailure.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
   }
@@ -197,14 +198,14 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
     final FileChecksum chk = overwrite.checksum();
     chk.update(overbytes, 0, 1024 * 1024);
     // precondition not met (bad checksum)
-    IOException chkFailure = Assertions.assertThrows(
+    IOException chkFailure =
+        Assertions.assertThrows(
             IOException.class,
             () -> {
               try (OutputStream os = overwrite.createAtomic(chk, inputFile -> {})) {
                 IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
               }
-            }
-    );
+            });
     BlobStorageException blobChkErr = (BlobStorageException) chkFailure.getCause();
     assertThat(blobChkErr.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
   }

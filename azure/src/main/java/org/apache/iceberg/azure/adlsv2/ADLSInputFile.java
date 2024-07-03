@@ -44,8 +44,19 @@ class ADLSInputFile extends BaseADLSFile implements InputFile {
       DataLakeFileClient fileClient,
       AzureProperties azureProperties,
       MetricsContext metrics) {
+    this(location, fileSize, fileClient, azureProperties, metrics, null);
+  }
+
+  ADLSInputFile(
+      String location,
+      Long fileSize,
+      DataLakeFileClient fileClient,
+      AzureProperties azureProperties,
+      MetricsContext metrics,
+      DataLakeRequestConditions invariants) {
     super(location, fileClient, azureProperties, metrics);
     this.fileSize = fileSize != null && fileSize > 0 ? fileSize : null;
+    this.invariants = invariants;
   }
 
   @Override

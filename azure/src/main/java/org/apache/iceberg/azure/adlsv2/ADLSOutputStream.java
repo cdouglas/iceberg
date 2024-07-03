@@ -21,8 +21,8 @@ package org.apache.iceberg.azure.adlsv2;
 import com.azure.storage.common.ParallelTransferOptions;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.PathProperties;
 import com.azure.storage.file.datalake.options.DataLakeFileOutputStreamOptions;
-import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
@@ -49,6 +49,7 @@ class ADLSOutputStream extends PositionOutputStream {
 
   private OutputStream stream;
 
+  private final MetricsContext metrics;
   private final Counter writeBytes;
   private final Counter writeOperations;
 
@@ -56,19 +57,22 @@ class ADLSOutputStream extends PositionOutputStream {
   private boolean closed;
 
   ADLSOutputStream(
-          DataLakeFileClient fileClient, AzureProperties azureProperties, MetricsContext metrics) {
+      DataLakeFileClient fileClient, AzureProperties azureProperties, MetricsContext metrics) {
     this(fileClient, azureProperties, metrics, null, info -> {});
   }
 
   ADLSOutputStream(
-          DataLakeFileClient fileClient, AzureProperties azureProperties, MetricsContext metrics,
-          FileChecksum checksum,
-          Consumer<InputFile> onClose) {
+      DataLakeFileClient fileClient,
+      AzureProperties azureProperties,
+      MetricsContext metrics,
+      FileChecksum checksum,
+      Consumer<InputFile> onClose) {
     this.fileClient = fileClient;
     this.azureProperties = azureProperties;
 
     this.createStack = Thread.currentThread().getStackTrace();
 
+    this.metrics = metrics;
     this.writeBytes = metrics.counter(FileIOMetricsContext.WRITE_BYTES, Unit.BYTES);
     this.writeOperations = metrics.counter(FileIOMetricsContext.WRITE_OPERATIONS);
 
@@ -105,11 +109,12 @@ class ADLSOutputStream extends PositionOutputStream {
   private void openStream(FileChecksum checksum) {
     DataLakeFileOutputStreamOptions options = new DataLakeFileOutputStreamOptions();
     if (checksum != null) {
-      options.setRequestConditions(new DataLakeRequestConditions().setIfMatch(checksum.toHeaderString()));
+      options.setRequestConditions(
+          new DataLakeRequestConditions().setIfMatch(checksum.toHeaderString()));
     }
     ParallelTransferOptions transferOptions = new ParallelTransferOptions();
     azureProperties.adlsWriteBlockSize().ifPresent(transferOptions::setBlockSizeLong);
-    this.stream = new BufferedOutputStream(fileClient.getOutputStream(options));
+    this.stream = fileClient.getOutputStream(options);
   }
 
   @Override
@@ -124,7 +129,18 @@ class ADLSOutputStream extends PositionOutputStream {
       stream.close();
     }
     // !#! TODO extract from close; find something to return a Result<>
-    InputFile etagIF = null;
+    // This is wrong, but GCP is broken, too?
+    PathProperties properties = fileClient.getProperties();
+    DataLakeRequestConditions invariant = new DataLakeRequestConditions();
+    invariant.setIfMatch(properties.getETag());
+    ADLSInputFile etagIF =
+        new ADLSInputFile(
+            fileClient.getFilePath(),
+            properties.getFileSize(),
+            fileClient,
+            azureProperties,
+            metrics,
+            invariant);
     onClose.accept(etagIF);
   }
 
