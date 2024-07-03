@@ -52,7 +52,7 @@ class ADLSInputFile extends BaseADLSFile implements InputFile {
   protected PathProperties pathProperties() {
     PathProperties ret = super.pathProperties();
     if (null == invariants) {
-      invariants = new DataLakeRequestConditions().setIfMatch(pathProperties().getETag());
+      invariants = new DataLakeRequestConditions().setIfMatch(ret.getETag());
     }
     return ret;
   }

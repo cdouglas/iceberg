@@ -23,7 +23,6 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
 import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
-import java.io.File;
 import java.util.Map;
 import java.util.UUID;
 import org.apache.iceberg.CatalogProperties;
@@ -47,13 +46,20 @@ import org.slf4j.LoggerFactory;
 public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
   private static final Logger LOG = LoggerFactory.getLogger(ADLSCatalogTest.class);
-
-  // copied from BaseAzuriteTest (needs to extend CatalogTests)
   protected static final AzuriteContainer AZURITE_CONTAINER = new AzuriteContainer();
 
+  private FileIOCatalog catalog;
+  private static String warehouseLocation;
+  private static String uniqTestRun;
+
+  // copied from BaseAzuriteTest (needs to extend CatalogTests)
   @BeforeAll
   public static void beforeAll() {
     AZURITE_CONTAINER.start();
+    uniqTestRun = UUID.randomUUID().toString();
+    LOG.info("TEST RUN: {}", uniqTestRun);
+    // show ridiculous stack traces
+    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
   }
 
   @AfterAll
@@ -72,22 +78,21 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
   }
 
   protected ADLSFileIO createFileIO() {
-    AzureProperties azureProps = spy(new AzureProperties());
-    doAnswer(
-            invoke -> {
-              DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
-              clientBuilder.endpoint(AZURITE_CONTAINER.endpoint());
-              clientBuilder.credential(AZURITE_CONTAINER.credential());
-              return null;
-            })
-        .when(azureProps)
-        .applyClientConfiguration(any(), any());
+    final AzureProperties azureProps;
+    if (true) {
+      azureProps = spy(new AzureProperties());
+      doAnswer(
+              invoke -> {
+                DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
+                clientBuilder.endpoint(AZURITE_CONTAINER.endpoint());
+                clientBuilder.credential(AZURITE_CONTAINER.credential());
+                return null;
+              })
+          .when(azureProps)
+          .applyClientConfiguration(any(), any());
+    }
     return new ADLSFileIO(azureProps);
   }
-
-  private FileIOCatalog catalog;
-  private static String warehouseLocation;
-  private static String uniqTestRun;
 
   // Don't keep artifacts from successful tests
   static class SuccessCleanupExtension implements TestWatcher {
@@ -101,30 +106,13 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
     // TODO: remove test data if test passed
   }
 
-  @BeforeAll
-  public static void initStorage() {
-    uniqTestRun = UUID.randomUUID().toString();
-    LOG.info("TEST RUN: {}", uniqTestRun);
-    // TODO get from env
-    final File credFile =
-        new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
-    if (credFile.exists()) {
-      // TODO use ADLS credentials on a real store
-      throw new UnsupportedOperationException("TODO");
-    } else {
-      LOG.info("Using local storage");
-    }
-    // show ridiculous stack traces
-    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
-  }
-
   @BeforeEach
   public void before(TestInfo info) {
-    ADLSFileIO io = createFileIO(); // new ADLSFileIO(() -> storage, new GCPProperties());
+    ADLSFileIO io = createFileIO();
 
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
-    // XXX TODO correct URI?
-    warehouseLocation = "gs://" + TEST_BUCKET + "/" + uniqTestRun + "/" + testName;
+    warehouseLocation =
+        AZURITE_CONTAINER.location(TEST_BUCKET + "/" + uniqTestRun + "/" + testName);
     cleanupWarehouseLocation();
 
     final Map<String, String> properties = Maps.newHashMap();

@@ -155,6 +155,7 @@ public class GCSFileIOTest {
     try (OutputStream os = overwrite.createOrOverwrite()) {
       IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
     }
+    // XXX !#! should fail the generation match, if resolved on this InputFile?
     try (InputStream is = in.newStream()) {
       IOUtil.readFully(is, actual, 0, actual.length);
     }

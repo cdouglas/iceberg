@@ -30,24 +30,35 @@ import static org.mockito.Mockito.when;
 
 import com.azure.core.http.rest.PagedIterable;
 import com.azure.core.http.rest.Response;
+import com.azure.storage.blob.models.BlobErrorCode;
+import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
 import com.azure.storage.file.datalake.models.PathItem;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.time.OffsetDateTime;
+import java.util.Arrays;
 import java.util.Iterator;
+import java.util.Random;
 import org.apache.iceberg.TestHelpers;
+import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.FileInfo;
+import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 public class ADLSFileIOTest extends BaseAzuriteTest {
+
+  private final Random random = new Random(1);
 
   @Test
   public void testFileOperations() throws IOException {
@@ -71,6 +82,131 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
 
     io.deleteFile(location);
     assertThat(fileClient.exists()).isFalse();
+  }
+  @Test
+  public void newOutputFileMatch() throws IOException {
+    final String path = "path/to/file.txt";
+    final String location = AZURITE_CONTAINER.location(path);
+    final byte[] expected = new byte[1024 * 1024];
+    random.nextBytes(expected);
+    ADLSFileIO io = createFileIO();
+
+    // create random blob
+    final OutputFile out = io.newOutputFile(location);
+    try (OutputStream os = out.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
+    }
+
+    // ensure it matches
+    final InputFile in = io.newInputFile(location);
+    assertThat(in.exists()).isTrue();
+    final byte[] actual = new byte[1024 * 1024];
+
+    try (InputStream is = in.newStream()) {
+      IOUtil.readFully(is, actual, 0, actual.length);
+    }
+    assertThat(actual).isEqualTo(expected);
+
+    // overwrite it
+    OutputFile overwrite = io.newOutputFile(in);
+    final byte[] overbytes = new byte[1024 * 1024];
+    random.nextBytes(overbytes);
+    try (OutputStream os = overwrite.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
+    }
+    // fail precondition; contents of InputFile changed
+    BlobStorageException etagFailure = Assertions.assertThrows(
+            BlobStorageException.class,
+            () -> {
+              try (InputStream is = in.newStream()) {
+                IOUtil.readFully(is, actual, 0, actual.length);
+              }
+            }
+    );
+    // precondition not met
+    assertThat(etagFailure.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
+
+    // newly-resolved InputFile should succeed
+    try (InputStream is = io.newInputFile(location).newStream()) {
+      IOUtil.readFully(is, actual, 0, actual.length);
+    }
+    assertThat(actual).isEqualTo(overbytes);
+  }
+
+  @Test
+  public void newOutputFileMatchFail() throws IOException {
+    final String path = "path/to/file.txt";
+    final String location = AZURITE_CONTAINER.location(path);
+    final byte[] expected = new byte[1024 * 1024];
+    random.nextBytes(expected);
+    ADLSFileIO io = createFileIO();
+
+    final OutputFile out = io.newOutputFile(location);
+    try (OutputStream os = out.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
+    }
+
+    final InputFile in = io.newInputFile(location);
+    assertThat(in.exists()).isTrue();
+    final byte[] actual = new byte[1024 * 1024];
+    try (InputStream is = in.newStream()) {
+      IOUtil.readFully(is, actual, 0, actual.length);
+    }
+    assertThat(actual).isEqualTo(expected);
+
+    // overwrite succeeds, because generation matches InputFile
+    final OutputFile overwrite = io.newOutputFile(in);
+    final byte[] overbytes = new byte[1024 * 1024];
+    random.nextBytes(overbytes);
+    try (OutputStream os = overwrite.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
+    }
+    // overwrite fails, object has been overwritten
+    BlobStorageException etagFailure = Assertions.assertThrows(
+            BlobStorageException.class,
+            () -> {
+              try (InputStream is = in.newStream()) {
+                IOUtil.readFully(is, actual, 0, actual.length);
+              }
+            }
+    );
+    // precondition not met
+    assertThat(etagFailure.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
+  }
+
+  @Test
+  public void testAtomicPartialWrite() throws IOException {
+    final String path = "path/to/file.txt";
+    final String location = AZURITE_CONTAINER.location(path);
+    final byte[] expected = new byte[1024 * 1024];
+    random.nextBytes(expected);
+    ADLSFileIO io = createFileIO();
+
+    final OutputFile out = io.newOutputFile(location);
+    try (OutputStream os = out.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
+    }
+
+    final InputFile in = io.newInputFile(location);
+    assertThat(in.exists()).isTrue();
+
+    // overwrite fails, checksum does not match
+    final AtomicOutputFile overwrite = io.newOutputFile(in);
+    final byte[] overbytes = new byte[1024 * 1024];
+    random.nextBytes(overbytes);
+    final FileChecksum chk = overwrite.checksum();
+    chk.update(overbytes, 0, 1024 * 1024);
+    // precondition not met (bad checksum)
+    IOException chkFailure = Assertions.assertThrows(
+            IOException.class,
+            () -> {
+              try (OutputStream os = overwrite.createAtomic(chk, inputFile -> {})) {
+                IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
+              }
+            }
+    );
+    BlobStorageException blobChkErr = (BlobStorageException) chkFailure.getCause();
+    assertThat(blobChkErr.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
   }
 
   @Test

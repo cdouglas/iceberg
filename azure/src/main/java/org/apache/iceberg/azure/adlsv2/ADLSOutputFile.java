@@ -70,12 +70,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
 
   @Override
   public PositionOutputStream createOrOverwrite() {
-    try {
-      return new ADLSOutputStream(fileClient(), azureProperties(), metrics());
-    } catch (IOException e) {
-      throw new UncheckedIOException(
-          "Failed to create output stream for location: " + location(), e);
-    }
+    return new ADLSOutputStream(fileClient(), azureProperties(), metrics());
   }
 
   @Override
@@ -85,11 +80,12 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
 
   @Override
   public FileChecksum checksum() {
-    return null;
+    return new ADLSChecksum();
   }
 
   @Override
   public PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose) {
-    return null;
+    // OK! Here we go
+    return new ADLSOutputStream(fileClient(), azureProperties(), metrics(), checksum, onClose);
   }
 }
