@@ -82,7 +82,8 @@ public class GCSFileIOTest {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
-    final File credFile = new File("/home/xchris/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
+    final File credFile =
+        new File("/home/xchris/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
     // final File credFile =
     //     new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
@@ -98,13 +99,13 @@ public class GCSFileIOTest {
                 Iterable<BlobId> iter = invoke.getArgument(0);
                 List<Boolean> answer = Lists.newArrayList();
                 iter.forEach(
-                        blobId -> {
-                          answer.add(storage.delete(blobId));
-                        });
+                    blobId -> {
+                      answer.add(storage.delete(blobId));
+                    });
                 return answer;
               })
-              .when(storage)
-              .delete(any(Iterable.class));
+          .when(storage)
+          .delete(any(Iterable.class));
       // LocalStorageHelper doesn't support checksums, so mock that here
       doAnswer(
               invoke -> {
@@ -118,8 +119,8 @@ public class GCSFileIOTest {
                 long crc32c = Ints.fromByteArray(Base64.getDecoder().decode(crc32cStr));
                 return new CRCWriteChannel(out, crc32c);
               })
-              .when(storage)
-              .writer(any(BlobInfo.class), any(Storage.BlobWriteOption[].class));
+          .when(storage)
+          .writer(any(BlobInfo.class), any(Storage.BlobWriteOption[].class));
     }
   }
 
@@ -271,7 +272,12 @@ public class GCSFileIOTest {
 
     // There should be one blob in the bucket
     assertThat(
-            StreamSupport.stream(storage.list(TEST_BUCKET, Storage.BlobListOption.prefix(testPath(""))).iterateAll().spliterator(), false)
+            StreamSupport.stream(
+                    storage
+                        .list(TEST_BUCKET, Storage.BlobListOption.prefix(testPath("")))
+                        .iterateAll()
+                        .spliterator(),
+                    false)
                 .count())
         .isEqualTo(1);
 
@@ -279,7 +285,12 @@ public class GCSFileIOTest {
 
     // The bucket should now be empty
     assertThat(
-            StreamSupport.stream(storage.list(TEST_BUCKET, Storage.BlobListOption.prefix("delete/path")).iterateAll().spliterator(), false)
+            StreamSupport.stream(
+                    storage
+                        .list(TEST_BUCKET, Storage.BlobListOption.prefix("delete/path"))
+                        .iterateAll()
+                        .spliterator(),
+                    false)
                 .count())
         .isZero();
   }
@@ -297,10 +308,13 @@ public class GCSFileIOTest {
     assertThat(StreamSupport.stream(io.listPrefix(gsUri("list/")).spliterator(), false).count())
         .isEqualTo(3);
 
-    assertThat(StreamSupport.stream(io.listPrefix(gsUri("list/path/")).spliterator(), false).count())
+    assertThat(
+            StreamSupport.stream(io.listPrefix(gsUri("list/path/")).spliterator(), false).count())
         .isEqualTo(2);
 
-    assertThat(StreamSupport.stream(io.listPrefix(gsUri("list/path/data1.dat")).spliterator(), false).count())
+    assertThat(
+            StreamSupport.stream(io.listPrefix(gsUri("list/path/data1.dat")).spliterator(), false)
+                .count())
         .isEqualTo(1);
   }
 
@@ -318,7 +332,9 @@ public class GCSFileIOTest {
         .isEqualTo(3);
 
     Iterable<String> deletes =
-        () -> ImmutableList.of(gsUri("del/path/data1.dat"), gsUri("del/skip/data3.dat")).stream().iterator();
+        () ->
+            ImmutableList.of(gsUri("del/path/data1.dat"), gsUri("del/skip/data3.dat")).stream()
+                .iterator();
     io.deleteFiles(deletes);
 
     assertThat(StreamSupport.stream(io.listPrefix(gsUri("del/")).spliterator(), false).count())
