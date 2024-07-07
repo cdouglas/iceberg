@@ -89,8 +89,7 @@ public class GCSFileIOTest {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
-    final File credFile =
-        new File("/home/chrisx/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
+    final File credFile = new File("/home/chrisx/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
     // final File credFile =
     //     new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
@@ -192,8 +191,8 @@ public class GCSFileIOTest {
     try (OutputStream os = overwrite.createOrOverwrite()) {
       IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
     }
-    // XXX !#! should fail the generation match, if resolved on this InputFile?
-    try (InputStream is = in.newStream()) {
+    final InputFile overwritten = io.newInputFile(location);
+    try (InputStream is = overwritten.newStream()) {
       IOUtil.readFully(is, actual, 0, actual.length);
     }
     assertThat(actual).isEqualTo(overbytes);
@@ -226,6 +225,8 @@ public class GCSFileIOTest {
       IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
     }
     // overwrite fails, object has been overwritten
+    // TODO: disparity beteen local/remote. Remote fails with CASException wrapping a 412
+    // precondition failed StorageException
     StorageException generationFailure =
         Assertions.assertThrows(
             StorageException.class,
@@ -236,7 +237,7 @@ public class GCSFileIOTest {
             });
     assertThat(generationFailure.getMessage()).startsWith("Generation mismatch");
     // XXX Why does a generation mismatch return 404 (not found), and not 409 (Conflict) or 412
-    // (Precondition)?
+    // (Precondition)? (it does return 412, the local runner is incorrect)
     // assertThat(generationFailure.getCode()).isEqualTo(412);
   }
 
@@ -355,7 +356,7 @@ public class GCSFileIOTest {
 
     io.deleteFile(gsUri(path));
 
-    // The bucket should now be empty
+    // The prefix should now be empty
     assertThat(
             StreamSupport.stream(
                     storage
@@ -365,6 +366,8 @@ public class GCSFileIOTest {
                     false)
                 .count())
         .isZero();
+    // TODO need to clean this up. the original test assumes it starts with an empty bucket, now
+    // there's a disparity between local/remote
   }
 
   @Test
