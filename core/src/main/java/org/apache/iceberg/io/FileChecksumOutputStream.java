@@ -33,19 +33,19 @@ public class FileChecksumOutputStream extends FilterOutputStream {
 
   @Override
   public void write(int b) throws IOException {
-    super.write(b);
+    out.write(b);
     chk.update(b);
   }
 
   @Override
   public void write(byte[] bytes) throws IOException {
-    super.write(bytes);
+    out.write(bytes);
     chk.update(bytes, 0, bytes.length);
   }
 
   @Override
   public void write(byte[] bytes, int off, int len) throws IOException {
-    super.write(bytes, off, len);
+    out.write(bytes, off, len);
     chk.update(bytes, off, len);
   }
 

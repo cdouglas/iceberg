@@ -23,8 +23,10 @@ import com.google.cloud.RestorableState;
 import com.google.cloud.WriteChannel;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Base64;
 import java.util.zip.Checksum;
 import org.apache.commons.codec.digest.PureJavaCrc32C;
+import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 
 public class CRCWriteChannel implements StorageWriteChannel {
 
@@ -61,7 +63,17 @@ public class CRCWriteChannel implements StorageWriteChannel {
   @Override
   public void close() throws IOException {
     if (crc32c != actual.getValue()) {
-      throw new IOException("CRC32C mismatch");
+      String expectedStr = Base64.getEncoder().encodeToString(Ints.toByteArray((int) crc32c));
+      String actualStr =
+          Base64.getEncoder().encodeToString(Ints.toByteArray((int) actual.getValue()));
+      throw new StorageException(
+          400,
+          "Wrapped StorageException",
+          new StorageException(
+              400,
+              String.format(
+                  "Provided CRC32C \\\"%s\\\" doesn't match calculated CRC32C \\\"%s\\\"",
+                  expectedStr, actualStr)));
     }
     out.close();
   }

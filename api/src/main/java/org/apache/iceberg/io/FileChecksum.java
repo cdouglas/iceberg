@@ -25,7 +25,7 @@ package org.apache.iceberg.io;
 public interface FileChecksum {
 
   default void update(int onebyte) {
-    update(new byte[] {(byte) onebyte});
+    update(new byte[] {(byte) onebyte}, 0, 1);
   }
 
   default void update(byte[] bytes) {

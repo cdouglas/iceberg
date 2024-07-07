@@ -31,6 +31,7 @@ import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
 import com.google.cloud.storage.testing.RemoteStorageHelper;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -42,13 +43,19 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.StreamSupport;
+import java.util.zip.CheckedOutputStream;
+import java.util.zip.Checksum;
+import org.apache.commons.io.output.NullOutputStream;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.PureJavaCrc32C;
 import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.common.DynMethods;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.InputFile;
@@ -83,7 +90,7 @@ public class GCSFileIOTest {
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
     final File credFile =
-        new File("/home/xchris/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
+        new File("/home/chrisx/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
     // final File credFile =
     //     new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
@@ -253,16 +260,81 @@ public class GCSFileIOTest {
     random.nextBytes(overbytes);
     final FileChecksum chk = overwrite.checksum();
     chk.update(overbytes, 0, 1024 * 1024);
-    IOException hackFailure =
+    StorageException hackFailure =
         Assertions.assertThrows(
-            IOException.class,
+            StorageException.class,
             () -> {
               try (OutputStream os = overwrite.createAtomic(chk, inputFile -> {})) {
                 IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
               }
             });
-    // HACK this is purely for the unit test, need to validate against GCP and change both to match
-    assertThat(hackFailure.getMessage()).isEqualTo("CRC32C mismatch");
+    // Error message validated against GCP
+    assertThat(hackFailure.getCause().getMessage())
+        .containsPattern(
+            Pattern.compile(
+                "Provided CRC32C \\\\\"[A-Za-z0-9+/=]+\\\\\" doesn't match calculated CRC32C \\\\\"[A-Za-z0-9+/=]+\\\\\""));
+  }
+
+  static class DbgChecksum implements Checksum {
+
+    @Override
+    public void update(int i) {
+      System.out.println("UPDATE(int): " + i);
+    }
+
+    @Override
+    public void update(byte[] bytes, int i, int i1) {
+      System.out.printf("UPDATE: %s (%d %d)%n", Arrays.toString(bytes), i, i1);
+    }
+
+    @Override
+    public long getValue() {
+      System.out.println("GETVALUE");
+      return 0;
+    }
+
+    @Override
+    public void reset() {
+      throw new UnsupportedOperationException("WTF?");
+    }
+  }
+
+  static class DbgFileChecksum implements FileChecksum {
+
+    @Override
+    public void update(byte[] bytes, int off, int len) {
+      System.out.printf("UPDATE: %s (%d %d)%n", Arrays.toString(bytes), off, len);
+    }
+
+    @Override
+    public byte[] asBytes() {
+      return new byte[0];
+    }
+
+    @Override
+    public String toHeaderString() {
+      return null;
+    }
+  }
+
+  @Test
+  public void testChecksumStream() throws IOException {
+    final byte[] somebytes = new byte[32];
+    final String utilcrc32c;
+    final ByteArrayInputStream in = new ByteArrayInputStream(somebytes);
+    try (CheckedOutputStream util =
+        new CheckedOutputStream(new NullOutputStream(), new PureJavaCrc32C())) {
+      util.write(somebytes);
+      utilcrc32c =
+          Base64.getEncoder().encodeToString(Ints.toByteArray((int) util.getChecksum().getValue()));
+    }
+    final String fccrc32c;
+    try (FileChecksumOutputStream fc =
+        new FileChecksumOutputStream(new NullOutputStream(), new GCSChecksum())) {
+      fc.write(somebytes);
+      fccrc32c = fc.getContentChecksum().toHeaderString();
+    }
+    assertThat(utilcrc32c).isEqualTo(fccrc32c);
   }
 
   @Test
