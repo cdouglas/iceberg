@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.io;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -32,7 +34,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiFunction;
 import java.util.stream.Collectors;
-import org.apache.commons.io.output.NullOutputStream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -50,6 +51,7 @@ public class CatalogFile {
   private final UUID uuid;
   private final Map<TableIdentifier, TableInfo> fqti; // fully qualified table identifiers
   private final Map<Namespace, Map<String, String>> namespaces;
+  private byte[] serBytes;
   private InputFile fromFile;
 
   private void setFromFile(InputFile fromFile) {
@@ -207,19 +209,19 @@ public class CatalogFile {
         final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
         merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
 
-        // TODO need to merge namespace properties
+        // TODO need to merge namespace properties?
         // TODO not using table versions...
 
-        CatalogFile catalog =
-            new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
-        try (OutputStream out =
-            outputFile.createAtomic(
-                catalog.checksum(outputFile.checksum()), catalog::setFromFile)) {
-          catalog.write(out);
+        try {
+          CatalogFile catalog =
+              new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
+          FileChecksum chk = catalog.checksum(outputFile.checksum());
+          InputFile newCatalog = outputFile.writeAtomic(chk, catalog::asBytes);
+          catalog.setFromFile(newCatalog);
+          return catalog;
         } catch (IOException e) {
           throw new CommitFailedException(e, "Failed to commit catalog file");
         }
-        return catalog;
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Cannot commit");
       }
@@ -310,15 +312,20 @@ public class CatalogFile {
     return Lists.newArrayList(fqti.keySet().iterator());
   }
 
-  public FileChecksum checksum(FileChecksum checksum) {
-    try (NullOutputStream nullOutputStream = new NullOutputStream();
+  private FileChecksum checksum(FileChecksum checksum) {
+    try (ByteArrayOutputStream bytes = new ByteArrayOutputStream(2048);
         FileChecksumOutputStream checkedOutputStream =
-            new FileChecksumOutputStream(nullOutputStream, checksum)) {
+            new FileChecksumOutputStream(bytes, checksum)) {
       write(checkedOutputStream);
-      return checksum;
+      serBytes = bytes.toByteArray();
     } catch (IOException e) {
       throw new CommitFailedException(e, "Failed to commit catalog file");
     }
+    return checksum;
+  }
+
+  private InputStream asBytes() {
+    return new ByteArrayInputStream(serBytes);
   }
 
   static CatalogFile read(InputFile catalogLocation) {

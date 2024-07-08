@@ -18,34 +18,26 @@
  */
 package org.apache.iceberg.azure.adlsv2;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
-import com.azure.storage.blob.models.BlobErrorCode;
-import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.ByteBuffer;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.Random;
 import java.util.UUID;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.catalog.CatalogTests;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.io.FileIOCatalog;
-import org.apache.iceberg.io.IOUtil;
-import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.ExtensionContext;
@@ -112,54 +104,15 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
     // TODO: remove test data if test passed
   }
 
-  public void newOutputFileMatchFail() throws IOException {
-    final String path = "path/to/file.txt";
-    final String location = AZURITE_CONTAINER.location(path);
-    final byte[] expected = new byte[1024 * 1024];
-    Random random = new Random();
-    random.nextBytes(expected);
-    ADLSFileIO io = createFileIO();
-
-    final OutputFile out = io.newOutputFile(location);
-    try (OutputStream os = out.createOrOverwrite()) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
-    }
-
-    final InputFile in = io.newInputFile(location);
-    assertThat(in.exists()).isTrue();
-    final byte[] actual = new byte[1024 * 1024];
-    try (InputStream is = in.newStream()) {
-      IOUtil.readFully(is, actual, 0, actual.length);
-    }
-    assertThat(actual).isEqualTo(expected);
-
-    // overwrite succeeds, because generation matches InputFile
-    final OutputFile overwrite = io.newOutputFile(in);
-    final byte[] overbytes = new byte[1024 * 1024];
-    random.nextBytes(overbytes);
-    try (OutputStream os = overwrite.createOrOverwrite()) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
-    }
-    // overwrite fails, object has been overwritten
-    BlobStorageException etagFailure =
-        Assertions.assertThrows(
-            BlobStorageException.class,
-            () -> {
-              try (InputStream is = in.newStream()) {
-                IOUtil.readFully(is, actual, 0, actual.length);
-              }
-            });
-    // precondition not met
-    assertThat(etagFailure.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
+  @Test
+  public void catalogFileTest() throws IOException {
+    catalog.createNamespace(Namespace.of("dingos"), new HashMap<>());
   }
 
   @BeforeEach
   public void before(TestInfo info) throws IOException {
     AZURITE_CONTAINER.createStorageContainer();
     ADLSFileIO io = createFileIO();
-    // XXX make sure this works
-    // newOutputFileMatchFail();
-    // XXX
 
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
     warehouseLocation =

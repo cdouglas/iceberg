@@ -21,8 +21,10 @@ package org.apache.iceberg.gcp.gcs;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
@@ -86,5 +88,25 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
   @Override
   public PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose) {
     return new GCSOutputStream(storage(), blobId(), gcpProperties(), metrics(), checksum, onClose);
+  }
+
+  @Override
+  public InputFile writeAtomic(FileChecksum checksum, final Supplier<InputStream> source)
+      throws IOException {
+    final InputFile[] ret = new InputFile[1]; // Java. FFS.
+    try (InputStream src = source.get()) {
+      // TODO remove createAtomic
+      try (PositionOutputStream dest = createAtomic(checksum, closed -> ret[0] = closed)) {
+        byte[] buf = new byte[gcpProperties().channelWriteChunkSize().orElse(32 * 1024)];
+        while (true) {
+          int r = src.read(buf);
+          if (r == -1) {
+            break;
+          }
+          dest.write(buf, 0, r);
+        }
+      }
+    }
+    return ret[0];
   }
 }

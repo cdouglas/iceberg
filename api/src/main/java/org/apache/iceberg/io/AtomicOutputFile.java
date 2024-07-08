@@ -18,7 +18,10 @@
  */
 package org.apache.iceberg.io;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public interface AtomicOutputFile extends OutputFile {
   FileChecksum checksum();
@@ -33,4 +36,6 @@ public interface AtomicOutputFile extends OutputFile {
    * @param onClose the callback to run on close
    */
   PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose);
+
+  InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source) throws IOException;
 }

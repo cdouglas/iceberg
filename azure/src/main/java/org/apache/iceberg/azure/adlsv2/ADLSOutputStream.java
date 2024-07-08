@@ -129,7 +129,6 @@ class ADLSOutputStream extends PositionOutputStream {
       stream.close();
     }
     // !#! TODO extract from close; find something to return a Result<>
-    // This is wrong, but GCP is broken, too?
     PathProperties properties = fileClient.getProperties();
     DataLakeRequestConditions invariant = new DataLakeRequestConditions();
     invariant.setIfMatch(properties.getETag());

@@ -89,7 +89,8 @@ public class GCSFileIOTest {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
-    final File credFile = new File("/home/chrisx/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
+    final File credFile =
+        new File("/home/chrisx/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
     // final File credFile =
     //     new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
@@ -130,7 +131,6 @@ public class GCSFileIOTest {
     }
   }
 
-  @SuppressWarnings("unchecked")
   @BeforeEach
   public void before(TestInfo info) {
     testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();

@@ -20,7 +20,11 @@ package org.apache.iceberg.azure.adlsv2;
 
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.io.AtomicOutputFile;
@@ -84,5 +88,11 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
   @Override
   public PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose) {
     return new ADLSOutputStream(fileClient(), azureProperties(), metrics(), checksum, onClose);
+  }
+
+  @Override
+  public InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
+      throws IOException {
+    throw new UnsupportedEncodingException();
   }
 }
