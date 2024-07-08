@@ -23,7 +23,6 @@ import com.google.cloud.storage.Storage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.gcp.GCPProperties;

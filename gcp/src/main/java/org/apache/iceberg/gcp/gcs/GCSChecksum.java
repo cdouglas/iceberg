@@ -26,11 +26,18 @@ import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 
 class GCSChecksum implements FileChecksum {
 
+  private long length = 0L;
   private final Checksum crc32c = new PureJavaCrc32C();
+
+  @Override
+  public long contentLength() {
+    return length;
+  }
 
   @Override
   public void update(byte[] bytes, int off, int len) {
     crc32c.update(bytes, off, len);
+    length += len;
   }
 
   @Override

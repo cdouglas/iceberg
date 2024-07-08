@@ -30,12 +30,22 @@ import static org.mockito.Mockito.when;
 
 import com.azure.core.http.rest.PagedIterable;
 import com.azure.core.http.rest.Response;
+import com.azure.core.util.Context;
 import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobStorageException;
+import com.azure.storage.file.datalake.DataLakeDirectoryClient;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
+import com.azure.storage.file.datalake.DataLakeServiceClient;
+import com.azure.storage.file.datalake.DataLakeServiceClientBuilder;
+import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.PathHttpHeaders;
+import com.azure.storage.file.datalake.models.PathInfo;
 import com.azure.storage.file.datalake.models.PathItem;
+import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -43,7 +53,9 @@ import java.nio.ByteBuffer;
 import java.time.OffsetDateTime;
 import java.util.Iterator;
 import java.util.Random;
+import java.util.UUID;
 import org.apache.iceberg.TestHelpers;
+import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.FileIO;
@@ -54,11 +66,34 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.testcontainers.shaded.com.fasterxml.jackson.databind.ObjectMapper;
 
 public class ADLSFileIOTest extends BaseAzuriteTest {
 
   private final Random random = new Random(1);
+  private static final Logger LOG = LoggerFactory.getLogger(ADLSFileIOTest.class);
+  private static String uniqTestRun = UUID.randomUUID().toString();
+
+  private AzureProperties azureProperties = null;
+
+  @BeforeAll
+  public static void initStorage() throws IOException {
+    uniqTestRun = UUID.randomUUID().toString();
+    LOG.info("TEST RUN: " + uniqTestRun);
+    AzureSAS creds = readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
+  }
+
+  @Override
+  protected ADLSFileIO createFileIO() {
+    if (null == azureProperties) {
+      return super.createFileIO();
+    }
+    return new ADLSFileIO(azureProperties);
+  }
 
   @Test
   public void testFileOperations() throws IOException {
@@ -210,6 +245,49 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
   }
 
   @Test
+  public void scratchADLS() {
+    // ADLSFileIO io = createFileIO();
+    // ADLSLocation loc = new ADLSLocation(AZURITE_CONTAINER.location("path/to/file.txt"));
+    // DataLakeFileClient client = io.client(loc).getFileClient(loc.path());
+    AzureSAS tok = readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
+    DataLakeServiceClient serviceClient =
+        new DataLakeServiceClientBuilder()
+            .endpoint(tok.getEndpoint())
+            .sasToken(tok.getSasToken())
+            .buildClient();
+    DataLakeFileSystemClient fsClient = serviceClient.getFileSystemClient("lst-ns-consistency");
+    DataLakeDirectoryClient dirClient = fsClient.getDirectoryClient("wtf");
+    DataLakeFileClient client = dirClient.getFileClient(UUID.randomUUID().toString());
+
+    final byte[] expected = new byte[1024 * 1024];
+    random.nextBytes(expected);
+
+    final Response<PathInfo> resp =
+        client.uploadWithResponse(
+            new FileParallelUploadOptions(new ByteArrayInputStream(expected)),
+            null, // no timeout
+            Context.NONE);
+    PathInfo info1 = resp.getValue();
+    System.out.println(info1.getETag());
+
+    final byte[] overbytes = new byte[1024 * 1024];
+    random.nextBytes(overbytes);
+    final FileChecksum chk = new ADLSChecksum();
+    chk.update(overbytes, 0, 1024 * 1024);
+
+    DataLakeRequestConditions cond2 = new DataLakeRequestConditions().setIfMatch(info1.getETag());
+    final Response<PathInfo> resp2 =
+        client.uploadWithResponse(
+            new FileParallelUploadOptions(new ByteArrayInputStream(overbytes))
+                .setRequestConditions(cond2)
+                .setHeaders(new PathHttpHeaders().setContentMd5(chk.asBytes())),
+            null, // no timeout
+            Context.NONE);
+    PathInfo info2 = resp.getValue();
+    System.out.println(info2.getETag());
+  }
+
+  @Test
   public void testBulkDeleteFiles() {
     String path1 = "path/to/file1";
     String location1 = AZURITE_CONTAINER.location(path1);
@@ -314,5 +392,35 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
     FileIO roundTripSerializedFileIO = TestHelpers.roundTripSerialize(testFileIO);
 
     assertThat(testFileIO.properties()).isEqualTo(roundTripSerializedFileIO.properties());
+  }
+
+  private static AzureSAS readCreds(File json) {
+    ObjectMapper objMapper = new ObjectMapper();
+    try (FileInputStream in = new FileInputStream(json)) {
+      return objMapper.readValue(in, AzureSAS.class);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  private static class AzureSAS {
+    private String endpoint;
+    private String sasToken;
+
+    public String getEndpoint() {
+      return endpoint;
+    }
+
+    public void setEndpoint(String endpoint) {
+      this.endpoint = endpoint;
+    }
+
+    public String getSasToken() {
+      return sasToken;
+    }
+
+    public void setSasToken(String sasToken) {
+      this.sasToken = sasToken;
+    }
   }
 }

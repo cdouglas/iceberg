@@ -38,7 +38,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Random;
@@ -46,7 +45,6 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.StreamSupport;
 import java.util.zip.CheckedOutputStream;
-import java.util.zip.Checksum;
 import org.apache.commons.io.output.NullOutputStream;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.PureJavaCrc32C;
@@ -273,48 +271,6 @@ public class GCSFileIOTest {
         .containsPattern(
             Pattern.compile(
                 "Provided CRC32C \\\\\"[A-Za-z0-9+/=]+\\\\\" doesn't match calculated CRC32C \\\\\"[A-Za-z0-9+/=]+\\\\\""));
-  }
-
-  static class DbgChecksum implements Checksum {
-
-    @Override
-    public void update(int i) {
-      System.out.println("UPDATE(int): " + i);
-    }
-
-    @Override
-    public void update(byte[] bytes, int i, int i1) {
-      System.out.printf("UPDATE: %s (%d %d)%n", Arrays.toString(bytes), i, i1);
-    }
-
-    @Override
-    public long getValue() {
-      System.out.println("GETVALUE");
-      return 0;
-    }
-
-    @Override
-    public void reset() {
-      throw new UnsupportedOperationException("WTF?");
-    }
-  }
-
-  static class DbgFileChecksum implements FileChecksum {
-
-    @Override
-    public void update(byte[] bytes, int off, int len) {
-      System.out.printf("UPDATE: %s (%d %d)%n", Arrays.toString(bytes), off, len);
-    }
-
-    @Override
-    public byte[] asBytes() {
-      return new byte[0];
-    }
-
-    @Override
-    public String toHeaderString() {
-      return null;
-    }
   }
 
   @Test

@@ -18,12 +18,16 @@
  */
 package org.apache.iceberg.azure.adlsv2;
 
+import com.azure.core.http.rest.Response;
+import com.azure.core.util.Context;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.PathHttpHeaders;
+import com.azure.storage.file.datalake.models.PathInfo;
+import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
-import java.util.function.Consumer;
+import java.io.UncheckedIOException;
 import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -31,6 +35,7 @@ import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
 
 class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
@@ -86,8 +91,33 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
   }
 
   @Override
-  public InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
+  public ADLSInputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
       throws IOException {
-    throw new UnsupportedEncodingException();
+    final Response<PathInfo> resp;
+    try (InputStream src = source.get()) {
+      resp =
+          fileClient()
+              .uploadWithResponse(
+                  new FileParallelUploadOptions(src, checksum().contentLength())
+                      .setRequestConditions(conditions)
+                      .setHeaders(
+                          new PathHttpHeaders()
+                              .setContentMd5(checksum.asBytes())
+                              .setContentType("binary")),
+                  null, // no timeout
+                  Context.NONE);
+    } catch (UncheckedIOException e) {
+      // TODO unwrap, only throw on precondition failure
+      throw new SupportsAtomicOperations.CASException("Target modified", e);
+    }
+    // TODO can assume this succeeded? Documentation is not clear
+    PathInfo info = resp.getValue();
+    return new ADLSInputFile(
+        location(),
+        checksum.contentLength(),
+        fileClient(),
+        azureProperties(),
+        metrics(),
+        new DataLakeRequestConditions().setIfMatch(info.getETag()));
   }
 }

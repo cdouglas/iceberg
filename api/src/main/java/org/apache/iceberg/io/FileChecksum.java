@@ -24,6 +24,8 @@ package org.apache.iceberg.io;
  */
 public interface FileChecksum {
 
+  long length = 0L;
+
   default void update(int onebyte) {
     update(new byte[] {(byte) onebyte}, 0, 1);
   }
@@ -31,6 +33,8 @@ public interface FileChecksum {
   default void update(byte[] bytes) {
     update(bytes, 0, bytes.length);
   }
+
+  long contentLength();
 
   void update(byte[] bytes, int off, int len);
 

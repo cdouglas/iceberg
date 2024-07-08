@@ -24,6 +24,7 @@ import java.util.Base64;
 import org.apache.iceberg.io.FileChecksum;
 
 public class ADLSChecksum implements FileChecksum {
+  private long length = 0L;
   private final MessageDigest checksum = getMD5DigestInstance();
 
   private static MessageDigest getMD5DigestInstance() {
@@ -35,8 +36,14 @@ public class ADLSChecksum implements FileChecksum {
   }
 
   @Override
+  public long contentLength() {
+    return length;
+  }
+
+  @Override
   public void update(byte[] bytes, int off, int len) {
     checksum.update(bytes, off, len);
+    length += len;
   }
 
   @Override

@@ -152,7 +152,7 @@ class GCSOutputStream extends PositionOutputStream {
       if (e.getCode() == 412) { // precondition failed
         // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
         // note: LocalStorageHelper throws 404,
-        throw new SupportsAtomicOperations.CASException("File was modified during write", e);
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
       throw e;
     }
@@ -180,7 +180,7 @@ class GCSOutputStream extends PositionOutputStream {
       if (e.getCode() == 412) { // precondition failed
         // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
         // note: LocalStorageHelper throws 404,
-        throw new SupportsAtomicOperations.CASException("File was modified during write", e);
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
       throw e;
     }
