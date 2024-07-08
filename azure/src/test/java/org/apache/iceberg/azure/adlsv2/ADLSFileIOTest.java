@@ -35,12 +35,12 @@ import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
 import com.azure.storage.file.datalake.models.PathItem;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.time.OffsetDateTime;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Random;
 import org.apache.iceberg.TestHelpers;
@@ -202,9 +202,8 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
         Assertions.assertThrows(
             IOException.class,
             () -> {
-              try (OutputStream os = overwrite.createAtomic(chk, inputFile -> {})) {
-                IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
-              }
+              // partial write
+              overwrite.writeAtomic(chk, () -> new ByteArrayInputStream(overbytes, 0, 512 * 1024));
             });
     BlobStorageException blobChkErr = (BlobStorageException) chkFailure.getCause();
     assertThat(blobChkErr.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);

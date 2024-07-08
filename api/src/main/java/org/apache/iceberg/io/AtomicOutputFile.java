@@ -20,22 +20,20 @@ package org.apache.iceberg.io;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public interface AtomicOutputFile extends OutputFile {
+  /** Checksum expected by this object store, bridging (in Java8) Checksum and Digest APIs. */
   FileChecksum checksum();
 
   /**
-   * Create a stream that- if the content written matches the checksum- will replace this file.
-   * Callback may return the InputFile corresponding to what was written, on close. This API is bad;
-   * the semantics are ambiguous. The callback only happens if the file closes. The V2 APIs include
-   * a Future-like API, which should admit a cleaner API.
+   * Atomically replace the contents of the target AtomicOutputFile using the contents of the stream
+   * provided, only if the content checksum matches.
    *
-   * @param checksum the checksum to validate the content
-   * @param onClose the callback to run on close
+   * @param checksum Checksum provided to the underlying store for validation
+   * @param source Function invoked to obtain an InputStream to copy to the destination
+   * @return an {@link InputFile} with metadata identifying the file written, could be used in a
+   *     subsequent call to {@link SupportsAtomicOperations#newOutputFile(InputFile)}
    */
-  PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose);
-
   InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source) throws IOException;
 }

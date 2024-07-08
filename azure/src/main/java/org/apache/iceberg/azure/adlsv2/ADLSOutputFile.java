@@ -86,11 +86,6 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
   }
 
   @Override
-  public PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose) {
-    return new ADLSOutputStream(fileClient(), azureProperties(), metrics(), checksum, onClose);
-  }
-
-  @Override
   public InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
       throws IOException {
     throw new UnsupportedEncodingException();

@@ -86,17 +86,19 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
   }
 
   @Override
-  public PositionOutputStream createAtomic(FileChecksum checksum, Consumer<InputFile> onClose) {
-    return new GCSOutputStream(storage(), blobId(), gcpProperties(), metrics(), checksum, onClose);
-  }
-
-  @Override
   public InputFile writeAtomic(FileChecksum checksum, final Supplier<InputStream> source)
       throws IOException {
     final InputFile[] ret = new InputFile[1]; // Java. FFS.
     try (InputStream src = source.get()) {
-      // TODO remove createAtomic
-      try (PositionOutputStream dest = createAtomic(checksum, closed -> ret[0] = closed)) {
+      // TODO onClose is from a previous implementation; define a less clunky internal API
+      try (PositionOutputStream dest =
+          new GCSOutputStream(
+              storage(),
+              blobId(),
+              gcpProperties(),
+              metrics(),
+              checksum,
+              closed -> ret[0] = closed)) {
         byte[] buf = new byte[gcpProperties().channelWriteChunkSize().orElse(32 * 1024)];
         while (true) {
           int r = src.read(buf);

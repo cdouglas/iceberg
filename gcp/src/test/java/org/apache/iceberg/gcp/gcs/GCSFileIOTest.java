@@ -226,7 +226,7 @@ public class GCSFileIOTest {
     }
     // overwrite fails, object has been overwritten
     // TODO: disparity beteen local/remote. Remote fails with CASException wrapping a 412
-    // precondition failed StorageException
+    // TODO: precondition failed StorageException
     StorageException generationFailure =
         Assertions.assertThrows(
             StorageException.class,
@@ -265,9 +265,8 @@ public class GCSFileIOTest {
         Assertions.assertThrows(
             StorageException.class,
             () -> {
-              try (OutputStream os = overwrite.createAtomic(chk, inputFile -> {})) {
-                IOUtil.writeFully(os, ByteBuffer.wrap(Arrays.copyOf(overbytes, 512 * 1024)));
-              }
+              // partial write
+              overwrite.writeAtomic(chk, () -> new ByteArrayInputStream(overbytes, 0, 512 * 1024));
             });
     // Error message validated against GCP
     assertThat(hackFailure.getCause().getMessage())
