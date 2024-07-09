@@ -29,7 +29,8 @@ import java.io.UncheckedIOException;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
 
-public class AzuriteContainer extends GenericContainer<AzuriteContainer> {
+public class AzuriteContainer extends GenericContainer<AzuriteContainer>
+    implements LocationResolver {
 
   private static final int DEFAULT_PORT = 10000; // default blob service port
   private static final String DEFAULT_IMAGE = "mcr.microsoft.com/azure-storage/azurite";
@@ -60,6 +61,7 @@ public class AzuriteContainer extends GenericContainer<AzuriteContainer> {
     serviceClient().deleteFileSystem(STORAGE_CONTAINER);
   }
 
+  @Override
   public void createFile(String path, byte[] data) {
     try (OutputStream out = fileClient(path).getOutputStream()) {
       out.write(data);
@@ -68,6 +70,7 @@ public class AzuriteContainer extends GenericContainer<AzuriteContainer> {
     }
   }
 
+  @Override
   public DataLakeServiceClient serviceClient() {
     return new DataLakeServiceClientBuilder()
         .endpoint(endpoint())
@@ -75,6 +78,7 @@ public class AzuriteContainer extends GenericContainer<AzuriteContainer> {
         .buildClient();
   }
 
+  @Override
   public DataLakeFileClient fileClient(String path) {
     return new DataLakePathClientBuilder()
         .endpoint(endpoint())
@@ -84,10 +88,22 @@ public class AzuriteContainer extends GenericContainer<AzuriteContainer> {
         .buildFileClient();
   }
 
+  @Override
+  public String container() {
+    return STORAGE_CONTAINER;
+  }
+
+  @Override
+  public String account() {
+    return ACCOUNT;
+  }
+
+  @Override
   public String location(String path) {
     return String.format("abfs://%s@%s.dfs.core.windows.net/%s", STORAGE_CONTAINER, ACCOUNT, path);
   }
 
+  @Override
   public String endpoint() {
     return String.format("http://%s:%d/%s", getHost(), getMappedPort(DEFAULT_PORT), ACCOUNT);
   }

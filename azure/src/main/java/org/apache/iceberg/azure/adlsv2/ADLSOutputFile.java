@@ -98,7 +98,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       resp =
           fileClient()
               .uploadWithResponse(
-                  new FileParallelUploadOptions(src, checksum().contentLength())
+                  new FileParallelUploadOptions(src, checksum.contentLength())
                       .setRequestConditions(conditions)
                       .setHeaders(
                           new PathHttpHeaders()
