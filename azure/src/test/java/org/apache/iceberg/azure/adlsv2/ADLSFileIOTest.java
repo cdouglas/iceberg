@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -37,6 +38,7 @@ import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.file.datalake.DataLakeDirectoryClient;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
+import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
 import com.azure.storage.file.datalake.DataLakeServiceClient;
 import com.azure.storage.file.datalake.DataLakeServiceClientBuilder;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
@@ -44,7 +46,6 @@ import com.azure.storage.file.datalake.models.PathHttpHeaders;
 import com.azure.storage.file.datalake.models.PathInfo;
 import com.azure.storage.file.datalake.models.PathItem;
 import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -68,13 +69,17 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class ADLSFileIOTest extends BaseAzuriteTest {
+public class ADLSFileIOTest {
+  protected static AzuriteContainer AZURITE_CONTAINER = null;
 
   private final Random random = new Random(1);
   private static final Logger LOG = LoggerFactory.getLogger(ADLSFileIOTest.class);
@@ -87,26 +92,55 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
   public static void initStorage() throws IOException {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
-    AzureSAS creds =
-        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
+    AzureSAS creds = AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/sas-lstnsgym.json"));
     if (creds != null) {
       Map<String, String> sascfg = Maps.newHashMap();
       sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lst-ns-consistency", creds.sasToken);
-      // sascfg.put(
-      //     AzureProperties.ADLS_CONNECTION_STRING_PREFIX + storageAccount +
-      // ".dfs.core.windows.net",
-      //     creds.connectionString);
       azureProperties = new AzureProperties(sascfg);
       az = new AzureSAS.SasResolver(creds);
     } else {
+      AZURITE_CONTAINER = new AzuriteContainer();
+      AZURITE_CONTAINER.start();
       az = AZURITE_CONTAINER;
     }
   }
 
-  @Override
+  @AfterAll
+  public static void afterAll() {
+    if (AZURITE_CONTAINER != null) {
+      AZURITE_CONTAINER.stop();
+    }
+  }
+
+  @BeforeEach
+  public void baseBefore() {
+    if (AZURITE_CONTAINER != null) {
+      AZURITE_CONTAINER.createStorageContainer();
+    }
+  }
+
+  @AfterEach
+  public void baseAfter() {
+    if (AZURITE_CONTAINER != null) {
+      AZURITE_CONTAINER.deleteStorageContainer();
+    }
+  }
+
   protected ADLSFileIO createFileIO() {
     if (null == azureProperties) {
-      return super.createFileIO();
+      AzureProperties azureProps = spy(new AzureProperties());
+
+      doAnswer(
+              invoke -> {
+                DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
+                clientBuilder.endpoint(AZURITE_CONTAINER.endpoint());
+                clientBuilder.credential(AZURITE_CONTAINER.credential());
+                return null;
+              })
+          .when(azureProps)
+          .applyClientConfiguration(any(), any());
+
+      return new ADLSFileIO(azureProps);
     }
     return new ADLSFileIO(azureProperties);
   }

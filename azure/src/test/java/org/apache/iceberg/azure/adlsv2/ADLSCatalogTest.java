@@ -62,10 +62,9 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
   public static void initStorage() {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: {}", uniqTestRun);
-    AzureSAS creds =
-        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
+    AzureSAS creds = AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/sas-lstnsgym.json"));
     if (creds != null) {
-      Map<String, String> sascfg = new HashMap<>();
+      Map<String, String> sascfg = Maps.newHashMap();
       sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lst-ns-consistency", creds.sasToken);
       azureProperties = new AzureProperties(sascfg);
       az = new AzureSAS.SasResolver(creds);
