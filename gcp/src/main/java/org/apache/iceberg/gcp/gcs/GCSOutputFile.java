@@ -100,11 +100,11 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
               closed -> ret[0] = closed)) {
         byte[] buf = new byte[gcpProperties().channelWriteChunkSize().orElse(32 * 1024)];
         while (true) {
-          int r = src.read(buf);
-          if (r == -1) {
+          int nread = src.read(buf);
+          if (nread == -1) {
             break;
           }
-          dest.write(buf, 0, r);
+          dest.write(buf, 0, nread);
         }
       }
     }

@@ -45,6 +45,7 @@ import com.azure.storage.file.datalake.models.PathHttpHeaders;
 import com.azure.storage.file.datalake.models.PathInfo;
 import com.azure.storage.file.datalake.models.PathItem;
 import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -55,7 +56,6 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.time.OffsetDateTime;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Random;
@@ -71,12 +71,12 @@ import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.shaded.com.fasterxml.jackson.databind.ObjectMapper;
 
 public class ADLSFileIOTest extends BaseAzuriteTest {
 
@@ -94,7 +94,7 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
     LOG.info("TEST RUN: " + uniqTestRun);
     AzureSAS creds = readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
     if (creds != null) {
-      Map<String, String> sascfg = new HashMap<>();
+      Map<String, String> sascfg = Maps.newHashMap();
       sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lst-ns-consistency", creds.sasToken);
       sascfg.put(
           AzureProperties.ADLS_CONNECTION_STRING_PREFIX + storageAccount + ".dfs.core.windows.net",
@@ -309,7 +309,11 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
               // partial write
               overwrite.writeAtomic(chk, () -> new ByteArrayInputStream(overbytes, 0, 512 * 1024));
             });
-    assertThat(chkFailure.getMessage()).isEqualTo(String.format("Request body emitted %d bytes, less than the expected %d bytes.", 512 * 1024, 1024 *1024));
+    assertThat(chkFailure.getMessage())
+        .isEqualTo(
+            String.format(
+                "Request body emitted %d bytes, less than the expected %d bytes.",
+                512 * 1024, 1024 * 1024));
   }
 
   @Test

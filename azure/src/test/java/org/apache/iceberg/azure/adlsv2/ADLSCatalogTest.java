@@ -24,7 +24,6 @@ import static org.mockito.Mockito.spy;
 
 import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import org.apache.iceberg.CatalogProperties;
@@ -106,7 +105,7 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @Test
   public void catalogFileTest() throws IOException {
-    catalog.createNamespace(Namespace.of("dingos"), new HashMap<>());
+    catalog.createNamespace(Namespace.of("dingos"), Maps.newHashMap());
   }
 
   @BeforeEach
