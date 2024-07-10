@@ -37,7 +37,6 @@ import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.file.datalake.DataLakeDirectoryClient;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
-import com.azure.storage.file.datalake.DataLakePathClientBuilder;
 import com.azure.storage.file.datalake.DataLakeServiceClient;
 import com.azure.storage.file.datalake.DataLakeServiceClientBuilder;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
@@ -48,12 +47,9 @@ import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.time.OffsetDateTime;
 import java.util.Iterator;
@@ -89,18 +85,19 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
 
   @BeforeAll
   public static void initStorage() throws IOException {
-    final String storageAccount = "lstnsgym";
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
-    AzureSAS creds = readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
+    AzureSAS creds =
+        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
     if (creds != null) {
       Map<String, String> sascfg = Maps.newHashMap();
       sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lst-ns-consistency", creds.sasToken);
-      sascfg.put(
-          AzureProperties.ADLS_CONNECTION_STRING_PREFIX + storageAccount + ".dfs.core.windows.net",
-          "");
+      // sascfg.put(
+      //     AzureProperties.ADLS_CONNECTION_STRING_PREFIX + storageAccount +
+      // ".dfs.core.windows.net",
+      //     creds.connectionString);
       azureProperties = new AzureProperties(sascfg);
-      az = new SasResolver(creds);
+      az = new AzureSAS.SasResolver(creds);
     } else {
       az = AZURITE_CONTAINER;
     }
@@ -112,56 +109,6 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
       return super.createFileIO();
     }
     return new ADLSFileIO(azureProperties);
-  }
-
-  static class SasResolver implements LocationResolver {
-
-    private final String sasToken;
-    private final String endpoint;
-    private final String connStr;
-    private final String account;
-    private final String container;
-
-    SasResolver(AzureSAS fromJson) {
-      this.endpoint = fromJson.endpoint;
-      this.sasToken = fromJson.sasToken;
-      this.connStr = fromJson.connectionString;
-      this.account = fromJson.account;
-      this.container = fromJson.container;
-    }
-
-    @Override
-    public String endpoint() {
-      return endpoint;
-    }
-
-    @Override
-    public DataLakeFileClient fileClient(String path) {
-      return new DataLakePathClientBuilder()
-          .endpoint(endpoint())
-          .sasToken(sasToken)
-          .fileSystemName(container())
-          .pathName(path)
-          .buildFileClient();
-    }
-
-    @Override
-    public DataLakeServiceClient serviceClient() {
-      return new DataLakeServiceClientBuilder()
-          .endpoint(endpoint())
-          .sasToken(sasToken)
-          .buildClient();
-    }
-
-    @Override
-    public String account() {
-      return account;
-    }
-
-    @Override
-    public String container() {
-      return container;
-    }
   }
 
   @Test
@@ -321,7 +268,7 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
     // ADLSFileIO io = createFileIO();
     // ADLSLocation loc = new ADLSLocation(AZURITE_CONTAINER.location("path/to/file.txt"));
     // DataLakeFileClient client = io.client(loc).getFileClient(loc.path());
-    AzureSAS tok = readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
+    AzureSAS tok = AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
     DataLakeServiceClient serviceClient =
         new DataLakeServiceClientBuilder()
             .endpoint(tok.endpoint)
@@ -464,44 +411,5 @@ public class ADLSFileIOTest extends BaseAzuriteTest {
     FileIO roundTripSerializedFileIO = TestHelpers.roundTripSerialize(testFileIO);
 
     assertThat(testFileIO.properties()).isEqualTo(roundTripSerializedFileIO.properties());
-  }
-
-  private static AzureSAS readCreds(File json) {
-    ObjectMapper objMapper = new ObjectMapper();
-    try (FileInputStream in = new FileInputStream(json)) {
-      return objMapper.readValue(in, AzureSAS.class);
-    } catch (FileNotFoundException e) {
-      return null;
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
-  }
-
-  private static class AzureSAS {
-    String endpoint;
-    String sasToken;
-    String connectionString;
-    String account;
-    String container;
-
-    public void setAccount(String account) {
-      this.account = account;
-    }
-
-    public void setContainer(String container) {
-      this.container = container;
-    }
-
-    public void setEndpoint(String endpoint) {
-      this.endpoint = endpoint;
-    }
-
-    public void setSasToken(String sasToken) {
-      this.sasToken = sasToken;
-    }
-
-    public void setConnectionString(String connectionString) {
-      this.connectionString = connectionString;
-    }
   }
 }

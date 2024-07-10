@@ -23,6 +23,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
 import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
+import java.io.File;
 import java.io.IOException;
 import java.util.Map;
 import java.util.UUID;
@@ -48,47 +49,47 @@ import org.slf4j.LoggerFactory;
 public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
   private static final Logger LOG = LoggerFactory.getLogger(ADLSCatalogTest.class);
-  protected static final AzuriteContainer AZURITE_CONTAINER = new AzuriteContainer();
+  protected static AzuriteContainer AZURITE_CONTAINER = null;
 
+  private static AzureProperties azureProperties;
   private FileIOCatalog catalog;
   private static String warehouseLocation;
   private static String uniqTestRun;
+  private static LocationResolver az;
 
   // copied from BaseAzuriteTest (needs to extend CatalogTests)
   @BeforeAll
-  public static void beforeAll() {
-    AZURITE_CONTAINER.start();
+  public static void initStorage() {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: {}", uniqTestRun);
+    AzureSAS creds =
+        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
+    if (creds != null) {
+      Map<String, String> sascfg = new HashMap<>();
+      sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lst-ns-consistency", creds.sasToken);
+      azureProperties = new AzureProperties(sascfg);
+      az = new AzureSAS.SasResolver(creds);
+    } else {
+      AZURITE_CONTAINER = new AzuriteContainer();
+      AZURITE_CONTAINER.start();
+      az = AZURITE_CONTAINER;
+    }
     // show ridiculous stack traces
     // Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
   }
 
   @AfterAll
   public static void afterAll() {
-    AZURITE_CONTAINER.stop();
+    if (AZURITE_CONTAINER != null) {
+      AZURITE_CONTAINER.stop();
+    }
   }
 
   @AfterEach
   public void baseAfter() {
-    AZURITE_CONTAINER.deleteStorageContainer();
-  }
-
-  protected ADLSFileIO createFileIO() {
-    final AzureProperties azureProps;
-    if (true) {
-      azureProps = spy(new AzureProperties());
-      doAnswer(
-              invoke -> {
-                DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
-                clientBuilder.endpoint(AZURITE_CONTAINER.endpoint());
-                clientBuilder.credential(AZURITE_CONTAINER.credential());
-                return null;
-              })
-          .when(azureProps)
-          .applyClientConfiguration(any(), any());
+    if (AZURITE_CONTAINER != null) {
+      AZURITE_CONTAINER.deleteStorageContainer();
     }
-    return new ADLSFileIO(azureProps);
   }
 
   // Don't keep artifacts from successful tests
@@ -110,12 +111,26 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @BeforeEach
   public void before(TestInfo info) throws IOException {
-    AZURITE_CONTAINER.createStorageContainer();
-    ADLSFileIO io = createFileIO();
+    final ADLSFileIO io;
+    if (null == azureProperties) {
+      AZURITE_CONTAINER.createStorageContainer();
+      final AzureProperties azureProps = spy(new AzureProperties());
+      doAnswer(
+              invoke -> {
+                DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
+                clientBuilder.endpoint(AZURITE_CONTAINER.endpoint());
+                clientBuilder.credential(AZURITE_CONTAINER.credential());
+                return null;
+              })
+          .when(azureProps)
+          .applyClientConfiguration(any(), any());
+      io = new ADLSFileIO(azureProps);
+    } else {
+      io = new ADLSFileIO(azureProperties);
+    }
 
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
-    warehouseLocation =
-        AZURITE_CONTAINER.location(TEST_BUCKET + "/" + uniqTestRun + "/" + testName);
+    warehouseLocation = az.location(TEST_BUCKET + "/" + uniqTestRun + "/" + testName);
     cleanupWarehouseLocation();
 
     final Map<String, String> properties = Maps.newHashMap();
