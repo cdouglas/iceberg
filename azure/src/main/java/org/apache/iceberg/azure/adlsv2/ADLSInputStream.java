@@ -79,8 +79,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
     this.pathProperties = openStream(conditions);
     // !#! XXX can't find this in the documentation, try it out
     if (this.fileSize != pathProperties.getFileSize()) {
-      throw new IllegalStateException(
-          "Evidently PathProperties gets the current length, not limtied to spec in opt");
+      throw new IllegalStateException("Evidently PathProperties gets the current length");
     }
   }
 

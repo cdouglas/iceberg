@@ -47,7 +47,7 @@ import org.junit.jupiter.api.extension.TestWatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class FileIOCatalogTransactionTests extends CatalogTransactionTests<FileIOCatalog> {
+public class GCSFileIOCatalogTransactionTests extends CatalogTransactionTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
   private static final Logger LOG = LoggerFactory.getLogger(GCSCatalogTest.class);
 
@@ -78,9 +78,7 @@ public class FileIOCatalogTransactionTests extends CatalogTransactionTests<FileI
     uniqTestRun = randomAlphabetic(8);
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
-    // final File credFile =
-    //    new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
-    final File credFile = new File("/home/chris/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
+    final File credFile = new File("/IdeaProjects/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
       try (FileInputStream creds = new FileInputStream(credFile)) {
         storage = RemoteStorageHelper.create("lst-consistency", creds).getOptions().getService();

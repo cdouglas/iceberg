@@ -85,7 +85,7 @@ public class ADLSFileIOTest {
   private static final Logger LOG = LoggerFactory.getLogger(ADLSFileIOTest.class);
   private static String uniqTestRun = UUID.randomUUID().toString();
 
-  private static AzureProperties azureProperties = null;
+  private static Map<String, String> azureProperties = null;
   private static LocationResolver az;
 
   @BeforeAll
@@ -94,10 +94,11 @@ public class ADLSFileIOTest {
     LOG.info("TEST RUN: " + uniqTestRun);
     AzureSAS creds = AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/sas-lstnsgym.json"));
     if (creds != null) {
-      Map<String, String> sascfg = Maps.newHashMap();
-      sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lstnsgym.dfs.core.windows.net", creds.sasToken);
-      // sascfg.put(AzureProperties.ADLS_CONNECTION_STRING_PREFIX + "lstnsgym.dfs.core.windows.net", creds.connectionString);
-      azureProperties = new AzureProperties(sascfg);
+      azureProperties = Maps.newHashMap();
+      azureProperties.put(
+          AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lstnsgym.dfs.core.windows.net", creds.sasToken);
+      // sascfg.put(AzureProperties.ADLS_CONNECTION_STRING_PREFIX + "lstnsgym.dfs.core.windows.net",
+      // creds.connectionString);
       az = new AzureSAS.SasResolver(creds);
     } else {
       AZURITE_CONTAINER = new AzuriteContainer();

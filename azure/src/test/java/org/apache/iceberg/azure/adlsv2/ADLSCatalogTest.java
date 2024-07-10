@@ -33,6 +33,7 @@ import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -51,7 +52,7 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final Logger LOG = LoggerFactory.getLogger(ADLSCatalogTest.class);
   protected static AzuriteContainer AZURITE_CONTAINER = null;
 
-  private static AzureProperties azureProperties;
+  private static Map<String, String> azureProperties;
   private FileIOCatalog catalog;
   private static String warehouseLocation;
   private static String uniqTestRun;
@@ -64,17 +65,19 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
     LOG.info("TEST RUN: {}", uniqTestRun);
     AzureSAS creds = AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/sas-lstnsgym.json"));
     if (creds != null) {
-      Map<String, String> sascfg = Maps.newHashMap();
-      sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lst-ns-consistency", creds.sasToken);
-      azureProperties = new AzureProperties(sascfg);
+      azureProperties = Maps.newHashMap();
+      azureProperties.put(
+          AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lstnsgym.dfs.core.windows.net", creds.sasToken);
       az = new AzureSAS.SasResolver(creds);
+      LOG.info("Using remote storage");
     } else {
       AZURITE_CONTAINER = new AzuriteContainer();
       AZURITE_CONTAINER.start();
       az = AZURITE_CONTAINER;
+      LOG.info("Using local storage");
     }
     // show ridiculous stack traces
-    // Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
+    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
   }
 
   @AfterAll

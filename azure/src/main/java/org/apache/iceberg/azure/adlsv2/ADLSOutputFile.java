@@ -22,12 +22,12 @@ import com.azure.core.http.rest.Response;
 import com.azure.core.util.Context;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import com.azure.storage.file.datalake.models.PathHttpHeaders;
 import com.azure.storage.file.datalake.models.PathInfo;
 import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -93,8 +93,12 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
   @Override
   public ADLSInputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
       throws IOException {
+    // Annoyingly, the checksum is not validated server-side, but stored as metadata. The
+    // partial-write
+    // problem is less of an issue using an InputStream, so the length validation can suffice
     final Response<PathInfo> resp;
     try (InputStream src = source.get()) {
+      // TODO local runner doesn't support this API, testcontainer path will fail
       resp =
           fileClient()
               .uploadWithResponse(
@@ -106,18 +110,20 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
                               .setContentType("binary")),
                   null, // no timeout
                   Context.NONE);
-    } catch (UncheckedIOException e) {
-      // TODO unwrap, only throw on precondition failure
-      throw new SupportsAtomicOperations.CASException("Target modified", e);
+      final PathInfo info = resp.getValue();
+      return new ADLSInputFile(
+          location(),
+          checksum.contentLength(),
+          fileClient(),
+          azureProperties(),
+          metrics(),
+          new DataLakeRequestConditions().setIfMatch(info.getETag()));
+    } catch (DataLakeStorageException e) {
+      if (412 == e.getStatusCode()) {
+        // precondition failed
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
+      }
+      throw e;
     }
-    // TODO can assume this succeeded? Documentation is not clear
-    PathInfo info = resp.getValue();
-    return new ADLSInputFile(
-        location(),
-        checksum.contentLength(),
-        fileClient(),
-        azureProperties(),
-        metrics(),
-        new DataLakeRequestConditions().setIfMatch(info.getETag()));
   }
 }
