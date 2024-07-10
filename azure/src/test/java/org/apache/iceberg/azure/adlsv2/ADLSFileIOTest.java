@@ -95,7 +95,8 @@ public class ADLSFileIOTest {
     AzureSAS creds = AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/sas-lstnsgym.json"));
     if (creds != null) {
       Map<String, String> sascfg = Maps.newHashMap();
-      sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lst-ns-consistency", creds.sasToken);
+      sascfg.put(AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lstnsgym.dfs.core.windows.net", creds.sasToken);
+      // sascfg.put(AzureProperties.ADLS_CONNECTION_STRING_PREFIX + "lstnsgym.dfs.core.windows.net", creds.connectionString);
       azureProperties = new AzureProperties(sascfg);
       az = new AzureSAS.SasResolver(creds);
     } else {
@@ -302,7 +303,7 @@ public class ADLSFileIOTest {
     // ADLSFileIO io = createFileIO();
     // ADLSLocation loc = new ADLSLocation(AZURITE_CONTAINER.location("path/to/file.txt"));
     // DataLakeFileClient client = io.client(loc).getFileClient(loc.path());
-    AzureSAS tok = AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/sas-lstnsgym.json"));
+    AzureSAS tok = AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/sas-lstnsgym.json"));
     DataLakeServiceClient serviceClient =
         new DataLakeServiceClientBuilder()
             .endpoint(tok.endpoint)
