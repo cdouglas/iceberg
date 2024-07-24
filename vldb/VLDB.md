@@ -140,7 +140,7 @@ flowchart LR
 
 </div>
 
-## Trick details
+## Optimization details
 
 ### Append
 
