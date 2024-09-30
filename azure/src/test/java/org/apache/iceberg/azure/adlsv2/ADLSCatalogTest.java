@@ -50,7 +50,7 @@ import org.slf4j.LoggerFactory;
 public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
   private static final Logger LOG = LoggerFactory.getLogger(ADLSCatalogTest.class);
-  protected static AzuriteContainer AZURITE_CONTAINER = null;
+  protected static AzuriteContainer azuriteContainer = null;
 
   private static Map<String, String> azureProperties;
   private FileIOCatalog catalog;
@@ -71,9 +71,9 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
       az = new AzureSAS.SasResolver(creds);
       LOG.info("Using remote storage");
     } else {
-      AZURITE_CONTAINER = new AzuriteContainer();
-      AZURITE_CONTAINER.start();
-      az = AZURITE_CONTAINER;
+      azuriteContainer = new AzuriteContainer();
+      azuriteContainer.start();
+      az = azuriteContainer;
       LOG.info("Using local storage");
     }
     // show ridiculous stack traces
@@ -82,15 +82,15 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @AfterAll
   public static void afterAll() {
-    if (AZURITE_CONTAINER != null) {
-      AZURITE_CONTAINER.stop();
+    if (azuriteContainer != null) {
+      azuriteContainer.stop();
     }
   }
 
   @AfterEach
   public void baseAfter() {
-    if (AZURITE_CONTAINER != null) {
-      AZURITE_CONTAINER.deleteStorageContainer();
+    if (azuriteContainer != null) {
+      azuriteContainer.deleteStorageContainer();
     }
   }
 
@@ -115,13 +115,13 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
   public void before(TestInfo info) throws IOException {
     final ADLSFileIO io;
     if (null == azureProperties) {
-      AZURITE_CONTAINER.createStorageContainer();
+      azuriteContainer.createStorageContainer();
       final AzureProperties azureProps = spy(new AzureProperties());
       doAnswer(
               invoke -> {
                 DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
-                clientBuilder.endpoint(AZURITE_CONTAINER.endpoint());
-                clientBuilder.credential(AZURITE_CONTAINER.credential());
+                clientBuilder.endpoint(azuriteContainer.endpoint());
+                clientBuilder.credential(azuriteContainer.credential());
                 return null;
               })
           .when(azureProps)

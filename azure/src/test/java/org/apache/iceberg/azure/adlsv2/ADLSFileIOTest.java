@@ -79,7 +79,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class ADLSFileIOTest {
-  protected static AzuriteContainer AZURITE_CONTAINER = null;
+  protected static AzuriteContainer azuriteContainer = null;
 
   private final Random random = new Random(1);
   private static final Logger LOG = LoggerFactory.getLogger(ADLSFileIOTest.class);
@@ -101,30 +101,30 @@ public class ADLSFileIOTest {
       // creds.connectionString);
       az = new AzureSAS.SasResolver(creds);
     } else {
-      AZURITE_CONTAINER = new AzuriteContainer();
-      AZURITE_CONTAINER.start();
-      az = AZURITE_CONTAINER;
+      azuriteContainer = new AzuriteContainer();
+      azuriteContainer.start();
+      az = azuriteContainer;
     }
   }
 
   @AfterAll
   public static void afterAll() {
-    if (AZURITE_CONTAINER != null) {
-      AZURITE_CONTAINER.stop();
+    if (azuriteContainer != null) {
+      azuriteContainer.stop();
     }
   }
 
   @BeforeEach
   public void baseBefore() {
-    if (AZURITE_CONTAINER != null) {
-      AZURITE_CONTAINER.createStorageContainer();
+    if (azuriteContainer != null) {
+      azuriteContainer.createStorageContainer();
     }
   }
 
   @AfterEach
   public void baseAfter() {
-    if (AZURITE_CONTAINER != null) {
-      AZURITE_CONTAINER.deleteStorageContainer();
+    if (azuriteContainer != null) {
+      azuriteContainer.deleteStorageContainer();
     }
   }
 
@@ -135,8 +135,8 @@ public class ADLSFileIOTest {
       doAnswer(
               invoke -> {
                 DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
-                clientBuilder.endpoint(AZURITE_CONTAINER.endpoint());
-                clientBuilder.credential(AZURITE_CONTAINER.credential());
+                clientBuilder.endpoint(azuriteContainer.endpoint());
+                clientBuilder.credential(azuriteContainer.credential());
                 return null;
               })
           .when(azureProps)
