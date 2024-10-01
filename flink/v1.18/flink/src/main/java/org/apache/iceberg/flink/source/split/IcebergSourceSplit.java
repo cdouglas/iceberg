@@ -32,7 +32,7 @@ import org.apache.flink.util.InstantiationUtil;
 import org.apache.iceberg.BaseCombinedScanTask;
 import org.apache.iceberg.CombinedScanTask;
 import org.apache.iceberg.FileScanTask;
-import org.apache.iceberg.FileScanTaskParser;
+import org.apache.iceberg.ScanTaskParser;
 import org.apache.iceberg.relocated.com.google.common.base.MoreObjects;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
@@ -132,6 +132,14 @@ public class IcebergSourceSplit implements SourceSplit, Serializable {
   }
 
   byte[] serializeV2() throws IOException {
+    return serialize(2);
+  }
+
+  byte[] serializeV3() throws IOException {
+    return serialize(3);
+  }
+
+  private byte[] serialize(int version) throws IOException {
     if (serializedBytesCache == null) {
       DataOutputSerializer out = SERIALIZER_CACHE.get();
       Collection<FileScanTask> fileScanTasks = task.tasks();
@@ -146,8 +154,8 @@ public class IcebergSourceSplit implements SourceSplit, Serializable {
       out.writeInt(fileScanTasks.size());
 
       for (FileScanTask fileScanTask : fileScanTasks) {
-        String taskJson = FileScanTaskParser.toJson(fileScanTask);
-        out.writeUTF(taskJson);
+        String taskJson = ScanTaskParser.toJson(fileScanTask);
+        writeTaskJson(out, taskJson, version);
       }
 
       serializedBytesCache = out.getCopyOfBuffer();
@@ -157,8 +165,32 @@ public class IcebergSourceSplit implements SourceSplit, Serializable {
     return serializedBytesCache;
   }
 
+  private static void writeTaskJson(DataOutputSerializer out, String taskJson, int version)
+      throws IOException {
+    switch (version) {
+      case 2:
+        out.writeUTF(taskJson);
+        break;
+      case 3:
+        SerializerHelper.writeLongUTF(out, taskJson);
+        break;
+      default:
+        throw new IllegalArgumentException("Unsupported version: " + version);
+    }
+  }
+
   static IcebergSourceSplit deserializeV2(byte[] serialized, boolean caseSensitive)
       throws IOException {
+    return deserialize(serialized, caseSensitive, 2);
+  }
+
+  static IcebergSourceSplit deserializeV3(byte[] serialized, boolean caseSensitive)
+      throws IOException {
+    return deserialize(serialized, caseSensitive, 3);
+  }
+
+  private static IcebergSourceSplit deserialize(
+      byte[] serialized, boolean caseSensitive, int version) throws IOException {
     DataInputDeserializer in = new DataInputDeserializer(serialized);
     int fileOffset = in.readInt();
     long recordOffset = in.readLong();
@@ -166,12 +198,23 @@ public class IcebergSourceSplit implements SourceSplit, Serializable {
 
     List<FileScanTask> tasks = Lists.newArrayListWithCapacity(taskCount);
     for (int i = 0; i < taskCount; ++i) {
-      String taskJson = in.readUTF();
-      FileScanTask task = FileScanTaskParser.fromJson(taskJson, caseSensitive);
+      String taskJson = readTaskJson(in, version);
+      FileScanTask task = ScanTaskParser.fromJson(taskJson, caseSensitive);
       tasks.add(task);
     }
 
     CombinedScanTask combinedScanTask = new BaseCombinedScanTask(tasks);
     return IcebergSourceSplit.fromCombinedScanTask(combinedScanTask, fileOffset, recordOffset);
+  }
+
+  private static String readTaskJson(DataInputDeserializer in, int version) throws IOException {
+    switch (version) {
+      case 2:
+        return in.readUTF();
+      case 3:
+        return SerializerHelper.readLongUTF(in);
+      default:
+        throw new IllegalArgumentException("Unsupported version: " + version);
+    }
   }
 }

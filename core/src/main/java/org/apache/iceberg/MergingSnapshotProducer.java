@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.events.CreateSnapshotEvent;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.exceptions.ValidationException;
@@ -38,7 +39,6 @@ import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.base.Predicate;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
@@ -80,6 +80,8 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   // update data
   private final List<DataFile> newDataFiles = Lists.newArrayList();
+  private final CharSequenceSet newDataFilePaths = CharSequenceSet.empty();
+  private final CharSequenceSet newDeleteFilePaths = CharSequenceSet.empty();
   private Long newDataFilesDataSequenceNumber;
   private final Map<Integer, List<DeleteFileHolder>> newDeleteFilesBySpec = Maps.newHashMap();
   private final List<ManifestFile> appendManifests = Lists.newArrayList();
@@ -220,10 +222,12 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   /** Add a data file to the new snapshot. */
   protected void add(DataFile file) {
     Preconditions.checkNotNull(file, "Invalid data file: null");
-    setDataSpec(file);
-    addedFilesSummary.addedFile(dataSpec(), file);
-    hasNewDataFiles = true;
-    newDataFiles.add(file);
+    if (newDataFilePaths.add(file.path())) {
+      setDataSpec(file);
+      addedFilesSummary.addedFile(dataSpec(), file);
+      hasNewDataFiles = true;
+      newDataFiles.add(file);
+    }
   }
 
   /** Add a delete file to the new snapshot. */
@@ -243,9 +247,12 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     PartitionSpec fileSpec = ops.current().spec(specId);
     List<DeleteFileHolder> deleteFiles =
         newDeleteFilesBySpec.computeIfAbsent(specId, s -> Lists.newArrayList());
-    deleteFiles.add(fileHolder);
-    addedFilesSummary.addedFile(fileSpec, fileHolder.deleteFile());
-    hasNewDeleteFiles = true;
+
+    if (newDeleteFilePaths.add(fileHolder.deleteFile().path())) {
+      deleteFiles.add(fileHolder);
+      addedFilesSummary.addedFile(fileSpec, fileHolder.deleteFile());
+      hasNewDeleteFiles = true;
+    }
   }
 
   private void setDataSpec(DataFile file) {
@@ -275,14 +282,14 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   private ManifestFile copyManifest(ManifestFile manifest) {
     TableMetadata current = ops.current();
-    InputFile toCopy = ops.io().newInputFile(manifest.path());
-    OutputFile newManifestPath = newManifestOutput();
+    InputFile toCopy = ops.io().newInputFile(manifest);
+    EncryptedOutputFile newManifestFile = newManifestOutputFile();
     return ManifestFiles.copyAppendManifest(
         current.formatVersion(),
         manifest.partitionSpecId(),
         toCopy,
         current.specsById(),
-        newManifestPath,
+        newManifestFile,
         snapshotId(),
         appendedManifestsSummary);
   }

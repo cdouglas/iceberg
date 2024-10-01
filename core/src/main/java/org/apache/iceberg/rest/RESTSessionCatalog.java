@@ -68,8 +68,10 @@ import org.apache.iceberg.metrics.MetricsReporters;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.rest.auth.AuthConfig;
 import org.apache.iceberg.rest.auth.OAuth2Properties;
 import org.apache.iceberg.rest.auth.OAuth2Util;
 import org.apache.iceberg.rest.auth.OAuth2Util.AuthSession;
@@ -114,6 +116,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
   private static final String DEFAULT_FILE_IO_IMPL = "org.apache.iceberg.io.ResolvingFileIO";
   private static final String REST_METRICS_REPORTING_ENABLED = "rest-metrics-reporting-enabled";
   private static final String REST_SNAPSHOT_LOADING_MODE = "snapshot-loading-mode";
+  public static final String REST_PAGE_SIZE = "rest-page-size";
   private static final List<String> TOKEN_PREFERENCE_ORDER =
       ImmutableList.of(
           OAuth2Properties.ID_TOKEN_TYPE,
@@ -121,6 +124,13 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
           OAuth2Properties.JWT_TOKEN_TYPE,
           OAuth2Properties.SAML2_TOKEN_TYPE,
           OAuth2Properties.SAML1_TOKEN_TYPE);
+
+  // Auth-related properties that are allowed to be passed to the table session
+  private static final Set<String> TABLE_SESSION_ALLOW_LIST =
+      ImmutableSet.<String>builder()
+          .add(OAuth2Properties.TOKEN)
+          .addAll(TOKEN_PREFERENCE_ORDER)
+          .build();
 
   private final Function<Map<String, String>, RESTClient> clientBuilder;
   private final BiFunction<SessionContext, Map<String, String>, FileIO> ioBuilder;
@@ -136,6 +146,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
   private FileIO io = null;
   private MetricsReporter reporter = null;
   private boolean reportingViaRestEnabled;
+  private Integer pageSize = null;
   private CloseableGroup closeables = null;
 
   // a lazy thread pool for token refresh
@@ -173,20 +184,37 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     long startTimeMillis =
         System.currentTimeMillis(); // keep track of the init start time for token refresh
     String initToken = props.get(OAuth2Properties.TOKEN);
+    boolean hasInitToken = initToken != null;
 
     // fetch auth and config to complete initialization
     ConfigResponse config;
     OAuthTokenResponse authResponse;
     String credential = props.get(OAuth2Properties.CREDENTIAL);
+    boolean hasCredential = credential != null && !credential.isEmpty();
     String scope = props.getOrDefault(OAuth2Properties.SCOPE, OAuth2Properties.CATALOG_SCOPE);
+    Map<String, String> optionalOAuthParams = OAuth2Util.buildOptionalParam(props);
+    if (!props.containsKey(OAuth2Properties.OAUTH2_SERVER_URI)
+        && (hasInitToken || hasCredential)
+        && !PropertyUtil.propertyAsBoolean(props, "rest.sigv4-enabled", false)) {
+      LOG.warn(
+          "Iceberg REST client is missing the OAuth2 server URI configuration and defaults to {}{}. "
+              + "This automatic fallback will be removed in a future Iceberg release."
+              + "It is recommended to configure the OAuth2 endpoint using the '{}' property to be prepared. "
+              + "This warning will disappear if the OAuth2 endpoint is explicitly configured. "
+              + "See https://github.com/apache/iceberg/issues/10537",
+          props.get(CatalogProperties.URI),
+          ResourcePaths.tokens(),
+          OAuth2Properties.OAUTH2_SERVER_URI);
+    }
     String oauth2ServerUri =
         props.getOrDefault(OAuth2Properties.OAUTH2_SERVER_URI, ResourcePaths.tokens());
     try (RESTClient initClient = clientBuilder.apply(props)) {
       Map<String, String> initHeaders =
           RESTUtil.merge(configHeaders(props), OAuth2Util.authHeaders(initToken));
-      if (credential != null && !credential.isEmpty()) {
+      if (hasCredential) {
         authResponse =
-            OAuth2Util.fetchToken(initClient, initHeaders, credential, scope, oauth2ServerUri);
+            OAuth2Util.fetchToken(
+                initClient, initHeaders, credential, scope, oauth2ServerUri, optionalOAuthParams);
         Map<String, String> authHeaders =
             RESTUtil.merge(initHeaders, OAuth2Util.authHeaders(authResponse.token()));
         config = fetchConfig(initClient, authHeaders, props);
@@ -213,15 +241,29 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     this.paths = ResourcePaths.forCatalogProperties(mergedProps);
 
     String token = mergedProps.get(OAuth2Properties.TOKEN);
-    this.catalogAuth = new AuthSession(baseHeaders, null, null, credential, scope, oauth2ServerUri);
+    this.catalogAuth =
+        new AuthSession(
+            baseHeaders,
+            AuthConfig.builder()
+                .credential(credential)
+                .scope(scope)
+                .oauth2ServerUri(oauth2ServerUri)
+                .optionalOAuthParams(optionalOAuthParams)
+                .build());
     if (authResponse != null) {
       this.catalogAuth =
           AuthSession.fromTokenResponse(
-              client, tokenRefreshExecutor(), authResponse, startTimeMillis, catalogAuth);
+              client, tokenRefreshExecutor(name), authResponse, startTimeMillis, catalogAuth);
     } else if (token != null) {
       this.catalogAuth =
           AuthSession.fromAccessToken(
-              client, tokenRefreshExecutor(), token, expiresAtMillis(mergedProps), catalogAuth);
+              client, tokenRefreshExecutor(name), token, expiresAtMillis(mergedProps), catalogAuth);
+    }
+
+    this.pageSize = PropertyUtil.propertyAsNullableInt(mergedProps, REST_PAGE_SIZE);
+    if (pageSize != null) {
+      Preconditions.checkArgument(
+          pageSize > 0, "Invalid value for %s, must be a positive integer", REST_PAGE_SIZE);
     }
 
     this.io = newFileIO(SessionContext.createEmpty(), mergedProps);
@@ -274,14 +316,27 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
   @Override
   public List<TableIdentifier> listTables(SessionContext context, Namespace ns) {
     checkNamespaceIsValid(ns);
+    Map<String, String> queryParams = Maps.newHashMap();
+    ImmutableList.Builder<TableIdentifier> tables = ImmutableList.builder();
+    String pageToken = "";
+    if (pageSize != null) {
+      queryParams.put("pageSize", String.valueOf(pageSize));
+    }
 
-    ListTablesResponse response =
-        client.get(
-            paths.tables(ns),
-            ListTablesResponse.class,
-            headers(context),
-            ErrorHandlers.namespaceErrorHandler());
-    return response.identifiers();
+    do {
+      queryParams.put("pageToken", pageToken);
+      ListTablesResponse response =
+          client.get(
+              paths.tables(ns),
+              queryParams,
+              ListTablesResponse.class,
+              headers(context),
+              ErrorHandlers.namespaceErrorHandler());
+      pageToken = response.nextPageToken();
+      tables.addAll(response.identifiers());
+    } while (pageToken != null);
+
+    return tables.build();
   }
 
   @Override
@@ -490,22 +545,31 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
 
   @Override
   public List<Namespace> listNamespaces(SessionContext context, Namespace namespace) {
-    Map<String, String> queryParams;
-    if (namespace.isEmpty()) {
-      queryParams = ImmutableMap.of();
-    } else {
-      // query params should be unescaped
-      queryParams = ImmutableMap.of("parent", RESTUtil.NAMESPACE_JOINER.join(namespace.levels()));
+    Map<String, String> queryParams = Maps.newHashMap();
+    if (!namespace.isEmpty()) {
+      queryParams.put("parent", RESTUtil.NAMESPACE_JOINER.join(namespace.levels()));
     }
 
-    ListNamespacesResponse response =
-        client.get(
-            paths.namespaces(),
-            queryParams,
-            ListNamespacesResponse.class,
-            headers(context),
-            ErrorHandlers.namespaceErrorHandler());
-    return response.namespaces();
+    ImmutableList.Builder<Namespace> namespaces = ImmutableList.builder();
+    String pageToken = "";
+    if (pageSize != null) {
+      queryParams.put("pageSize", String.valueOf(pageSize));
+    }
+
+    do {
+      queryParams.put("pageToken", pageToken);
+      ListNamespacesResponse response =
+          client.get(
+              paths.namespaces(),
+              queryParams,
+              ListNamespacesResponse.class,
+              headers(context),
+              ErrorHandlers.namespaceErrorHandler());
+      pageToken = response.nextPageToken();
+      namespaces.addAll(response.namespaces());
+    } while (pageToken != null);
+
+    return namespaces.build();
   }
 
   @Override
@@ -554,7 +618,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     return !response.updated().isEmpty();
   }
 
-  private ScheduledExecutorService tokenRefreshExecutor() {
+  private ScheduledExecutorService tokenRefreshExecutor(String catalogName) {
     if (!keepTokenRefreshed) {
       return null;
     }
@@ -562,7 +626,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     if (refreshExecutor == null) {
       synchronized (this) {
         if (refreshExecutor == null) {
-          this.refreshExecutor = ThreadPools.newScheduledPool(name() + "-token-refresh", 1);
+          this.refreshExecutor = ThreadPools.newScheduledPool(catalogName + "-token-refresh", 1);
         }
       }
     }
@@ -598,7 +662,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
           });
 
       try {
-        if (service.awaitTermination(1, TimeUnit.MINUTES)) {
+        if (!service.awaitTermination(1, TimeUnit.MINUTES)) {
           LOG.warn("Timed out waiting for refresh executor to terminate");
         }
       } catch (InterruptedException e) {
@@ -881,7 +945,14 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
   }
 
   private AuthSession tableSession(Map<String, String> tableConf, AuthSession parent) {
-    Pair<String, Supplier<AuthSession>> newSession = newSession(tableConf, tableConf, parent);
+    Map<String, String> credentials = Maps.newHashMapWithExpectedSize(tableConf.size());
+    for (String prop : tableConf.keySet()) {
+      if (TABLE_SESSION_ALLOW_LIST.contains(prop)) {
+        credentials.put(prop, tableConf.get(prop));
+      }
+    }
+
+    Pair<String, Supplier<AuthSession>> newSession = newSession(credentials, tableConf, parent);
     if (null == newSession) {
       return parent;
     }
@@ -926,7 +997,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
             () ->
                 AuthSession.fromAccessToken(
                     client,
-                    tokenRefreshExecutor(),
+                    tokenRefreshExecutor(name()),
                     credentials.get(OAuth2Properties.TOKEN),
                     expiresAtMillis(properties),
                     parent));
@@ -939,7 +1010,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
             () ->
                 AuthSession.fromCredential(
                     client,
-                    tokenRefreshExecutor(),
+                    tokenRefreshExecutor(name()),
                     credentials.get(OAuth2Properties.CREDENTIAL),
                     parent));
       }
@@ -952,7 +1023,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
               () ->
                   AuthSession.fromTokenExchange(
                       client,
-                      tokenRefreshExecutor(),
+                      tokenRefreshExecutor(name()),
                       credentials.get(tokenType),
                       tokenType,
                       parent));
@@ -1008,7 +1079,12 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     return Caffeine.newBuilder()
         .expireAfterAccess(Duration.ofMillis(expirationIntervalMs))
         .removalListener(
-            (RemovalListener<String, AuthSession>) (id, auth, cause) -> auth.stopRefreshing())
+            (RemovalListener<String, AuthSession>)
+                (id, auth, cause) -> {
+                  if (auth != null) {
+                    auth.stopRefreshing();
+                  }
+                })
         .build();
   }
 
@@ -1044,14 +1120,27 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
   @Override
   public List<TableIdentifier> listViews(SessionContext context, Namespace namespace) {
     checkNamespaceIsValid(namespace);
+    Map<String, String> queryParams = Maps.newHashMap();
+    ImmutableList.Builder<TableIdentifier> views = ImmutableList.builder();
+    String pageToken = "";
+    if (pageSize != null) {
+      queryParams.put("pageSize", String.valueOf(pageSize));
+    }
 
-    ListTablesResponse response =
-        client.get(
-            paths.views(namespace),
-            ListTablesResponse.class,
-            headers(context),
-            ErrorHandlers.namespaceErrorHandler());
-    return response.identifiers();
+    do {
+      queryParams.put("pageToken", pageToken);
+      ListTablesResponse response =
+          client.get(
+              paths.views(namespace),
+              queryParams,
+              ListTablesResponse.class,
+              headers(context),
+              ErrorHandlers.namespaceErrorHandler());
+      pageToken = response.nextPageToken();
+      views.addAll(response.identifiers());
+    } while (pageToken != null);
+
+    return views.build();
   }
 
   @Override

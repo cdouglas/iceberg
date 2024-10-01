@@ -43,6 +43,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
+import org.apache.iceberg.encryption.EncryptingFileIO;
 import org.apache.iceberg.events.CreateSnapshotEvent;
 import org.apache.iceberg.events.Listeners;
 import org.apache.iceberg.exceptions.CleanableFailure;
@@ -255,7 +257,6 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
           .run(index -> manifestFiles[index] = manifestsWithMetadata.get(manifests.get(index)));
 
       writer.addAll(Arrays.asList(manifestFiles));
-
     } catch (IOException e) {
       throw new RuntimeIOException(e, "Failed to write manifest list file");
     }
@@ -351,6 +352,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
         SnapshotSummary.ADDED_EQ_DELETES_PROP,
         SnapshotSummary.REMOVED_EQ_DELETES_PROP);
 
+    builder.putAll(EnvironmentContext.get());
     return builder.build();
   }
 
@@ -368,82 +370,84 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
   public void commit() {
     // this is always set to the latest commit attempt's snapshot id.
     AtomicLong newSnapshotId = new AtomicLong(-1L);
-    Timed totalDuration = commitMetrics().totalDuration().start();
-    try {
-      Tasks.foreach(ops)
-          .retry(base.propertyAsInt(COMMIT_NUM_RETRIES, COMMIT_NUM_RETRIES_DEFAULT))
-          .exponentialBackoff(
-              base.propertyAsInt(COMMIT_MIN_RETRY_WAIT_MS, COMMIT_MIN_RETRY_WAIT_MS_DEFAULT),
-              base.propertyAsInt(COMMIT_MAX_RETRY_WAIT_MS, COMMIT_MAX_RETRY_WAIT_MS_DEFAULT),
-              base.propertyAsInt(COMMIT_TOTAL_RETRY_TIME_MS, COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT),
-              2.0 /* exponential */)
-          .onlyRetryOn(CommitFailedException.class)
-          .countAttempts(commitMetrics().attempts())
-          .run(
-              taskOps -> {
-                Snapshot newSnapshot = apply();
-                newSnapshotId.set(newSnapshot.snapshotId());
-                TableMetadata.Builder update = TableMetadata.buildFrom(base);
-                if (base.snapshot(newSnapshot.snapshotId()) != null) {
-                  // this is a rollback operation
-                  update.setBranchSnapshot(newSnapshot.snapshotId(), targetBranch);
-                } else if (stageOnly) {
-                  update.addSnapshot(newSnapshot);
-                } else {
-                  update.setBranchSnapshot(newSnapshot, targetBranch);
-                }
+    try (Timed ignore = commitMetrics().totalDuration().start()) {
+      try {
+        Tasks.foreach(ops)
+            .retry(base.propertyAsInt(COMMIT_NUM_RETRIES, COMMIT_NUM_RETRIES_DEFAULT))
+            .exponentialBackoff(
+                base.propertyAsInt(COMMIT_MIN_RETRY_WAIT_MS, COMMIT_MIN_RETRY_WAIT_MS_DEFAULT),
+                base.propertyAsInt(COMMIT_MAX_RETRY_WAIT_MS, COMMIT_MAX_RETRY_WAIT_MS_DEFAULT),
+                base.propertyAsInt(COMMIT_TOTAL_RETRY_TIME_MS, COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT),
+                2.0 /* exponential */)
+            .onlyRetryOn(CommitFailedException.class)
+            .countAttempts(commitMetrics().attempts())
+            .run(
+                taskOps -> {
+                  Snapshot newSnapshot = apply();
+                  newSnapshotId.set(newSnapshot.snapshotId());
+                  TableMetadata.Builder update = TableMetadata.buildFrom(base);
+                  if (base.snapshot(newSnapshot.snapshotId()) != null) {
+                    // this is a rollback operation
+                    update.setBranchSnapshot(newSnapshot.snapshotId(), targetBranch);
+                  } else if (stageOnly) {
+                    update.addSnapshot(newSnapshot);
+                  } else {
+                    update.setBranchSnapshot(newSnapshot, targetBranch);
+                  }
 
-                TableMetadata updated = update.build();
-                if (updated.changes().isEmpty()) {
-                  // do not commit if the metadata has not changed. for example, this may happen
-                  // when setting the current
-                  // snapshot to an ID that is already current. note that this check uses identity.
-                  return;
-                }
+                  TableMetadata updated = update.build();
+                  if (updated.changes().isEmpty()) {
+                    // do not commit if the metadata has not changed. for example, this may happen
+                    // when setting the current
+                    // snapshot to an ID that is already current. note that this check uses
+                    // identity.
+                    return;
+                  }
 
-                // if the table UUID is missing, add it here. the UUID will be re-created each time
-                // this operation retries
-                // to ensure that if a concurrent operation assigns the UUID, this operation will
-                // not fail.
-                taskOps.commit(base, updated.withUUID());
-              });
+                  // if the table UUID is missing, add it here. the UUID will be re-created each
+                  // time
+                  // this operation retries
+                  // to ensure that if a concurrent operation assigns the UUID, this operation will
+                  // not fail.
+                  taskOps.commit(base, updated.withUUID());
+                });
 
-    } catch (CommitStateUnknownException commitStateUnknownException) {
-      throw commitStateUnknownException;
-    } catch (RuntimeException e) {
-      if (!strictCleanup || e instanceof CleanableFailure) {
-        Exceptions.suppressAndThrow(e, this::cleanAll);
-      }
-
-      throw e;
-    }
-
-    try {
-      LOG.info("Committed snapshot {} ({})", newSnapshotId.get(), getClass().getSimpleName());
-
-      // at this point, the commit must have succeeded. after a refresh, the snapshot is loaded by
-      // id in case another commit was added between this commit and the refresh.
-      Snapshot saved = ops.refresh().snapshot(newSnapshotId.get());
-      if (saved != null) {
-        cleanUncommitted(Sets.newHashSet(saved.allManifests(ops.io())));
-        // also clean up unused manifest lists created by multiple attempts
-        for (String manifestList : manifestLists) {
-          if (!saved.manifestListLocation().equals(manifestList)) {
-            deleteFile(manifestList);
-          }
+      } catch (CommitStateUnknownException commitStateUnknownException) {
+        throw commitStateUnknownException;
+      } catch (RuntimeException e) {
+        if (!strictCleanup || e instanceof CleanableFailure) {
+          Exceptions.suppressAndThrow(e, this::cleanAll);
         }
-      } else {
-        // saved may not be present if the latest metadata couldn't be loaded due to eventual
-        // consistency problems in refresh. in that case, don't clean up.
-        LOG.warn("Failed to load committed snapshot, skipping manifest clean-up");
+
+        throw e;
       }
 
-    } catch (Throwable e) {
-      LOG.warn(
-          "Failed to load committed table metadata or during cleanup, skipping further cleanup", e);
-    }
+      try {
+        LOG.info("Committed snapshot {} ({})", newSnapshotId.get(), getClass().getSimpleName());
 
-    totalDuration.stop();
+        // at this point, the commit must have succeeded. after a refresh, the snapshot is loaded by
+        // id in case another commit was added between this commit and the refresh.
+        Snapshot saved = ops.refresh().snapshot(newSnapshotId.get());
+        if (saved != null) {
+          cleanUncommitted(Sets.newHashSet(saved.allManifests(ops.io())));
+          // also clean up unused manifest lists created by multiple attempts
+          for (String manifestList : manifestLists) {
+            if (!saved.manifestListLocation().equals(manifestList)) {
+              deleteFile(manifestList);
+            }
+          }
+        } else {
+          // saved may not be present if the latest metadata couldn't be loaded due to eventual
+          // consistency problems in refresh. in that case, don't clean up.
+          LOG.warn("Failed to load committed snapshot, skipping manifest clean-up");
+        }
+
+      } catch (Throwable e) {
+        LOG.warn(
+            "Failed to load committed table metadata or during cleanup, skipping further cleanup",
+            e);
+      }
+    }
 
     try {
       notifyListeners();
@@ -499,6 +503,11 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
                         "snap-%d-%d-%s", snapshotId(), attempt.incrementAndGet(), commitUUID))));
   }
 
+  /**
+   * @deprecated will be removed in 1.7.0; Use {@link SnapshotProducer#newManifestOutputFile}
+   *     instead
+   */
+  @Deprecated
   protected OutputFile newManifestOutput() {
     return ops.io()
         .newOutputFile(
@@ -506,14 +515,22 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
                 FileFormat.AVRO.addExtension(commitUUID + "-m" + manifestCount.getAndIncrement())));
   }
 
+  protected EncryptedOutputFile newManifestOutputFile() {
+    String manifestFileLocation =
+        ops.metadataFileLocation(
+            FileFormat.AVRO.addExtension(commitUUID + "-m" + manifestCount.getAndIncrement()));
+    return EncryptingFileIO.combine(ops.io(), ops.encryption())
+        .newEncryptingOutputFile(manifestFileLocation);
+  }
+
   protected ManifestWriter<DataFile> newManifestWriter(PartitionSpec spec) {
     return ManifestFiles.write(
-        ops.current().formatVersion(), spec, newManifestOutput(), snapshotId());
+        ops.current().formatVersion(), spec, newManifestOutputFile(), snapshotId());
   }
 
   protected ManifestWriter<DeleteFile> newDeleteManifestWriter(PartitionSpec spec) {
     return ManifestFiles.writeDeleteManifest(
-        ops.current().formatVersion(), spec, newManifestOutput(), snapshotId());
+        ops.current().formatVersion(), spec, newManifestOutputFile(), snapshotId());
   }
 
   protected RollingManifestWriter<DataFile> newRollingManifestWriter(PartitionSpec spec) {
