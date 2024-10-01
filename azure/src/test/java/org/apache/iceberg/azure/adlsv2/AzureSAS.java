@@ -29,6 +29,17 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 
+/**
+ * surely there's a format for this already. Whatever.
+ *
+ * {
+ *   "endpoint": "https://lstnsgym.blob.core.windows.net",
+ *   "sasToken": "",
+ *   "connectionString": "",
+ *   "account": "lstnsgym",
+ *   "container": "lst-ns-consistency"
+ * }
+ */
 class AzureSAS {
   String endpoint;
   String sasToken;
