@@ -45,98 +45,99 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @ExtendWith(ADLSCatalogTest.SuccessCleanupExtension.class)
-public class ADLSFileIOCatalogTransactionTests  extends CatalogTransactionTests<FileIOCatalog> {
-    private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
-    private static final Logger LOG = LoggerFactory.getLogger(ADLSCatalogTest.class);
-    protected static AzuriteContainer azuriteContainer = null;
+public class ADLSFileIOCatalogTransactionTests extends CatalogTransactionTests<FileIOCatalog> {
+  private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
+  private static final Logger LOG = LoggerFactory.getLogger(ADLSCatalogTest.class);
+  protected static AzuriteContainer azuriteContainer = null;
 
-    private static Map<String, String> azureProperties;
-    private FileIOCatalog catalog;
-    private static String warehouseLocation;
-    private static String uniqTestRun;
-    private static LocationResolver az;
+  private static Map<String, String> azureProperties;
+  private FileIOCatalog catalog;
+  private static String warehouseLocation;
+  private static String uniqTestRun;
+  private static LocationResolver az;
 
-    @BeforeAll
-    public static void initStorage() throws IOException {
-        uniqTestRun = UUID.randomUUID().toString();
-        LOG.info("TEST RUN: {}", uniqTestRun);
-        AzureSAS creds = AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/lstnsgym-sas-3112204.json"));
-        if (creds != null) {
-            azureProperties = Maps.newHashMap();
-            azureProperties.put(
-                    AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lstnsgym.dfs.core.windows.net", creds.sasToken);
-            az = new AzureSAS.SasResolver(creds);
-            LOG.info("Using remote storage");
-        } else {
-            azuriteContainer = new AzuriteContainer();
-            azuriteContainer.start();
-            az = azuriteContainer;
-            LOG.info("Using local storage");
-        }
-        // show ridiculous stack traces
-        Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
+  @BeforeAll
+  public static void initStorage() throws IOException {
+    uniqTestRun = UUID.randomUUID().toString();
+    LOG.info("TEST RUN: {}", uniqTestRun);
+    AzureSAS creds =
+        AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/lstnsgym-sas-3112204.json"));
+    if (creds != null) {
+      azureProperties = Maps.newHashMap();
+      azureProperties.put(
+          AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lstnsgym.dfs.core.windows.net", creds.sasToken);
+      az = new AzureSAS.SasResolver(creds);
+      LOG.info("Using remote storage");
+    } else {
+      azuriteContainer = new AzuriteContainer();
+      azuriteContainer.start();
+      az = azuriteContainer;
+      LOG.info("Using local storage");
+    }
+    // show ridiculous stack traces
+    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
+  }
+
+  @BeforeEach
+  public void before(TestInfo info) {
+    final ADLSFileIO io;
+    if (null == azureProperties) {
+      azuriteContainer.createStorageContainer();
+      final AzureProperties azureProps = spy(new AzureProperties());
+      doAnswer(
+              invoke -> {
+                DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
+                clientBuilder.endpoint(azuriteContainer.endpoint());
+                clientBuilder.credential(azuriteContainer.credential());
+                return null;
+              })
+          .when(azureProps)
+          .applyClientConfiguration(any(), any());
+      io = new ADLSFileIO(azureProps);
+    } else {
+      io = new ADLSFileIO(azureProperties);
     }
 
-    @BeforeEach
-    public void before(TestInfo info) {
-        final ADLSFileIO io;
-        if (null == azureProperties) {
-            azuriteContainer.createStorageContainer();
-            final AzureProperties azureProps = spy(new AzureProperties());
-            doAnswer(
-                    invoke -> {
-                        DataLakeFileSystemClientBuilder clientBuilder = invoke.getArgument(1);
-                        clientBuilder.endpoint(azuriteContainer.endpoint());
-                        clientBuilder.credential(azuriteContainer.credential());
-                        return null;
-                    })
-                    .when(azureProps)
-                    .applyClientConfiguration(any(), any());
-            io = new ADLSFileIO(azureProps);
-        } else {
-            io = new ADLSFileIO(azureProperties);
-        }
+    final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
+    warehouseLocation =
+        az.location(TEST_BUCKET + "/" + uniqTestRun + "/" + testName + "_" + info.getDisplayName());
+    cleanupWarehouseLocation();
 
-        final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
-        warehouseLocation = az.location(TEST_BUCKET + "/" + uniqTestRun + "/" + testName + "_" + info.getDisplayName());
-        cleanupWarehouseLocation();
+    final Map<String, String> properties = Maps.newHashMap();
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
+    final String location = warehouseLocation + "/catalog";
+    catalog = new FileIOCatalog("test", location, null, io, Maps.newHashMap());
+    catalog.initialize(testName, properties);
+  }
 
-        final Map<String, String> properties = Maps.newHashMap();
-        properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
-        final String location = warehouseLocation + "/catalog";
-        catalog = new FileIOCatalog("test", location, null, io, Maps.newHashMap());
-        catalog.initialize(testName, properties);
+  @AfterAll
+  public static void afterAll() {
+    if (azuriteContainer != null) {
+      azuriteContainer.stop();
     }
+  }
 
-    @AfterAll
-    public static void afterAll() {
-        if (azuriteContainer != null) {
-            azuriteContainer.stop();
-        }
+  @AfterEach
+  public void baseAfter() {
+    if (azuriteContainer != null) {
+      azuriteContainer.deleteStorageContainer();
     }
+  }
 
-    @AfterEach
-    public void baseAfter() {
-        if (azuriteContainer != null) {
-            azuriteContainer.deleteStorageContainer();
-        }
-    }
-
-    // Don't keep artifacts from successful tests
-    static class SuccessCleanupExtension implements TestWatcher {
-        @Override
-        public void testSuccessful(ExtensionContext ctxt) {
-            cleanupWarehouseLocation();
-        }
-    }
-
-    static void cleanupWarehouseLocation() {
-        // TODO: remove test data if test passed
-    }
-
+  // Don't keep artifacts from successful tests
+  static class SuccessCleanupExtension implements TestWatcher {
     @Override
-    protected FileIOCatalog catalog() {
-        return catalog;
+    public void testSuccessful(ExtensionContext ctxt) {
+      cleanupWarehouseLocation();
     }
+  }
 
+  static void cleanupWarehouseLocation() {
+    // TODO: remove test data if test passed
+  }
+
+  @Override
+  protected FileIOCatalog catalog() {
+    return catalog;
+  }
 }
