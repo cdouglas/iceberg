@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.gcp.gcs;
 
+import static org.assertj.core.api.Assertions.setMaxStackTraceElementsDisplayed;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
@@ -38,7 +39,6 @@ import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
@@ -104,7 +104,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
       LOG.info("Using local storage");
     }
     // show ridiculous stack traces
-    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
+    setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
   }
 
   @BeforeEach

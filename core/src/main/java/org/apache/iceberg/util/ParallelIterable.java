@@ -113,16 +113,18 @@ public class ParallelIterable<T> extends CloseableGroup implements CloseableIter
         for (CompletableFuture<Optional<Task<T>>> taskFuture : taskFutures) {
           if (taskFuture != null) {
             taskFuture.cancel(true);
-            taskFuture.thenAccept(
-                continuation -> {
-                  if (continuation.isPresent()) {
-                    try {
-                      continuation.get().close();
-                    } catch (IOException e) {
-                      LOG.error("Task close failed", e);
-                    }
-                  }
-                });
+            taskFuture
+                .thenAccept(
+                    continuation -> {
+                      if (continuation.isPresent()) {
+                        try {
+                          continuation.get().close();
+                        } catch (IOException e) {
+                          LOG.error("Task close failed", e);
+                        }
+                      }
+                    })
+                .join();
           }
         }
 

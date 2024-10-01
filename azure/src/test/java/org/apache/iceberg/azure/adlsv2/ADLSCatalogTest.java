@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.azure.adlsv2;
 
+import static org.assertj.core.api.Assertions.setMaxStackTraceElementsDisplayed;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
@@ -33,7 +34,6 @@ import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -78,7 +78,7 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
       LOG.info("Using local storage");
     }
     // show ridiculous stack traces
-    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
+    setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
   }
 
   @AfterAll

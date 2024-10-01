@@ -45,9 +45,6 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.FileFormat;
-import org.apache.iceberg.ManifestFile;
-import org.apache.iceberg.ManifestFiles;
-import org.apache.iceberg.ManifestWriter;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.TestHelpers;
@@ -404,78 +401,6 @@ public class TestS3FileIO {
     assertThat(inputFile.getLength())
         .as("Data file length should be determined from the file size stats")
         .isEqualTo(123L);
-    verify(s3mock, never()).headObject(any(HeadObjectRequest.class));
-  }
-
-  @Test
-  public void testInputFileWithManifest() throws IOException {
-    String dataFileLocation = "s3://bucket/path/to/data-file-2.parquet";
-    DataFile dataFile =
-        DataFiles.builder(PartitionSpec.unpartitioned())
-            .withPath(dataFileLocation)
-            .withFileSizeInBytes(123L)
-            .withFormat(FileFormat.PARQUET)
-            .withRecordCount(123L)
-            .build();
-    String manifestLocation = "s3://bucket/path/to/manifest.avro";
-    OutputFile outputFile = s3FileIO.newOutputFile(manifestLocation);
-    ManifestWriter<DataFile> writer =
-        ManifestFiles.write(PartitionSpec.unpartitioned(), outputFile);
-    writer.add(dataFile);
-    writer.close();
-    ManifestFile manifest = writer.toManifestFile();
-    InputFile inputFile = s3FileIO.newInputFile(manifest);
-    reset(s3mock);
-
-    assertThat(inputFile.getLength()).isEqualTo(manifest.length());
-    verify(s3mock, never()).headObject(any(HeadObjectRequest.class));
-  }
-
-  @Test
-  public void testInputFileWithDataFile() throws IOException {
-    String location = "s3://bucket/path/to/data-file.parquet";
-    DataFile dataFile =
-        DataFiles.builder(PartitionSpec.unpartitioned())
-            .withPath(location)
-            .withFileSizeInBytes(123L)
-            .withFormat(FileFormat.PARQUET)
-            .withRecordCount(123L)
-            .build();
-    OutputStream outputStream = s3FileIO.newOutputFile(location).create();
-    byte[] data = "testing".getBytes();
-    outputStream.write(data);
-    outputStream.close();
-
-    InputFile inputFile = s3FileIO.newInputFile(dataFile);
-    reset(s3mock);
-
-    Assertions.assertThat(inputFile.getLength())
-        .as("Data file length should be determined from the file size stats")
-        .isEqualTo(123L);
-    verify(s3mock, never()).headObject(any(HeadObjectRequest.class));
-  }
-
-  @Test
-  public void testInputFileWithManifest() throws IOException {
-    String dataFileLocation = "s3://bucket/path/to/data-file-2.parquet";
-    DataFile dataFile =
-        DataFiles.builder(PartitionSpec.unpartitioned())
-            .withPath(dataFileLocation)
-            .withFileSizeInBytes(123L)
-            .withFormat(FileFormat.PARQUET)
-            .withRecordCount(123L)
-            .build();
-    String manifestLocation = "s3://bucket/path/to/manifest.avro";
-    OutputFile outputFile = s3FileIO.newOutputFile(manifestLocation);
-    ManifestWriter<DataFile> writer =
-        ManifestFiles.write(PartitionSpec.unpartitioned(), outputFile);
-    writer.add(dataFile);
-    writer.close();
-    ManifestFile manifest = writer.toManifestFile();
-    InputFile inputFile = s3FileIO.newInputFile(manifest);
-    reset(s3mock);
-
-    Assertions.assertThat(inputFile.getLength()).isEqualTo(manifest.length());
     verify(s3mock, never()).headObject(any(HeadObjectRequest.class));
   }
 

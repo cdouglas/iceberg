@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.gcp.gcs;
 
+import static org.assertj.core.api.Assertions.setMaxStackTraceElementsDisplayed;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
@@ -38,7 +39,6 @@ import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
@@ -101,7 +101,7 @@ public class GCSFileIOCatalogTransactionTests extends CatalogTransactionTests<Fi
       LOG.info("Using local storage");
     }
     // show ridiculous stack traces
-    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
+    setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
   }
 
   @BeforeEach
@@ -124,13 +124,13 @@ public class GCSFileIOCatalogTransactionTests extends CatalogTransactionTests<Fi
     return catalog;
   }
 
-  static final Random random = new Random();
+  static final Random RANDOM = new Random();
 
   static String randomAlphabetic(int count) {
     assert count >= 0;
     StringBuilder ret = new StringBuilder();
     for (int i = 0; i < count; ++i) {
-      ret.append((char) ('a' + random.nextInt(26)));
+      ret.append((char) ('a' + RANDOM.nextInt(26)));
     }
     return ret.toString();
   }

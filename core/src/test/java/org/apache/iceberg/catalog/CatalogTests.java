@@ -1753,17 +1753,17 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     catalog.buildTable(TABLE, OTHER_SCHEMA).create();
 
     // concurrent create may fail the commit without finer-grained information
-    Assertions.setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
+    setMaxStackTraceElementsDisplayed(Integer.MAX_VALUE);
     if (supportsConcurrentCreate()) {
       String expectedMessage =
           supportsServerSideRetry()
               ? "Requirement failed: table already exists"
               : "Table already exists";
-      Assertions.assertThatThrownBy(create::commitTransaction)
+      assertThatThrownBy(create::commitTransaction)
           .isInstanceOf(AlreadyExistsException.class)
           .hasMessageStartingWith(expectedMessage);
     } else {
-      Assertions.assertThatThrownBy(create::commitTransaction)
+      assertThatThrownBy(create::commitTransaction)
           .isInstanceOf(CommitFailedException.class)
           .hasMessageStartingWith("Cannot commit");
     }

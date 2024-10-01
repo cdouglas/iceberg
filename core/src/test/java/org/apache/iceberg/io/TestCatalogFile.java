@@ -30,33 +30,33 @@ import org.junit.jupiter.api.Test;
 
 public class TestCatalogFile {
 
-  private static final Namespace ns1 = Namespace.of("db", "dingos", "yaks", "prod");
-  private static final Namespace ns2 = Namespace.of("db", "dingos", "yaks", "qa");
-  private static final TableIdentifier tbl1 = TableIdentifier.of(ns1, "table1");
-  private static final TableIdentifier tbl2 = TableIdentifier.of(ns1, "table2");
-  private static final TableIdentifier tbl3 = TableIdentifier.of(ns1, "table3");
-  private static final TableIdentifier tbl4 = TableIdentifier.of(ns1, "table4");
+  private static final Namespace NS1 = Namespace.of("db", "dingos", "yaks", "prod");
+  private static final Namespace NS2 = Namespace.of("db", "dingos", "yaks", "qa");
+  private static final TableIdentifier TBL1 = TableIdentifier.of(NS1, "table1");
+  private static final TableIdentifier TBL2 = TableIdentifier.of(NS1, "table2");
+  private static final TableIdentifier TBL3 = TableIdentifier.of(NS1, "table3");
+  private static final TableIdentifier TBL4 = TableIdentifier.of(NS1, "table4");
 
   @Test
   public void testCatalogNamespace() {
     OutputStream nullOut = NullOutputStream.NULL_OUTPUT_STREAM;
     CatalogFile catalogFile =
         CatalogFile.empty()
-            .createNamespace(ns1, Collections.emptyMap())
-            .createNamespace(ns2, Collections.emptyMap())
-            .createTable(tbl1, "gs://bucket/path/to/table1")
-            .createTable(tbl2, "gs://bucket/path/to/table2")
+            .createNamespace(NS1, Collections.emptyMap())
+            .createNamespace(NS2, Collections.emptyMap())
+            .createTable(TBL1, "gs://bucket/path/to/table1")
+            .createTable(TBL2, "gs://bucket/path/to/table2")
             .commit(nullOut);
 
     final Map<String, String> ns1Props = Collections.singletonMap("key1", "value1");
     CatalogFile updateProp =
-        CatalogFile.from(catalogFile).updateProperties(ns1, ns1Props).commit(nullOut);
+        CatalogFile.from(catalogFile).updateProperties(NS1, ns1Props).commit(nullOut);
     assertThat(updateProp).isNotEqualTo(catalogFile);
-    assertThat(updateProp.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), ns1, ns2);
-    assertThat(updateProp.namespaceProperties(ns1)).containsExactlyEntriesOf(ns1Props);
+    assertThat(updateProp.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1, NS2);
+    assertThat(updateProp.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
 
-    CatalogFile drop = CatalogFile.from(updateProp).dropNamespace(ns2).commit(nullOut);
-    assertThat(drop.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), ns1);
-    assertThat(drop.namespaceProperties(ns1)).containsExactlyEntriesOf(ns1Props);
+    CatalogFile drop = CatalogFile.from(updateProp).dropNamespace(NS2).commit(nullOut);
+    assertThat(drop.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1);
+    assertThat(drop.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
   }
 }
