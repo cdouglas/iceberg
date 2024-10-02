@@ -133,7 +133,8 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
     }
 
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
-    warehouseLocation = az.location(TEST_BUCKET + "/" + uniqTestRun + "/" + testName + "_" + info.getDisplayName());
+    warehouseLocation =
+        az.location(TEST_BUCKET + "/" + uniqTestRun + "/" + testName + "_" + info.getDisplayName());
     cleanupWarehouseLocation();
 
     final Map<String, String> properties = Maps.newHashMap();
