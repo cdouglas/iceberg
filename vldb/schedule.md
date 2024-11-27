@@ -79,6 +79,7 @@ Doesn't match. Forget it.
 * Other data in the root JSON is 10kb
 * Append latency is identical to write latency
 * Services are a PITA and we don't want to run them
+* Disable caching? Object size latency-sensitive? Be careful to make sure we get wins
 
 <p>&nbsp;</p>
 
@@ -93,6 +94,8 @@ Doesn't match. Forget it.
 
 * Repeat [Leis23] experiments with Azure and GCP (1-2 weeks)
 * Measure append latency
+
+TODO: star things that can be easily cached
 
 ## 1. CAS Catalog (<span style="color: cyan">Azure</span>, <span style="color: purple">GCP</span>, <span style="color: orange">S3</span>)
     Atomically replace the root of the catalog without a service
@@ -147,7 +150,7 @@ Potential savings of ~100ms per snapshot (manifest list RTT) in the conflict set
         [ ] Merge-on-read
         [ ] Partitioned resolution
 
-# Garden of Append
+# Arbor of Append
 
 ## 4. Parquet/ORC Append (<span style="color: cyan">Azure</span>, <span style="color: lime">HDFS</span>)
     Replace row groups by appending a new footer
@@ -320,7 +323,7 @@ which SQS entries are included in the checkpoint.
         [ ] Merge on read from queue (2-3 days)
         [ ] Compaction to S3 (3-4 days)
 
-# Garden of Coordination <span style="color: red">CUT</span>
+# Courtyard of Coordination <span style="color: red">CUT</span>
 
 Tasks that communicate with concurrent transactions through storage. These could be useful, but can be left to future work.
 
