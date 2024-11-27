@@ -23,6 +23,7 @@ package org.apache.iceberg.io;
  * MD5.
  */
 public interface FileChecksum {
+  // TODO include a path to provide a checksum (known locally), rather than computing it
 
   default void update(int onebyte) {
     update(new byte[] {(byte) onebyte}, 0, 1);

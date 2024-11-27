@@ -19,17 +19,22 @@
 package org.apache.iceberg.aws.s3;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.util.function.Supplier;
 import org.apache.iceberg.encryption.NativeFileCryptoParameters;
 import org.apache.iceberg.encryption.NativelyEncryptedFile;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.metrics.MetricsContext;
 import software.amazon.awssdk.services.s3.S3Client;
 
-public class S3OutputFile extends BaseS3File implements OutputFile, NativelyEncryptedFile {
+public class S3OutputFile extends BaseS3File
+    implements OutputFile, NativelyEncryptedFile, AtomicOutputFile {
   private NativeFileCryptoParameters nativeEncryptionParameters;
 
   public static S3OutputFile fromLocation(
@@ -86,5 +91,19 @@ public class S3OutputFile extends BaseS3File implements OutputFile, NativelyEncr
   @Override
   public void setNativeCryptoParameters(NativeFileCryptoParameters nativeCryptoParameters) {
     this.nativeEncryptionParameters = nativeCryptoParameters;
+  }
+
+  @Override
+  public FileChecksum checksum() {
+    // !#! TODO
+    // MessageDigest explicilty requested w/in S3OutputStream
+    return null;
+  }
+
+  @Override
+  public InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
+      throws IOException {
+    // !#! TODO
+    return null;
   }
 }

@@ -83,7 +83,7 @@ public class Tasks {
     private List<Class<? extends Exception>> onlyRetryExceptions = null;
     private Predicate<Exception> shouldRetryPredicate = null;
     private int maxAttempts = 1; // not all operations can be retried
-    private long minSleepTimeMs = 1000; // 1 second
+    private long MinSleepTimeMs = 1000; // 1 second
     private long maxSleepTimeMs = 600000; // 10 minutes
     private long maxDurationMs = 600000; // 10 minutes
     private double scaleFactor = 2.0; // exponential
