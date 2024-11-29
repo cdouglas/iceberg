@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 
+/** Crude indirection for AzureContainer/actual Azure paths in tests. */
 interface LocationResolver {
   default String location(String path) {
     return String.format("abfs://%s@%s.dfs.core.windows.net/%s", container(), account(), path);
