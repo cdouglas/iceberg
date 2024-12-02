@@ -58,11 +58,11 @@ public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryp
   }
 
   S3InputFile(
-          S3Client client,
-          S3URI uri,
-          Long length,
-          S3FileIOProperties s3FileIOProperties,
-          MetricsContext metrics) {
+      S3Client client,
+      S3URI uri,
+      Long length,
+      S3FileIOProperties s3FileIOProperties,
+      MetricsContext metrics) {
     this(client, uri, length, s3FileIOProperties, metrics, null);
   }
 

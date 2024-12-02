@@ -56,12 +56,16 @@ public class S3OutputFile extends BaseS3File
   }
 
   S3OutputFile(
-          S3Client client, S3URI uri, S3FileIOProperties s3FileIOProperties, MetricsContext metrics) {
+      S3Client client, S3URI uri, S3FileIOProperties s3FileIOProperties, MetricsContext metrics) {
     this(client, uri, s3FileIOProperties, metrics, null);
   }
 
   S3OutputFile(
-      S3Client client, S3URI uri, S3FileIOProperties s3FileIOProperties, MetricsContext metrics, String etag) {
+      S3Client client,
+      S3URI uri,
+      S3FileIOProperties s3FileIOProperties,
+      MetricsContext metrics,
+      String etag) {
     super(client, uri, s3FileIOProperties, metrics);
     this.etag = etag;
   }
@@ -117,10 +121,21 @@ public class S3OutputFile extends BaseS3File
       throws IOException {
     try (InputStream src = source.get()) {
       final S3URI location = uri();
-      PutObjectRequest req = PutObjectRequest.builder().bucket(location.bucket()).key(location.key()).ifMatch(etag).build();
+      PutObjectRequest req =
+          PutObjectRequest.builder()
+              .bucket(location.bucket())
+              .key(location.key())
+              .ifMatch(etag)
+              .build();
       RequestBody content = RequestBody.fromInputStream(src, checksum().contentLength());
       PutObjectResponse response = client().putObject(req, content);
-      return new S3InputFile(client(), location, checksum.contentLength(), s3FileIOProperties(), metrics(), response.eTag());
+      return new S3InputFile(
+          client(),
+          location,
+          checksum.contentLength(),
+          s3FileIOProperties(),
+          metrics(),
+          response.eTag());
     } catch (S3Exception e) {
       if (412 == e.statusCode()) {
         // precondition failed
