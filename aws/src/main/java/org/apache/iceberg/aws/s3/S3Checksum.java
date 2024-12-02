@@ -16,29 +16,37 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.iceberg.io;
+package org.apache.iceberg.aws.s3;
 
-/**
- * Checksum API for object stores. Annoyingly, Java does not have a common interface for CRC32 and
- * MD5. The convoluted "obtain a checksum object from the outputfile and use it to write" API sucks,
- * but whatever, it'll suffice for experiments.
- */
-public interface FileChecksum {
-  // TODO include a path to provide a checksum (known locally), rather than computing it
+import java.util.Base64;
+import java.util.zip.Checksum;
+import org.apache.commons.codec.digest.PureJavaCrc32C;
+import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 
-  default void update(int onebyte) {
-    update(new byte[] {(byte) onebyte}, 0, 1);
+public class S3Checksum implements FileChecksum {
+
+  private long length = 0L;
+  private final Checksum crc32c = new PureJavaCrc32C();
+
+  @Override
+  public long contentLength() {
+    return length;
   }
 
-  default void update(byte[] bytes) {
-    update(bytes, 0, bytes.length);
+  @Override
+  public void update(byte[] bytes, int off, int len) {
+    crc32c.update(bytes, off, len);
+    length += len;
   }
 
-  long contentLength();
+  @Override
+  public byte[] asBytes() {
+    return Ints.toByteArray((int) crc32c.getValue());
+  }
 
-  void update(byte[] bytes, int off, int len);
-
-  byte[] asBytes();
-
-  String toHeaderString();
+  @Override
+  public String toHeaderString() {
+    return Base64.getEncoder().encodeToString(asBytes());
+  }
 }

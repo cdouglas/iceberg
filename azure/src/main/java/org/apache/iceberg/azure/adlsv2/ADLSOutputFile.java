@@ -40,6 +40,7 @@ import org.apache.iceberg.metrics.MetricsContext;
 
 class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
 
+  private Long length;
   private final DataLakeRequestConditions conditions;
 
   ADLSOutputFile(
@@ -77,12 +78,14 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
 
   @Override
   public PositionOutputStream createOrOverwrite() {
+    // !#! TODO update this.length
     return new ADLSOutputStream(fileClient(), azureProperties(), metrics());
   }
 
   @Override
   public InputFile toInputFile() {
-    return new ADLSInputFile(location(), fileClient(), azureProperties(), metrics());
+    return new ADLSInputFile(
+        location(), length, fileClient(), azureProperties(), metrics(), conditions);
   }
 
   @Override
@@ -94,8 +97,8 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
   public ADLSInputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
       throws IOException {
     // Annoyingly, the checksum is not validated server-side, but stored as metadata. The
-    // partial-write
-    // problem is less of an issue using an InputStream, so the length validation can suffice
+    // partial-write problem is less of an issue using an InputStream, so the length validation can
+    // suffice
     try (InputStream src = source.get()) {
       // TODO local runner doesn't support this API, testcontainer path will fail
       final Response<PathInfo> resp =
@@ -109,6 +112,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
                               .setContentType("binary")),
                   null, // no timeout
                   Context.NONE);
+      this.length = checksum.contentLength();
       final PathInfo info = resp.getValue();
       return new ADLSInputFile(
           location(),

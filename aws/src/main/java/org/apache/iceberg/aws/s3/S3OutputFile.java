@@ -96,7 +96,7 @@ public class S3OutputFile extends BaseS3File
 
   @Override
   public InputFile toInputFile() {
-    return new S3InputFile(client(), uri(), null, s3FileIOProperties(), metrics());
+    return new S3InputFile(client(), uri(), null, s3FileIOProperties(), metrics(), etag);
   }
 
   @Override
@@ -111,9 +111,10 @@ public class S3OutputFile extends BaseS3File
 
   @Override
   public FileChecksum checksum() {
-    // !#! TODO
-    // MessageDigest explicilty requested w/in S3OutputStream
-    return null;
+    // S3OutputStream forces multipart upload w/ attendant MD5 and work pool... meh, do it manually
+    // in writeAtomic
+    // Catalog + metadata writes are likely smaller than multipart would justify, anyway
+    return new S3Checksum();
   }
 
   @Override
@@ -125,6 +126,7 @@ public class S3OutputFile extends BaseS3File
           PutObjectRequest.builder()
               .bucket(location.bucket())
               .key(location.key())
+              .checksumCRC32C(checksum.toString())
               .ifMatch(etag)
               .build();
       RequestBody content = RequestBody.fromInputStream(src, checksum().contentLength());

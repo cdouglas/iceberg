@@ -21,10 +21,16 @@ package org.apache.iceberg.aws.s3;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import org.apache.iceberg.aws.AwsClientFactories;
 import org.apache.iceberg.aws.AwsClientFactory;
+import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.io.InputFile;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -34,6 +40,7 @@ import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.TestWatcher;
+import org.testcontainers.shaded.org.apache.commons.io.IOUtils;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
@@ -50,7 +57,7 @@ public class TestS3FileIOAtomic {
   // TODO: may need to use StaticClientFactory
   private static S3Client s3;
   private static String uniqTestRun;
-  // private static String warehouseLocation;
+  private static String warehouseLocation;
   private static String warehousePath;
 
   @BeforeAll
@@ -59,12 +66,9 @@ public class TestS3FileIOAtomic {
     uniqTestRun = UUID.randomUUID().toString();
     // LOG.info("TEST RUN: {}", uniqTestRun);
     System.err.println("TEST RUN: " + uniqTestRun); // (logging disabled in tests)
-    try {
-      final AwsClientFactory clientFactory = AwsClientFactories.defaultFactory();
-      s3 = clientFactory.s3();
-      StaticClientFactory.client = s3;
-    } catch (Exception ignored) {
-    }
+    final AwsClientFactory clientFactory = AwsClientFactories.defaultFactory();
+    s3 = clientFactory.s3();
+    StaticClientFactory.client = s3;
   }
 
   @BeforeEach
@@ -72,7 +76,7 @@ public class TestS3FileIOAtomic {
     Assumptions.assumeTrue(s3 != null);
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
     warehousePath = uniqTestRun + "/" + testName;
-    // warehouseLocation = "s3://" + TEST_BUCKET + "/" + warehousePath;
+    warehouseLocation = "s3://" + TEST_BUCKET + "/" + warehousePath;
   }
 
   @AfterEach
@@ -114,7 +118,30 @@ public class TestS3FileIOAtomic {
   }
 
   @Test
-  public void testFileIOOverwrite() throws S3Exception {}
+  public void testFileIOOverwrite() throws IOException, S3Exception {
+    final String path = warehousePath + "/yaks";
+    final String location = warehouseLocation + "/yaks";
+
+    PutObjectRequest req1 = PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).build();
+    RequestBody body1 = RequestBody.fromBytes("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
+    s3.putObject(req1, body1);
+    PutObjectResponse resp1 = s3.putObject(req1, body1);
+
+    // let's see if this works
+    S3FileIO fileIO = new S3FileIO(() -> s3);
+    final InputFile inf = fileIO.newInputFile(location);
+    try (InputStream i = inf.newStream()) {
+      assertThat(IOUtils.toString(i, "UTF-8")).isEqualTo("shaved my kiwis");
+    }
+    AtomicOutputFile outf = fileIO.newOutputFile(inf);
+    final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
+    FileChecksum chk = outf.checksum();
+    chk.update(replContent);
+    InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
+    try (InputStream i = replf.newStream()) {
+      assertThat(IOUtils.toString(i, "UTF-8")).isEqualTo("shaved my hamster");
+    }
+  }
 
   static class SuccessCleanupExtension implements TestWatcher {
     @Override
