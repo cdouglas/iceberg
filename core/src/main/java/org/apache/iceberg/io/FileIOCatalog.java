@@ -117,13 +117,12 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       fileIO = (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
     }
     // TODO: create empty catalog if not exists
-    try (SupportsAtomicOperations io = fileIO) {
-      if (!io.newInputFile(catalogLocation).exists()) {
-        try (OutputStream out = io.newOutputFile(catalogLocation).create()) {
-          CatalogFile.empty().commit(out);
-        } catch (IOException e) {
-          // ignore
-        }
+    // TODO: use create-if-absent (if-no-match or whatever)
+    if (!fileIO.newInputFile(catalogLocation).exists()) {
+      try (OutputStream out = fileIO.newOutputFile(catalogLocation).create()) {
+        CatalogFile.empty().commit(out);
+      } catch (IOException e) {
+        // ignore
       }
     }
   }
@@ -306,12 +305,10 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
     @Override
     protected void doRefresh() {
-      try (FileIO io = io()) {
-        final CatalogFile updatedCatalogFile = CatalogFile.read(io.newInputFile(catalogLocation));
-        updateVersionAndMetadata(
-            updatedCatalogFile.version(tableId), updatedCatalogFile.location(tableId));
-        lastCatalogFile = updatedCatalogFile;
-      }
+      final CatalogFile updatedCatalogFile = CatalogFile.read(io().newInputFile(catalogLocation));
+      updateVersionAndMetadata(
+          updatedCatalogFile.version(tableId), updatedCatalogFile.location(tableId));
+      lastCatalogFile = updatedCatalogFile;
     }
 
     String writeUpdateMetadata(boolean isCreate, TableMetadata metadata) {
@@ -322,11 +319,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     public void doCommit(TableMetadata base, TableMetadata metadata) {
       final boolean isCreate = null == base;
       final String newMetadataLocation = writeUpdateMetadata(isCreate, metadata);
-      try (SupportsAtomicOperations io = io()) {
+      try {
         if (null == base) {
-          CatalogFile.from(lastCatalogFile).createTable(tableId, newMetadataLocation).commit(io);
+          CatalogFile.from(lastCatalogFile).createTable(tableId, newMetadataLocation).commit(io());
         } else {
-          CatalogFile.from(lastCatalogFile).updateTable(tableId, newMetadataLocation).commit(io);
+          CatalogFile.from(lastCatalogFile).updateTable(tableId, newMetadataLocation).commit(io());
         }
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Failed to commit metadata for table %s", tableId);

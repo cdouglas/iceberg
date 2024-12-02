@@ -59,7 +59,6 @@ public class TestS3FileIOAtomic {
   // private static final Logger LOG = LoggerFactory.getLogger(TestS3FileIOAtomic.class);
   private static final String TEST_BUCKET = "casalog";
 
-  // TODO: may need to use StaticClientFactory
   private static S3Client s3;
   private static String uniqTestRun;
   private static String warehouseLocation;
