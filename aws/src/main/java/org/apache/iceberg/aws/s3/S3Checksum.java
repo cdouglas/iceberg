@@ -49,4 +49,9 @@ public class S3Checksum implements FileChecksum {
   public String toHeaderString() {
     return Base64.getEncoder().encodeToString(asBytes());
   }
+
+  @Override
+  public String toString() {
+    return toHeaderString();
+  }
 }

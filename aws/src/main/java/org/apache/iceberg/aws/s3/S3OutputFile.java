@@ -126,7 +126,8 @@ public class S3OutputFile extends BaseS3File
           PutObjectRequest.builder()
               .bucket(location.bucket())
               .key(location.key())
-              .checksumCRC32C(checksum.toString())
+              .checksumCRC32C(checksum.toHeaderString())
+              .contentLength(checksum.contentLength())
               .ifMatch(etag)
               .build();
       RequestBody content = RequestBody.fromInputStream(src, checksum().contentLength());

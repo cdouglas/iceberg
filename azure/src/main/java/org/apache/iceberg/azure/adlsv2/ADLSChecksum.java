@@ -55,4 +55,9 @@ public class ADLSChecksum implements FileChecksum {
   public String toHeaderString() {
     return Base64.getEncoder().encodeToString(asBytes());
   }
+
+  @Override
+  public String toString() {
+    return toHeaderString();
+  }
 }

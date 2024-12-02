@@ -41,4 +41,5 @@ public interface FileChecksum {
   byte[] asBytes();
 
   String toHeaderString();
+
 }

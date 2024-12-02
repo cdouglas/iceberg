@@ -21,11 +21,14 @@ package org.apache.iceberg.aws.s3;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.google.common.primitives.Ints;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.UUID;
+import org.apache.commons.codec.digest.PureJavaCrc32C;
 import org.apache.iceberg.aws.AwsClientFactories;
 import org.apache.iceberg.aws.AwsClientFactory;
 import org.apache.iceberg.io.AtomicOutputFile;
@@ -118,6 +121,22 @@ public class TestS3FileIOAtomic {
   }
 
   @Test
+  public void testChecksum() throws S3Exception {
+    final String path = warehousePath + "/wombats";
+
+    final byte[] data = "cubed my pineapple".getBytes(StandardCharsets.UTF_8);
+
+    final PureJavaCrc32C chk = new PureJavaCrc32C();
+    chk.update(data, 0, data.length);
+    String chkStr = Base64.getEncoder().encodeToString(Ints.toByteArray((int) chk.getValue()));
+
+    PutObjectRequest req1 = PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).checksumCRC32C(chkStr).contentLength((long) data.length).build();
+    //RequestBody body1 = RequestBody.fromBytes(data);
+    RequestBody body1 = RequestBody.fromInputStream(new ByteArrayInputStream(data), data.length);
+    s3.putObject(req1, body1);
+  }
+
+  @Test
   public void testFileIOOverwrite() throws IOException, S3Exception {
     final String path = warehousePath + "/yaks";
     final String location = warehouseLocation + "/yaks";
@@ -133,10 +152,17 @@ public class TestS3FileIOAtomic {
     try (InputStream i = inf.newStream()) {
       assertThat(IOUtils.toString(i, "UTF-8")).isEqualTo("shaved my kiwis");
     }
-    AtomicOutputFile outf = fileIO.newOutputFile(inf);
+    final AtomicOutputFile outf = fileIO.newOutputFile(inf);
+    final FileChecksum chk = outf.checksum();
     final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
-    FileChecksum chk = outf.checksum();
     chk.update(replContent);
+    // XXX DEBUG
+    final PureJavaCrc32C validate = new PureJavaCrc32C();
+    validate.update(replContent, 0, replContent.length);
+    String chkStr = Base64.getEncoder().encodeToString(Ints.toByteArray((int) validate.getValue()));
+    assertThat(chk.toHeaderString()).isEqualTo(chkStr);
+    // XXX DEBUG
+
     InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
     try (InputStream i = replf.newStream()) {
       assertThat(IOUtils.toString(i, "UTF-8")).isEqualTo("shaved my hamster");
