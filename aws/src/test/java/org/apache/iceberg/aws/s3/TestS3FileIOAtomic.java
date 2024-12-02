@@ -131,8 +131,14 @@ public class TestS3FileIOAtomic {
     chk.update(data, 0, data.length);
     String chkStr = Base64.getEncoder().encodeToString(Ints.toByteArray((int) chk.getValue()));
 
-    PutObjectRequest req1 = PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).checksumCRC32C(chkStr).contentLength((long) data.length).build();
-    //RequestBody body1 = RequestBody.fromBytes(data);
+    PutObjectRequest req1 =
+        PutObjectRequest.builder()
+            .bucket(TEST_BUCKET)
+            .key(path)
+            .checksumCRC32C(chkStr)
+            .contentLength((long) data.length)
+            .build();
+    // RequestBody body1 = RequestBody.fromBytes(data);
     RequestBody body1 = RequestBody.fromInputStream(new ByteArrayInputStream(data), data.length);
     s3.putObject(req1, body1);
   }
@@ -168,8 +174,9 @@ public class TestS3FileIOAtomic {
     final byte[] failContent = "shaved your mom".getBytes(StandardCharsets.UTF_8);
     chkFail.update(failContent);
 
-    assertThatThrownBy(() -> outfFail.writeAtomic(chkFail, () -> new ByteArrayInputStream(failContent)))
-      .isInstanceOf(SupportsAtomicOperations.CASException.class);
+    assertThatThrownBy(
+            () -> outfFail.writeAtomic(chkFail, () -> new ByteArrayInputStream(failContent)))
+        .isInstanceOf(SupportsAtomicOperations.CASException.class);
     try (InputStream i = replf.newStream()) {
       assertThat(IOUtils.toString(i, "UTF-8")).isEqualTo("shaved my hamster");
     }
