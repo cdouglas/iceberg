@@ -96,10 +96,9 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
     // Annoyingly, the checksum is not validated server-side, but stored as metadata. The
     // partial-write
     // problem is less of an issue using an InputStream, so the length validation can suffice
-    final Response<PathInfo> resp;
     try (InputStream src = source.get()) {
       // TODO local runner doesn't support this API, testcontainer path will fail
-      resp =
+      final Response<PathInfo> resp =
           fileClient()
               .uploadWithResponse(
                   new FileParallelUploadOptions(src, checksum.contentLength())

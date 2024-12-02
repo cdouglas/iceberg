@@ -53,20 +53,21 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 @ExtendWith(TestS3FileIOAtomic.SuccessCleanupExtension.class)
 public class TestS3FileIOAtomic {
-    private static final Logger LOG = LoggerFactory.getLogger(TestS3FileIOAtomic.class);
+    // private static final Logger LOG = LoggerFactory.getLogger(TestS3FileIOAtomic.class);
     private static final String TEST_BUCKET = "casalog";
 
     // TODO: may need to use StaticClientFactory
     private static S3Client s3;
     private static String uniqTestRun;
-    private static String warehouseLocation;
+    // private static String warehouseLocation;
     private static String warehousePath;
 
     @BeforeAll
     public static void initStorage() {
         // XXX integration tests are well designed, but I'd rather gargle yak piss than configure AWS.
         uniqTestRun = UUID.randomUUID().toString();
-        LOG.info("TEST RUN: " + uniqTestRun);
+        // LOG.info("TEST RUN: {}", uniqTestRun);
+        System.err.println("TEST RUN: " + uniqTestRun); // (logging disabled in tests)
         try {
             final AwsClientFactory clientFactory = AwsClientFactories.defaultFactory();
             s3 = clientFactory.s3();
@@ -79,7 +80,7 @@ public class TestS3FileIOAtomic {
         Assumptions.assumeTrue(s3 != null);
         final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
         warehousePath = uniqTestRun + "/" + testName;
-        warehouseLocation = "s3://" + TEST_BUCKET + "/" + warehousePath;
+        // warehouseLocation = "s3://" + TEST_BUCKET + "/" + warehousePath;
     }
 
     @AfterEach
@@ -111,7 +112,15 @@ public class TestS3FileIOAtomic {
         // overwrite w/ if-match
         PutObjectRequest req4 = PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).ifMatch(resp1.eTag()).build();
         RequestBody body4 = RequestBody.fromBytes("ate my sushi".getBytes(StandardCharsets.UTF_8));
-        s3.putObject(req4, body4);
+        PutObjectResponse resp4 = s3.putObject(req4, body4);
+
+        // new object
+        HeadObjectRequest req5 = HeadObjectRequest.builder().bucket(TEST_BUCKET).key(path).build();
+        assertThat(s3.headObject(req5)).extracting(HeadObjectResponse::eTag).isEqualTo(resp4.eTag());
+    }
+
+    @Test
+    public void testFileIOOverwrite() throws S3Exception {
     }
 
     static class SuccessCleanupExtension implements TestWatcher {

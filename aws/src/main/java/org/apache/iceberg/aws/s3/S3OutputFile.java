@@ -30,12 +30,18 @@ import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 public class S3OutputFile extends BaseS3File
     implements OutputFile, NativelyEncryptedFile, AtomicOutputFile {
   private NativeFileCryptoParameters nativeEncryptionParameters;
+  private final String etag;
 
   public static S3OutputFile fromLocation(
       String location,
@@ -50,8 +56,14 @@ public class S3OutputFile extends BaseS3File
   }
 
   S3OutputFile(
-      S3Client client, S3URI uri, S3FileIOProperties s3FileIOProperties, MetricsContext metrics) {
+          S3Client client, S3URI uri, S3FileIOProperties s3FileIOProperties, MetricsContext metrics) {
+    this(client, uri, s3FileIOProperties, metrics, null);
+  }
+
+  S3OutputFile(
+      S3Client client, S3URI uri, S3FileIOProperties s3FileIOProperties, MetricsContext metrics, String etag) {
     super(client, uri, s3FileIOProperties, metrics);
+    this.etag = etag;
   }
 
   /**
@@ -103,7 +115,18 @@ public class S3OutputFile extends BaseS3File
   @Override
   public InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
       throws IOException {
-    // !#! TODO
-    return null;
+    try (InputStream src = source.get()) {
+      final S3URI location = uri();
+      PutObjectRequest req = PutObjectRequest.builder().bucket(location.bucket()).key(location.key()).ifMatch(etag).build();
+      RequestBody content = RequestBody.fromInputStream(src, checksum().contentLength());
+      PutObjectResponse response = client().putObject(req, content);
+      return new S3InputFile(client(), location, checksum.contentLength(), s3FileIOProperties(), metrics(), response.eTag());
+    } catch (S3Exception e) {
+      if (412 == e.statusCode()) {
+        // precondition failed
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
+      }
+      throw e;
+    }
   }
 }

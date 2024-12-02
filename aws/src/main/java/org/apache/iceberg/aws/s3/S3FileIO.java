@@ -139,8 +139,12 @@ public class S3FileIO implements CredentialSupplier, DelegateFileIO, SupportsAto
 
   @Override
   public AtomicOutputFile newOutputFile(InputFile replace) {
-    // TODO
-    return null;
+    if (replace instanceof S3InputFile) {
+      final S3URI location = ((S3InputFile)replace).uri();
+      final String etag = ((S3InputFile)replace).etag();
+      return new S3OutputFile(client(), location, s3FileIOProperties, metrics, etag);
+    }
+    return S3OutputFile.fromLocation(replace.location(), client(), s3FileIOProperties, metrics);
   }
 
   @Override

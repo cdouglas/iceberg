@@ -28,6 +28,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryptedFile {
   private NativeFileCryptoParameters nativeDecryptionParameters;
   private Long length;
+  private String etag;
 
   public static S3InputFile fromLocation(
       String location,
@@ -57,13 +58,24 @@ public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryp
   }
 
   S3InputFile(
+          S3Client client,
+          S3URI uri,
+          Long length,
+          S3FileIOProperties s3FileIOProperties,
+          MetricsContext metrics) {
+    this(client, uri, length, s3FileIOProperties, metrics, null);
+  }
+
+  S3InputFile(
       S3Client client,
       S3URI uri,
       Long length,
       S3FileIOProperties s3FileIOProperties,
-      MetricsContext metrics) {
+      MetricsContext metrics,
+      String etag) {
     super(client, uri, s3FileIOProperties, metrics);
     this.length = length;
+    this.etag = etag;
   }
 
   /**
@@ -76,13 +88,20 @@ public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryp
     if (length == null) {
       this.length = getObjectMetadata().contentLength();
     }
-
     return length;
+  }
+
+  public String etag() {
+    return etag;
   }
 
   @Override
   public SeekableInputStream newStream() {
-    return new S3InputStream(client(), uri(), s3FileIOProperties(), metrics());
+    S3InputStream ret = new S3InputStream(client(), uri(), s3FileIOProperties(), metrics());
+    if (null == etag) {
+      etag = getObjectMetadata().eTag();
+    }
+    return ret;
   }
 
   @Override
