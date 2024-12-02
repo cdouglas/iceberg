@@ -6,7 +6,7 @@ tl;dr
 
 ## Aggressive Schedule
 
-Week 1: CAS Catalog (S3) \
+Week 1: CAS Catalog (S3) ✅ \
 Week 2: Embed Table Metadata \
 Week 3: ibid \
 Week 4: Split table entries \

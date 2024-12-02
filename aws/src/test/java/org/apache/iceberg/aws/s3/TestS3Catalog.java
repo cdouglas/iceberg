@@ -31,13 +31,11 @@ import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.TestWatcher;
-import software.amazon.awssdk.services.s3.S3Client;
 
 @ExtendWith(TestS3Catalog.SuccessCleanupExtension.class)
 public class TestS3Catalog extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "casalog";
 
-  private static S3Client s3;
   private static String uniqTestRun;
   private static String warehouseLocation;
 
