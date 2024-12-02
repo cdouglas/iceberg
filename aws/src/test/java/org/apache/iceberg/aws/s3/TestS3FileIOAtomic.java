@@ -21,10 +21,10 @@ package org.apache.iceberg.aws.s3;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.google.common.primitives.Ints;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.UUID;
@@ -35,6 +35,8 @@ import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.SupportsAtomicOperations;
+import org.apache.iceberg.relocated.com.google.common.io.CharStreams;
+import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -44,7 +46,6 @@ import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.TestWatcher;
-import org.testcontainers.shaded.org.apache.commons.io.IOUtils;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
@@ -157,7 +158,8 @@ public class TestS3FileIOAtomic {
     S3FileIO fileIO = new S3FileIO(() -> s3);
     final InputFile inf = fileIO.newInputFile(location);
     try (InputStream i = inf.newStream()) {
-      assertThat(IOUtils.toString(i, "UTF-8")).isEqualTo("shaved my kiwis");
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my kiwis");
     }
     final AtomicOutputFile outf = fileIO.newOutputFile(inf);
     final FileChecksum chk = outf.checksum();
@@ -166,7 +168,8 @@ public class TestS3FileIOAtomic {
 
     InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
     try (InputStream i = replf.newStream()) {
-      assertThat(IOUtils.toString(i, "UTF-8")).isEqualTo("shaved my hamster");
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my hamster");
     }
 
     final AtomicOutputFile outfFail = fileIO.newOutputFile(inf);
@@ -178,7 +181,8 @@ public class TestS3FileIOAtomic {
             () -> outfFail.writeAtomic(chkFail, () -> new ByteArrayInputStream(failContent)))
         .isInstanceOf(SupportsAtomicOperations.CASException.class);
     try (InputStream i = replf.newStream()) {
-      assertThat(IOUtils.toString(i, "UTF-8")).isEqualTo("shaved my hamster");
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my hamster");
     }
   }
 
