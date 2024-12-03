@@ -109,6 +109,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       catalogLocation = LocationUtil.stripTrailingSlash(warehouseLocation) + "/catalog";
     }
     if (null == fileIO) {
+      // TODO check warehouseLocation schema?
       String fileIOImpl =
           properties.getOrDefault(
               CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.gcp.gcs.GCSFileIO");
