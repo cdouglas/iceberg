@@ -59,4 +59,7 @@ public class TestCatalogFile {
     assertThat(drop.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1);
     assertThat(drop.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
   }
+
+  @Test
+  public void testSerDe() {}
 }
