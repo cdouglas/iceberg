@@ -32,6 +32,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
+import org.apache.commons.io.IOUtils;
 import org.apache.iceberg.TableMetadata.MetadataLogEntry;
 import org.apache.iceberg.TableMetadata.SnapshotLogEntry;
 import org.apache.iceberg.exceptions.RuntimeIOException;
@@ -131,6 +132,23 @@ public class TableMetadataParser {
       generator.flush();
     } catch (IOException e) {
       throw new RuntimeIOException(e, "Failed to write json to file: %s", outputFile);
+    }
+  }
+
+  public static void internalWrite(TableMetadata metadata, OutputStream out, boolean close) {
+    OutputStreamWriter writer = null;
+    try {
+      writer = new OutputStreamWriter(out);
+      JsonGenerator generator = JsonUtil.factory().createGenerator(writer);
+      generator.useDefaultPrettyPrinter();
+      toJson(metadata, generator);
+      generator.flush();
+    } catch (IOException e) {
+      throw new RuntimeIOException(e, "Failed to write json to stream");
+    } finally {
+      if (close) {
+        IOUtils.closeQuietly(writer);
+      }
     }
   }
 

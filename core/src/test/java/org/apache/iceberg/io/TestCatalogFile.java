@@ -20,6 +20,7 @@ package org.apache.iceberg.io;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.util.Collections;
 import java.util.Map;
@@ -61,5 +62,7 @@ public class TestCatalogFile {
   }
 
   @Test
-  public void testSerDe() {}
+  public void testSerDe() {
+    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+  }
 }

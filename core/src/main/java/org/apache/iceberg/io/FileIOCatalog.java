@@ -353,6 +353,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       if (newMetadata.changes().isEmpty()) {
         continue;
       }
+      // !#! HERE
       final String newLocation = ops.writeUpdateMetadata(false, newMetadata);
       newCatalog.updateTable(tableId, newLocation);
     }
