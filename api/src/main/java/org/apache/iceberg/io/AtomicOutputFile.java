@@ -22,18 +22,23 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.function.Supplier;
 
-public interface AtomicOutputFile extends OutputFile {
-  /** Checksum expected by this object store, bridging (in Java8) Checksum and Digest APIs. */
-  FileChecksum checksum();
+public interface AtomicOutputFile<T> extends OutputFile {
+
+  /**
+   * Generate a token to replace the InputFile with the specified content.
+   *
+   * @param source Invoked to obtain an InputStream for the future output.
+   */
+  T prepare(Supplier<InputStream> source) throws IOException;
 
   /**
    * Atomically replace the contents of the target AtomicOutputFile using the contents of the stream
    * provided, only if the content checksum matches.
    *
-   * @param checksum Checksum provided to the underlying store for validation
+   * @param token Checksum provided to the underlying store for validation
    * @param source Function invoked to obtain an InputStream to copy to the destination
    * @return an {@link InputFile} with metadata identifying the file written, could be used in a
    *     subsequent call to {@link SupportsAtomicOperations#newOutputFile(InputFile)}
    */
-  InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source) throws IOException;
+  InputFile writeAtomic(T token, Supplier<InputStream> source) throws IOException;
 }

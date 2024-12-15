@@ -114,11 +114,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
           properties.getOrDefault(
               CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.gcp.gcs.GCSFileIO");
 
-      // TODO handle this more gracefully; use listings/HadoopCatalog
+      // TODO handle this more gracefully; use listings/HadoopCatalog?
       fileIO = (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
     }
-    // TODO: create empty catalog if not exists
-    // TODO: use create-if-absent (if-no-match or whatever)
     if (!fileIO.newInputFile(catalogLocation).exists()) {
       try (OutputStream out = fileIO.newOutputFile(catalogLocation).create()) {
         CatalogFile.empty().commit(out);
@@ -226,8 +224,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     try {
       CatalogFile.from(catalogFile).dropNamespace(namespace).commit(fileIO);
     } catch (NoSuchNamespaceException e) {
-      // sigh.
-      return false;
+      return false; // sigh.
     }
     return true;
   }
@@ -312,6 +309,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       lastCatalogFile = updatedCatalogFile;
     }
 
+    // visible from commitTransaction
     String writeUpdateMetadata(boolean isCreate, TableMetadata metadata) {
       return writeNewMetadataIfRequired(isCreate, metadata);
     }

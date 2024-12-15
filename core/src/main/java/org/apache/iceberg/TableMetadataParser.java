@@ -138,7 +138,7 @@ public class TableMetadataParser {
   public static void internalWrite(TableMetadata metadata, OutputStream out, boolean close) {
     OutputStreamWriter writer = null;
     try {
-      writer = new OutputStreamWriter(out);
+      writer = new OutputStreamWriter(out, StandardCharsets.UTF_8);
       JsonGenerator generator = JsonUtil.factory().createGenerator(writer);
       generator.useDefaultPrettyPrinter();
       toJson(metadata, generator);

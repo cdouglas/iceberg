@@ -47,6 +47,12 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 public class CatalogFile {
   // TODO use serialization idioms from the project, handle evolution, etc.
 
+  public interface CatalogTransform {
+    CatalogFile read(InputFile in);
+
+    MutCatalogFile from(CatalogFile catalogFile);
+  }
+
   private final int seqno; // or retain deleted TableIdentifiers unless/until not the max
   private final UUID uuid;
   private final Map<TableIdentifier, TableInfo> fqti; // fully qualified table identifiers
@@ -191,9 +197,9 @@ public class CatalogFile {
       return this;
     }
 
-    public CatalogFile commit(SupportsAtomicOperations fileIO) {
+    public CatalogFile commit(SupportsAtomicOperations<CAS> fileIO) {
       try {
-        final AtomicOutputFile outputFile = fileIO.newOutputFile(original.fromFile);
+        final AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(original.fromFile);
         final Map<Namespace, Map<String, String>> newNamespaces =
             Maps.newHashMap(original.namespaces);
         merge(
@@ -210,13 +216,13 @@ public class CatalogFile {
         merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
 
         // TODO need to merge namespace properties?
-        // TODO not using table versions...
+        // TODO not using table versions... remove
 
         try {
           CatalogFile catalog =
               new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
-          FileChecksum chk = catalog.checksum(outputFile.checksum());
-          InputFile newCatalog = outputFile.writeAtomic(chk, catalog::asBytes);
+          CAS token = outputFile.prepare(catalog::asBytes);
+          InputFile newCatalog = outputFile.writeAtomic(token, catalog::asBytes);
           catalog.setFromFile(newCatalog);
           return catalog;
         } catch (IOException e) {
@@ -227,7 +233,7 @@ public class CatalogFile {
       }
     }
 
-    // XXX TODO remove this
+    // XXX TODO remove this, define commit(FileIO) for empty()
     public CatalogFile commit(OutputStream out) {
       final Map<Namespace, Map<String, String>> newNamespaces =
           Maps.newHashMap(original.namespaces);
@@ -312,19 +318,16 @@ public class CatalogFile {
     return Lists.newArrayList(fqti.keySet().iterator());
   }
 
-  private FileChecksum checksum(FileChecksum checksum) {
-    try (ByteArrayOutputStream bytes = new ByteArrayOutputStream(2048);
-        FileChecksumOutputStream checkedOutputStream =
-            new FileChecksumOutputStream(bytes, checksum)) {
-      write(checkedOutputStream);
-      serBytes = bytes.toByteArray();
-    } catch (IOException e) {
-      throw new CommitFailedException(e, "Failed to commit catalog file");
-    }
-    return checksum;
-  }
-
   private InputStream asBytes() {
+    if (null == serBytes) {
+      // TODO unnecessary buffer copy; DataInput/DataOutputStream avail?
+      try (ByteArrayOutputStream bytes = new ByteArrayOutputStream(2048)) {
+        write(bytes);
+        serBytes = bytes.toByteArray();
+      } catch (IOException e) {
+        throw new CommitFailedException(e, "Failed to commit catalog file");
+      }
+    }
     return new ByteArrayInputStream(serBytes);
   }
 

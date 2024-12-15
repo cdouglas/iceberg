@@ -33,6 +33,7 @@ import org.apache.iceberg.aws.S3FileIOAwsClientFactories;
 import org.apache.iceberg.common.DynConstructors;
 import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.BulkDeletionFailureException;
+import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.CredentialSupplier;
 import org.apache.iceberg.io.DelegateFileIO;
 import org.apache.iceberg.io.FileInfo;
@@ -75,7 +76,7 @@ import software.amazon.awssdk.services.s3.model.Tagging;
  * schemes s3a, s3n, https are also treated as s3 file paths. Using this FileIO with other schemes
  * will result in {@link org.apache.iceberg.exceptions.ValidationException}.
  */
-public class S3FileIO implements CredentialSupplier, DelegateFileIO, SupportsAtomicOperations {
+public class S3FileIO implements CredentialSupplier, DelegateFileIO, SupportsAtomicOperations<CAS> {
   private static final Logger LOG = LoggerFactory.getLogger(S3FileIO.class);
   private static final String DEFAULT_METRICS_IMPL =
       "org.apache.iceberg.hadoop.HadoopMetricsContext";

@@ -21,18 +21,15 @@ package org.apache.iceberg.aws.s3;
 import java.util.Base64;
 import java.util.zip.Checksum;
 import org.apache.commons.codec.digest.PureJavaCrc32C;
+import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 
-public class S3Checksum implements FileChecksum {
+// mild abuse of types to accommodate existing work
+public class S3Checksum implements FileChecksum, CAS {
 
   private long length = 0L;
   private final Checksum crc32c = new PureJavaCrc32C();
-
-  @Override
-  public long contentLength() {
-    return length;
-  }
 
   @Override
   public void update(byte[] bytes, int off, int len) {
@@ -41,17 +38,22 @@ public class S3Checksum implements FileChecksum {
   }
 
   @Override
-  public byte[] asBytes() {
+  public long contentLength() {
+    return length;
+  }
+
+  @Override
+  public byte[] contentChecksumBytes() {
     return Ints.toByteArray((int) crc32c.getValue());
   }
 
   @Override
-  public String toHeaderString() {
-    return Base64.getEncoder().encodeToString(asBytes());
+  public String contentHeaderString() {
+    return Base64.getEncoder().encodeToString(contentChecksumBytes());
   }
 
   @Override
   public String toString() {
-    return toHeaderString();
+    return contentHeaderString();
   }
 }

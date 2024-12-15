@@ -28,17 +28,21 @@ import com.azure.storage.file.datalake.models.PathInfo;
 import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.io.AtomicOutputFile;
-import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.io.CAS;
+import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
+import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
-class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
+class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
 
   private Long length;
   private final DataLakeRequestConditions conditions;
@@ -89,13 +93,33 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
   }
 
   @Override
-  public FileChecksum checksum() {
-    return new ADLSChecksum();
+  public CAS prepare(Supplier<InputStream> source) {
+    final ADLSChecksum checksum = new ADLSChecksum();
+    final byte[] buffer = new byte[8192];
+    try (InputStream in = source.get();
+        FileChecksumOutputStream chk =
+            new FileChecksumOutputStream(
+                new OutputStream() {
+                  @Override
+                  public void write(int b) {
+                    // TODO: no NullOutputStream?
+                  }
+
+                  @Override
+                  public void write(byte[] b, int off, int len) {
+                    // do nothing
+                  }
+                },
+                checksum)) {
+      ByteStreams.copy(in, chk);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    return checksum;
   }
 
   @Override
-  public ADLSInputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
-      throws IOException {
+  public ADLSInputFile writeAtomic(CAS checksum, Supplier<InputStream> source) throws IOException {
     // Annoyingly, the checksum is not validated server-side, but stored as metadata. The
     // partial-write problem is less of an issue using an InputStream, so the length validation can
     // suffice
@@ -108,7 +132,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
                       .setRequestConditions(conditions)
                       .setHeaders(
                           new PathHttpHeaders()
-                              .setContentMd5(checksum.asBytes())
+                              .setContentMd5(checksum.contentChecksumBytes())
                               .setContentType("binary")),
                   null, // no timeout
                   Context.NONE);

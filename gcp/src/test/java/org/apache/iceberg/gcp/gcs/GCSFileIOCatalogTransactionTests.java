@@ -78,7 +78,7 @@ public class GCSFileIOCatalogTransactionTests extends CatalogTransactionTests<Fi
     uniqTestRun = randomAlphabetic(8);
     LOG.info("TEST RUN: " + uniqTestRun);
     // TODO get from env
-    final File credFile = new File("/IdeaProjects/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
+    final File credFile = new File("/home/chris/work/.cloud/gcp/lst-consistency-8dd2dfbea73a.json");
     if (credFile.exists()) {
       try (FileInputStream creds = new FileInputStream(credFile)) {
         storage = RemoteStorageHelper.create("lst-consistency", creds).getOptions().getService();

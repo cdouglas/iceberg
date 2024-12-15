@@ -19,14 +19,14 @@
 package org.apache.iceberg.io;
 
 // TODO using InputFile is imprecise. It should be resolved.
-public interface SupportsAtomicOperations extends FileIO {
+public interface SupportsAtomicOperations<T> extends FileIO {
   /**
    * Create a new atomic output file that will replace the given input file.
    *
    * @param replace an input file to replace
    * @return a new atomic output file
    */
-  AtomicOutputFile newOutputFile(InputFile replace);
+  AtomicOutputFile<T> newOutputFile(InputFile replace);
 
   class CASException extends RuntimeException {
     public CASException(String message, Exception cause) {

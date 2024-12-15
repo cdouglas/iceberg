@@ -22,16 +22,18 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.function.Supplier;
+import org.apache.commons.io.output.NullOutputStream;
 import org.apache.iceberg.encryption.NativeFileCryptoParameters;
 import org.apache.iceberg.encryption.NativelyEncryptedFile;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.io.AtomicOutputFile;
-import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.io.CAS;
+import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
+import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -39,7 +41,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 public class S3OutputFile extends BaseS3File
-    implements OutputFile, NativelyEncryptedFile, AtomicOutputFile {
+    implements NativelyEncryptedFile, AtomicOutputFile<CAS> {
   private NativeFileCryptoParameters nativeEncryptionParameters;
   private final String etag;
 
@@ -110,32 +112,37 @@ public class S3OutputFile extends BaseS3File
   }
 
   @Override
-  public FileChecksum checksum() {
+  public CAS prepare(Supplier<InputStream> source) throws IOException {
     // S3OutputStream forces multipart upload w/ attendant MD5 and work pool... meh, do it manually
     // in writeAtomic
     // Catalog + metadata writes are likely smaller than multipart would justify, anyway
-    return new S3Checksum();
+    final S3Checksum checksum = new S3Checksum();
+    try (InputStream in = source.get();
+        FileChecksumOutputStream chk =
+            new FileChecksumOutputStream(new NullOutputStream(), checksum)) {
+      ByteStreams.copy(in, chk);
+    }
+    return checksum;
   }
 
   @Override
-  public InputFile writeAtomic(FileChecksum checksum, Supplier<InputStream> source)
-      throws IOException {
+  public InputFile writeAtomic(CAS token, Supplier<InputStream> source) throws IOException {
     try (InputStream src = source.get()) {
       final S3URI location = uri();
       PutObjectRequest req =
           PutObjectRequest.builder()
               .bucket(location.bucket())
               .key(location.key())
-              .checksumCRC32C(checksum.toHeaderString())
-              .contentLength(checksum.contentLength())
+              .checksumCRC32C(token.contentHeaderString())
+              .contentLength(token.contentLength())
               .ifMatch(etag)
               .build();
-      RequestBody content = RequestBody.fromInputStream(src, checksum().contentLength());
+      RequestBody content = RequestBody.fromInputStream(src, token.contentLength());
       PutObjectResponse response = client().putObject(req, content);
       return new S3InputFile(
           client(),
           location,
-          checksum.contentLength(),
+          token.contentLength(), // TODO should be identical, but get from resposne?
           s3FileIOProperties(),
           metrics(),
           response.eTag());

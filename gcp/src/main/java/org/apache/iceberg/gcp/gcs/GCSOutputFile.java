@@ -22,17 +22,20 @@ import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
-import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.io.CAS;
+import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.metrics.MetricsContext;
+import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
-class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
+class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile<CAS> {
 
   static GCSOutputFile fromLocation(
       String location, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
@@ -80,24 +83,40 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
   }
 
   @Override
-  public FileChecksum checksum() {
-    return new GCSChecksum();
+  public CAS prepare(Supplier<InputStream> source) {
+    final GCSChecksum checksum = new GCSChecksum();
+    // TODO replace with IOUtils (or whatever Guice provides)
+    final byte[] buffer = new byte[8192];
+    try (InputStream in = source.get();
+        FileChecksumOutputStream chk =
+            new FileChecksumOutputStream(
+                new OutputStream() {
+                  @Override
+                  public void write(int b) {
+                    // TODO: no NullOutputStream?
+                  }
+
+                  @Override
+                  public void write(byte[] b, int off, int len) {
+                    // do nothing
+                  }
+                },
+                checksum)) {
+      ByteStreams.copy(in, chk);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    return checksum;
   }
 
   @Override
-  public InputFile writeAtomic(FileChecksum checksum, final Supplier<InputStream> source)
-      throws IOException {
+  public InputFile writeAtomic(CAS token, final Supplier<InputStream> source) throws IOException {
     final InputFile[] ret = new InputFile[1]; // Java. FFS.
     try (InputStream src = source.get()) {
       // TODO onClose is from a previous implementation; define a less clunky internal API
       try (PositionOutputStream dest =
           new GCSOutputStream(
-              storage(),
-              blobId(),
-              gcpProperties(),
-              metrics(),
-              checksum,
-              closed -> ret[0] = closed)) {
+              storage(), blobId(), gcpProperties(), metrics(), token, closed -> ret[0] = closed)) {
         byte[] buf = new byte[gcpProperties().channelWriteChunkSize().orElse(32 * 1024)];
         while (true) {
           int nread = src.read(buf);

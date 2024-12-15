@@ -34,7 +34,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import org.apache.iceberg.gcp.GCPProperties;
-import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.FileIOMetricsContext;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
@@ -81,7 +81,7 @@ class GCSOutputStream extends PositionOutputStream {
       BlobId blobId,
       GCPProperties gcpProperties,
       MetricsContext metrics,
-      FileChecksum checksum,
+      CAS token,
       Consumer<InputFile> onClose) {
     this.storage = storage;
     this.blobId = blobId;
@@ -94,7 +94,7 @@ class GCSOutputStream extends PositionOutputStream {
     this.writeOperations = metrics.counter(FileIOMetricsContext.WRITE_OPERATIONS);
 
     this.onClose = onClose;
-    openStream(checksum);
+    openStream(token);
   }
 
   @Override
@@ -123,7 +123,7 @@ class GCSOutputStream extends PositionOutputStream {
     writeOperations.increment();
   }
 
-  private void openStream(FileChecksum checksum) {
+  private void openStream(CAS token) {
     List<BlobWriteOption> writeOptions = Lists.newArrayList();
 
     gcpProperties
@@ -136,8 +136,8 @@ class GCSOutputStream extends PositionOutputStream {
       writeOptions.add(BlobWriteOption.generationMatch());
     }
     BlobInfo.Builder blobInfoBuilder = BlobInfo.newBuilder(blobId);
-    if (checksum != null) {
-      blobInfoBuilder.setCrc32c(checksum.toHeaderString());
+    if (token != null) {
+      blobInfoBuilder.setCrc32c(token.contentHeaderString());
       writeOptions.add(BlobWriteOption.crc32cMatch());
     }
 

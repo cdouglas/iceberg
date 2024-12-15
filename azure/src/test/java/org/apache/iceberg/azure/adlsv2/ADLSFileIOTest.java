@@ -60,6 +60,7 @@ import java.util.UUID;
 import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.FileInfo;
@@ -280,11 +281,10 @@ public class ADLSFileIOTest {
     assertThat(in.exists()).isTrue();
 
     // overwrite fails, checksum does not match
-    final AtomicOutputFile overwrite = io.newOutputFile(in);
+    final AtomicOutputFile<CAS> overwrite = io.newOutputFile(in);
     final byte[] overbytes = new byte[1024 * 1024];
     random.nextBytes(overbytes);
-    final FileChecksum chk = overwrite.checksum();
-    chk.update(overbytes, 0, 1024 * 1024);
+    final CAS chk = overwrite.prepare(() -> new ByteArrayInputStream(overbytes));
     // precondition not met (bad checksum)
     UnexpectedLengthException chkFailure =
         Assertions.assertThrows(
@@ -337,7 +337,7 @@ public class ADLSFileIOTest {
         client.uploadWithResponse(
             new FileParallelUploadOptions(new ByteArrayInputStream(overbytes))
                 .setRequestConditions(cond2)
-                .setHeaders(new PathHttpHeaders().setContentMd5(chk.asBytes())),
+                .setHeaders(new PathHttpHeaders().setContentMd5(chk.contentChecksumBytes())),
             null, // no timeout
             Context.NONE);
     PathInfo info2 = resp.getValue();

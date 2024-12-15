@@ -1,18 +1,18 @@
-# VLDB
-
 tl;dr
 - 3-6 months to complete all tasks
 - lower bound includes all implementation but not experiments
 
-## Schedule
+# Schedule
 
 Week 1: CAS Catalog (S3) ✅ \
-Week 2: Embed Table Metadata \
+Week 2: Embed Table Metadata + simulator \
 Week 3: ibid \
 Week 4: Catalog Append (Azure) \
 Week 5: Blind appends (Azure) \
 Week 6: Lease+Position appends (Azure, AWS) \
 Week 7: Lambda Append (S3)
+
+
 
 <!--
 ## Aggressive Schedule
@@ -31,7 +31,13 @@ Week 11: Lambda Append (S3) \
 Week 12: Experiments
 -->
 
-## Model
+# Model
+
+## Simulator 
+
+We write a simple discrete event simulator to explore the space.
+
+## Store latency
 
 To motivate the following, we assume average read latencies for "hot" objects from [Leis et al.](https://dl.acm.org/doi/abs/10.14778/3611479.3611486). These will differ for Azure and GCP. Assume appends in Azure have the same cost per byte.
 

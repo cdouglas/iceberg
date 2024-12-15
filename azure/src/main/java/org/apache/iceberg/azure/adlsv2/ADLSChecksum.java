@@ -21,9 +21,10 @@ package org.apache.iceberg.azure.adlsv2;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.FileChecksum;
 
-public class ADLSChecksum implements FileChecksum {
+public class ADLSChecksum implements FileChecksum, CAS {
   private long length = 0L;
   private final MessageDigest checksum = getMD5DigestInstance();
 
@@ -47,17 +48,17 @@ public class ADLSChecksum implements FileChecksum {
   }
 
   @Override
-  public byte[] asBytes() {
+  public byte[] contentChecksumBytes() {
     return checksum.digest();
   }
 
   @Override
-  public String toHeaderString() {
-    return Base64.getEncoder().encodeToString(asBytes());
+  public String contentHeaderString() {
+    return Base64.getEncoder().encodeToString(contentChecksumBytes());
   }
 
   @Override
   public String toString() {
-    return toHeaderString();
+    return contentHeaderString();
   }
 }

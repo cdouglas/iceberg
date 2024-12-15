@@ -18,25 +18,10 @@
  */
 package org.apache.iceberg.io;
 
-/**
- * Checksum API for object stores. Annoyingly, Java does not have a common interface for CRC32 and
- * MD5. The convoluted "obtain a checksum object from the outputfile and use it to write" API sucks,
- * but whatever, it'll suffice for experiments.
- */
-public interface FileChecksum {
-  // TODO include a path to provide a checksum (known locally), rather than computing it
-
-  default void update(int onebyte) {
-    update(new byte[] {(byte) onebyte}, 0, 1);
-  }
-
-  default void update(byte[] bytes) {
-    update(bytes, 0, bytes.length);
-  }
-
+/** Input metadata and full checksum to swap contents of the file. */
+public interface CAS {
+  /** Checksum expected by this object store, bridging (in Java8) Checksum and Digest APIs. */
   long contentLength();
-
-  void update(byte[] bytes, int off, int len);
 
   byte[] contentChecksumBytes();
 

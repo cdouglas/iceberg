@@ -52,7 +52,7 @@ import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.common.DynMethods;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
-import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.IOUtil;
@@ -253,11 +253,10 @@ public class GCSFileIOTest {
     assertThat(in.exists()).isTrue();
 
     // overwrite fails, checksum does not match
-    final AtomicOutputFile overwrite = io.newOutputFile(in);
+    final AtomicOutputFile<CAS> overwrite = io.newOutputFile(in);
     final byte[] overbytes = new byte[1024 * 1024];
     random.nextBytes(overbytes);
-    final FileChecksum chk = overwrite.checksum();
-    chk.update(overbytes, 0, 1024 * 1024);
+    final CAS chk = overwrite.prepare(() -> new ByteArrayInputStream(overbytes));
     StorageException hackFailure =
         Assertions.assertThrows(
             StorageException.class,
@@ -287,7 +286,7 @@ public class GCSFileIOTest {
     try (FileChecksumOutputStream fc =
         new FileChecksumOutputStream(new NullOutputStream(), new GCSChecksum())) {
       fc.write(somebytes);
-      fccrc32c = fc.getContentChecksum().toHeaderString();
+      fccrc32c = fc.getContentChecksum().contentHeaderString();
     }
     assertThat(utilcrc32c).isEqualTo(fccrc32c);
   }

@@ -32,7 +32,7 @@ import org.apache.commons.codec.digest.PureJavaCrc32C;
 import org.apache.iceberg.aws.AwsClientFactories;
 import org.apache.iceberg.aws.AwsClientFactory;
 import org.apache.iceberg.io.AtomicOutputFile;
-import org.apache.iceberg.io.FileChecksum;
+import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.relocated.com.google.common.io.CharStreams;
@@ -160,10 +160,9 @@ public class TestS3FileIOAtomic {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
           .isEqualTo("shaved my kiwis");
     }
-    final AtomicOutputFile outf = fileIO.newOutputFile(inf);
-    final FileChecksum chk = outf.checksum();
+    final AtomicOutputFile<CAS> outf = fileIO.newOutputFile(inf);
     final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
-    chk.update(replContent);
+    final CAS chk = outf.prepare(() -> new ByteArrayInputStream(replContent));
 
     InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
     try (InputStream i = replf.newStream()) {
@@ -171,10 +170,9 @@ public class TestS3FileIOAtomic {
           .isEqualTo("shaved my hamster");
     }
 
-    final AtomicOutputFile outfFail = fileIO.newOutputFile(inf);
-    final FileChecksum chkFail = outfFail.checksum();
+    final AtomicOutputFile<CAS> outfFail = fileIO.newOutputFile(inf);
     final byte[] failContent = "shaved your mom".getBytes(StandardCharsets.UTF_8);
-    chkFail.update(failContent);
+    final CAS chkFail = outfFail.prepare(() -> new ByteArrayInputStream(failContent));
 
     assertThatThrownBy(
             () -> outfFail.writeAtomic(chkFail, () -> new ByteArrayInputStream(failContent)))
