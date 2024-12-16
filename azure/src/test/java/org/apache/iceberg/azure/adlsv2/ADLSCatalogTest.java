@@ -64,7 +64,7 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: {}", uniqTestRun);
     AzureSAS creds =
-        AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/lstnsgym-20250228.json"));
+        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/lstnsgym-20250228.json"));
     if (creds != null) {
       azureProperties = Maps.newHashMap();
       azureProperties.put(

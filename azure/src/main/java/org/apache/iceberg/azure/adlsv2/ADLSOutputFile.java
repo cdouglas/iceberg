@@ -28,7 +28,6 @@ import com.azure.storage.file.datalake.models.PathInfo;
 import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
@@ -98,19 +97,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
     final byte[] buffer = new byte[8192];
     try (InputStream in = source.get();
         FileChecksumOutputStream chk =
-            new FileChecksumOutputStream(
-                new OutputStream() {
-                  @Override
-                  public void write(int b) {
-                    // TODO: no NullOutputStream?
-                  }
-
-                  @Override
-                  public void write(byte[] b, int off, int len) {
-                    // do nothing
-                  }
-                },
-                checksum)) {
+            new FileChecksumOutputStream(ByteStreams.nullOutputStream(), checksum)) {
       ByteStreams.copy(in, chk);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
