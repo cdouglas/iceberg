@@ -256,7 +256,8 @@ public class GCSFileIOTest {
     final AtomicOutputFile<CAS> overwrite = io.newOutputFile(in);
     final byte[] overbytes = new byte[1024 * 1024];
     random.nextBytes(overbytes);
-    final CAS chk = overwrite.prepare(() -> new ByteArrayInputStream(overbytes));
+    final CAS chk =
+        overwrite.prepare(() -> new ByteArrayInputStream(overbytes), AtomicOutputFile.Strategy.CAS);
     StorageException hackFailure =
         Assertions.assertThrows(
             StorageException.class,

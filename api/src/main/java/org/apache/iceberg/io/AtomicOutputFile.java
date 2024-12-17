@@ -24,12 +24,21 @@ import java.util.function.Supplier;
 
 public interface AtomicOutputFile<T> extends OutputFile {
 
+  // TODO do this cleanly later; options pattern for prepare, actually align the types
+  // TODO so FileIO compatibility is explicit
+  // stream(...), checksum(...), length(...), append()
+  enum Strategy {
+    CAS,
+    APPEND,
+  }
+
   /**
    * Generate a token to replace the InputFile with the specified content.
    *
    * @param source Invoked to obtain an InputStream for the future output.
+   * @param howto
    */
-  T prepare(Supplier<InputStream> source) throws IOException;
+  T prepare(Supplier<InputStream> source, Strategy howto) throws IOException;
 
   /**
    * Atomically replace the contents of the target AtomicOutputFile using the contents of the stream

@@ -82,7 +82,7 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile<CAS> {
   }
 
   @Override
-  public CAS prepare(Supplier<InputStream> source) {
+  public CAS prepare(Supplier<InputStream> source, Strategy howto) {
     final GCSChecksum checksum = new GCSChecksum();
     // TODO replace with IOUtils (or whatever Guice provides)
     final byte[] buffer = new byte[8192];

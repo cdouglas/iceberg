@@ -47,12 +47,6 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 public class CatalogFile {
   // TODO use serialization idioms from the project, handle evolution, etc.
 
-  public interface CatalogTransform {
-    CatalogFile read(InputFile in);
-
-    MutCatalogFile from(CatalogFile catalogFile);
-  }
-
   private final int seqno; // or retain deleted TableIdentifiers unless/until not the max
   private final UUID uuid;
   private final Map<TableIdentifier, TableInfo> fqti; // fully qualified table identifiers
@@ -221,7 +215,7 @@ public class CatalogFile {
         try {
           CatalogFile catalog =
               new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
-          CAS token = outputFile.prepare(catalog::asBytes);
+          CAS token = outputFile.prepare(catalog::asBytes, AtomicOutputFile.Strategy.CAS);
           InputFile newCatalog = outputFile.writeAtomic(token, catalog::asBytes);
           catalog.setFromFile(newCatalog);
           return catalog;

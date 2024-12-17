@@ -284,7 +284,8 @@ public class ADLSFileIOTest {
     final AtomicOutputFile<CAS> overwrite = io.newOutputFile(in);
     final byte[] overbytes = new byte[1024 * 1024];
     random.nextBytes(overbytes);
-    final CAS chk = overwrite.prepare(() -> new ByteArrayInputStream(overbytes));
+    final CAS chk =
+        overwrite.prepare(() -> new ByteArrayInputStream(overbytes), AtomicOutputFile.Strategy.CAS);
     // precondition not met (bad checksum)
     UnexpectedLengthException chkFailure =
         Assertions.assertThrows(
@@ -329,7 +330,7 @@ public class ADLSFileIOTest {
 
     final byte[] overbytes = new byte[1024 * 1024];
     random.nextBytes(overbytes);
-    final FileChecksum chk = new ADLSChecksum();
+    final FileChecksum chk = new ADLSChecksum(AtomicOutputFile.Strategy.CAS);
     chk.update(overbytes, 0, 1024 * 1024);
 
     DataLakeRequestConditions cond2 = new DataLakeRequestConditions().setIfMatch(info1.getETag());

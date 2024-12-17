@@ -112,7 +112,7 @@ public class S3OutputFile extends BaseS3File
   }
 
   @Override
-  public CAS prepare(Supplier<InputStream> source) throws IOException {
+  public CAS prepare(Supplier<InputStream> source, Strategy howto) throws IOException {
     // S3OutputStream forces multipart upload w/ attendant MD5 and work pool... meh, do it manually
     // in writeAtomic
     // Catalog + metadata writes are likely smaller than multipart would justify, anyway

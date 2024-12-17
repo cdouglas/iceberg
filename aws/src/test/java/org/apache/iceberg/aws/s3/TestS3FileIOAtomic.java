@@ -162,7 +162,8 @@ public class TestS3FileIOAtomic {
     }
     final AtomicOutputFile<CAS> outf = fileIO.newOutputFile(inf);
     final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
-    final CAS chk = outf.prepare(() -> new ByteArrayInputStream(replContent));
+    final CAS chk =
+        outf.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.CAS);
 
     InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
     try (InputStream i = replf.newStream()) {
@@ -172,7 +173,9 @@ public class TestS3FileIOAtomic {
 
     final AtomicOutputFile<CAS> outfFail = fileIO.newOutputFile(inf);
     final byte[] failContent = "shaved your mom".getBytes(StandardCharsets.UTF_8);
-    final CAS chkFail = outfFail.prepare(() -> new ByteArrayInputStream(failContent));
+    final CAS chkFail =
+        outfFail.prepare(
+            () -> new ByteArrayInputStream(failContent), AtomicOutputFile.Strategy.CAS);
 
     assertThatThrownBy(
             () -> outfFail.writeAtomic(chkFail, () -> new ByteArrayInputStream(failContent)))

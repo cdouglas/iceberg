@@ -59,7 +59,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   private String catalogName = "fileio";
   private String catalogLocation;
   private String warehouseLocation;
-  private SupportsAtomicOperations fileIO;
+  private SupportsAtomicOperations<CAS> fileIO;
   private final Map<String, String> catalogProperties;
 
   @SuppressWarnings("unused") // reflection cstr
@@ -72,7 +72,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       String catalogName,
       String catalogLocation,
       Configuration conf,
-      SupportsAtomicOperations fileIO,
+      SupportsAtomicOperations<CAS> fileIO,
       Map<String, String> catalogProperties) {
     this.catalogName = catalogName;
     this.catalogLocation = catalogLocation;
@@ -115,7 +115,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog
               CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.gcp.gcs.GCSFileIO");
 
       // TODO handle this more gracefully; use listings/HadoopCatalog?
-      fileIO = (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
+      fileIO =
+          (SupportsAtomicOperations<CAS>) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
     }
     if (!fileIO.newInputFile(catalogLocation).exists()) {
       try (OutputStream out = fileIO.newOutputFile(catalogLocation).create()) {
@@ -252,18 +253,18 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   static class FileIOTableOperations extends BaseMetastoreTableOperations {
     private final String catalogLocation;
     private final TableIdentifier tableId;
-    private final SupportsAtomicOperations fileIO;
+    private final SupportsAtomicOperations<CAS> fileIO;
     private volatile CatalogFile lastCatalogFile = null;
 
     FileIOTableOperations(
-        TableIdentifier tableId, String catalogLocation, SupportsAtomicOperations fileIO) {
+        TableIdentifier tableId, String catalogLocation, SupportsAtomicOperations<CAS> fileIO) {
       this(tableId, catalogLocation, fileIO, null);
     }
 
     FileIOTableOperations(
         TableIdentifier tableId,
         String catalogLocation,
-        SupportsAtomicOperations fileIO,
+        SupportsAtomicOperations<CAS> fileIO,
         CatalogFile catalogFile) {
       this.fileIO = fileIO;
       this.tableId = tableId;
@@ -276,7 +277,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     }
 
     @Override
-    public SupportsAtomicOperations io() {
+    public SupportsAtomicOperations<CAS> io() {
       return fileIO;
     }
 

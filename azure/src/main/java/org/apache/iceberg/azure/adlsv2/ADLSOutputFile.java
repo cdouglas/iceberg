@@ -92,8 +92,8 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
   }
 
   @Override
-  public CAS prepare(Supplier<InputStream> source) {
-    final ADLSChecksum checksum = new ADLSChecksum();
+  public CAS prepare(Supplier<InputStream> source, Strategy howto) {
+    final ADLSChecksum checksum = new ADLSChecksum(howto);
     final byte[] buffer = new byte[8192];
     try (InputStream in = source.get();
         FileChecksumOutputStream chk =
@@ -110,6 +110,19 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
     // Annoyingly, the checksum is not validated server-side, but stored as metadata. The
     // partial-write problem is less of an issue using an InputStream, so the length validation can
     // suffice
+    ADLSChecksum token = (ADLSChecksum) checksum;
+    switch (token.getStrategy()) {
+      case CAS:
+        return replaceDestObj(token, source);
+      case APPEND:
+        // TODO
+      default:
+        throw new UnsupportedOperationException("Unrecognized strategy: " + token.getStrategy());
+    }
+  }
+
+  private ADLSInputFile replaceDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
+      throws IOException {
     try (InputStream src = source.get()) {
       // TODO local runner doesn't support this API, testcontainer path will fail
       final Response<PathInfo> resp =

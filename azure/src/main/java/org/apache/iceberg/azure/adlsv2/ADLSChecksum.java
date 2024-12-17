@@ -21,12 +21,18 @@ package org.apache.iceberg.azure.adlsv2;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.FileChecksum;
 
 public class ADLSChecksum implements FileChecksum, CAS {
   private long length = 0L;
   private final MessageDigest checksum = getMD5DigestInstance();
+  private final AtomicOutputFile.Strategy strategy;
+
+  ADLSChecksum(AtomicOutputFile.Strategy strategy) {
+    this.strategy = strategy;
+  }
 
   private static MessageDigest getMD5DigestInstance() {
     try {
@@ -45,6 +51,10 @@ public class ADLSChecksum implements FileChecksum, CAS {
   public void update(byte[] bytes, int off, int len) {
     checksum.update(bytes, off, len);
     length += len;
+  }
+
+  public AtomicOutputFile.Strategy getStrategy() {
+    return AtomicOutputFile.Strategy.CAS;
   }
 
   @Override
