@@ -30,6 +30,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.azure.core.exception.UnexpectedLengthException;
+import com.azure.core.http.HttpHeader;
 import com.azure.core.http.rest.PagedIterable;
 import com.azure.core.http.rest.Response;
 import com.azure.core.util.Context;
@@ -42,16 +43,21 @@ import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
 import com.azure.storage.file.datalake.DataLakeServiceClient;
 import com.azure.storage.file.datalake.DataLakeServiceClientBuilder;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import com.azure.storage.file.datalake.models.PathHttpHeaders;
 import com.azure.storage.file.datalake.models.PathInfo;
 import com.azure.storage.file.datalake.models.PathItem;
+import com.azure.storage.file.datalake.options.DataLakeFileAppendOptions;
+import com.azure.storage.file.datalake.options.DataLakeFileFlushOptions;
 import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.Iterator;
 import java.util.Map;
@@ -94,7 +100,7 @@ public class ADLSFileIOTest {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
     AzureSAS creds =
-        AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/lstnsgym-20250228.json"));
+        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/lstnsgym-20250228.json"));
     if (creds != null) {
       azureProperties = Maps.newHashMap();
       azureProperties.put(
@@ -301,13 +307,53 @@ public class ADLSFileIOTest {
                 512 * 1024, 1024 * 1024));
   }
 
+  private byte[] randBytes(int len) {
+    final byte[] bytes = new byte[len];
+    random.nextBytes(bytes);
+    return bytes;
+  }
+
+  private static Response<PathInfo> writeBytes(DataLakeFileClient client, byte[] bytes, DataLakeRequestConditions cond) {
+    final FileChecksum chk = new ADLSChecksum(AtomicOutputFile.Strategy.CAS);
+    chk.update(bytes, 0, bytes.length);
+    final Response<PathInfo> resp =
+            client.uploadWithResponse(
+                    new FileParallelUploadOptions(new ByteArrayInputStream(bytes), bytes.length)
+                        .setRequestConditions(cond)
+                        .setHeaders(new PathHttpHeaders()
+                            .setContentMd5(chk.contentChecksumBytes())
+                            .setContentType("binary")),
+                    null, // no timeout
+                    Context.NONE);
+    return resp;
+  }
+
+  private static Response<PathInfo> appendBytes(DataLakeFileClient client, long origLen, byte[] bytes, DataLakeRequestConditions cond) {
+    final FileChecksum chk = new ADLSChecksum(AtomicOutputFile.Strategy.CAS);
+    chk.update(bytes, 0, bytes.length);
+    client.appendWithResponse(
+            new ByteArrayInputStream(bytes),
+            origLen, // client.getProperties().getFileSize(),
+            bytes.length,
+            chk.contentChecksumBytes(),
+            null,
+            null,
+            Context.NONE);
+    final DataLakeFileFlushOptions flushOpts = new DataLakeFileFlushOptions()
+            .setClose(true)
+            .setRequestConditions(cond)
+            .setUncommittedDataRetained(false);
+    return client.flushWithResponse(origLen + bytes.length,
+            flushOpts, null, Context.NONE);
+  }
+
   @Test
   public void scratchADLS() {
     // ADLSFileIO io = createFileIO();
     // ADLSLocation loc = new ADLSLocation(AZURITE_CONTAINER.location("path/to/file.txt"));
     // DataLakeFileClient client = io.client(loc).getFileClient(loc.path());
     AzureSAS tok =
-        AzureSAS.readCreds(new File("/IdeaProjects/.cloud/azure/lstnsgym-sas-3112204.json"));
+        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/lstnsgym-20250228.json"));
     DataLakeServiceClient serviceClient =
         new DataLakeServiceClientBuilder()
             .endpoint(tok.endpoint)
@@ -315,34 +361,39 @@ public class ADLSFileIOTest {
             .buildClient();
     DataLakeFileSystemClient fsClient = serviceClient.getFileSystemClient("lst-ns-consistency");
     DataLakeDirectoryClient dirClient = fsClient.getDirectoryClient("wtf");
-    DataLakeFileClient client = dirClient.getFileClient(UUID.randomUUID().toString());
+    final String objId = UUID.randomUUID().toString();
+    DataLakeFileClient client = dirClient.getFileClient(objId);
 
-    final byte[] expected = new byte[1024 * 1024];
-    random.nextBytes(expected);
+    final byte[] originalBytes = randBytes(1024 + random.nextInt(1024));
+    final Response<PathInfo> origResp = writeBytes(client, originalBytes, new DataLakeRequestConditions());
+    System.out.println("DEBUG0: " + client.getProperties().getFileSize() + " + " + origResp.getValue().getETag());
 
-    final Response<PathInfo> resp =
-        client.uploadWithResponse(
-            new FileParallelUploadOptions(new ByteArrayInputStream(expected)),
-            null, // no timeout
-            Context.NONE);
-    PathInfo info1 = resp.getValue();
-    System.out.println(info1.getETag());
+    final byte[] overBytes = randBytes(1024 + random.nextInt(1024));
+    final Response<PathInfo> overResp = writeBytes(client, overBytes, new DataLakeRequestConditions().setIfMatch(origResp.getValue().getETag()));
+    System.out.println("DEBUG1: " + client.getProperties().getFileSize() + " + " + overResp.getValue().getETag());
 
-    final byte[] overbytes = new byte[1024 * 1024];
-    random.nextBytes(overbytes);
-    final FileChecksum chk = new ADLSChecksum(AtomicOutputFile.Strategy.CAS);
-    chk.update(overbytes, 0, 1024 * 1024);
+    final byte[] appendBytes = randBytes(1024 + random.nextInt(1024));
+    final Response<PathInfo> appendResp = appendBytes(client, overBytes.length, appendBytes, new DataLakeRequestConditions().setIfMatch(overResp.getValue().getETag()));
+    System.out.println("DEBUG2: " + client.getProperties().getFileSize() + " + " + appendResp.getValue().getETag());
 
-    DataLakeRequestConditions cond2 = new DataLakeRequestConditions().setIfMatch(info1.getETag());
-    final Response<PathInfo> resp2 =
-        client.uploadWithResponse(
-            new FileParallelUploadOptions(new ByteArrayInputStream(overbytes))
-                .setRequestConditions(cond2)
-                .setHeaders(new PathHttpHeaders().setContentMd5(chk.contentChecksumBytes())),
-            null, // no timeout
-            Context.NONE);
-    PathInfo info2 = resp.getValue();
-    System.out.println(info2.getETag());
+    final byte[] appendBytes2 = randBytes(1024 + random.nextInt(1024));
+    // fail, off by 1
+    final Response<PathInfo> appendResp2;
+    try {
+      // final Response<PathInfo> appendResp2 = appendBytes(client, overBytes.length + appendBytes.length - 1, appendBytes2, new DataLakeRequestConditions().setIfMatch(appendResp.getValue().getETag()));
+      appendResp2 = appendBytes(client, overBytes.length + appendBytes.length - 1, appendBytes2, new DataLakeRequestConditions().setIfMatch(appendResp.getValue().getETag()));
+      System.out.println("DEBUG3: " + client.getProperties().getFileSize() + " + " + appendResp2.getValue().getETag());
+    } catch (DataLakeStorageException e) {
+      assertThat(e.getResponse().getHeaderValue("x-ms-error-code")).isEqualTo("x-ms-error-code:InvalidFlushPosition");
+    }
+
+    // final byte[] overBytes2 = randBytes(1024 + random.nextInt(1024));
+    // final Response<PathInfo> overResp2 = writeBytes(client, overBytes2, new DataLakeRequestConditions().setIfMatch(appendResp2.getValue().getETag()));
+    // System.out.println("DEBUG4: " + client.getProperties().getFileSize() + " + " + overResp2.getValue().getETag());
+
+    // final byte[] failBytes = randBytes(1024 + random.nextInt(1024));
+    // final Response<PathInfo> failResp = writeBytes(client, failBytes, new DataLakeRequestConditions().setIfMatch(origResp.getValue().getETag()));
+    // System.out.println("DEBUG3: " + client.getProperties().getFileSize() + " + " + failResp.getValue().getETag());
   }
 
   @Test

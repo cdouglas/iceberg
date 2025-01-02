@@ -107,22 +107,55 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
 
   @Override
   public ADLSInputFile writeAtomic(CAS checksum, Supplier<InputStream> source) throws IOException {
-    // Annoyingly, the checksum is not validated server-side, but stored as metadata. The
-    // partial-write problem is less of an issue using an InputStream, so the length validation can
-    // suffice
+    // TODO this is very ugly. clean it up later.
     ADLSChecksum token = (ADLSChecksum) checksum;
     switch (token.getStrategy()) {
       case CAS:
         return replaceDestObj(token, source);
       case APPEND:
-        // TODO
+        return appendDestObj(token, source);
       default:
         throw new UnsupportedOperationException("Unrecognized strategy: " + token.getStrategy());
     }
   }
 
+  private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
+      throws IOException {
+    try (InputStream src = source.get()) {
+      final Response<PathInfo> resp =
+          fileClient()
+              .uploadWithResponse(
+                  new FileParallelUploadOptions(src, checksum.contentLength())
+                      .setRequestConditions(conditions)
+                      .setHeaders(
+                          new PathHttpHeaders()
+                              .setContentMd5(checksum.contentChecksumBytes())
+                              .setContentType("binary")),
+                  null, // no timeout
+                  Context.NONE);
+      this.length = checksum.contentLength();
+      final PathInfo info = resp.getValue();
+      return new ADLSInputFile(
+          location(),
+          checksum.contentLength(),
+          fileClient(),
+          azureProperties(),
+          metrics(),
+          new DataLakeRequestConditions().setIfMatch(info.getETag()));
+    } catch (DataLakeStorageException e) {
+      if (412 == e.getStatusCode()) {
+        // precondition failed
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
+      }
+      throw e;
+    }
+  }
+
   private ADLSInputFile replaceDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
       throws IOException {
+    // Annoyingly, the checksum is not validated server-side, but stored as metadata. The
+    // partial-write problem is less of an issue using an InputStream, so the length validation can
+    // suffice
     try (InputStream src = source.get()) {
       // TODO local runner doesn't support this API, testcontainer path will fail
       final Response<PathInfo> resp =
