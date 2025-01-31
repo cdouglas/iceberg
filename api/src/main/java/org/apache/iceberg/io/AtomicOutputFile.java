@@ -36,7 +36,7 @@ public interface AtomicOutputFile<T> extends OutputFile {
    * Generate a token to replace the InputFile with the specified content.
    *
    * @param source Invoked to obtain an InputStream for the future output.
-   * @param howto
+   * @param howto append/CAS
    */
   T prepare(Supplier<InputStream> source, Strategy howto) throws IOException;
 

@@ -20,12 +20,10 @@ package org.apache.iceberg.io;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.UncheckedIOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -83,14 +81,6 @@ public class CatalogFile {
     public int hashCode() {
       return 31 * version + location.hashCode();
     }
-  }
-
-  public static MutCatalogFile empty() {
-    return new MutCatalogFile();
-  }
-
-  public static MutCatalogFile from(CatalogFile file) {
-    return new MutCatalogFile(file);
   }
 
   public static class MutCatalogFile {
@@ -325,64 +315,19 @@ public class CatalogFile {
     return new ByteArrayInputStream(serBytes);
   }
 
-  static CatalogFile read(InputFile catalogLocation) {
-    final Map<TableIdentifier, TableInfo> fqti = Maps.newHashMap();
-    final Map<Namespace, Map<String, String>> namespaces = Maps.newHashMap();
-    try (InputStream in = catalogLocation.newStream();
-        DataInputStream din = new DataInputStream(in)) {
-      int nNamespaces = din.readInt();
-      for (int i = 0; i < nNamespaces; ++i) {
-        Namespace namespace = readNamespace(din);
-        Map<String, String> props = readProperties(din);
-        namespaces.put(namespace, props);
-      }
-      int nTables = din.readInt();
-      for (int i = 0; i < nTables; i++) {
-        int tableVersion = din.readInt();
-        Namespace namespace = readNamespace(din);
-        TableIdentifier tid = TableIdentifier.of(namespace, din.readUTF());
-        fqti.put(tid, new TableInfo(tableVersion, din.readUTF()));
-      }
-      int seqno = din.readInt();
-      long msb = din.readLong();
-      long lsb = din.readLong();
-      return new CatalogFile(new UUID(msb, lsb), seqno, namespaces, fqti, catalogLocation);
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
-  }
-
-  private static Map<String, String> readProperties(DataInputStream in) throws IOException {
-    int nprops = in.readInt();
-    Map<String, String> props = nprops > 0 ? Maps.newHashMap() : Collections.emptyMap();
-    for (int j = 0; j < nprops; j++) {
-      props.put(in.readUTF(), in.readUTF());
-    }
-    return props;
-  }
-
-  private static Namespace readNamespace(DataInputStream in) throws IOException {
-    int nlen = in.readInt();
-    String[] levels = new String[nlen];
-    for (int j = 0; j < nlen; j++) {
-      levels[j] = in.readUTF();
-    }
-    return Namespace.of(levels);
-  }
-
   int write(OutputStream out) throws IOException {
     try (DataOutputStream dos = new DataOutputStream(out)) {
       dos.writeInt(namespaces.size());
       for (Map.Entry<Namespace, Map<String, String>> e : namespaces.entrySet()) {
-        writeNamespace(dos, e.getKey());
-        writeProperties(dos, e.getValue());
+        CASCatalogFormat.writeNamespace(dos, e.getKey());
+        CASCatalogFormat.writeProperties(dos, e.getValue());
       }
       dos.writeInt(fqti.size());
       for (Map.Entry<TableIdentifier, TableInfo> e : fqti.entrySet()) {
         TableInfo info = e.getValue();
         dos.writeInt(info.version);
         TableIdentifier tid = e.getKey();
-        writeNamespace(dos, tid.namespace());
+        CASCatalogFormat.writeNamespace(dos, tid.namespace());
         dos.writeUTF(tid.name());
         dos.writeUTF(info.location);
       }
@@ -390,26 +335,6 @@ public class CatalogFile {
       dos.writeLong(uuid.getMostSignificantBits());
       dos.writeLong(uuid.getLeastSignificantBits());
       return dos.size();
-    }
-  }
-
-  private static void writeNamespace(DataOutputStream out, Namespace namespace) throws IOException {
-    out.writeInt(namespace.length());
-    for (String n : namespace.levels()) {
-      out.writeUTF(n);
-    }
-  }
-
-  private static void writeProperties(DataOutputStream out, Map<String, String> props)
-      throws IOException {
-    Map<String, String> writeProps =
-        props.entrySet().stream()
-            .filter(e -> e.getValue() != null)
-            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-    out.writeInt(writeProps.size());
-    for (Map.Entry<String, String> p : writeProps.entrySet()) {
-      out.writeUTF(p.getKey());
-      out.writeUTF(p.getValue());
     }
   }
 

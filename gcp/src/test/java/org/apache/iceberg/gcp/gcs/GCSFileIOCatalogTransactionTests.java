@@ -36,6 +36,7 @@ import java.util.Random;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTransactionTests;
 import org.apache.iceberg.gcp.GCPProperties;
+import org.apache.iceberg.io.CASCatalogFormat;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -115,7 +116,8 @@ public class GCSFileIOCatalogTransactionTests extends CatalogTransactionTests<Fi
     final Map<String, String> properties = Maps.newHashMap();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
     final String location = warehouseLocation + "/catalog";
-    catalog = new FileIOCatalog("test", location, null, io, Maps.newHashMap());
+    catalog =
+        new FileIOCatalog("test", location, null, new CASCatalogFormat(), io, Maps.newHashMap());
     catalog.initialize(testName, properties);
   }
 

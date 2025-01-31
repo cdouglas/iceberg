@@ -18,9 +18,17 @@
  */
 package org.apache.iceberg.io;
 
-public abstract class CatalogFormat<T> {
+/** I */
+public abstract class CatalogFormat {
 
-  public abstract CatalogFile empty();
+  // Ah. you were trying to ensure the CatalogFormat and FileIO class
+  // were compatible... not sure this is useful, as generic type parameters
+  // are discarded at runtime? Remove generic from type for now, maybe
+  // revisit later?
+  // would need this parameter to get bound to the CatalogFile<T> s.t.
+  // it could not be passed to a FileIO class that did not support it
+
+  public abstract CatalogFile.MutCatalogFile empty();
 
   public abstract CatalogFile read(InputFile in);
 

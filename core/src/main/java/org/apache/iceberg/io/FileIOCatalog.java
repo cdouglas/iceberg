@@ -55,10 +55,13 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   // TODO audit loadTable in BaseMetastoreCatalog
   // TODO buildTable overridden in BaseMetastoreCatalog?
 
+  private static final String FILE_FORMAT = "fileio.catalog.format";
+
   private Configuration conf; // TODO: delete
   private String catalogName = "fileio";
   private String catalogLocation;
   private String warehouseLocation;
+  private CatalogFormat format;
   private SupportsAtomicOperations<CAS> fileIO;
   private final Map<String, String> catalogProperties;
 
@@ -72,11 +75,13 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       String catalogName,
       String catalogLocation,
       Configuration conf,
+      CatalogFormat format,
       SupportsAtomicOperations<CAS> fileIO,
       Map<String, String> catalogProperties) {
     this.catalogName = catalogName;
     this.catalogLocation = catalogLocation;
     this.conf = conf;
+    this.format = format;
     this.fileIO = fileIO;
     this.catalogProperties = catalogProperties;
   }
@@ -108,6 +113,10 @@ public class FileIOCatalog extends BaseMetastoreCatalog
           "Cannot initialize FileIOCatalog because warehousePath must not be null or empty");
       catalogLocation = LocationUtil.stripTrailingSlash(warehouseLocation) + "/catalog";
     }
+    if (null == format) {
+      // TODO configuration
+      format = new CASCatalogFormat();
+    }
     if (null == fileIO) {
       // TODO check warehouseLocation schema?
       String fileIOImpl =
@@ -120,7 +129,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     }
     if (!fileIO.newInputFile(catalogLocation).exists()) {
       try (OutputStream out = fileIO.newOutputFile(catalogLocation).create()) {
-        CatalogFile.empty().commit(out);
+        format.empty().commit(out);
       } catch (IOException e) {
         // ignore
       }
@@ -142,9 +151,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public boolean dropTable(TableIdentifier identifier, boolean purge) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = CatalogFile.read(catalog);
+    final CatalogFile catalogFile = format.read(catalog);
     try {
-      CatalogFile.from(catalogFile).dropTable(identifier).commit(fileIO);
+      format.from(catalogFile).dropTable(identifier).commit(fileIO);
       return true;
     } catch (CommitFailedException | NoSuchTableException e) {
       return false;
@@ -154,8 +163,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public void renameTable(TableIdentifier from, TableIdentifier to) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = CatalogFile.read(catalog);
-    CatalogFile.from(catalogFile)
+    final CatalogFile catalogFile = format.read(catalog);
+    format
+        .from(catalogFile)
         .dropTable(from)
         .createTable(to, catalogFile.location(from)) // TODO preserve metadata
         .commit(fileIO);
@@ -163,11 +173,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   @Override
   protected TableOperations newTableOps(TableIdentifier tableIdentifier) {
-    return new FileIOTableOperations(tableIdentifier, catalogLocation, fileIO);
+    return new FileIOTableOperations(tableIdentifier, catalogLocation, format, fileIO);
   }
 
   FileIOTableOperations newTableOps(TableIdentifier tableIdentifier, CatalogFile catalogFile) {
-    return new FileIOTableOperations(tableIdentifier, catalogLocation, fileIO, catalogFile);
+    return new FileIOTableOperations(tableIdentifier, catalogLocation, format, fileIO, catalogFile);
   }
 
   @Override
@@ -185,7 +195,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   private CatalogFile getCatalogFile() {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    return CatalogFile.read(catalog);
+    return format.read(catalog);
   }
 
   //
@@ -195,8 +205,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public void createNamespace(Namespace namespace, Map<String, String> metadata) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = CatalogFile.read(catalog);
-    CatalogFile.from(catalogFile).createNamespace(namespace, metadata).commit(fileIO);
+    final CatalogFile catalogFile = format.read(catalog);
+    format.from(catalogFile).createNamespace(namespace, metadata).commit(fileIO);
   }
 
   @Override
@@ -221,9 +231,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     // XXX TODO wait, wtf?
     //     TODO catalog ops must also follow the refresh cycle, or only TableOperations detect
     // concurrent changes?
-    final CatalogFile catalogFile = CatalogFile.read(catalog);
+    final CatalogFile catalogFile = format.read(catalog);
     try {
-      CatalogFile.from(catalogFile).dropNamespace(namespace).commit(fileIO);
+      format.from(catalogFile).dropNamespace(namespace).commit(fileIO);
     } catch (NoSuchNamespaceException e) {
       return false; // sigh.
     }
@@ -235,7 +245,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       throws NoSuchNamespaceException {
     final CatalogFile catalogFile = getCatalogFile();
     try {
-      CatalogFile.from(catalogFile).updateProperties(namespace, properties).commit(fileIO);
+      format.from(catalogFile).updateProperties(namespace, properties).commit(fileIO);
     } catch (CommitFailedException e) {
       return false; // sigh.
     }
@@ -253,20 +263,26 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   static class FileIOTableOperations extends BaseMetastoreTableOperations {
     private final String catalogLocation;
     private final TableIdentifier tableId;
+    private final CatalogFormat format;
     private final SupportsAtomicOperations<CAS> fileIO;
     private volatile CatalogFile lastCatalogFile = null;
 
     FileIOTableOperations(
-        TableIdentifier tableId, String catalogLocation, SupportsAtomicOperations<CAS> fileIO) {
-      this(tableId, catalogLocation, fileIO, null);
+        TableIdentifier tableId,
+        String catalogLocation,
+        CatalogFormat format,
+        SupportsAtomicOperations<CAS> fileIO) {
+      this(tableId, catalogLocation, format, fileIO, null);
     }
 
     FileIOTableOperations(
         TableIdentifier tableId,
         String catalogLocation,
+        CatalogFormat format,
         SupportsAtomicOperations<CAS> fileIO,
         CatalogFile catalogFile) {
       this.fileIO = fileIO;
+      this.format = format;
       this.tableId = tableId;
       this.catalogLocation = catalogLocation;
       this.lastCatalogFile = catalogFile;
@@ -304,7 +320,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
     @Override
     protected void doRefresh() {
-      final CatalogFile updatedCatalogFile = CatalogFile.read(io().newInputFile(catalogLocation));
+      final CatalogFile updatedCatalogFile = format.read(io().newInputFile(catalogLocation));
       updateVersionAndMetadata(
           updatedCatalogFile.version(tableId), updatedCatalogFile.location(tableId));
       lastCatalogFile = updatedCatalogFile;
@@ -321,9 +337,9 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       final String newMetadataLocation = writeUpdateMetadata(isCreate, metadata);
       try {
         if (null == base) {
-          CatalogFile.from(lastCatalogFile).createTable(tableId, newMetadataLocation).commit(io());
+          format.from(lastCatalogFile).createTable(tableId, newMetadataLocation).commit(io());
         } else {
-          CatalogFile.from(lastCatalogFile).updateTable(tableId, newMetadataLocation).commit(io());
+          format.from(lastCatalogFile).updateTable(tableId, newMetadataLocation).commit(io());
         }
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Failed to commit metadata for table %s", tableId);
@@ -338,7 +354,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     // TableCommit validations check the table UUID and snapshot ref for each table
     // if all validations pass for the current CatalogFile, then attempt atomic replace
     final CatalogFile current = getCatalogFile();
-    final CatalogFile.MutCatalogFile newCatalog = CatalogFile.from(current);
+    final CatalogFile.MutCatalogFile newCatalog = format.from(current);
     for (TableCommit commit : commits) {
       final TableIdentifier tableId = commit.identifier();
       // use fixed catalog snapshot for validation

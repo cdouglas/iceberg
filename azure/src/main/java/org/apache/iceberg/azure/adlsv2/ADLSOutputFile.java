@@ -94,7 +94,6 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
   @Override
   public CAS prepare(Supplier<InputStream> source, Strategy howto) {
     final ADLSChecksum checksum = new ADLSChecksum(howto);
-    final byte[] buffer = new byte[8192];
     try (InputStream in = source.get();
         FileChecksumOutputStream chk =
             new FileChecksumOutputStream(ByteStreams.nullOutputStream(), checksum)) {
@@ -119,6 +118,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
     }
   }
 
+  @SuppressWarnings("deprecation") // not clear how else to support this
   private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
       throws IOException {
     try (InputStream src = source.get()) {

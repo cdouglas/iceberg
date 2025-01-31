@@ -1,13 +1,15 @@
-tl;dr
-- 3-6 months to complete all tasks
-- lower bound includes all implementation but not experiments
-
 # Schedule
 
 Week 1: CAS Catalog (S3) ✅ \
-Week 2: Embed Table Metadata + simulator \
-Week 3: ibid \
-Week 4: Catalog Append (Azure) \
+Week 2: Catalog Append (Azure) \
+✅ Refactor to prepare/writeAtomic
+🟩 Microbenchmark for Catalog
+🟩
+🟩
+🟩
+
+Week 3: Embed Table Metadata + simulator \
+Week 4: ibid \
 Week 5: Blind appends (Azure) \
 Week 6: Lease+Position appends (Azure, AWS) \
 Week 7: Lambda Append (S3)
