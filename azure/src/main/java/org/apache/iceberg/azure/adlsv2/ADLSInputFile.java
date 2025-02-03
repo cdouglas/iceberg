@@ -20,6 +20,7 @@ package org.apache.iceberg.azure.adlsv2;
 
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.SeekableInputStream;
@@ -60,8 +61,15 @@ class ADLSInputFile extends BaseADLSFile implements InputFile {
 
   DataLakeRequestConditions conditions() {
     if (null == invariants) {
-      // Base::pathProperties() caches its response, should be invariant
-      invariants = new DataLakeRequestConditions().setIfMatch(pathProperties().getETag());
+      try {
+        // Base::pathProperties() caches its response, should be invariant
+        invariants = new DataLakeRequestConditions().setIfMatch(pathProperties().getETag());
+      } catch (DataLakeStorageException e) {
+        if (e.getStatusCode() == 404) {
+          // *should* be possible to atomicly get properties and !exists, but whatever
+          return null;
+        }
+      }
     }
     return invariants;
   }
