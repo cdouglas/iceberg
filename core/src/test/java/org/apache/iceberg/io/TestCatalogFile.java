@@ -19,11 +19,24 @@
 package org.apache.iceberg.io;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Collections;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.apache.commons.io.output.NullOutputStream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -39,32 +52,65 @@ public class TestCatalogFile {
   private static final TableIdentifier TBL4 = TableIdentifier.of(NS1, "table4");
 
   @Test
-  public void testCatalogNamespace() {
-    OutputStream nullOut = NullOutputStream.NULL_OUTPUT_STREAM;
+  @SuppressWarnings("unchecked")
+  public void testCatalogNamespace() throws IOException {
+    InputFile nullFile = mock(InputFile.class);
+    AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
+    CAS token = mock(CAS.class);
+    when(outputFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(token);
+    when(outputFile.writeAtomic(any(), any())).thenReturn(nullFile);
+    SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
+    when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
+
     CatalogFormat format = new CASCatalogFormat();
     CatalogFile catalogFile =
         format
-            .empty()
+            .empty(nullFile)
             .createNamespace(NS1, Collections.emptyMap())
             .createNamespace(NS2, Collections.emptyMap())
             .createTable(TBL1, "gs://bucket/path/to/table1")
             .createTable(TBL2, "gs://bucket/path/to/table2")
-            .commit(nullOut);
+            .commit(fileIO); // ignored; just passing info between CatalogFile
 
     final Map<String, String> ns1Props = Collections.singletonMap("key1", "value1");
     CatalogFile updateProp =
-        format.from(catalogFile).updateProperties(NS1, ns1Props).commit(nullOut);
+        format.from(catalogFile).updateProperties(NS1, ns1Props).commit(fileIO);
     assertThat(updateProp).isNotEqualTo(catalogFile);
     assertThat(updateProp.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1, NS2);
     assertThat(updateProp.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
 
-    CatalogFile drop = format.from(updateProp).dropNamespace(NS2).commit(nullOut);
+    CatalogFile drop = format.from(updateProp).dropNamespace(NS2).commit(fileIO);
     assertThat(drop.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1);
     assertThat(drop.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
   }
 
+  static class MockFileIO implements SupportsAtomicOperations<CAS> {
+
+    @Override
+    public AtomicOutputFile<CAS> newOutputFile(InputFile replace) {
+      return null;
+    }
+
+    @Override
+    public InputFile newInputFile(String path) {
+      return null;
+    }
+
+    @Override
+    public OutputFile newOutputFile(String path) {
+      return null;
+    }
+
+    @Override
+    public void deleteFile(String path) {
+
+    }
+  }
+
   @Test
   public void testSerDe() {
+    // parameterizedTest
+    CASCatalogFormat format = new CASCatalogFormat();
     ByteArrayOutputStream bos = new ByteArrayOutputStream();
   }
 }
