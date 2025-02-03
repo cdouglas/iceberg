@@ -18,10 +18,13 @@
  */
 package org.apache.iceberg.io;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.util.Collections;
 import java.util.Map;
@@ -29,20 +32,49 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 public class CASCatalogFormat extends CatalogFormat {
 
   @Override
-  public CatalogFile.MutCatalogFile empty() {
-    // TODO record format
-    return new CatalogFile.MutCatalogFile();
+  public CatalogFile.Mut empty(InputFile location) {
+    return new CASMutCatalogFile(location);
   }
 
   @Override
-  public CatalogFile.MutCatalogFile from(CatalogFile other) {
-    // TODO
-    return null;
+  public CatalogFile.Mut from(CatalogFile other) {
+    return new CASMutCatalogFile(other);
+  }
+
+  static class CASMutCatalogFile extends CatalogFile.Mut {
+    CASMutCatalogFile(InputFile location) {
+      super(location);
+    }
+    CASMutCatalogFile(CatalogFile original) {
+      super(original);
+    }
+    @Override
+    public CatalogFile commit(SupportsAtomicOperations<CAS> fileIO) {
+      try {
+        CatalogFile catalog = merge();
+        final AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(original.location());
+        try {
+          byte[] ffs = asBytes(catalog);
+          try (ByteArrayInputStream serBytes = new ByteArrayInputStream(asBytes(catalog))) {
+            serBytes.mark(ffs.length); // readAheadLimit ignored, but whatever
+            CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.CAS);
+            serBytes.reset();
+            InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
+            return new CatalogFile(catalog.uuid(), catalog.seqno(), catalog.namespaceProperties(), catalog.tableMetadata(), newCatalog);
+          }
+        } catch (IOException e) {
+          throw new CommitFailedException(e, "Failed to commit catalog file");
+        }
+      } catch (SupportsAtomicOperations.CASException e) {
+        throw new CommitFailedException(e, "Cannot commit");
+      }
+    }
   }
 
   @Override
@@ -70,6 +102,45 @@ public class CASCatalogFormat extends CatalogFormat {
       return new CatalogFile(new UUID(msb, lsb), seqno, namespaces, fqti, catalogLocation);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
+    }
+  }
+
+  static byte[] asBytes(CatalogFile file) {
+    // TODO unnecessary buffer copy; DataInput/DataOutputStream avail?
+    try (ByteArrayOutputStream bytes = new ByteArrayOutputStream(2048)) {
+      write(file, bytes);
+      return bytes.toByteArray();
+    } catch (IOException e) {
+      throw new CommitFailedException(e, "Failed to commit catalog file");
+    }
+  }
+
+  static int write(CatalogFile file, OutputStream out) throws IOException {
+    try (DataOutputStream dos = new DataOutputStream(out)) {
+      // namespaces
+      Map<Namespace,Map<String,String>> namespaces = file.namespaceProperties();
+      dos.writeInt(namespaces.size());
+      for (Map.Entry<Namespace, Map<String, String>> e : namespaces.entrySet()) {
+        CASCatalogFormat.writeNamespace(dos, e.getKey());
+        CASCatalogFormat.writeProperties(dos, e.getValue());
+      }
+      // tableinfo TODO store as bytes
+      Map<TableIdentifier, CatalogFile.TableInfo> fqti = file.tableMetadata();
+      dos.writeInt(fqti.size());
+      for (Map.Entry<TableIdentifier, CatalogFile.TableInfo> e : fqti.entrySet()) {
+        CatalogFile.TableInfo info = e.getValue();
+        dos.writeInt(info.version);
+        TableIdentifier tid = e.getKey();
+        CASCatalogFormat.writeNamespace(dos, tid.namespace());
+        dos.writeUTF(tid.name());
+        dos.writeUTF(info.location);
+      }
+      dos.writeInt(file.seqno());
+      // table uuid
+      UUID uuid = file.uuid();
+      dos.writeLong(uuid.getMostSignificantBits());
+      dos.writeLong(uuid.getLeastSignificantBits());
+      return dos.size();
     }
   }
 

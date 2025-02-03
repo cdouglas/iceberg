@@ -18,8 +18,6 @@
  */
 package org.apache.iceberg.io;
 
-import java.io.IOException;
-import java.io.OutputStream;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -124,15 +122,13 @@ public class FileIOCatalog extends BaseMetastoreCatalog
               CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.gcp.gcs.GCSFileIO");
 
       // TODO handle this more gracefully; use listings/HadoopCatalog?
+      // TODO remove generics
       fileIO =
           (SupportsAtomicOperations<CAS>) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
     }
-    if (!fileIO.newInputFile(catalogLocation).exists()) {
-      try (OutputStream out = fileIO.newOutputFile(catalogLocation).create()) {
-        format.empty().commit(out);
-      } catch (IOException e) {
-        // ignore
-      }
+    final InputFile catalogFile = fileIO.newInputFile(catalogLocation);
+    if (!catalogFile.exists()) {
+      format.empty(catalogFile).commit(fileIO);
     }
   }
 
@@ -297,7 +293,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       return fileIO;
     }
 
-    // version 0 reserved for empty catalog; tables created in subsequent commits
+    // version 0 reserved for empty catalog; tables created in subsequent commits TODO replace w/ metadata embed
     private synchronized void updateVersionAndMetadata(int newVersion, String metadataFile) {
       // update if table exists and version lags newVersion
       if (null == metadataFile) {
@@ -354,7 +350,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     // TableCommit validations check the table UUID and snapshot ref for each table
     // if all validations pass for the current CatalogFile, then attempt atomic replace
     final CatalogFile current = getCatalogFile();
-    final CatalogFile.MutCatalogFile newCatalog = format.from(current);
+    final CatalogFile.Mut newCatalog = format.from(current);
     for (TableCommit commit : commits) {
       final TableIdentifier tableId = commit.identifier();
       // use fixed catalog snapshot for validation

@@ -52,13 +52,10 @@ public class CatalogFile {
   private byte[] serBytes;
   private InputFile fromFile;
 
-  private void setFromFile(InputFile fromFile) {
-    this.fromFile = fromFile;
-  }
-
+  // TODO use to embed metadata?
   static class TableInfo {
-    private final int version;
-    private final String location;
+    final int version;
+    final String location;
 
     TableInfo(int version, String location) {
       this.version = version;
@@ -83,28 +80,28 @@ public class CatalogFile {
     }
   }
 
-  public static class MutCatalogFile {
+  public abstract static class Mut {
 
-    private final CatalogFile original;
-    private final Map<TableIdentifier, String> tables;
-    private final Map<Namespace, Map<String, String>> namespaces;
+    protected final CatalogFile original;
+    protected final Map<TableIdentifier, String> tables;
+    protected final Map<Namespace, Map<String, String>> namespaces;
 
-    MutCatalogFile() {
-      this(new CatalogFile());
+    protected Mut(InputFile location) {
+      this(new CatalogFile(location));
     }
 
-    MutCatalogFile(CatalogFile original) {
+    protected Mut(CatalogFile original) {
       this.original = original;
       this.tables = Maps.newHashMap();
       this.namespaces = Maps.newHashMap();
       namespaces.put(Namespace.empty(), Collections.emptyMap());
     }
 
-    public MutCatalogFile createNamespace(Namespace namespace) {
+    public Mut createNamespace(Namespace namespace) {
       return createNamespace(namespace, Collections.emptyMap());
     }
 
-    public MutCatalogFile createNamespace(Namespace namespace, Map<String, String> properties) {
+    public Mut createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
       if (original.containsNamespace(namespace) || namespaces.containsKey(namespace)) {
@@ -115,7 +112,7 @@ public class CatalogFile {
       return this;
     }
 
-    public MutCatalogFile updateProperties(Namespace namespace, Map<String, String> properties) {
+    public Mut updateProperties(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
       // TODO: legal to update properties of empty/root namespace?
@@ -142,14 +139,14 @@ public class CatalogFile {
       return this;
     }
 
-    public MutCatalogFile dropNamespace(Namespace namespace) {
+    public Mut dropNamespace(Namespace namespace) {
       // TODO check for tables, refuse if not empty
       checkNamespaceExists(namespace);
       namespaces.put(namespace, null);
       return this;
     }
 
-    public MutCatalogFile createTable(TableIdentifier table, String location) {
+    public Mut createTable(TableIdentifier table, String location) {
       // TODO: fix for swap (a -> b; b -> a)
       checkNamespaceExists(table.namespace());
       if (original.location(table) != null || tables.get(table) != null) {
@@ -165,7 +162,7 @@ public class CatalogFile {
       }
     }
 
-    public MutCatalogFile updateTable(TableIdentifier table, String location) {
+    public Mut updateTable(TableIdentifier table, String location) {
       if (null == original.location(table)) {
         throw new NoSuchNamespaceException("Table does not exist: %s", table);
       }
@@ -173,7 +170,7 @@ public class CatalogFile {
       return this;
     }
 
-    public MutCatalogFile dropTable(TableIdentifier tableId) {
+    public Mut dropTable(TableIdentifier tableId) {
       if (null == original.location(tableId)) {
         throw new NoSuchTableException("Table does not exist: %s", tableId);
       }
@@ -181,60 +178,27 @@ public class CatalogFile {
       return this;
     }
 
-    public CatalogFile commit(SupportsAtomicOperations<CAS> fileIO) {
-      try {
-        final AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(original.fromFile);
-        final Map<Namespace, Map<String, String>> newNamespaces =
-            Maps.newHashMap(original.namespaces);
-        merge(
-            newNamespaces,
-            namespaces,
-            (orig, next) -> {
-              Map<String, String> nsProps =
-                  null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
-              merge(nsProps, next, (x, y) -> y);
-              return nsProps;
-            });
-
-        final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
-        merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
-
-        // TODO need to merge namespace properties?
-        // TODO not using table versions... remove
-
-        try {
-          CatalogFile catalog =
-              new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
-          CAS token = outputFile.prepare(catalog::asBytes, AtomicOutputFile.Strategy.CAS);
-          InputFile newCatalog = outputFile.writeAtomic(token, catalog::asBytes);
-          catalog.setFromFile(newCatalog);
-          return catalog;
-        } catch (IOException e) {
-          throw new CommitFailedException(e, "Failed to commit catalog file");
-        }
-      } catch (SupportsAtomicOperations.CASException e) {
-        throw new CommitFailedException(e, "Cannot commit");
-      }
-    }
-
-    // XXX TODO remove this, define commit(FileIO) for empty()
-    public CatalogFile commit(OutputStream out) {
+    protected CatalogFile merge() {
       final Map<Namespace, Map<String, String>> newNamespaces =
-          Maps.newHashMap(original.namespaces);
-      merge(newNamespaces, namespaces, (x, y) -> y);
+              Maps.newHashMap(original.namespaceProperties());
+      // TODO need to merge namespace properties?
+      // TODO not using table versions... remove
+      merge(
+              newNamespaces,
+              namespaces,
+              (orig, next) -> {
+                Map<String, String> nsProps =
+                        null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
+                merge(nsProps, next, (x, y) -> y);
+                return nsProps;
+              });
 
-      final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.fqti);
+      final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.tableMetadata());
       merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
-
-      final CatalogFile catalog =
-          new CatalogFile(original.uuid, original.seqno, newNamespaces, newFqti);
-      try {
-        catalog.write(out);
-      } catch (IOException e) {
-        throw new CommitFailedException(e, "Failed to commit catalog file");
-      }
-      return catalog;
+      return new CatalogFile(original.uuid(), original.seqno(), newNamespaces, newFqti, original.location());
     }
+
+    public abstract CatalogFile commit(SupportsAtomicOperations<CAS> fileIO);
 
     private static <K, V, U> void merge(
         Map<K, V> original, Map<K, U> update, BiFunction<V, U, V> valueMapper) {
@@ -250,17 +214,9 @@ public class CatalogFile {
     }
   }
 
-  CatalogFile() {
-    // consistent iteration order
-    this(UUID.randomUUID(), 0, Maps.newHashMap(), Maps.newHashMap(), null);
-  }
-
-  CatalogFile(
-      UUID uuid,
-      int seqno,
-      Map<Namespace, Map<String, String>> namespaces,
-      Map<TableIdentifier, TableInfo> fqti) {
-    this(uuid, seqno, namespaces, fqti, null);
+  CatalogFile(InputFile location) {
+    // consistent iteration order; UUIDv7
+    this(UUID.randomUUID(), 0, Maps.newHashMap(), Maps.newHashMap(), location);
   }
 
   CatalogFile(
@@ -276,11 +232,16 @@ public class CatalogFile {
     this.namespaces = namespaces;
   }
 
+  public InputFile location() {
+    return fromFile;
+  }
+
   public String location(TableIdentifier table) {
     final TableInfo info = fqti.get(table);
     return info != null ? info.location : null;
   }
 
+  // TODO remove; replace w/ metadata embed
   public int version(TableIdentifier table) {
     final TableInfo info = fqti.get(table);
     return info != null ? info.version : -1;
@@ -302,40 +263,20 @@ public class CatalogFile {
     return Lists.newArrayList(fqti.keySet().iterator());
   }
 
-  private InputStream asBytes() {
-    if (null == serBytes) {
-      // TODO unnecessary buffer copy; DataInput/DataOutputStream avail?
-      try (ByteArrayOutputStream bytes = new ByteArrayOutputStream(2048)) {
-        write(bytes);
-        serBytes = bytes.toByteArray();
-      } catch (IOException e) {
-        throw new CommitFailedException(e, "Failed to commit catalog file");
-      }
-    }
-    return new ByteArrayInputStream(serBytes);
+  public UUID uuid() {
+    return uuid;
   }
 
-  int write(OutputStream out) throws IOException {
-    try (DataOutputStream dos = new DataOutputStream(out)) {
-      dos.writeInt(namespaces.size());
-      for (Map.Entry<Namespace, Map<String, String>> e : namespaces.entrySet()) {
-        CASCatalogFormat.writeNamespace(dos, e.getKey());
-        CASCatalogFormat.writeProperties(dos, e.getValue());
-      }
-      dos.writeInt(fqti.size());
-      for (Map.Entry<TableIdentifier, TableInfo> e : fqti.entrySet()) {
-        TableInfo info = e.getValue();
-        dos.writeInt(info.version);
-        TableIdentifier tid = e.getKey();
-        CASCatalogFormat.writeNamespace(dos, tid.namespace());
-        dos.writeUTF(tid.name());
-        dos.writeUTF(info.location);
-      }
-      dos.writeInt(seqno);
-      dos.writeLong(uuid.getMostSignificantBits());
-      dos.writeLong(uuid.getLeastSignificantBits());
-      return dos.size();
-    }
+  int seqno() {
+    return seqno;
+  }
+
+  Map<Namespace, Map<String,String>> namespaceProperties() {
+    return Collections.unmodifiableMap(namespaces);
+  }
+
+  Map<TableIdentifier,TableInfo> tableMetadata() {
+    return Collections.unmodifiableMap(fqti);
   }
 
   @Override

@@ -28,9 +28,9 @@ public abstract class CatalogFormat {
   // would need this parameter to get bound to the CatalogFile<T> s.t.
   // it could not be passed to a FileIO class that did not support it
 
-  public abstract CatalogFile.MutCatalogFile empty();
+  public abstract CatalogFile.Mut empty(InputFile inputFile);
 
   public abstract CatalogFile read(InputFile in);
 
-  public abstract CatalogFile.MutCatalogFile from(CatalogFile other);
+  public abstract CatalogFile.Mut from(CatalogFile other);
 }

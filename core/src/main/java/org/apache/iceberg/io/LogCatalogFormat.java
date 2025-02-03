@@ -21,5 +21,22 @@
 
 package org.apache.iceberg.io;
 
-public class LogCatalogFormat {
+public class LogCatalogFormat extends CatalogFormat {
+    private final CASCatalogFormat casFormat = new CASCatalogFormat();
+
+    @Override
+    public CatalogFile.Mut empty(InputFile input) {
+        return null;
+    }
+
+    @Override
+    public CatalogFile read(InputFile in) {
+        return null;
+    }
+
+    @Override
+    public CatalogFile.Mut from(CatalogFile other) {
+        return null;
+    }
+
 }
