@@ -51,9 +51,11 @@ public class CASCatalogFormat extends CatalogFormat {
     CASMutCatalogFile(InputFile location) {
       super(location);
     }
+
     CASMutCatalogFile(CatalogFile original) {
       super(original);
     }
+
     @Override
     public CatalogFile commit(SupportsAtomicOperations<CAS> fileIO) {
       try {
@@ -66,7 +68,12 @@ public class CASCatalogFormat extends CatalogFormat {
             CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.CAS);
             serBytes.reset();
             InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
-            return new CatalogFile(catalog.uuid(), catalog.seqno(), catalog.namespaceProperties(), catalog.tableMetadata(), newCatalog);
+            return new CatalogFile(
+                catalog.uuid(),
+                catalog.seqno(),
+                catalog.namespaceProperties(),
+                catalog.tableMetadata(),
+                newCatalog);
           }
         } catch (IOException e) {
           throw new CommitFailedException(e, "Failed to commit catalog file");
@@ -118,7 +125,7 @@ public class CASCatalogFormat extends CatalogFormat {
   static int write(CatalogFile file, OutputStream out) throws IOException {
     try (DataOutputStream dos = new DataOutputStream(out)) {
       // namespaces
-      Map<Namespace,Map<String,String>> namespaces = file.namespaceProperties();
+      Map<Namespace, Map<String, String>> namespaces = file.namespaceProperties();
       dos.writeInt(namespaces.size());
       for (Map.Entry<Namespace, Map<String, String>> e : namespaces.entrySet()) {
         CASCatalogFormat.writeNamespace(dos, e.getKey());

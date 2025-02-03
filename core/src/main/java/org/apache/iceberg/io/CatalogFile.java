@@ -18,12 +18,6 @@
  */
 package org.apache.iceberg.io;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -35,7 +29,6 @@ import java.util.stream.Collectors;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
-import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
@@ -180,22 +173,22 @@ public class CatalogFile {
 
     protected CatalogFile merge() {
       final Map<Namespace, Map<String, String>> newNamespaces =
-              Maps.newHashMap(original.namespaceProperties());
+          Maps.newHashMap(original.namespaceProperties());
       // TODO need to merge namespace properties?
       // TODO not using table versions... remove
       merge(
-              newNamespaces,
-              namespaces,
-              (orig, next) -> {
-                Map<String, String> nsProps =
-                        null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
-                merge(nsProps, next, (x, y) -> y);
-                return nsProps;
-              });
+          newNamespaces,
+          namespaces,
+          (orig, next) -> {
+            Map<String, String> nsProps = null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
+            merge(nsProps, next, (x, y) -> y);
+            return nsProps;
+          });
 
       final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.tableMetadata());
       merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
-      return new CatalogFile(original.uuid(), original.seqno(), newNamespaces, newFqti, original.location());
+      return new CatalogFile(
+          original.uuid(), original.seqno(), newNamespaces, newFqti, original.location());
     }
 
     public abstract CatalogFile commit(SupportsAtomicOperations<CAS> fileIO);
@@ -271,11 +264,11 @@ public class CatalogFile {
     return seqno;
   }
 
-  Map<Namespace, Map<String,String>> namespaceProperties() {
+  Map<Namespace, Map<String, String>> namespaceProperties() {
     return Collections.unmodifiableMap(namespaces);
   }
 
-  Map<TableIdentifier,TableInfo> tableMetadata() {
+  Map<TableIdentifier, TableInfo> tableMetadata() {
     return Collections.unmodifiableMap(fqti);
   }
 

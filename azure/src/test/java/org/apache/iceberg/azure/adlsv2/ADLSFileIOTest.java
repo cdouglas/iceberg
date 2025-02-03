@@ -314,16 +314,16 @@ public class ADLSFileIOTest {
       DataLakeFileClient client, byte[] bytes, DataLakeRequestConditions cond) {
     final FileChecksum chk = new ADLSChecksum(AtomicOutputFile.Strategy.CAS);
     chk.update(bytes, 0, bytes.length);
-      // no timeout
-      return client.uploadWithResponse(
-          new FileParallelUploadOptions(new ByteArrayInputStream(bytes), bytes.length)
-              .setRequestConditions(cond)
-              .setHeaders(
-                  new PathHttpHeaders()
-                      .setContentMd5(chk.contentChecksumBytes())
-                      .setContentType("binary")),
-          null, // no timeout
-          Context.NONE);
+    // no timeout
+    return client.uploadWithResponse(
+        new FileParallelUploadOptions(new ByteArrayInputStream(bytes), bytes.length)
+            .setRequestConditions(cond)
+            .setHeaders(
+                new PathHttpHeaders()
+                    .setContentMd5(chk.contentChecksumBytes())
+                    .setContentType("binary")),
+        null, // no timeout
+        Context.NONE);
   }
 
   private static Response<PathInfo> appendBytes(
