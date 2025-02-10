@@ -35,6 +35,7 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
+// TODO replace janky serde with parquet
 public class CASCatalogFormat extends CatalogFormat {
 
   @Override
@@ -85,7 +86,7 @@ public class CASCatalogFormat extends CatalogFormat {
   }
 
   @Override
-  public CatalogFile read(InputFile catalogLocation) {
+  public CatalogFile read(SupportsAtomicOperations fileIO, InputFile catalogLocation) {
     final Map<TableIdentifier, CatalogFile.TableInfo> fqti = Maps.newHashMap();
     final Map<Namespace, Map<String, String>> namespaces = Maps.newHashMap();
     try (InputStream in = catalogLocation.newStream();
@@ -128,8 +129,8 @@ public class CASCatalogFormat extends CatalogFormat {
       Map<Namespace, Map<String, String>> namespaces = file.namespaceProperties();
       dos.writeInt(namespaces.size());
       for (Map.Entry<Namespace, Map<String, String>> e : namespaces.entrySet()) {
-        CASCatalogFormat.writeNamespace(dos, e.getKey());
-        CASCatalogFormat.writeProperties(dos, e.getValue());
+        writeNamespace(dos, e.getKey());
+        writeProperties(dos, e.getValue());
       }
       // tableinfo TODO store as bytes
       Map<TableIdentifier, CatalogFile.TableInfo> fqti = file.tableMetadata();
@@ -138,7 +139,7 @@ public class CASCatalogFormat extends CatalogFormat {
         CatalogFile.TableInfo info = e.getValue();
         dos.writeInt(info.version);
         TableIdentifier tid = e.getKey();
-        CASCatalogFormat.writeNamespace(dos, tid.namespace());
+        writeNamespace(dos, tid.namespace());
         dos.writeUTF(tid.name());
         dos.writeUTF(info.location);
       }

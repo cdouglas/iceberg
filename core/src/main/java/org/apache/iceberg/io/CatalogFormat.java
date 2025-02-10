@@ -30,7 +30,7 @@ public abstract class CatalogFormat {
 
   public abstract CatalogFile.Mut empty(InputFile inputFile);
 
-  public abstract CatalogFile read(InputFile in);
+  public abstract CatalogFile read(SupportsAtomicOperations fileIO, InputFile in);
 
   public abstract CatalogFile.Mut from(CatalogFile other);
 }

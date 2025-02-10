@@ -106,6 +106,10 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
 
   @Override
   public ADLSInputFile writeAtomic(CAS checksum, Supplier<InputStream> source) throws IOException {
+    // writeAtomic(token, source)
+    // CAS (impl; TODO come back for docs)
+    // APPEND
+    //   read object,
     // TODO this is very ugly. clean it up later.
     ADLSChecksum token = (ADLSChecksum) checksum;
     switch (token.getStrategy()) {
