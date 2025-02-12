@@ -147,7 +147,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public boolean dropTable(TableIdentifier identifier, boolean purge) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = format.read(catalog);
+    final CatalogFile catalogFile = format.read(fileIO, catalog);
     try {
       format.from(catalogFile).dropTable(identifier).commit(fileIO);
       return true;
@@ -159,7 +159,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public void renameTable(TableIdentifier from, TableIdentifier to) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = format.read(catalog);
+    final CatalogFile catalogFile = format.read(fileIO, catalog);
     format
         .from(catalogFile)
         .dropTable(from)
@@ -191,7 +191,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   private CatalogFile getCatalogFile() {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    return format.read(catalog);
+    return format.read(fileIO, catalog);
   }
 
   //
@@ -201,7 +201,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public void createNamespace(Namespace namespace, Map<String, String> metadata) {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = format.read(catalog);
+    final CatalogFile catalogFile = format.read(fileIO, catalog);
     format.from(catalogFile).createNamespace(namespace, metadata).commit(fileIO);
   }
 
@@ -227,7 +227,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     // XXX TODO wait, wtf?
     //     TODO catalog ops must also follow the refresh cycle, or only TableOperations detect
     // concurrent changes?
-    final CatalogFile catalogFile = format.read(catalog);
+    final CatalogFile catalogFile = format.read(fileIO, catalog);
     try {
       format.from(catalogFile).dropNamespace(namespace).commit(fileIO);
     } catch (NoSuchNamespaceException e) {
@@ -317,7 +317,8 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
     @Override
     protected void doRefresh() {
-      final CatalogFile updatedCatalogFile = format.read(io().newInputFile(catalogLocation));
+      final CatalogFile updatedCatalogFile =
+          format.read(fileIO, io().newInputFile(catalogLocation));
       updateVersionAndMetadata(
           updatedCatalogFile.version(tableId), updatedCatalogFile.location(tableId));
       lastCatalogFile = updatedCatalogFile;

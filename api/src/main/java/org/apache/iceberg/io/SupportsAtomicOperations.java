@@ -40,6 +40,8 @@ public interface SupportsAtomicOperations<T> extends FileIO {
   }
 
   class AppendException extends AtomicOperationException {
-    public AppendException(String message, Exception cause) { super(message, cause); }
+    public AppendException(String message, Exception cause) {
+      super(message, cause);
+    }
   }
 }
