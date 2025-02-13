@@ -33,6 +33,9 @@ import org.junit.jupiter.api.Test;
 public class TestLogCatalogFormat {
 
   @Test
+  public void testRegionFormat() {}
+
+  @Test
   public void testLogStream() throws IOException {
     // Create a sample transaction to write to the stream
     UUID txnId = UUID.randomUUID();
@@ -60,8 +63,8 @@ public class TestLogCatalogFormat {
     assertEquals(txnId, readTransaction.txnId);
     assertTrue(readTransaction.sealed());
     assertEquals(1, readTransaction.actions.size());
-    assertTrue(
-        readTransaction.actions.get(0) instanceof LogCatalogFormat.LogAction.CreateNamespace);
+    assertInstanceOf(
+        LogCatalogFormat.LogAction.CreateNamespace.class, readTransaction.actions.get(0));
     assertFalse(logStream.hasNext());
   }
 }

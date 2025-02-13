@@ -18,27 +18,20 @@
  */
 package org.apache.iceberg.io;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.Random;
 import java.util.UUID;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
-import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
@@ -59,8 +52,9 @@ public class LogCatalogFormat extends CatalogFormat {
     final LogCatalogFileMut catalog = new LogCatalogFileMut(refresh);
     try (SeekableInputStream in = refresh.newStream();
         DataInputStream din = new DataInputStream(in)) {
-      RegionFormat.readCheckpoint(catalog, din);
+      LogCatalogRegionFormat.readCheckpoint(catalog, din);
       final long logLength = fileLength - in.getPos();
+      LogCatalogFormat.readLog(catalog, din, logLength);
       // process log
       throw new UnsupportedOperationException();
       // return new CatalogFile(new UUID(msb, lsb), seqno, namespaces, fqti, catalogLocation);
@@ -247,7 +241,7 @@ public class LogCatalogFormat extends CatalogFormat {
 
       @Override
       void apply(LogCatalogFileMut catalog) {
-        catalog.addTableInternal(catalog.nextTblid++, nsid, name, location);
+        catalog.addTableInternal(catalog.nextTblid++, nsid, 1, name, location);
       }
 
       @Override
@@ -393,7 +387,7 @@ public class LogCatalogFormat extends CatalogFormat {
         final int nActions = dis.readInt();
         List<LogAction> actions = new ArrayList<>(nActions);
         for (int i = 0; i < nActions; ++i) {
-          Type type = Type.from(dis.readInt());
+          Type type = Type.from(dis.readByte());
           switch (type) {
             case CREATE_TABLE:
               actions.add(CreateTable.read(dis));
@@ -446,7 +440,7 @@ public class LogCatalogFormat extends CatalogFormat {
       @Override
       public Transaction next() {
         try {
-          Type type = Type.from(dis.readInt());
+          Type type = Type.from(dis.readByte());
           switch (type) {
             case TRANSACTION:
               return Transaction.read(dis);
@@ -563,7 +557,7 @@ public class LogCatalogFormat extends CatalogFormat {
       nsVersion.remove(nsid);
     }
 
-    void addTableInternal(int tblId, int nsid, String name, String location) {
+    void addTableInternal(int tblId, int nsid, int version, String name, String location) {
       Namespace ns = nsLookup.get(nsid);
       if (null == ns) {
         throw new IllegalStateException("Invalid namespace: " + nsid);
@@ -573,7 +567,7 @@ public class LogCatalogFormat extends CatalogFormat {
         throw new IllegalStateException("Duplicate table: " + ti);
       }
       tblLocations.put(tblId, location);
-      tblVersion.put(tblId, 1);
+      tblVersion.put(tblId, version);
     }
 
     void dropTableInternal(int tblId) {
@@ -629,319 +623,6 @@ public class LogCatalogFormat extends CatalogFormat {
         throw new CommitFailedException(e, "Cannot commit");
       }
       return null;
-    }
-  }
-
-  // ENDV<ver_major><ver_minor><nregions>[<region_end>]*
-  // [<region_type><region_format><region_data>]*
-  //
-  // CREATE TABLE namespaces (
-  //   nsid INT,
-  //   version INT,
-  //   parentId INT,
-  //   name VARCHAR(255) NOT NULL,
-  //   PRIMARY KEY (nsid, version),
-  //   FOREIGN KEY (parentId) REFERENCES namespaces(nsid)
-  // );
-  //
-  // CREATE TABLE ns_prop (
-  //   nsid INT,
-  //   key VARCHAR(255) NOT NULL,
-  //   value VARCHAR(1024) NOT NULL
-  // );
-  //
-  // CREATE TABLE tables (
-  //   tbl_id INT,
-  //   version INT,
-  //   nsid INT,
-  //   name VARCHAR(255) NOT NULL,
-  //   location VARCHAR(1024 NOT NULL),
-  //   PRIMARY KEY (tbl_id, version),
-  //   FOREIGN KEY (nsid) REFERENCES namespaces(nsid)
-  // );
-  static final class RegionFormat {
-    private static final String MAGIC_NUMBER = "ENDV";
-    private static final int VERSION_MAJOR = 1;
-    private static final int VERSION_MINOR = 0;
-
-    enum RegionType {
-      NS(1),
-      NS_PROP(2),
-      TABLE(3),
-      TABLE_EMBED(4),
-      METADATA(5);
-      private final byte type;
-
-      RegionType(int type) {
-        this.type = (byte) type;
-      }
-
-      static RegionType from(byte type) {
-        for (RegionType rt : RegionType.values()) {
-          if (rt.type == type) {
-            return rt;
-          }
-        }
-        throw new IllegalArgumentException("Unknown region type: " + type);
-      }
-    }
-
-    // TODO really... lame way to do this, but whatever.
-    enum Format {
-      LENGTH(1),
-      JSON(2),
-      PARQUET(3);
-      private final int format;
-
-      Format(int format) {
-        this.format = format;
-      }
-
-      static Format from(int format) {
-        for (Format f : Format.values()) {
-          if (f.format == format) {
-            return f;
-          }
-        }
-        throw new IllegalArgumentException("Unknown format: " + format);
-      }
-    }
-
-    static class Region {
-      final Format format;
-      final byte[] data;
-
-      Region(Format format, byte[] data) {
-        this.format = format;
-        this.data = data;
-      }
-    }
-
-    static LogCatalogFileMut readCheckpoint(LogCatalogFileMut catalog, DataInputStream dis)
-        throws IOException {
-      final EnumMap<RegionType, Region> regions = readRegions(dis);
-      catalogMetadata(catalog, regions.get(RegionType.METADATA));
-      namespaceRegion(catalog, regions.get(RegionType.NS));
-      nsPropRegion(catalog, regions.get(RegionType.NS_PROP));
-      tableRegion(catalog, regions.get(RegionType.TABLE));
-      tableEmbedRegion(catalog, regions.get(RegionType.TABLE_EMBED));
-      return catalog;
-    }
-
-    static void catalogMetadata(LogCatalogFileMut catalog, Region region) {
-      switch (region.format) {
-        case LENGTH:
-          try (DataInputStream dis = new DataInputStream(new ByteArrayInputStream(region.data))) {
-            long msb = dis.readLong();
-            long lsb = dis.readLong();
-            final UUID uuid = new UUID(msb, lsb);
-            final int nextNsid = dis.readInt();
-            final int nextTblid = dis.readInt();
-            catalog.setGlobals(uuid, nextNsid, nextTblid);
-          } catch (IOException e) {
-            throw new UncheckedIOException(e);
-          }
-          break;
-        default:
-          throw new UnsupportedOperationException(region.format + " unsupported");
-      }
-    }
-
-    private static void tableRegion(LogCatalogFileMut catalog, Region region) {
-      // TODO
-    }
-
-    private static void tableEmbedRegion(LogCatalogFileMut catalog, Region region) {
-      // TODO
-    }
-
-    // updating properties increments the ns version, so confluent updates to properties are treated
-    // as conflicts
-    private static void nsPropRegion(LogCatalogFileMut catalog, Region region) {
-      if (region == null) {
-        return;
-      }
-      switch (region.format) {
-        case LENGTH:
-          try (ByteArrayInputStream bais = new ByteArrayInputStream(region.data);
-              DataInputStream dis = new DataInputStream(bais)) {
-            int nProps = dis.readInt();
-            for (int i = 0; i < nProps; i++) {
-              int nsid = dis.readInt();
-              int nPropsForNs = dis.readInt();
-              for (int j = 0; j < nPropsForNs; j++) {
-                String key = dis.readUTF();
-                String value = dis.readUTF();
-                catalog.addNamespacePropertyInternal(nsid, key, value);
-              }
-            }
-            break;
-          } catch (IOException e) {
-            throw new UncheckedIOException(e);
-          }
-        case JSON:
-        case PARQUET:
-        default:
-          throw new UnsupportedOperationException(region.format + " unsupported");
-      }
-    }
-
-    private static void namespaceRegion(LogCatalogFileMut catalog, final Region region) {
-      // strict versioning of namespace properties requires at least the empty namespace be present
-      Preconditions.checkNotNull(region, "Missing namespace region");
-
-      // build (nsid, version) -> Namespace
-      final Iterable<NamespaceEntry> nsEntries;
-      switch (region.format) {
-        case LENGTH:
-          nsEntries = () -> new LengthNamespaceIterator(region.data);
-          break;
-        case JSON:
-          nsEntries = () -> new JsonNamespaceIterator(region.data);
-          break;
-        case PARQUET:
-        default:
-          throw new UnsupportedOperationException();
-      }
-      for (NamespaceEntry e : nsEntries) {
-        catalog.addNamespaceInternal(e.name, e.parentId, e.nsid, e.version);
-      }
-    }
-
-    private static EnumMap<RegionType, Region> readRegions(DataInputStream dis) throws IOException {
-      EnumMap<RegionType, Region> regions = Maps.newEnumMap(RegionType.class);
-      byte[] magic = new byte[4];
-      dis.readFully(magic);
-      if (!MAGIC_NUMBER.equals(new String(magic, StandardCharsets.UTF_8))) {
-        throw new IOException("Invalid magic number");
-      }
-
-      int versionMajor = dis.readUnsignedShort();
-      int versionMinor = dis.readUnsignedShort();
-      if (versionMajor != VERSION_MAJOR || versionMinor != VERSION_MINOR) {
-        throw new IOException("Unsupported version");
-      }
-
-      int nRegions = dis.readInt();
-      int[] endOffsets = new int[nRegions];
-      for (int i = 0; i < nRegions; i++) {
-        endOffsets[i] = dis.readInt();
-      }
-
-      for (int i = 0; i < nRegions; i++) {
-        RegionType type = RegionType.from(dis.readByte());
-        Format format = Format.from(dis.readInt());
-        int length =
-            (i == nRegions - 1) ? (int) (dis.available()) : (endOffsets[i] - dis.available());
-        byte[] data = new byte[length];
-        dis.readFully(data);
-        if (regions.put(type, new Region(format, data)) != null) {
-          throw new IOException("Duplicate region type: " + type);
-        }
-      }
-      return regions;
-    }
-  }
-
-  static class NamespaceEntry {
-    final int nsid;
-    final int version;
-    final int parentId;
-    final String name;
-
-    NamespaceEntry(int nsid, int version, int parentId, String name) {
-      this.nsid = nsid;
-      this.version = version;
-      this.parentId = parentId;
-      this.name = name;
-    }
-  }
-
-  static class LengthNamespaceIterator implements Iterator<NamespaceEntry> {
-    private final DataInputStream dis;
-    private final int nNamespaces;
-    private int currentIndex = 0;
-
-    public LengthNamespaceIterator(byte[] data) {
-      try {
-        this.dis = new DataInputStream(new ByteArrayInputStream(data));
-        this.nNamespaces = dis.readInt();
-      } catch (IOException e) {
-        throw new UncheckedIOException(e);
-      }
-    }
-
-    @Override
-    public boolean hasNext() {
-      return currentIndex < nNamespaces;
-    }
-
-    @Override
-    public NamespaceEntry next() {
-      if (!hasNext()) {
-        throw new NoSuchElementException();
-      }
-      try {
-        int nsid = dis.readInt();
-        int version = dis.readInt();
-        int parentId = dis.readInt();
-        String name = dis.readUTF();
-        currentIndex++;
-        return new NamespaceEntry(nsid, version, parentId, name);
-      } catch (IOException e) {
-        throw new UncheckedIOException(e);
-      }
-    }
-  }
-
-  static class JsonNamespaceIterator implements Iterator<NamespaceEntry> {
-    private final Iterator<JsonNode> jsonIterator;
-    private final ObjectMapper objectMapper;
-
-    public JsonNamespaceIterator(byte[] jsonData) {
-      try {
-        this.objectMapper = new ObjectMapper();
-        JsonNode rootNode = objectMapper.readTree(jsonData);
-        List<JsonNode> jsonNodes = new ArrayList<>();
-        rootNode.elements().forEachRemaining(jsonNodes::add);
-        this.jsonIterator = jsonNodes.iterator();
-      } catch (IOException e) {
-        throw new UncheckedIOException(e);
-      }
-    }
-
-    @VisibleForTesting
-    JsonNamespaceIterator(List<String> jsonList) {
-      this.objectMapper = new ObjectMapper();
-      this.jsonIterator =
-          jsonList.stream()
-              .map(
-                  json -> {
-                    try {
-                      return objectMapper.readTree(json);
-                    } catch (IOException e) {
-                      throw new UncheckedIOException(e);
-                    }
-                  })
-              .iterator();
-    }
-
-    @Override
-    public boolean hasNext() {
-      return jsonIterator.hasNext();
-    }
-
-    @Override
-    public NamespaceEntry next() {
-      if (!hasNext()) {
-        throw new NoSuchElementException();
-      }
-      JsonNode jsonNode = jsonIterator.next();
-      return new NamespaceEntry(
-          jsonNode.get("nsid").asInt(),
-          jsonNode.get("version").asInt(),
-          jsonNode.get("parentId").asInt(),
-          jsonNode.get("name").asText());
     }
   }
 
