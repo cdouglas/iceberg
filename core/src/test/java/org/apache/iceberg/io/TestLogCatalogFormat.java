@@ -33,7 +33,8 @@ import org.junit.jupiter.api.Test;
 public class TestLogCatalogFormat {
 
   @Test
-  public void testRegionFormat() {}
+  public void testRegionFormat() {
+  }
 
   @Test
   public void testLogStream() throws IOException {

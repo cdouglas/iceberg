@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -29,9 +30,13 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Supplier;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
@@ -67,6 +72,41 @@ final class LogCatalogRegionFormat {
   private static final int VERSION_MAJOR = 1;
   private static final int VERSION_MINOR = 0;
 
+  static void create(CatalogFile catalog, AtomicOutputFile<CAS> out) throws IOException {
+    // TODO
+    throw new UnsupportedOperationException();
+  }
+
+  static void update(LogCatalogFile update, AtomicOutputFile<CAS> out) throws IOException {
+    // TODO
+    throw new UnsupportedOperationException();
+  }
+
+  static class LogCatalogFile extends CatalogFile {
+      final int nextNsid;
+      final int nextTblid;
+
+      // empty LogCatalogFile
+      LogCatalogFile(InputFile location, UUID catalogUUID, int nextNsid, int nextTblid) {
+          super(location);
+          this.nextNsid = 1;
+          this.nextTblid = 1;
+      }
+
+      LogCatalogFile(
+              UUID uuid,
+              int seqno,
+              Map<Namespace, Map<String, String>> namespaces,
+              Map<TableIdentifier, TableInfo> fqti,
+              InputFile fromFile,
+              final int nextNsid,
+              final int nextTblid) {
+          super(uuid, seqno, namespaces, fqti, fromFile);
+          this.nextNsid = nextNsid;
+          this.nextTblid = nextTblid;
+      }
+  }
+
   enum RegionType {
     NS(1),
     NS_PROP(2),
@@ -94,15 +134,15 @@ final class LogCatalogRegionFormat {
     LENGTH(1),
     JSON(2),
     PARQUET(3);
-    private final int format;
+    private final int fmtid;
 
     Format(int format) {
-      this.format = format;
+      this.fmtid = format;
     }
 
     static Format from(int format) {
       for (Format f : Format.values()) {
-        if (f.format == format) {
+        if (f.fmtid == format) {
           return f;
         }
       }
@@ -123,14 +163,14 @@ final class LogCatalogRegionFormat {
   static void readCheckpoint(LogCatalogFormat.LogCatalogFileMut catalog, DataInputStream dis)
       throws IOException {
     final EnumMap<RegionType, Region> regions = readRegions(dis);
-    catalogMetadata(catalog, regions.get(RegionType.METADATA));
+    metadataRegion(catalog, regions.get(RegionType.METADATA));
     namespaceRegion(catalog, regions.get(RegionType.NS));
     nsPropRegion(catalog, regions.get(RegionType.NS_PROP));
     tableRegion(catalog, regions.get(RegionType.TABLE));
     tableEmbedRegion(catalog, regions.get(RegionType.TABLE_EMBED));
   }
 
-  static void catalogMetadata(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
+  private static void metadataRegion(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
     if (null == region) {
       throw new IllegalStateException("Metadata region is required");
     }
@@ -254,6 +294,47 @@ final class LogCatalogRegionFormat {
       }
     }
     return regions;
+  }
+
+  private static void writeCatalogFile(LogCatalogFile catalog, EnumMap<RegionType, Format> formats, DataOutputStream out) throws IOException {
+    final EnumMap<RegionType, Supplier<Region>> regions = Maps.newEnumMap(RegionType.class);
+    for (RegionType type : formats.keySet()) {
+      switch (type) {
+        case NS:
+          regions.put(type, () -> new Region(formats.get(type), namespaceRegion(catalog)));
+          break;
+        case NS_PROP:
+          regions.put(type, () -> new Region(formats.get(type), nsPropRegion(catalog)));
+          break;
+        case TABLE:
+          regions.put(type, () -> new Region(formats.get(type), tableRegion(catalog)));
+          break;
+        case TABLE_EMBED:
+          regions.put(type, () -> new Region(formats.get(type), tableEmbedRegion(catalog)));
+          break;
+        case METADATA:
+          regions.put(type, () -> new Region(formats.get(type), metadataRegion(catalog)));
+          break;
+        default:
+          throw new UnsupportedOperationException("Unknown region type: " + type);
+      }
+    }
+    writeRegions(out, regions);
+    // TODO
+    throw new UnsupportedOperationException();
+  }
+
+  private static void writeRegions(DataOutputStream out, EnumMap<RegionType, Supplier<Region>> regions) throws IOException {
+      out.writeUTF(MAGIC_NUMBER);
+      out.writeShort(VERSION_MAJOR);
+      out.writeShort(VERSION_MINOR);
+      out.writeInt(regions.size());
+      for (RegionType type : regions.keySet()) {
+          out.writeByte(type.type);
+          final Region region = regions.get(type).get();
+          out.writeByte(region.format.fmtid);
+          out.write(regions.get(type).get().data);
+      }
   }
 
   static class NamespaceEntry {
