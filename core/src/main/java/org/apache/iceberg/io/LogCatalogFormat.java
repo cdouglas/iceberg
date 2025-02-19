@@ -54,10 +54,9 @@ public class LogCatalogFormat extends CatalogFormat {
         DataInputStream din = new DataInputStream(in)) {
       LogCatalogRegionFormat.readCheckpoint(catalog, din);
       final long logLength = fileLength - in.getPos();
-      LogCatalogFormat.readLog(catalog, din, logLength);
       // process log
-      throw new UnsupportedOperationException();
-      // return new CatalogFile(new UUID(msb, lsb), seqno, namespaces, fqti, catalogLocation);
+      // LogCatalogFormat.readLog(catalog, din, logLength);
+      return catalog.merge();
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
@@ -335,7 +334,7 @@ public class LogCatalogFormat extends CatalogFormat {
     }
 
     static class Transaction extends LogAction {
-      boolean sealed = false;
+      boolean sealed;
       final UUID txnId;
       final List<LogAction> actions;
 
@@ -632,7 +631,7 @@ public class LogCatalogFormat extends CatalogFormat {
     long unixTsMs = timestamp & 0xFFFFFFFFFFFFL; // 48 bits for timestamp
 
     // Randomness: 12 bits for unique sequencing within the millisecond
-    long randA = (random.nextInt(0x1000)) & 0x0FFF; // 12 bits
+    long randA = random.nextInt(0x1000) & 0x0FFF; // 12 bits
 
     // Construct the most significant 64 bits
     long msb = (unixTsMs << 16) | (0x7L << 12) | randA; // Version 7 (0111)

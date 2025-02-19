@@ -21,12 +21,17 @@ package org.apache.iceberg.io;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
@@ -35,8 +40,10 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
@@ -82,29 +89,203 @@ final class LogCatalogRegionFormat {
     throw new UnsupportedOperationException();
   }
 
+  // TODO extract interface
+  // leave merge w.r.t. interface/whatever
   static class LogCatalogFile extends CatalogFile {
-      final int nextNsid;
-      final int nextTblid;
+    final UUID catalogUUID;
+    final int nextNsid;
+    final int nextTblid;
 
-      // empty LogCatalogFile
-      LogCatalogFile(InputFile location, UUID catalogUUID, int nextNsid, int nextTblid) {
-          super(location);
-          this.nextNsid = 1;
-          this.nextTblid = 1;
-      }
+    // CREATE TABLE namespaces (
+    //   nsid INT,
+    //   version INT,
+    //   parentId INT,
+    //   name VARCHAR(255) NOT NULL,
+    //   PRIMARY KEY (nsid, version),
+    //   FOREIGN KEY (parentId) REFERENCES namespaces(nsid)
+    // );
+    private final Map<Namespace, Integer> nsids;
+    private final Map<Integer, Integer> nsVersion;
+    private final Map<Integer, Namespace> nsLookup;
 
-      LogCatalogFile(
-              UUID uuid,
-              int seqno,
-              Map<Namespace, Map<String, String>> namespaces,
-              Map<TableIdentifier, TableInfo> fqti,
-              InputFile fromFile,
-              final int nextNsid,
-              final int nextTblid) {
-          super(uuid, seqno, namespaces, fqti, fromFile);
-          this.nextNsid = nextNsid;
-          this.nextTblid = nextTblid;
-      }
+    private final Map<Integer, Map<String, String>> nsProperties;
+
+    private final Map<TableIdentifier, Integer> tblIds;
+    private final Map<Integer, Integer> tblVersion;
+    private final Map<Integer, String> tblLocations;
+
+    // empty LogCatalogFile
+    LogCatalogFile(InputFile location, UUID catalogUUID) {
+      super(location);
+      this.catalogUUID = catalogUUID;
+      this.nextNsid = 1;
+      this.nextTblid = 1;
+      this.nsids = Maps.newHashMap();
+      this.nsVersion = Maps.newHashMap();
+      this.nsProperties = Maps.newHashMap();
+      this.tblIds = Maps.newHashMap();
+      this.tblVersion = Maps.newHashMap();
+      this.tblLocations = Maps.newHashMap();
+      this.nsLookup = Maps.newHashMap();
+    }
+
+    LogCatalogFile(
+        InputFile location,
+        UUID catalogUUID,
+        int nextNsid,
+        int nextTblid,
+        Map<Namespace, Integer> nsids,
+        Map<Integer, Integer> nsVersion,
+        Map<Integer, Map<String, String>> nsProperties,
+        Map<TableIdentifier, Integer> tblIds,
+        Map<Integer, Integer> tblVersion,
+        Map<Integer, String> tblLocations) {
+      super(location);
+      this.catalogUUID = catalogUUID;
+      this.nextNsid = nextNsid;
+      this.nextTblid = nextTblid;
+      this.nsids = nsids;
+      this.nsVersion = nsVersion;
+      this.nsProperties = nsProperties;
+      this.tblIds = tblIds;
+      this.tblVersion = tblVersion;
+      this.tblLocations = tblLocations;
+      this.nsLookup =
+          nsids.entrySet().stream()
+              .collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey));
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        LogCatalogFile that = (LogCatalogFile) o;
+        return nextNsid == that.nextNsid
+            && nextTblid == that.nextTblid
+            && Objects.equals(catalogUUID, that.catalogUUID)
+            && Objects.equals(nsids, that.nsids)
+            && Objects.equals(nsVersion, that.nsVersion)
+            && Objects.equals(nsProperties, that.nsProperties)
+            && Objects.equals(tblIds, that.tblIds)
+            && Objects.equals(tblVersion, that.tblVersion)
+            && Objects.equals(tblLocations, that.tblLocations);
+    }
+
+    @Override
+    public String toString() {
+        return "LogCatalogFile{"
+            + "catalogUUID="
+            + catalogUUID
+            + ", nextNsid="
+            + nextNsid
+            + ", nextTblid="
+            + nextTblid
+            + ", nsids="
+            + nsids
+            + ", nsVersion="
+            + nsVersion
+            + ", nsProperties="
+            + nsProperties
+            + ", tblIds="
+            + tblIds
+            + ", tblVersion="
+            + tblVersion
+            + ", tblLocations="
+            + tblLocations
+            + '}';
+    }
+
+    Iterable<NamespaceEntry> namespaceEntries() {
+      return () ->
+          new Iterator<NamespaceEntry>() {
+            // sort by nsid; sufficient for parentId, since namespaces never move and are created in
+            // order
+            private final Iterator<Map.Entry<Namespace, Integer>> iter =
+                nsids.entrySet().stream()
+                    .sorted(Comparator.comparingInt(Map.Entry::getValue))
+                    .iterator();
+
+            @Override
+            public boolean hasNext() {
+              return iter.hasNext();
+            }
+
+            @Override
+            public NamespaceEntry next() {
+              Map.Entry<Namespace, Integer> entry = iter.next();
+              final Namespace ns = entry.getKey();
+              final int levels = ns.length();
+              final Namespace parent =
+                  levels > 1
+                      ? Namespace.of(Arrays.copyOfRange(ns.levels(), 0, levels - 1))
+                      : Namespace.empty();
+              final int nsid = entry.getValue();
+              return new NamespaceEntry(
+                  nsid, nsVersion.get(nsid), nsids.get(parent), ns.level(levels - 1));
+            }
+          };
+    }
+
+    Iterable<NamespacePropertyEntry> namespacePropertyEntries() {
+      return () ->
+          new Iterator<NamespacePropertyEntry>() {
+            private final Iterator<Map.Entry<Integer, Map<String, String>>> iter =
+                nsProperties.entrySet().iterator();
+            private Iterator<Map.Entry<String, String>> currentIter = null;
+
+            @Override
+            public boolean hasNext() {
+              if (currentIter == null || !currentIter.hasNext()) {
+                if (iter.hasNext()) {
+                  currentIter = iter.next().getValue().entrySet().iterator();
+                } else {
+                  return false;
+                }
+              }
+              return true;
+            }
+
+            @Override
+            public NamespacePropertyEntry next() {
+              if (!hasNext()) {
+                throw new NoSuchElementException();
+              }
+              Map.Entry<String, String> entry = currentIter.next();
+              return new NamespacePropertyEntry(
+                  iter.next().getKey(), entry.getKey(), entry.getValue());
+            }
+          };
+    }
+
+    Iterable<TableEntry> tableEntries() {
+      return () ->
+          new Iterator<TableEntry>() {
+            private final Iterator<Map.Entry<TableIdentifier, Integer>> iter =
+                tblIds.entrySet().iterator();
+
+            @Override
+            public boolean hasNext() {
+              return iter.hasNext();
+            }
+
+            @Override
+            public TableEntry next() {
+              Map.Entry<TableIdentifier, Integer> entry = iter.next();
+              final TableIdentifier tblId = entry.getKey();
+              final int tblid = entry.getValue();
+              return new TableEntry(
+                  tblid,
+                  tblVersion.get(tblid),
+                  nsids.get(tblId.namespace()),
+                  tblId.name(),
+                  tblLocations.get(tblid));
+            }
+          };
+    }
   }
 
   enum RegionType {
@@ -131,7 +312,7 @@ final class LogCatalogRegionFormat {
 
   // TODO really... lame way to do this, but whatever.
   enum Format {
-    LENGTH(1),
+    LENGTH(1), // rename to LOG and ignore validation for checkpoint replay
     JSON(2),
     PARQUET(3);
     private final int fmtid;
@@ -277,7 +458,7 @@ final class LogCatalogRegionFormat {
       throw new IOException("Unsupported version");
     }
 
-    int nRegions = dis.readInt();
+    int nRegions = dis.readUnsignedShort();
     int[] endOffsets = new int[nRegions];
     for (int i = 0; i < nRegions; i++) {
       endOffsets[i] = dis.readInt();
@@ -286,7 +467,7 @@ final class LogCatalogRegionFormat {
     for (int i = 0; i < nRegions; i++) {
       RegionType type = RegionType.from(dis.readByte());
       Format format = Format.from(dis.readByte());
-      int length = (i == nRegions - 1) ? (dis.available()) : (endOffsets[i] - dis.available());
+      int length = (i == nRegions - 1) ? dis.available() : (endOffsets[i] - dis.available());
       byte[] data = new byte[length];
       dis.readFully(data);
       if (regions.put(type, new Region(format, data)) != null) {
@@ -296,45 +477,126 @@ final class LogCatalogRegionFormat {
     return regions;
   }
 
-  private static void writeCatalogFile(LogCatalogFile catalog, EnumMap<RegionType, Format> formats, DataOutputStream out) throws IOException {
-    final EnumMap<RegionType, Supplier<Region>> regions = Maps.newEnumMap(RegionType.class);
-    for (RegionType type : formats.keySet()) {
+  @VisibleForTesting
+  static Supplier<InputStream> writeCatalogFile(LogCatalogFile catalog, EnumMap<RegionType, Format> formats) {
+    final EnumMap<RegionType, Region> regions = Maps.newEnumMap(RegionType.class);
+    // TODO multi-part upload, don't buffer embedded tables into memory
+    for (Map.Entry<RegionType, Format> entry : formats.entrySet()) {
+      final RegionType type = entry.getKey();
       switch (type) {
         case NS:
-          regions.put(type, () -> new Region(formats.get(type), namespaceRegion(catalog)));
+          regions.put(type, namespaceRegion(catalog, entry.getValue()));
           break;
         case NS_PROP:
-          regions.put(type, () -> new Region(formats.get(type), nsPropRegion(catalog)));
+          regions.put(type, nsPropRegion(catalog, entry.getValue()));
           break;
         case TABLE:
-          regions.put(type, () -> new Region(formats.get(type), tableRegion(catalog)));
+          regions.put(type, tableRegion(catalog, entry.getValue()));
           break;
         case TABLE_EMBED:
-          regions.put(type, () -> new Region(formats.get(type), tableEmbedRegion(catalog)));
-          break;
+          throw new UnsupportedOperationException("Unsupported");
         case METADATA:
-          regions.put(type, () -> new Region(formats.get(type), metadataRegion(catalog)));
-          break;
+          throw new UnsupportedOperationException("metadata format not configurable");
         default:
           throw new UnsupportedOperationException("Unknown region type: " + type);
       }
     }
-    writeRegions(out, regions);
-    // TODO
-    throw new UnsupportedOperationException();
+    return writeRegions(regions);
   }
 
-  private static void writeRegions(DataOutputStream out, EnumMap<RegionType, Supplier<Region>> regions) throws IOException {
+  private static Region namespaceRegion(LogCatalogFile catalog, Format format) {
+    try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+         DataOutputStream dos = new DataOutputStream(bos)) {
+      switch (format) {
+        case LENGTH:
+          dos.writeInt(catalog.nsids.size());
+          for (NamespaceEntry e : catalog.namespaceEntries()) {
+            dos.writeInt(e.nsid);
+            dos.writeInt(e.version);
+            dos.writeInt(e.parentId);
+            dos.writeUTF(e.name);
+          }
+          break;
+        default:
+          throw new UnsupportedOperationException(format + " unsupported for namespace region");
+      }
+      // TODO so many unnecessary buffer copies, ffs
+      return new Region(format, bos.toByteArray());
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  private static Region nsPropRegion(LogCatalogFile catalog, Format format) {
+    try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+         DataOutputStream dos = new DataOutputStream(bos)) {
+      switch (format) {
+        case LENGTH:
+          dos.writeInt(catalog.nsProperties.size());
+          for (NamespacePropertyEntry e : catalog.namespacePropertyEntries()) {
+            dos.writeInt(e.nsid);
+            dos.writeUTF(e.key);
+            dos.writeUTF(e.value);
+          }
+          break;
+        default:
+          throw new UnsupportedOperationException(format + " unsupported for namespace property region");
+      }
+      return new Region(format, bos.toByteArray());
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  private static Region tableRegion(LogCatalogFile catalog, Format format) {
+    try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+         DataOutputStream dos = new DataOutputStream(bos)) {
+      switch (format) {
+        case LENGTH:
+          dos.writeInt(catalog.tblIds.size());
+          for (TableEntry e : catalog.tableEntries()) {
+            dos.writeInt(e.tblId);
+            dos.writeInt(e.version);
+            dos.writeInt(e.nsid);
+            dos.writeUTF(e.name);
+            dos.writeUTF(e.location);
+          }
+          break;
+        default:
+          throw new UnsupportedOperationException(format + " unsupported for table region");
+      }
+      return new Region(format, bos.toByteArray());
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  // TODO aaaaaaand another buffer copy. You shame yourself.
+  private static Supplier<InputStream> writeRegions(EnumMap<RegionType, Region> regions) {
+    try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+         DataOutputStream out = new DataOutputStream(bos)) {
+      // write METADATA region
+      // FFS why are you making this so convoluted?
       out.writeUTF(MAGIC_NUMBER);
       out.writeShort(VERSION_MAJOR);
       out.writeShort(VERSION_MINOR);
-      out.writeInt(regions.size());
-      for (RegionType type : regions.keySet()) {
-          out.writeByte(type.type);
-          final Region region = regions.get(type).get();
-          out.writeByte(region.format.fmtid);
-          out.write(regions.get(type).get().data);
+      final int nRegions = regions.size();
+      out.writeShort(nRegions);
+      // MAGIC(4) MAJOR(2) MINOR(2) NREGIONS(2) ENDOFFSETS(4*NREGIONS)
+      final int headerOffset = MAGIC_NUMBER.length() + 2 + 2 + 2 + (nRegions * 4);
+      for (Region region : regions.values()) {
+        out.writeInt(headerOffset + region.data.length);
       }
+      for (Map.Entry<RegionType,Region> re : regions.entrySet()) {
+        out.writeByte(re.getKey().type);
+        final Region region = re.getValue();
+        out.writeByte(region.format.fmtid);
+        out.write(region.data);
+      }
+      return () -> new ByteArrayInputStream(bos.toByteArray());
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
   }
 
   static class NamespaceEntry {
