@@ -170,7 +170,9 @@ public class TestLogCatalogFormat {
       for (int j = 0; j < rand.nextInt(5); j++) {
         properties.put("key" + j, nsid + "value" + j);
       }
-      nsProperties.put(nsid, properties);
+      if (!properties.isEmpty()) {
+        nsProperties.put(nsid, properties);
+      }
       nsVersion.put(nsid, nsVersion.get(nsid) + rand.nextInt(2) + 1);
     }
 
