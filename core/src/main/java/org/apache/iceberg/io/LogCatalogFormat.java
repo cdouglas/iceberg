@@ -50,9 +50,8 @@ public class LogCatalogFormat extends CatalogFormat {
     InputFile refresh = fileIO.newInputFile(catalogLocation.location());
     final long fileLength = refresh.getLength();
     final LogCatalogFileMut catalog = new LogCatalogFileMut(refresh);
-    try (SeekableInputStream in = refresh.newStream();
-        DataInputStream din = new DataInputStream(in)) {
-      LogCatalogRegionFormat.readCheckpoint(catalog, din);
+    try (SeekableInputStream in = refresh.newStream()) {
+      LogCatalogRegionFormat.readCheckpoint(catalog, in);
       final long logLength = fileLength - in.getPos();
       // process log
       // LogCatalogFormat.readLog(catalog, din, logLength);
@@ -463,6 +462,7 @@ public class LogCatalogFormat extends CatalogFormat {
   static class LogCatalogFileMut extends CatalogFile.Mut {
     // namespace IDs are internal to the catalog format
 
+    private final InputFile location;
     private UUID uuid = null;
     private int nextNsid = 1;
     private int nextTblid = 1;
@@ -500,11 +500,20 @@ public class LogCatalogFormat extends CatalogFormat {
     private final Map<Integer, String> tblLocations = Maps.newHashMap();
 
     LogCatalogFileMut(InputFile input) {
-      super(input);
+      super(input); // TODO dismantle this
+      this.location = input;
     }
 
-    LogCatalogFileMut(CatalogFile other) {
+    LogCatalogFileMut(LogCatalogRegionFormat.LogCatalogFile other) {
       super(other);
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public LogCatalogRegionFormat.LogCatalogFile merge() {
+      // TODO w.r.t. original
+      return new LogCatalogRegionFormat.LogCatalogFile(location,
+          uuid, nextNsid, nextTblid, nsids, nsVersion, nsProperties, tblIds, tblVersion, tblLocations);
     }
 
     void setGlobals(UUID uuid, int nextNsid, int nextTblid) {

@@ -18,9 +18,6 @@
  */
 package org.apache.iceberg.io;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.mock;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
@@ -28,21 +25,28 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
+import org.apache.commons.io.IOUtils;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.io.LogCatalogRegionFormat.LogCatalogFile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.apache.iceberg.io.LogCatalogRegionFormat.LogCatalogFile;
 import org.junit.jupiter.api.TestInfo;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
 
 public class TestLogCatalogFormat {
 
@@ -60,13 +64,6 @@ public class TestLogCatalogFormat {
     final InputFile mockFile = mock(InputFile.class);
     LogCatalogRegionFormat.LogCatalogFile catalog = generateRandomLogCatalogFile(random.nextLong());
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-      EnumMap<LogCatalogRegionFormat.RegionType, LogCatalogRegionFormat.Format> regionFormat =
-          new EnumMap<>(LogCatalogRegionFormat.RegionType.class);
-      // you really screwed this up. what a mess.
-      regionFormat.put(LogCatalogRegionFormat.RegionType.METADATA, LogCatalogRegionFormat.Format.LENGTH);
-      regionFormat.put(LogCatalogRegionFormat.RegionType.NS, LogCatalogRegionFormat.Format.LENGTH);
-      regionFormat.put(LogCatalogRegionFormat.RegionType.NS_PROP, LogCatalogRegionFormat.Format.LENGTH);
-      regionFormat.put(LogCatalogRegionFormat.RegionType.TABLE, LogCatalogRegionFormat.Format.LENGTH);
       byte[] catabytes = toBytes(catalog);
       //LogCatalogFile readCatalog = LogCatalogRegionFormat.readCatalogFile(catabytes, regionFormat);
     } catch (IOException e) {
@@ -116,10 +113,16 @@ public class TestLogCatalogFormat {
 
     byte[] aBytes = toBytes(a);
     byte[] bBytes = toBytes(b);
+    assertThat(aBytes.length).isGreaterThan(0);
     assertArrayEquals(aBytes, bBytes);
 
-    LogCatalogFormat.LogCatalogFileMut fromBytes = LogCatalogRegionFormat.readCheckpoint(aBytes);
-    LogCatalogFile fromBytes = LogCatalogRegionFormat.readCheckpoint(aBytes);
+    InputFile mockFile = mock(InputFile.class);
+    LogCatalogFormat.LogCatalogFileMut catalog = new LogCatalogFormat.LogCatalogFileMut(mockFile);
+    try (ByteArrayInputStream bis = new ByteArrayInputStream(aBytes)) {
+      LogCatalogRegionFormat.readCheckpoint(catalog, bis);
+      LogCatalogFile c = catalog.merge();
+      assertEquals(a, c);
+    }
   }
 
   private LogCatalogFile generateRandomLogCatalogFile(long seed) {
@@ -141,6 +144,8 @@ public class TestLogCatalogFormat {
 
     final Map<Integer, Namespace> nsLookup = new HashMap<>();
 
+    nsids.put(Namespace.empty(), 0);
+    nsLookup.put(0, Namespace.empty());
     nsVersion.put(0, rand.nextInt(1) + 1);
     // ns version \geq #children + #prop
     for (int nsid = 1; nsid < nextNsid; nsid += rand.nextInt(5) + 1) {
@@ -155,18 +160,18 @@ public class TestLogCatalogFormat {
         levels[levels.length - 1] = "ns" + nsid;
         ns = Namespace.of(levels);
       }
-      final int parentVersion = nsVersion.get(0);
-      nsVersion.put(nsid, rand.nextInt(parentVersion));
-      nsVersion.put(parentId, parentVersion + rand.nextInt(1) + 1);
+      final int parentVersion = nsVersion.get(parentId) + rand.nextInt(2) + 1;
+      nsVersion.put(nsid, rand.nextInt(parentVersion - 1) + 1);
+      nsVersion.put(parentId, parentVersion);
 
       nsids.put(ns, nsid);
       nsLookup.put(nsid, ns);
       Map<String, String> properties = new HashMap<>();
       for (int j = 0; j < rand.nextInt(5); j++) {
-        properties.put("key" + j, ns.hashCode() + "value" + j);
-        nsProperties.put(j, properties);
-        nsVersion.put(nsid, rand.nextInt(1) + 1);
+        properties.put("key" + j, nsid + "value" + j);
       }
+      nsProperties.put(nsid, properties);
+      nsVersion.put(nsid, nsVersion.get(nsid) + rand.nextInt(2) + 1);
     }
 
     List<Integer> namespaces = new ArrayList<>(nsids.values());
@@ -177,7 +182,7 @@ public class TestLogCatalogFormat {
       tblIds.put(tblId, i);
       tblVersion.put(i, rand.nextInt(10));
       tblLocations.put(i, "location" + i);
-      nsVersion.put(nsid, rand.nextInt(1) + 1);
+      nsVersion.put(nsid, nsVersion.get(nsid) + rand.nextInt(2) + 1);
     }
 
     return new LogCatalogRegionFormat.LogCatalogFile(location, uuid, nextNsid, nextTblid, nsids, nsVersion, nsProperties, tblIds, tblVersion, tblLocations);
@@ -187,11 +192,14 @@ public class TestLogCatalogFormat {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
       EnumMap<LogCatalogRegionFormat.RegionType, LogCatalogRegionFormat.Format> regionFormat =
               new EnumMap<>(LogCatalogRegionFormat.RegionType.class);
-      LogCatalogRegionFormat.writeCatalogFile(catalog, regionFormat);
+      regionFormat.put(LogCatalogRegionFormat.RegionType.NS, LogCatalogRegionFormat.Format.LENGTH);
+      regionFormat.put(LogCatalogRegionFormat.RegionType.NS_PROP, LogCatalogRegionFormat.Format.LENGTH);
+      regionFormat.put(LogCatalogRegionFormat.RegionType.TABLE, LogCatalogRegionFormat.Format.LENGTH);
+      IOUtils.copy(LogCatalogRegionFormat.writeCatalogFile(catalog, regionFormat).get(), bos);
       return bos.toByteArray();
     } catch (IOException e) {
       fail("Failed to write/read catalog file", e);
-      return null;
+      throw new IllegalStateException("Failed to write/read catalog file", e);
     }
   }
 

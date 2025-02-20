@@ -27,7 +27,6 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -75,7 +74,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 //   FOREIGN KEY (nsid) REFERENCES namespaces(nsid)
 // );
 final class LogCatalogRegionFormat {
-  private static final String MAGIC_NUMBER = "ENDV";
+  private static final byte[] MAGIC_NUMBER = "ENDV".getBytes(StandardCharsets.US_ASCII);
   private static final int VERSION_MAJOR = 1;
   private static final int VERSION_MINOR = 0;
 
@@ -225,7 +224,7 @@ final class LogCatalogRegionFormat {
                       : Namespace.empty();
               final int nsid = entry.getValue();
               return new NamespaceEntry(
-                  nsid, nsVersion.get(nsid), nsids.get(parent), ns.level(levels - 1));
+                  nsid, nsVersion.get(nsid), nsids.get(parent), 0 == levels ? "" : ns.level(levels - 1));
             }
           };
     }
@@ -235,28 +234,29 @@ final class LogCatalogRegionFormat {
           new Iterator<NamespacePropertyEntry>() {
             private final Iterator<Map.Entry<Integer, Map<String, String>>> iter =
                 nsProperties.entrySet().iterator();
+            private Integer currentKey = null;
             private Iterator<Map.Entry<String, String>> currentIter = null;
 
             @Override
             public boolean hasNext() {
               if (currentIter == null || !currentIter.hasNext()) {
-                if (iter.hasNext()) {
-                  currentIter = iter.next().getValue().entrySet().iterator();
-                } else {
-                  return false;
+                while (iter.hasNext()) {
+                  Map.Entry<Integer, Map<String, String>> e = iter.next();
+                  currentKey = e.getKey();
+                  currentIter = e.getValue().entrySet().iterator();
+                  if (currentIter.hasNext()) {
+                    return true;
+                  }
                 }
+                return false;
               }
               return true;
             }
 
             @Override
             public NamespacePropertyEntry next() {
-              if (!hasNext()) {
-                throw new NoSuchElementException();
-              }
               Map.Entry<String, String> entry = currentIter.next();
-              return new NamespacePropertyEntry(
-                  iter.next().getKey(), entry.getKey(), entry.getValue());
+              return new NamespacePropertyEntry(currentKey, entry.getKey(), entry.getValue());
             }
           };
     }
@@ -341,9 +341,10 @@ final class LogCatalogRegionFormat {
     }
   }
 
-  static void readCheckpoint(LogCatalogFormat.LogCatalogFileMut catalog, DataInputStream dis)
+  static void readCheckpoint(LogCatalogFormat.LogCatalogFileMut catalog, InputStream stream)
       throws IOException {
-    final EnumMap<RegionType, Region> regions = readRegions(dis);
+    DataInputStream dis = new DataInputStream(stream);
+    final EnumMap<RegionType, Region> regions = readRegions(catalog, dis);
     metadataRegion(catalog, regions.get(RegionType.METADATA));
     namespaceRegion(catalog, regions.get(RegionType.NS));
     nsPropRegion(catalog, regions.get(RegionType.NS_PROP));
@@ -441,14 +442,16 @@ final class LogCatalogRegionFormat {
 
   private static void tableEmbedRegion(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
     // TODO build schema for Parquet from JSON spec
-    throw new UnsupportedOperationException();
+    if (region != null) {
+      throw new UnsupportedOperationException();
+    }
   }
 
-  private static EnumMap<RegionType, Region> readRegions(DataInputStream dis) throws IOException {
+  private static EnumMap<RegionType, Region> readRegions(LogCatalogFormat.LogCatalogFileMut catalog, DataInputStream dis) throws IOException {
     EnumMap<RegionType, Region> regions = Maps.newEnumMap(RegionType.class);
     byte[] magic = new byte[4];
     dis.readFully(magic);
-    if (!MAGIC_NUMBER.equals(new String(magic, StandardCharsets.UTF_8))) {
+    if (!Arrays.equals(MAGIC_NUMBER, magic)) {
       throw new IOException("Invalid magic number");
     }
 
@@ -464,10 +467,11 @@ final class LogCatalogRegionFormat {
       endOffsets[i] = dis.readInt();
     }
 
+    int previousOffset = headerLen(nRegions);
     for (int i = 0; i < nRegions; i++) {
       RegionType type = RegionType.from(dis.readByte());
       Format format = Format.from(dis.readByte());
-      int length = (i == nRegions - 1) ? dis.available() : (endOffsets[i] - dis.available());
+      int length = endOffsets[i] - previousOffset;
       byte[] data = new byte[length];
       dis.readFully(data);
       if (regions.put(type, new Region(format, data)) != null) {
@@ -475,6 +479,10 @@ final class LogCatalogRegionFormat {
       }
     }
     return regions;
+  }
+
+  private static int headerLen(int nRegions) {
+    return MAGIC_NUMBER.length + 2 + 2 + 2 + (nRegions * 4);
   }
 
   @VisibleForTesting
@@ -501,7 +509,21 @@ final class LogCatalogRegionFormat {
           throw new UnsupportedOperationException("Unknown region type: " + type);
       }
     }
+    regions.put(RegionType.METADATA, metadataRegion(catalog));
     return writeRegions(regions);
+  }
+
+  private static Region metadataRegion(LogCatalogFile catalog) {
+    try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+       DataOutputStream dos = new DataOutputStream(bos)) {
+          dos.writeLong(catalog.catalogUUID.getMostSignificantBits());
+          dos.writeLong(catalog.catalogUUID.getLeastSignificantBits());
+          dos.writeInt(catalog.nextNsid);
+          dos.writeInt(catalog.nextTblid);
+      return new Region(Format.LENGTH, bos.toByteArray());
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
   }
 
   private static Region namespaceRegion(LogCatalogFile catalog, Format format) {
@@ -532,7 +554,7 @@ final class LogCatalogRegionFormat {
          DataOutputStream dos = new DataOutputStream(bos)) {
       switch (format) {
         case LENGTH:
-          dos.writeInt(catalog.nsProperties.size());
+          dos.writeInt(catalog.nsProperties.values().stream().mapToInt(Map::size).sum());
           for (NamespacePropertyEntry e : catalog.namespacePropertyEntries()) {
             dos.writeInt(e.nsid);
             dos.writeUTF(e.key);
@@ -577,13 +599,13 @@ final class LogCatalogRegionFormat {
          DataOutputStream out = new DataOutputStream(bos)) {
       // write METADATA region
       // FFS why are you making this so convoluted?
-      out.writeUTF(MAGIC_NUMBER);
+      out.write(MAGIC_NUMBER);
       out.writeShort(VERSION_MAJOR);
       out.writeShort(VERSION_MINOR);
       final int nRegions = regions.size();
       out.writeShort(nRegions);
       // MAGIC(4) MAJOR(2) MINOR(2) NREGIONS(2) ENDOFFSETS(4*NREGIONS)
-      final int headerOffset = MAGIC_NUMBER.length() + 2 + 2 + 2 + (nRegions * 4);
+      final int headerOffset = headerLen(nRegions);
       for (Region region : regions.values()) {
         out.writeInt(headerOffset + region.data.length);
       }
