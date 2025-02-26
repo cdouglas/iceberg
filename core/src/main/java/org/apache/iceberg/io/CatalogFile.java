@@ -38,63 +38,39 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 public class CatalogFile {
   // TODO use serialization idioms from the project, handle evolution, etc.
 
-  private final int seqno; // or retain deleted TableIdentifiers unless/until not the max
   private final UUID uuid;
-  private final Map<TableIdentifier, TableInfo> fqti; // fully qualified table identifiers
+  private final InputFile location;
+  private final Map<TableIdentifier, String> tblLocations; // fully qualified table identifiers
   private final Map<Namespace, Map<String, String>> namespaces;
-  private byte[] serBytes;
-  private InputFile fromFile;
 
-  // TODO use to embed metadata?
-  static class TableInfo {
-    final int version;
-    final String location;
+  public abstract static class Mut<T extends CatalogFile> {
 
-    TableInfo(int version, String location) {
-      this.version = version;
-      this.location = location;
-    }
-
-    @Override
-    public boolean equals(Object other) {
-      if (this == other) {
-        return true;
-      }
-      if (other == null || getClass() != other.getClass()) {
-        return false;
-      }
-      TableInfo that = (TableInfo) other;
-      return version == that.version && location.equals(that.location);
-    }
-
-    @Override
-    public int hashCode() {
-      return 31 * version + location.hashCode();
-    }
-  }
-
-  public abstract static class Mut {
-
-    protected final CatalogFile original;
+    protected final T original;
+    protected final InputFile location;
     protected final Map<TableIdentifier, String> tables;
     protected final Map<Namespace, Map<String, String>> namespaces;
 
+    // UGH.
     protected Mut(InputFile location) {
-      this(new CatalogFile(location));
+      this.original = null;
+      this.location = location;
+      this.tables = Maps.newHashMap();
+      this.namespaces = Maps.newHashMap();
     }
 
-    protected Mut(CatalogFile original) {
+    protected Mut(T original) {
       this.original = original;
+      this.location = null;
       this.tables = Maps.newHashMap();
       this.namespaces = Maps.newHashMap();
       namespaces.put(Namespace.empty(), Collections.emptyMap());
     }
 
-    public Mut createNamespace(Namespace namespace) {
+    public Mut<T> createNamespace(Namespace namespace) {
       return createNamespace(namespace, Collections.emptyMap());
     }
 
-    public Mut createNamespace(Namespace namespace, Map<String, String> properties) {
+    public Mut<T> createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
       if (original.containsNamespace(namespace) || namespaces.containsKey(namespace)) {
@@ -105,7 +81,7 @@ public class CatalogFile {
       return this;
     }
 
-    public Mut updateProperties(Namespace namespace, Map<String, String> properties) {
+    public Mut<T> updateProperties(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
       // TODO: legal to update properties of empty/root namespace?
@@ -132,14 +108,14 @@ public class CatalogFile {
       return this;
     }
 
-    public Mut dropNamespace(Namespace namespace) {
-      // TODO check for tables, refuse if not empty
+    public Mut<T> dropNamespace(Namespace namespace) {
+      // TODO check for tables/child namespaces, refuse if not empty
       checkNamespaceExists(namespace);
       namespaces.put(namespace, null);
       return this;
     }
 
-    public Mut createTable(TableIdentifier table, String location) {
+    public Mut<T> createTable(TableIdentifier table, String location) {
       // TODO: fix for swap (a -> b; b -> a)
       checkNamespaceExists(table.namespace());
       if (original.location(table) != null || tables.get(table) != null) {
@@ -155,7 +131,7 @@ public class CatalogFile {
       }
     }
 
-    public Mut updateTable(TableIdentifier table, String location) {
+    public Mut<T> updateTable(TableIdentifier table, String location) {
       if (null == original.location(table)) {
         throw new NoSuchNamespaceException("Table does not exist: %s", table);
       }
@@ -163,7 +139,7 @@ public class CatalogFile {
       return this;
     }
 
-    public Mut dropTable(TableIdentifier tableId) {
+    public Mut<T> dropTable(TableIdentifier tableId) {
       if (null == original.location(tableId)) {
         throw new NoSuchTableException("Table does not exist: %s", tableId);
       }
@@ -171,6 +147,7 @@ public class CatalogFile {
       return this;
     }
 
+    // TODO move this to CASCatalogFile
     protected CatalogFile merge() {
       final Map<Namespace, Map<String, String>> newNamespaces =
           Maps.newHashMap(original.namespaceProperties());
@@ -185,13 +162,12 @@ public class CatalogFile {
             return nsProps;
           });
 
-      final Map<TableIdentifier, TableInfo> newFqti = Maps.newHashMap(original.tableMetadata());
-      merge(newFqti, tables, (x, location) -> new TableInfo(original.seqno, location));
-      return new CatalogFile(
-          original.uuid(), original.seqno(), newNamespaces, newFqti, original.location());
+      final Map<TableIdentifier, String> newFqti = Maps.newHashMap(original.locations());
+      merge(newFqti, tables, (x, location) -> location);
+      return new CatalogFile(original.uuid(), newNamespaces, newFqti, original.location());
     }
 
-    public abstract CatalogFile commit(SupportsAtomicOperations<CAS> fileIO);
+    public abstract T commit(SupportsAtomicOperations<CAS> fileIO);
 
     private static <K, V, U> void merge(
         Map<K, V> original, Map<K, U> update, BiFunction<V, U, V> valueMapper) {
@@ -209,35 +185,26 @@ public class CatalogFile {
 
   CatalogFile(InputFile location) {
     // consistent iteration order; UUIDv7
-    this(UUID.randomUUID(), 0, Maps.newHashMap(), Maps.newHashMap(), location);
+    this(UUID.randomUUID(), Maps.newHashMap(), Maps.newHashMap(), location);
   }
 
   CatalogFile(
       UUID uuid,
-      int seqno,
       Map<Namespace, Map<String, String>> namespaces,
-      Map<TableIdentifier, TableInfo> fqti,
+      Map<TableIdentifier, String> tblLocations,
       InputFile fromFile) {
     this.uuid = uuid;
-    this.seqno = seqno;
-    this.fqti = fqti;
-    this.fromFile = fromFile;
+    this.tblLocations = tblLocations;
+    this.location = fromFile;
     this.namespaces = namespaces;
   }
 
   public InputFile location() {
-    return fromFile;
+    return location;
   }
 
   public String location(TableIdentifier table) {
-    final TableInfo info = fqti.get(table);
-    return info != null ? info.location : null;
-  }
-
-  // TODO remove; replace w/ metadata embed
-  public int version(TableIdentifier table) {
-    final TableInfo info = fqti.get(table);
-    return info != null ? info.version : -1;
+    return tblLocations.get(table);
   }
 
   public Set<Namespace> namespaces() {
@@ -253,23 +220,19 @@ public class CatalogFile {
   }
 
   public List<TableIdentifier> tables() {
-    return Lists.newArrayList(fqti.keySet().iterator());
+    return Lists.newArrayList(tblLocations.keySet().iterator());
   }
 
   public UUID uuid() {
     return uuid;
   }
 
-  int seqno() {
-    return seqno;
-  }
-
   Map<Namespace, Map<String, String>> namespaceProperties() {
     return Collections.unmodifiableMap(namespaces);
   }
 
-  Map<TableIdentifier, TableInfo> tableMetadata() {
-    return Collections.unmodifiableMap(fqti);
+  Map<TableIdentifier, String> locations() {
+    return Collections.unmodifiableMap(tblLocations);
   }
 
   @Override
@@ -281,16 +244,15 @@ public class CatalogFile {
       return false;
     }
     CatalogFile that = (CatalogFile) other;
-    return seqno == that.seqno
-        && uuid.equals(that.uuid)
-        && fqti.equals(that.fqti)
+    return uuid.equals(that.uuid)
+        && tblLocations.equals(that.tblLocations)
         && namespaces.equals(that.namespaces);
   }
 
   @Override
   public int hashCode() {
     // TODO replace with CRC during deserialization?
-    return Objects.hash(uuid, fqti.keySet(), namespaces.keySet());
+    return Objects.hash(uuid, tblLocations.keySet(), namespaces.keySet());
   }
 
   @Override
@@ -298,9 +260,11 @@ public class CatalogFile {
     StringBuilder sb = new StringBuilder();
     sb.append("{");
     sb.append("\"uuid\" : \"").append(uuid).append("\",");
-    sb.append("\"seqno\" : ").append(seqno).append(",");
     sb.append("\"tables\" : [");
-    sb.append(fqti.keySet().stream().map(id -> "\"" + id + "\"").collect(Collectors.joining(",")))
+    sb.append(
+            tblLocations.keySet().stream()
+                .map(id -> "\"" + id + "\"")
+                .collect(Collectors.joining(",")))
         .append("],");
     sb.append("\"namespaces\" : [");
     sb.append(

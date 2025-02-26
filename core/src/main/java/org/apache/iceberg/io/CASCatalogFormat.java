@@ -48,7 +48,7 @@ public class CASCatalogFormat extends CatalogFormat {
     return new CASMutCatalogFile(other);
   }
 
-  static class CASMutCatalogFile extends CatalogFile.Mut {
+  static class CASMutCatalogFile extends CatalogFile.Mut<CatalogFile> {
     CASMutCatalogFile(InputFile location) {
       super(location);
     }
@@ -70,11 +70,7 @@ public class CASCatalogFormat extends CatalogFormat {
             serBytes.reset();
             InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
             return new CatalogFile(
-                catalog.uuid(),
-                catalog.seqno(),
-                catalog.namespaceProperties(),
-                catalog.tableMetadata(),
-                newCatalog);
+                catalog.uuid(), catalog.namespaceProperties(), catalog.locations(), newCatalog);
           }
         } catch (IOException e) {
           throw new CommitFailedException(e, "Failed to commit catalog file");
@@ -87,7 +83,7 @@ public class CASCatalogFormat extends CatalogFormat {
 
   @Override
   public CatalogFile read(SupportsAtomicOperations fileIO, InputFile catalogLocation) {
-    final Map<TableIdentifier, CatalogFile.TableInfo> fqti = Maps.newHashMap();
+    final Map<TableIdentifier, String> fqti = Maps.newHashMap();
     final Map<Namespace, Map<String, String>> namespaces = Maps.newHashMap();
     try (InputStream in = catalogLocation.newStream();
         DataInputStream din = new DataInputStream(in)) {
@@ -99,15 +95,13 @@ public class CASCatalogFormat extends CatalogFormat {
       }
       int nTables = din.readInt();
       for (int i = 0; i < nTables; i++) {
-        int tableVersion = din.readInt();
         Namespace namespace = readNamespace(din);
         TableIdentifier tid = TableIdentifier.of(namespace, din.readUTF());
-        fqti.put(tid, new CatalogFile.TableInfo(tableVersion, din.readUTF()));
+        fqti.put(tid, din.readUTF()); // location
       }
-      int seqno = din.readInt();
       long msb = din.readLong();
       long lsb = din.readLong();
-      return new CatalogFile(new UUID(msb, lsb), seqno, namespaces, fqti, catalogLocation);
+      return new CatalogFile(new UUID(msb, lsb), namespaces, fqti, catalogLocation);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
@@ -133,17 +127,14 @@ public class CASCatalogFormat extends CatalogFormat {
         writeProperties(dos, e.getValue());
       }
       // tableinfo TODO store as bytes
-      Map<TableIdentifier, CatalogFile.TableInfo> fqti = file.tableMetadata();
-      dos.writeInt(fqti.size());
-      for (Map.Entry<TableIdentifier, CatalogFile.TableInfo> e : fqti.entrySet()) {
-        CatalogFile.TableInfo info = e.getValue();
-        dos.writeInt(info.version);
+      Map<TableIdentifier, String> locations = file.locations();
+      dos.writeInt(locations.size());
+      for (Map.Entry<TableIdentifier, String> e : locations.entrySet()) {
         TableIdentifier tid = e.getKey();
         writeNamespace(dos, tid.namespace());
         dos.writeUTF(tid.name());
-        dos.writeUTF(info.location);
+        dos.writeUTF(e.getValue());
       }
-      dos.writeInt(file.seqno());
       // table uuid
       UUID uuid = file.uuid();
       dos.writeLong(uuid.getMostSignificantBits());

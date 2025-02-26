@@ -512,8 +512,17 @@ public class LogCatalogFormat extends CatalogFormat {
     @Override
     public LogCatalogRegionFormat.LogCatalogFile merge() {
       // TODO w.r.t. original
-      return new LogCatalogRegionFormat.LogCatalogFile(location,
-          uuid, nextNsid, nextTblid, nsids, nsVersion, nsProperties, tblIds, tblVersion, tblLocations);
+      return new LogCatalogRegionFormat.LogCatalogFile(
+          location,
+          uuid,
+          nextNsid,
+          nextTblid,
+          nsids,
+          nsVersion,
+          nsProperties,
+          tblIds,
+          tblVersion,
+          tblLocations);
     }
 
     void setGlobals(UUID uuid, int nextNsid, int nextTblid) {

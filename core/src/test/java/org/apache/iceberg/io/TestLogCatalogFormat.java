@@ -18,6 +18,15 @@
  */
 package org.apache.iceberg.io;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
@@ -39,25 +48,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
-import static org.mockito.Mockito.mock;
-
 public class TestLogCatalogFormat {
 
   private final Random random = new Random();
 
   @BeforeEach
-    public void before(TestInfo info) {
-        final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
-        random.setSeed(System.currentTimeMillis());
-        System.out.println(testName + " seed: " + random.nextLong());
-    }
+  public void before(TestInfo info) {
+    final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
+    random.setSeed(System.currentTimeMillis());
+    System.out.println(testName + " seed: " + random.nextLong());
+  }
 
   @Test
   public void testRegionFormat() {
@@ -65,7 +65,8 @@ public class TestLogCatalogFormat {
     LogCatalogRegionFormat.LogCatalogFile catalog = generateRandomLogCatalogFile(random.nextLong());
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
       byte[] catabytes = toBytes(catalog);
-      //LogCatalogFile readCatalog = LogCatalogRegionFormat.readCatalogFile(catabytes, regionFormat);
+      // LogCatalogFile readCatalog = LogCatalogRegionFormat.readCatalogFile(catabytes,
+      // regionFormat);
     } catch (IOException e) {
       fail("Failed to write/read catalog file", e);
     }
@@ -187,16 +188,28 @@ public class TestLogCatalogFormat {
       nsVersion.put(nsid, nsVersion.get(nsid) + rand.nextInt(2) + 1);
     }
 
-    return new LogCatalogRegionFormat.LogCatalogFile(location, uuid, nextNsid, nextTblid, nsids, nsVersion, nsProperties, tblIds, tblVersion, tblLocations);
+    return new LogCatalogRegionFormat.LogCatalogFile(
+        location,
+        uuid,
+        nextNsid,
+        nextTblid,
+        nsids,
+        nsVersion,
+        nsProperties,
+        tblIds,
+        tblVersion,
+        tblLocations);
   }
 
   static byte[] toBytes(LogCatalogFile catalog) throws IOException {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
       EnumMap<LogCatalogRegionFormat.RegionType, LogCatalogRegionFormat.Format> regionFormat =
-              new EnumMap<>(LogCatalogRegionFormat.RegionType.class);
+          new EnumMap<>(LogCatalogRegionFormat.RegionType.class);
       regionFormat.put(LogCatalogRegionFormat.RegionType.NS, LogCatalogRegionFormat.Format.LENGTH);
-      regionFormat.put(LogCatalogRegionFormat.RegionType.NS_PROP, LogCatalogRegionFormat.Format.LENGTH);
-      regionFormat.put(LogCatalogRegionFormat.RegionType.TABLE, LogCatalogRegionFormat.Format.LENGTH);
+      regionFormat.put(
+          LogCatalogRegionFormat.RegionType.NS_PROP, LogCatalogRegionFormat.Format.LENGTH);
+      regionFormat.put(
+          LogCatalogRegionFormat.RegionType.TABLE, LogCatalogRegionFormat.Format.LENGTH);
       IOUtils.copy(LogCatalogRegionFormat.writeCatalogFile(catalog, regionFormat).get(), bos);
       return bos.toByteArray();
     } catch (IOException e) {
@@ -204,5 +217,4 @@ public class TestLogCatalogFormat {
       throw new IllegalStateException("Failed to write/read catalog file", e);
     }
   }
-
 }

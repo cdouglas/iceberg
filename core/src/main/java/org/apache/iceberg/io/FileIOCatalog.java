@@ -283,7 +283,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       this.catalogLocation = catalogLocation;
       this.lastCatalogFile = catalogFile;
       if (catalogFile != null) {
-        updateVersionAndMetadata(catalogFile.version(tableId), catalogFile.location(tableId));
+        updateVersionAndMetadata(catalogFile.location(tableId));
         disableRefresh();
       }
     }
@@ -295,7 +295,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
     // version 0 reserved for empty catalog; tables created in subsequent commits TODO replace w/
     // metadata embed
-    private synchronized void updateVersionAndMetadata(int newVersion, String metadataFile) {
+    private synchronized void updateVersionAndMetadata(String metadataFile) {
       // update if table exists and version lags newVersion
       if (null == metadataFile) {
         if (currentMetadataLocation() != null) {
@@ -319,8 +319,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     protected void doRefresh() {
       final CatalogFile updatedCatalogFile =
           format.read(fileIO, io().newInputFile(catalogLocation));
-      updateVersionAndMetadata(
-          updatedCatalogFile.version(tableId), updatedCatalogFile.location(tableId));
+      updateVersionAndMetadata(updatedCatalogFile.location(tableId));
       lastCatalogFile = updatedCatalogFile;
     }
 
