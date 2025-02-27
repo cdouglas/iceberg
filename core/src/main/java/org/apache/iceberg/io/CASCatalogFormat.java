@@ -27,62 +27,34 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
-// TODO replace janky serde with parquet
-public class CASCatalogFormat extends CatalogFormat {
+// Old implementation, used in sp24 class project
+public class CASCatalogFormat extends CatalogFormat<CASCatalogFormat.CASCatalogFile> {
 
   @Override
-  public CatalogFile.Mut empty(InputFile location) {
-    return new CASMutCatalogFile(location);
+  public CatalogFile.Mut<CASCatalogFile> empty(InputFile location) {
+    return new Mut(location);
   }
 
   @Override
-  public CatalogFile.Mut from(CatalogFile other) {
-    return new CASMutCatalogFile(other);
-  }
-
-  static class CASMutCatalogFile extends CatalogFile.Mut<CatalogFile> {
-    CASMutCatalogFile(InputFile location) {
-      super(location);
-    }
-
-    CASMutCatalogFile(CatalogFile original) {
-      super(original);
-    }
-
-    @Override
-    public CatalogFile commit(SupportsAtomicOperations<CAS> fileIO) {
-      try {
-        CatalogFile catalog = merge();
-        final AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(original.location());
-        try {
-          byte[] ffs = asBytes(catalog);
-          try (ByteArrayInputStream serBytes = new ByteArrayInputStream(asBytes(catalog))) {
-            serBytes.mark(ffs.length); // readAheadLimit ignored, but whatever
-            CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.CAS);
-            serBytes.reset();
-            InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
-            return new CatalogFile(
-                catalog.uuid(), catalog.namespaceProperties(), catalog.locations(), newCatalog);
-          }
-        } catch (IOException e) {
-          throw new CommitFailedException(e, "Failed to commit catalog file");
-        }
-      } catch (SupportsAtomicOperations.CASException e) {
-        throw new CommitFailedException(e, "Cannot commit");
-      }
-    }
+  public CatalogFile.Mut<CASCatalogFile> from(CASCatalogFile other) {
+    return new Mut(other);
   }
 
   @Override
-  public CatalogFile read(SupportsAtomicOperations fileIO, InputFile catalogLocation) {
+  public CASCatalogFile read(SupportsAtomicOperations ignored, InputFile catalogLocation) {
     final Map<TableIdentifier, String> fqti = Maps.newHashMap();
     final Map<Namespace, Map<String, String>> namespaces = Maps.newHashMap();
     try (InputStream in = catalogLocation.newStream();
@@ -101,9 +73,175 @@ public class CASCatalogFormat extends CatalogFormat {
       }
       long msb = din.readLong();
       long lsb = din.readLong();
-      return new CatalogFile(new UUID(msb, lsb), namespaces, fqti, catalogLocation);
+      return new CASCatalogFile(new UUID(msb, lsb), namespaces, fqti, catalogLocation);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
+    }
+  }
+
+  // TODO revisit visibility, this is haphazard nonsense.
+  public static class CASCatalogFile extends CatalogFile {
+    private final Map<TableIdentifier, String> tblLocations;
+    private final Map<Namespace, Map<String, String>> namespaces;
+
+    CASCatalogFile(InputFile location) {
+      super(location);
+      this.tblLocations = Maps.newHashMap();
+      this.namespaces = Maps.newHashMap();
+    }
+
+    CASCatalogFile(
+        UUID uuid,
+        Map<Namespace, Map<String, String>> namespaces,
+        Map<TableIdentifier, String> tblLocations,
+        InputFile location) {
+      super(uuid, location);
+      this.tblLocations = tblLocations;
+      this.namespaces = namespaces;
+    }
+
+    @Override
+    public String location(TableIdentifier table) {
+      return tblLocations.get(table);
+    }
+
+    @Override
+    public Set<Namespace> namespaces() {
+      return Collections.unmodifiableSet(namespaces.keySet());
+    }
+
+    @Override
+    public boolean containsNamespace(Namespace namespace) {
+      return namespaces.containsKey(namespace);
+    }
+
+    @Override
+    public Map<String, String> namespaceProperties(Namespace namespace) {
+      return Collections.unmodifiableMap(namespaces.get(namespace));
+    }
+
+    @Override
+    public List<TableIdentifier> tables() {
+      return Lists.newArrayList(tblLocations.keySet().iterator());
+    }
+
+    @Override
+    Map<Namespace, Map<String, String>> namespaceProperties() {
+      return Collections.unmodifiableMap(namespaces);
+    }
+
+    @Override
+    Map<TableIdentifier, String> locations() {
+      return Collections.unmodifiableMap(tblLocations);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (this == other) {
+        return true;
+      }
+      if (other == null || getClass() != other.getClass()) {
+        return false;
+      }
+      CASCatalogFile that = (CASCatalogFile) other;
+      return uuid().equals(that.uuid())
+          && tblLocations.equals(that.tblLocations)
+          && namespaces.equals(that.namespaces);
+    }
+
+    @Override
+    public int hashCode() {
+      // TODO replace with CRC during deserialization?
+      return Objects.hash(uuid(), tblLocations.keySet(), namespaces.keySet());
+    }
+
+    @Override
+    public String toString() {
+      StringBuilder sb = new StringBuilder();
+      sb.append("{");
+      sb.append("\"uuid\" : \"").append(uuid()).append("\",");
+      sb.append("\"tables\" : [");
+      sb.append(
+              tblLocations.keySet().stream()
+                  .map(id -> "\"" + id + "\"")
+                  .collect(Collectors.joining(",")))
+          .append("],");
+      sb.append("\"namespaces\" : [");
+      sb.append(
+          namespaces.keySet().stream()
+              .map(id -> "\"" + id + "\"")
+              .collect(Collectors.joining(",")));
+      sb.append("]").append("}");
+      return sb.toString();
+    }
+  }
+
+  static class Mut extends CatalogFile.Mut<CASCatalogFile> {
+    Mut(InputFile location) {
+      super(location);
+    }
+
+    Mut(CASCatalogFile original) {
+      super(original);
+    }
+
+    @Override
+    protected final CASCatalogFile empty(InputFile location) {
+      return new CASCatalogFile(location);
+    }
+
+    @Override
+    public CASCatalogFile commit(SupportsAtomicOperations<CAS> fileIO) {
+      try {
+        CatalogFile catalog = merge();
+        final AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(original.location());
+        try {
+          byte[] ffs = asBytes(catalog);
+          try (ByteArrayInputStream serBytes = new ByteArrayInputStream(asBytes(catalog))) {
+            serBytes.mark(ffs.length); // readAheadLimit ignored, but whatever
+            CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.CAS);
+            serBytes.reset();
+            InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
+            return new CASCatalogFile(
+                catalog.uuid(), catalog.namespaceProperties(), catalog.locations(), newCatalog);
+          }
+        } catch (IOException e) {
+          throw new CommitFailedException(e, "Failed to commit catalog file");
+        }
+      } catch (SupportsAtomicOperations.CASException e) {
+        throw new CommitFailedException(e, "Cannot commit");
+      }
+    }
+
+    protected CatalogFile merge() {
+      final Map<Namespace, Map<String, String>> newNamespaces =
+          Maps.newHashMap(original.namespaceProperties());
+      // TODO need to merge namespace properties?
+      merge(
+          newNamespaces,
+          namespaces,
+          (orig, next) -> {
+            Map<String, String> nsProps = null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
+            merge(nsProps, next, (x, y) -> y);
+            return nsProps;
+          });
+
+      final Map<TableIdentifier, String> newFqti = Maps.newHashMap(original.locations());
+      merge(newFqti, tables, (x, location) -> location);
+      return new CASCatalogFile(original.uuid(), newNamespaces, newFqti, original.location());
+    }
+
+    private static <K, V, U> void merge(
+        Map<K, V> original, Map<K, U> update, BiFunction<V, U, V> valueMapper) {
+      for (Map.Entry<K, U> entry : update.entrySet()) {
+        final K key = entry.getKey();
+        final U value = entry.getValue();
+        if (null == value) {
+          original.remove(key);
+        } else {
+          original.put(key, valueMapper.apply(original.get(key), value));
+        }
+      }
     }
   }
 
@@ -117,7 +255,7 @@ public class CASCatalogFormat extends CatalogFormat {
     }
   }
 
-  static int write(CatalogFile file, OutputStream out) throws IOException {
+  static void write(CatalogFile file, OutputStream out) throws IOException {
     try (DataOutputStream dos = new DataOutputStream(out)) {
       // namespaces
       Map<Namespace, Map<String, String>> namespaces = file.namespaceProperties();
@@ -126,7 +264,6 @@ public class CASCatalogFormat extends CatalogFormat {
         writeNamespace(dos, e.getKey());
         writeProperties(dos, e.getValue());
       }
-      // tableinfo TODO store as bytes
       Map<TableIdentifier, String> locations = file.locations();
       dos.writeInt(locations.size());
       for (Map.Entry<TableIdentifier, String> e : locations.entrySet()) {
@@ -139,7 +276,6 @@ public class CASCatalogFormat extends CatalogFormat {
       UUID uuid = file.uuid();
       dos.writeLong(uuid.getMostSignificantBits());
       dos.writeLong(uuid.getLeastSignificantBits());
-      return dos.size();
     }
   }
 

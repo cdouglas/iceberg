@@ -30,6 +30,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.Iterator;
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -44,7 +46,10 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+
+// TODO what the hell were you doing? This is a mess.
 
 // ENDV<ver_major><ver_minor><nregions>[<region_end>]*
 // [<region_type><region_format><region_data>]*
@@ -78,31 +83,10 @@ final class LogCatalogRegionFormat {
   private static final int VERSION_MAJOR = 1;
   private static final int VERSION_MINOR = 0;
 
-  static void create(CatalogFile catalog, AtomicOutputFile<CAS> out) throws IOException {
-    // TODO
-    throw new UnsupportedOperationException();
-  }
-
-  static void update(LogCatalogFile update, AtomicOutputFile<CAS> out) throws IOException {
-    // TODO
-    throw new UnsupportedOperationException();
-  }
-
-  // TODO extract interface
-  // leave merge w.r.t. interface/whatever
   static class LogCatalogFile extends CatalogFile {
-    final UUID catalogUUID;
     final int nextNsid;
     final int nextTblid;
 
-    // CREATE TABLE namespaces (
-    //   nsid INT,
-    //   version INT,
-    //   parentId INT,
-    //   name VARCHAR(255) NOT NULL,
-    //   PRIMARY KEY (nsid, version),
-    //   FOREIGN KEY (parentId) REFERENCES namespaces(nsid)
-    // );
     private final Map<Namespace, Integer> nsids;
     private final Map<Integer, Integer> nsVersion;
     private final Map<Integer, Namespace> nsLookup;
@@ -114,9 +98,8 @@ final class LogCatalogRegionFormat {
     private final Map<Integer, String> tblLocations;
 
     // empty LogCatalogFile
-    LogCatalogFile(InputFile location, UUID catalogUUID) {
+    LogCatalogFile(InputFile location) {
       super(location);
-      this.catalogUUID = catalogUUID;
       this.nextNsid = 1;
       this.nextTblid = 1;
       this.nsids = Maps.newHashMap();
@@ -139,8 +122,7 @@ final class LogCatalogRegionFormat {
         Map<TableIdentifier, Integer> tblIds,
         Map<Integer, Integer> tblVersion,
         Map<Integer, String> tblLocations) {
-      super(location);
-      this.catalogUUID = catalogUUID;
+      super(catalogUUID, location);
       this.nextNsid = nextNsid;
       this.nextTblid = nextTblid;
       this.nsids = nsids;
@@ -155,6 +137,54 @@ final class LogCatalogRegionFormat {
     }
 
     @Override
+    public String location(TableIdentifier table) {
+      final Integer tblId = tblIds.get(table);
+      if (tblId == null) {
+        return null;
+      }
+      return tblLocations.get(tblId);
+    }
+
+    @Override
+    public Set<Namespace> namespaces() {
+      return Collections.unmodifiableSet(nsids.keySet());
+    }
+
+    @Override
+    public boolean containsNamespace(Namespace namespace) {
+      return nsids.containsKey(namespace);
+    }
+
+    @Override
+    public Map<String, String> namespaceProperties(Namespace namespace) {
+      final Integer nsid = nsids.get(namespace);
+      if (nsid == null) {
+        return null;
+      }
+      return Collections.unmodifiableMap(nsProperties.get(nsid));
+    }
+
+    @Override
+    public List<TableIdentifier> tables() {
+      return Lists.newArrayList(tblIds.keySet().iterator());
+    }
+
+    @Override
+    Map<Namespace, Map<String, String>> namespaceProperties() {
+      return nsids.entrySet().stream()
+          .collect(
+              Collectors.toMap(
+                  Map.Entry::getKey,
+                  e -> nsProperties.getOrDefault(e.getValue(), Collections.emptyMap())));
+    }
+
+    @Override
+    Map<TableIdentifier, String> locations() {
+      return tblIds.entrySet().stream()
+          .collect(Collectors.toMap(Map.Entry::getKey, e -> tblLocations.get(e.getValue())));
+    }
+
+    @Override
     public boolean equals(Object o) {
       if (this == o) {
         return true;
@@ -165,7 +195,7 @@ final class LogCatalogRegionFormat {
       LogCatalogFile that = (LogCatalogFile) o;
       return nextNsid == that.nextNsid
           && nextTblid == that.nextTblid
-          && Objects.equals(catalogUUID, that.catalogUUID)
+          && Objects.equals(uuid(), that.uuid())
           && Objects.equals(nsids, that.nsids)
           && Objects.equals(nsVersion, that.nsVersion)
           && Objects.equals(nsProperties, that.nsProperties)
@@ -175,10 +205,16 @@ final class LogCatalogRegionFormat {
     }
 
     @Override
+    public int hashCode() {
+      return Objects.hash(
+          uuid(), nextNsid, nextTblid, nsids, nsVersion, nsProperties, tblIds, tblVersion, tblLocations);
+    }
+
+    @Override
     public String toString() {
       return "LogCatalogFile{"
           + "catalogUUID="
-          + catalogUUID
+          + uuid()
           + ", nextNsid="
           + nextNsid
           + ", nextTblid="
@@ -346,16 +382,18 @@ final class LogCatalogRegionFormat {
 
   static void readCheckpoint(LogCatalogFormat.LogCatalogFileMut catalog, InputStream stream)
       throws IOException {
+    // TODO WHY doesn't this just use the log format?
     DataInputStream dis = new DataInputStream(stream);
-    final EnumMap<RegionType, Region> regions = readRegions(catalog, dis);
-    metadataRegion(catalog, regions.get(RegionType.METADATA));
-    namespaceRegion(catalog, regions.get(RegionType.NS));
-    nsPropRegion(catalog, regions.get(RegionType.NS_PROP));
-    tableRegion(catalog, regions.get(RegionType.TABLE));
-    tableEmbedRegion(catalog, regions.get(RegionType.TABLE_EMBED));
+    final EnumMap<RegionType, Region> regions = readRegions(dis);
+    readMetadataRegion(catalog, regions.get(RegionType.METADATA));
+    readNamespaceRegion(catalog, regions.get(RegionType.NS));
+    readNsPropRegion(catalog, regions.get(RegionType.NS_PROP));
+    readTableRegion(catalog, regions.get(RegionType.TABLE));
+    readTableEmbedRegion(catalog, regions.get(RegionType.TABLE_EMBED));
   }
 
-  private static void metadataRegion(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
+  private static void readMetadataRegion(
+      LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
     if (null == region) {
       throw new IllegalStateException("Metadata region is required");
     }
@@ -375,7 +413,7 @@ final class LogCatalogRegionFormat {
     }
   }
 
-  private static void namespaceRegion(
+  private static void readNamespaceRegion(
       LogCatalogFormat.LogCatalogFileMut catalog, final Region region) {
     // strict versioning of namespace properties requires at least the empty namespace be present
     Preconditions.checkNotNull(region, "Missing namespace region");
@@ -400,7 +438,7 @@ final class LogCatalogRegionFormat {
 
   // updating properties increments the ns version, so confluent updates to properties are treated
   // as conflicts
-  private static void nsPropRegion(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
+  private static void readNsPropRegion(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
     if (region == null) {
       return;
     }
@@ -421,7 +459,7 @@ final class LogCatalogRegionFormat {
     }
   }
 
-  private static void tableRegion(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
+  private static void readTableRegion(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
     // TODO
     if (null == region) {
       return;
@@ -443,15 +481,15 @@ final class LogCatalogRegionFormat {
     }
   }
 
-  private static void tableEmbedRegion(LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
+  private static void readTableEmbedRegion(
+      LogCatalogFormat.LogCatalogFileMut catalog, Region region) {
     // TODO build schema for Parquet from JSON spec
     if (region != null) {
       throw new UnsupportedOperationException();
     }
   }
 
-  private static EnumMap<RegionType, Region> readRegions(
-      LogCatalogFormat.LogCatalogFileMut catalog, DataInputStream dis) throws IOException {
+  private static EnumMap<RegionType, Region> readRegions(DataInputStream dis) throws IOException {
     EnumMap<RegionType, Region> regions = Maps.newEnumMap(RegionType.class);
     byte[] magic = new byte[4];
     dis.readFully(magic);
@@ -490,7 +528,7 @@ final class LogCatalogRegionFormat {
   }
 
   @VisibleForTesting
-  static Supplier<InputStream> writeCatalogFile(
+  static Supplier<InputStream> writeCheckpoint(
       LogCatalogFile catalog, EnumMap<RegionType, Format> formats) {
     final EnumMap<RegionType, Region> regions = Maps.newEnumMap(RegionType.class);
     // TODO multi-part upload, don't buffer embedded tables into memory
@@ -498,13 +536,13 @@ final class LogCatalogRegionFormat {
       final RegionType type = entry.getKey();
       switch (type) {
         case NS:
-          regions.put(type, namespaceRegion(catalog, entry.getValue()));
+          regions.put(type, writeNamespaceRegion(catalog, entry.getValue()));
           break;
         case NS_PROP:
-          regions.put(type, nsPropRegion(catalog, entry.getValue()));
+          regions.put(type, writeNsPropRegion(catalog, entry.getValue()));
           break;
         case TABLE:
-          regions.put(type, tableRegion(catalog, entry.getValue()));
+          regions.put(type, writeTableRegion(catalog, entry.getValue()));
           break;
         case TABLE_EMBED:
           throw new UnsupportedOperationException("Unsupported");
@@ -514,15 +552,16 @@ final class LogCatalogRegionFormat {
           throw new UnsupportedOperationException("Unknown region type: " + type);
       }
     }
-    regions.put(RegionType.METADATA, metadataRegion(catalog));
+    regions.put(RegionType.METADATA, writeMetadataRegion(catalog));
     return writeRegions(regions);
   }
 
-  private static Region metadataRegion(LogCatalogFile catalog) {
+  private static Region writeMetadataRegion(LogCatalogFile catalog) {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
         DataOutputStream dos = new DataOutputStream(bos)) {
-      dos.writeLong(catalog.catalogUUID.getMostSignificantBits());
-      dos.writeLong(catalog.catalogUUID.getLeastSignificantBits());
+      UUID catalogUUID = catalog.uuid();
+      dos.writeLong(catalogUUID.getMostSignificantBits());
+      dos.writeLong(catalogUUID.getLeastSignificantBits());
       dos.writeInt(catalog.nextNsid);
       dos.writeInt(catalog.nextTblid);
       return new Region(Format.LENGTH, bos.toByteArray());
@@ -531,7 +570,7 @@ final class LogCatalogRegionFormat {
     }
   }
 
-  private static Region namespaceRegion(LogCatalogFile catalog, Format format) {
+  private static Region writeNamespaceRegion(LogCatalogFile catalog, Format format) {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
         DataOutputStream dos = new DataOutputStream(bos)) {
       switch (format) {
@@ -554,7 +593,7 @@ final class LogCatalogRegionFormat {
     }
   }
 
-  private static Region nsPropRegion(LogCatalogFile catalog, Format format) {
+  private static Region writeNsPropRegion(LogCatalogFile catalog, Format format) {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
         DataOutputStream dos = new DataOutputStream(bos)) {
       switch (format) {
@@ -576,7 +615,7 @@ final class LogCatalogRegionFormat {
     }
   }
 
-  private static Region tableRegion(LogCatalogFile catalog, Format format) {
+  private static Region writeTableRegion(LogCatalogFile catalog, Format format) {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
         DataOutputStream dos = new DataOutputStream(bos)) {
       switch (format) {

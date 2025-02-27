@@ -163,7 +163,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     format
         .from(catalogFile)
         .dropTable(from)
-        .createTable(to, catalogFile.location(from)) // TODO preserve metadata
+        .createTable(to, catalogFile.location(from))
         .commit(fileIO);
   }
 

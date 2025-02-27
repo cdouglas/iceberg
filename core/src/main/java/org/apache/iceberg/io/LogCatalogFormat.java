@@ -55,7 +55,8 @@ public class LogCatalogFormat extends CatalogFormat {
       final long logLength = fileLength - in.getPos();
       // process log
       // LogCatalogFormat.readLog(catalog, din, logLength);
-      return catalog.merge();
+      // return catalog.merge();
+      return null;
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
@@ -459,10 +460,9 @@ public class LogCatalogFormat extends CatalogFormat {
     }
   }
 
-  static class LogCatalogFileMut extends CatalogFile.Mut {
+  static class LogCatalogFileMut extends CatalogFile.Mut<LogCatalogRegionFormat.LogCatalogFile> {
     // namespace IDs are internal to the catalog format
 
-    private final InputFile location;
     private UUID uuid = null;
     private int nextNsid = 1;
     private int nextTblid = 1;
@@ -499,30 +499,17 @@ public class LogCatalogFormat extends CatalogFormat {
     private final Map<Integer, Integer> tblVersion = Maps.newHashMap();
     private final Map<Integer, String> tblLocations = Maps.newHashMap();
 
+    @Override
+    public LogCatalogRegionFormat.LogCatalogFile empty(InputFile location) {
+      return new LogCatalogRegionFormat.LogCatalogFile(location);
+    }
+
     LogCatalogFileMut(InputFile input) {
-      super(input); // TODO dismantle this
-      this.location = input;
+      super(input);
     }
 
     LogCatalogFileMut(LogCatalogRegionFormat.LogCatalogFile other) {
       super(other);
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public LogCatalogRegionFormat.LogCatalogFile merge() {
-      // TODO w.r.t. original
-      return new LogCatalogRegionFormat.LogCatalogFile(
-          location,
-          uuid,
-          nextNsid,
-          nextTblid,
-          nsids,
-          nsVersion,
-          nsProperties,
-          tblIds,
-          tblVersion,
-          tblLocations);
     }
 
     void setGlobals(UUID uuid, int nextNsid, int nextTblid) {
@@ -598,23 +585,8 @@ public class LogCatalogFormat extends CatalogFormat {
       tblVersion.put(tblId, version);
     }
 
-    void logAction(LogAction.Type action) {
-      switch (action) {
-        case CREATE_TABLE:
-        case UPDATE_TABLE:
-        case DROP_TABLE:
-          throw new UnsupportedOperationException();
-        case CREATE_NAMESPACE:
-        case UPDATE_NAMESPACE:
-          // nsVersion matches action version
-        case DROP_NAMESPACE:
-        default:
-          throw new UnsupportedOperationException();
-      }
-    }
-
     @Override
-    public CatalogFile commit(SupportsAtomicOperations fileIO) {
+    public LogCatalogRegionFormat.LogCatalogFile commit(SupportsAtomicOperations fileIO) {
       try {
         // TODO
         // CatalogFile catalog = merge();

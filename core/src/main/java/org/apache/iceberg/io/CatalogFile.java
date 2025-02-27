@@ -21,46 +21,72 @@ package org.apache.iceberg.io;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.BiFunction;
-import java.util.stream.Collectors;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
-public class CatalogFile {
-  // TODO use serialization idioms from the project, handle evolution, etc.
+/** Snapshot of Catalog state used in FileIOCatalog. */
+public abstract class CatalogFile {
 
   private final UUID uuid;
   private final InputFile location;
-  private final Map<TableIdentifier, String> tblLocations; // fully qualified table identifiers
-  private final Map<Namespace, Map<String, String>> namespaces;
+
+  /** Constructor for empty CatalogFile instances. Assigns a random UUID. */
+  CatalogFile(InputFile location) {
+    // consistent iteration order; UUIDv7
+    this(UUID.randomUUID(), location);
+  }
+
+  /** Construct a CatalogFile instance from an existing Catalog. */
+  CatalogFile(UUID uuid, InputFile fromFile) {
+    this.uuid = uuid;
+    this.location = fromFile;
+  }
+
+  public UUID uuid() {
+    return uuid;
+  }
+
+  public InputFile location() {
+    return location;
+  }
+
+  public abstract String location(TableIdentifier table);
+
+  public abstract Set<Namespace> namespaces();
+
+  public abstract boolean containsNamespace(Namespace namespace);
+
+  public abstract Map<String, String> namespaceProperties(Namespace namespace);
+
+  public abstract List<TableIdentifier> tables();
+
+  abstract Map<Namespace, Map<String, String>> namespaceProperties();
+
+  abstract Map<TableIdentifier, String> locations();
 
   public abstract static class Mut<T extends CatalogFile> {
 
     protected final T original;
-    protected final InputFile location;
     protected final Map<TableIdentifier, String> tables;
     protected final Map<Namespace, Map<String, String>> namespaces;
 
-    // UGH.
+    protected abstract T empty(InputFile location);
+
     protected Mut(InputFile location) {
-      this.original = null;
-      this.location = location;
+      this.original = empty(location);
       this.tables = Maps.newHashMap();
       this.namespaces = Maps.newHashMap();
     }
 
     protected Mut(T original) {
       this.original = original;
-      this.location = null;
       this.tables = Maps.newHashMap();
       this.namespaces = Maps.newHashMap();
       namespaces.put(Namespace.empty(), Collections.emptyMap());
@@ -147,129 +173,6 @@ public class CatalogFile {
       return this;
     }
 
-    // TODO move this to CASCatalogFile
-    protected CatalogFile merge() {
-      final Map<Namespace, Map<String, String>> newNamespaces =
-          Maps.newHashMap(original.namespaceProperties());
-      // TODO need to merge namespace properties?
-      // TODO not using table versions... remove
-      merge(
-          newNamespaces,
-          namespaces,
-          (orig, next) -> {
-            Map<String, String> nsProps = null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
-            merge(nsProps, next, (x, y) -> y);
-            return nsProps;
-          });
-
-      final Map<TableIdentifier, String> newFqti = Maps.newHashMap(original.locations());
-      merge(newFqti, tables, (x, location) -> location);
-      return new CatalogFile(original.uuid(), newNamespaces, newFqti, original.location());
-    }
-
     public abstract T commit(SupportsAtomicOperations<CAS> fileIO);
-
-    private static <K, V, U> void merge(
-        Map<K, V> original, Map<K, U> update, BiFunction<V, U, V> valueMapper) {
-      for (Map.Entry<K, U> entry : update.entrySet()) {
-        final K key = entry.getKey();
-        final U value = entry.getValue();
-        if (null == value) {
-          original.remove(key);
-        } else {
-          original.put(key, valueMapper.apply(original.get(key), value));
-        }
-      }
-    }
-  }
-
-  CatalogFile(InputFile location) {
-    // consistent iteration order; UUIDv7
-    this(UUID.randomUUID(), Maps.newHashMap(), Maps.newHashMap(), location);
-  }
-
-  CatalogFile(
-      UUID uuid,
-      Map<Namespace, Map<String, String>> namespaces,
-      Map<TableIdentifier, String> tblLocations,
-      InputFile fromFile) {
-    this.uuid = uuid;
-    this.tblLocations = tblLocations;
-    this.location = fromFile;
-    this.namespaces = namespaces;
-  }
-
-  public InputFile location() {
-    return location;
-  }
-
-  public String location(TableIdentifier table) {
-    return tblLocations.get(table);
-  }
-
-  public Set<Namespace> namespaces() {
-    return Collections.unmodifiableSet(namespaces.keySet());
-  }
-
-  public boolean containsNamespace(Namespace namespace) {
-    return namespaces.containsKey(namespace);
-  }
-
-  public Map<String, String> namespaceProperties(Namespace namespace) {
-    return Collections.unmodifiableMap(namespaces.get(namespace));
-  }
-
-  public List<TableIdentifier> tables() {
-    return Lists.newArrayList(tblLocations.keySet().iterator());
-  }
-
-  public UUID uuid() {
-    return uuid;
-  }
-
-  Map<Namespace, Map<String, String>> namespaceProperties() {
-    return Collections.unmodifiableMap(namespaces);
-  }
-
-  Map<TableIdentifier, String> locations() {
-    return Collections.unmodifiableMap(tblLocations);
-  }
-
-  @Override
-  public boolean equals(Object other) {
-    if (this == other) {
-      return true;
-    }
-    if (other == null || getClass() != other.getClass()) {
-      return false;
-    }
-    CatalogFile that = (CatalogFile) other;
-    return uuid.equals(that.uuid)
-        && tblLocations.equals(that.tblLocations)
-        && namespaces.equals(that.namespaces);
-  }
-
-  @Override
-  public int hashCode() {
-    // TODO replace with CRC during deserialization?
-    return Objects.hash(uuid, tblLocations.keySet(), namespaces.keySet());
-  }
-
-  @Override
-  public String toString() {
-    StringBuilder sb = new StringBuilder();
-    sb.append("{");
-    sb.append("\"uuid\" : \"").append(uuid).append("\",");
-    sb.append("\"tables\" : [");
-    sb.append(
-            tblLocations.keySet().stream()
-                .map(id -> "\"" + id + "\"")
-                .collect(Collectors.joining(",")))
-        .append("],");
-    sb.append("\"namespaces\" : [");
-    sb.append(
-        namespaces.keySet().stream().map(id -> "\"" + id + "\"").collect(Collectors.joining(",")));
-    sb.append("]").append("}");
-    return sb.toString();
   }
 }
