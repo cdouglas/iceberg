@@ -43,7 +43,7 @@ import java.util.UUID;
 import org.apache.commons.io.IOUtils;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
-import org.apache.iceberg.io.LogCatalogRegionFormat.LogCatalogFile;
+import org.apache.iceberg.io.LogCatalogFormat.LogCatalogFile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -62,7 +62,7 @@ public class TestLogCatalogFormat {
   @Test
   public void testRegionFormat() {
     final InputFile mockFile = mock(InputFile.class);
-    LogCatalogRegionFormat.LogCatalogFile catalog = generateRandomLogCatalogFile(random.nextLong());
+    LogCatalogFile catalog = generateRandomLogCatalogFile(random.nextLong());
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
       byte[] catabytes = toBytes(catalog);
       // LogCatalogFile readCatalog = LogCatalogRegionFormat.readCatalogFile(catabytes,
@@ -118,7 +118,7 @@ public class TestLogCatalogFormat {
     assertArrayEquals(aBytes, bBytes);
 
     InputFile mockFile = mock(InputFile.class);
-    LogCatalogFormat.LogCatalogFileMut catalog = new LogCatalogFormat.LogCatalogFileMut(mockFile);
+    LogCatalogFormat.Mut catalog = new LogCatalogFormat.Mut(mockFile);
     try (ByteArrayInputStream bis = new ByteArrayInputStream(aBytes)) {
       LogCatalogRegionFormat.readCheckpoint(catalog, bis);
       // LogCatalogFile c = catalog.merge();
@@ -188,11 +188,12 @@ public class TestLogCatalogFormat {
       nsVersion.put(nsid, nsVersion.get(nsid) + rand.nextInt(2) + 1);
     }
 
-    return new LogCatalogRegionFormat.LogCatalogFile(
+    return new LogCatalogFile(
         location,
         uuid,
         nextNsid,
         nextTblid,
+        false,
         nsids,
         nsVersion,
         nsProperties,

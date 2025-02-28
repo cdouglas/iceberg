@@ -71,32 +71,24 @@ public abstract class CatalogFile {
 
   abstract Map<TableIdentifier, String> locations();
 
-  public abstract static class Mut<T extends CatalogFile> {
+  public abstract static class Mut {
 
-    protected final T original;
+    protected final CatalogFile original;
     protected final Map<TableIdentifier, String> tables;
     protected final Map<Namespace, Map<String, String>> namespaces;
 
-    protected abstract T empty(InputFile location);
-
-    protected Mut(InputFile location) {
-      this.original = empty(location);
-      this.tables = Maps.newHashMap();
-      this.namespaces = Maps.newHashMap();
-    }
-
-    protected Mut(T original) {
+    protected Mut(CatalogFile original) {
       this.original = original;
       this.tables = Maps.newHashMap();
       this.namespaces = Maps.newHashMap();
       namespaces.put(Namespace.empty(), Collections.emptyMap());
     }
 
-    public Mut<T> createNamespace(Namespace namespace) {
+    public Mut createNamespace(Namespace namespace) {
       return createNamespace(namespace, Collections.emptyMap());
     }
 
-    public Mut<T> createNamespace(Namespace namespace, Map<String, String> properties) {
+    public Mut createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
       if (original.containsNamespace(namespace) || namespaces.containsKey(namespace)) {
@@ -107,7 +99,7 @@ public abstract class CatalogFile {
       return this;
     }
 
-    public Mut<T> updateProperties(Namespace namespace, Map<String, String> properties) {
+    public Mut updateProperties(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
       // TODO: legal to update properties of empty/root namespace?
@@ -134,14 +126,14 @@ public abstract class CatalogFile {
       return this;
     }
 
-    public Mut<T> dropNamespace(Namespace namespace) {
+    public Mut dropNamespace(Namespace namespace) {
       // TODO check for tables/child namespaces, refuse if not empty
       checkNamespaceExists(namespace);
       namespaces.put(namespace, null);
       return this;
     }
 
-    public Mut<T> createTable(TableIdentifier table, String location) {
+    public Mut createTable(TableIdentifier table, String location) {
       // TODO: fix for swap (a -> b; b -> a)
       checkNamespaceExists(table.namespace());
       if (original.location(table) != null || tables.get(table) != null) {
@@ -157,7 +149,7 @@ public abstract class CatalogFile {
       }
     }
 
-    public Mut<T> updateTable(TableIdentifier table, String location) {
+    public Mut updateTable(TableIdentifier table, String location) {
       if (null == original.location(table)) {
         throw new NoSuchNamespaceException("Table does not exist: %s", table);
       }
@@ -165,7 +157,7 @@ public abstract class CatalogFile {
       return this;
     }
 
-    public Mut<T> dropTable(TableIdentifier tableId) {
+    public Mut dropTable(TableIdentifier tableId) {
       if (null == original.location(tableId)) {
         throw new NoSuchTableException("Table does not exist: %s", tableId);
       }
@@ -173,6 +165,6 @@ public abstract class CatalogFile {
       return this;
     }
 
-    public abstract T commit(SupportsAtomicOperations<CAS> fileIO);
+    public abstract CatalogFile commit(SupportsAtomicOperations<CAS> fileIO);
   }
 }
