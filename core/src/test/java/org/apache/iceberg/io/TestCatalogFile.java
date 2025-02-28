@@ -33,6 +33,10 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.junit.jupiter.api.Test;
 
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import java.util.stream.Stream;
+
 public class TestCatalogFile {
 
   private static final Namespace NS1 = Namespace.of("db", "dingos", "yaks", "prod");
@@ -42,9 +46,14 @@ public class TestCatalogFile {
   private static final TableIdentifier TBL3 = TableIdentifier.of(NS1, "table3");
   private static final TableIdentifier TBL4 = TableIdentifier.of(NS1, "table4");
 
-  @Test
+  static Stream<CatalogFormat> catalogFormats() {
+    return Stream.of(new CASCatalogFormat(), new LogCatalogFormat());
+  }
+
+  @ParameterizedTest
+  @MethodSource("catalogFormats")
   @SuppressWarnings("unchecked")
-  public void testCatalogNamespace() throws IOException {
+  public void testCatalogNamespace(CatalogFormat format) throws IOException {
     InputFile nullFile = mock(InputFile.class);
     AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
     CAS token = mock(CAS.class);
@@ -53,7 +62,6 @@ public class TestCatalogFile {
     SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
     when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
 
-    CatalogFormat format = new CASCatalogFormat();
     CatalogFile catalogFile =
         format
             .empty(nullFile)
@@ -73,33 +81,5 @@ public class TestCatalogFile {
     CatalogFile drop = format.from(updateProp).dropNamespace(NS2).commit(fileIO);
     assertThat(drop.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1);
     assertThat(drop.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
-  }
-
-  static class MockFileIO implements SupportsAtomicOperations<CAS> {
-
-    @Override
-    public AtomicOutputFile<CAS> newOutputFile(InputFile replace) {
-      return null;
-    }
-
-    @Override
-    public InputFile newInputFile(String path) {
-      return null;
-    }
-
-    @Override
-    public OutputFile newOutputFile(String path) {
-      return null;
-    }
-
-    @Override
-    public void deleteFile(String path) {}
-  }
-
-  @Test
-  public void testSerDe() {
-    // parameterizedTest
-    CASCatalogFormat format = new CASCatalogFormat();
-    ByteArrayOutputStream bos = new ByteArrayOutputStream();
   }
 }

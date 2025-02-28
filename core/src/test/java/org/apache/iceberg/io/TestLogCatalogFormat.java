@@ -117,11 +117,10 @@ public class TestLogCatalogFormat {
 
     InputFile mockFile = mock(InputFile.class);
     LogCatalogFormat.Mut catalog = new LogCatalogFormat.Mut(mockFile);
+    LogCatalogFormat format = new LogCatalogFormat();
     try (ByteArrayInputStream bis = new ByteArrayInputStream(aBytes)) {
-      // TODO
-      // LogCatalogRegionFormat.readCheckpoint(catalog, bis);
-      // LogCatalogFile c = catalog.merge();
-      // assertEquals(a, c);
+      LogCatalogFile c = format.readInternal(catalog, bis);
+      assertEquals(a, c);
     }
   }
 
@@ -203,6 +202,7 @@ public class TestLogCatalogFormat {
 
   static byte[] toBytes(LogCatalogFile catalog) throws IOException {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+      catalog.write(bos);
       return bos.toByteArray();
     } catch (IOException e) {
       fail("Failed to write/read catalog file", e);

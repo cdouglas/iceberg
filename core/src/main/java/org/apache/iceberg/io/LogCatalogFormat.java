@@ -21,10 +21,13 @@ package org.apache.iceberg.io;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +39,7 @@ import java.util.stream.Collectors;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -63,8 +67,19 @@ public class LogCatalogFormat extends CatalogFormat {
     // intentionally drop metadata cached on InputFile
     InputFile refresh = fileIO.newInputFile(catalogLocation.location());
     Mut catalog = new Mut(refresh);
-    try (SeekableInputStream in = refresh.newStream();
-        DataInputStream din = new DataInputStream(in)) {
+    try (SeekableInputStream in = refresh.newStream()) {
+      return readInternal(catalog, in);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  @VisibleForTesting
+  LogCatalogFile readInternal(Mut catalog, InputStream in) throws IOException {
+    try (DataInputStream din = new DataInputStream(in)) {
+      if (din.readByte() != LogAction.Type.CHECKPOINT.opcode) {
+        throw new IllegalStateException("Invalid magic bits");
+      }
       LogAction.Checkpoint chk = LogAction.Checkpoint.read(din);
       chk.apply(catalog);
       // TODO bound stream to iterator
@@ -77,7 +92,7 @@ public class LogCatalogFormat extends CatalogFormat {
         throw new IllegalStateException("No.");
       }
       // TODO buffer committedTxn, in case it's relevant
-      in.seek(chk.committedTxnEnd);
+      // in.seek(chk.committedTxnEnd);
       for (LogAction.Transaction txn : LogAction.logIterator(din)) {
         if (txn.verify(catalog)) {
           txn.apply(catalog);
@@ -88,10 +103,9 @@ public class LogCatalogFormat extends CatalogFormat {
         }
       }
       return catalog.merge();
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
     }
-  }
+
+    }
 
   // Log format
   // <len><op><payload>
@@ -155,7 +169,6 @@ public class LogCatalogFormat extends CatalogFormat {
 
       @Override
       boolean verify(Mut catalog) {
-        // TODO include validation for catalogUUID
         return true;
       }
 
@@ -167,6 +180,7 @@ public class LogCatalogFormat extends CatalogFormat {
       @Override
       void write(DataOutputStream dos) throws IOException {
         dos.writeByte(Type.CHECKPOINT.opcode);
+        // TODO write additional, magic bits + version
         dos.writeLong(catalogUUID.getMostSignificantBits());
         dos.writeLong(catalogUUID.getLeastSignificantBits());
         dos.writeInt(nextNsid);
@@ -182,21 +196,30 @@ public class LogCatalogFormat extends CatalogFormat {
         UUID catalogUUID = new UUID(msb, lsb);
         int nextNsid = dis.readInt();
         int nextTblid = dis.readInt();
-        long logEnd = dis.readLong();
+        long chkEnd = dis.readLong();
         long tblEmbedEnd = dis.readLong();
         long committedTxnEnd = dis.readLong();
         return new Checkpoint(
-            catalogUUID, nextNsid, nextTblid, logEnd, tblEmbedEnd, committedTxnEnd);
+            catalogUUID, nextNsid, nextTblid, chkEnd, tblEmbedEnd, committedTxnEnd);
       }
     }
 
     static class CreateNamespace extends LogAction {
+      private static final int LATE_BIND = -1;
       final String name;
+      final int logNsid;
+      final int version;
       final int parentId;
       final int parentVersion;
 
       CreateNamespace(String name, int parentId, int parentVersion) {
+        this(name, LATE_BIND, LATE_BIND, parentId, parentVersion);
+      }
+
+      CreateNamespace(String name, int logNsid, int version, int parentId, int parentVersion) {
         this.name = name;
+        this.logNsid = logNsid;
+        this.version = version;
         this.parentId = parentId;
         this.parentVersion = parentVersion;
       }
@@ -211,23 +234,35 @@ public class LogCatalogFormat extends CatalogFormat {
       @Override
       void apply(Mut catalog) {
         // increment parent version, assign uniq nsid
-        catalog.nsVersion.put(parentId, parentVersion + 1);
-        catalog.addNamespaceInternal(name, parentId, catalog.nextNsid++, 1);
+        final int nsid, version;
+        if (logNsid == LATE_BIND) {
+          nsid = catalog.nextNsid++;
+          catalog.nsVersion.put(parentId, parentVersion + 1);
+          version = 1;
+        } else {
+          nsid = logNsid;
+          version = this.version;
+        }
+        catalog.addNamespaceInternal(name, parentId, nsid, version);
       }
 
       @Override
       void write(DataOutputStream dos) throws IOException {
         dos.writeByte(Type.CREATE_NAMESPACE.opcode);
         dos.writeUTF(name);
+        dos.writeInt(logNsid);
+        dos.writeInt(version);
         dos.writeInt(parentId);
         dos.writeInt(parentVersion);
       }
 
       static CreateNamespace read(DataInputStream dis) throws IOException {
         String name = dis.readUTF();
+        int nsid = dis.readInt();
+        int version = dis.readInt();
         int parentId = dis.readInt();
         int parentVersion = dis.readInt();
-        return new CreateNamespace(name, parentId, parentVersion);
+        return new CreateNamespace(name, nsid, version, parentId, parentVersion);
       }
     }
 
@@ -265,13 +300,18 @@ public class LogCatalogFormat extends CatalogFormat {
       }
     }
 
-    static class UpdateNamespaceProperty extends LogAction {
+    static class AddNamespaceProperty extends LogAction {
+      private static final int LATE_BIND = -1;
       final int nsid;
       final int version;
       final String key;
       final String value;
 
-      UpdateNamespaceProperty(int nsid, int version, String key, String value) {
+      AddNamespaceProperty(int nsid, String key, String value) {
+        this(nsid, LATE_BIND, key, value);
+      }
+
+      AddNamespaceProperty(int nsid, int version, String key, String value) {
         this.nsid = nsid;
         this.version = version;
         this.key = key;
@@ -286,7 +326,11 @@ public class LogCatalogFormat extends CatalogFormat {
 
       @Override
       void apply(Mut catalog) {
-        catalog.nsVersion.put(nsid, version + 1);
+        if (version != LATE_BIND) {
+          // from the log; increment the namespace version
+          // TODO when building a transaction, make subsequent actions LATE_BIND
+          catalog.nsVersion.put(nsid, version + 1);
+        }
         catalog.addNamespacePropertyInternal(nsid, key, value);
       }
 
@@ -299,12 +343,12 @@ public class LogCatalogFormat extends CatalogFormat {
         dos.writeUTF(value);
       }
 
-      static UpdateNamespaceProperty read(DataInputStream dis) throws IOException {
+      static AddNamespaceProperty read(DataInputStream dis) throws IOException {
         int nsid = dis.readInt();
         int version = dis.readInt();
         String key = dis.readUTF();
         String value = dis.readUTF();
-        return new UpdateNamespaceProperty(nsid, version, key, value);
+        return new AddNamespaceProperty(nsid, version, key, value);
       }
     }
 
@@ -348,13 +392,22 @@ public class LogCatalogFormat extends CatalogFormat {
     }
 
     static class CreateTable extends LogAction {
+      private static final int LATE_BIND = -1;
       final String name;
+      final int logTblId;
+      final int tblVersion;
       final int nsid;
       final int nsVersion;
       final String location;
 
       CreateTable(String name, int nsid, int nsVersion, String location) {
+        this(name, LATE_BIND, 1, nsid, nsVersion, location);
+      }
+
+      CreateTable(String name, int logTblId, int tblVersion, int nsid, int nsVersion, String location) {
         this.name = name;
+        this.logTblId = logTblId;
+        this.tblVersion = tblVersion;
         this.nsid = nsid;
         this.nsVersion = nsVersion;
         this.location = location;
@@ -368,13 +421,16 @@ public class LogCatalogFormat extends CatalogFormat {
 
       @Override
       void apply(Mut catalog) {
-        catalog.addTableInternal(catalog.nextTblid++, nsid, 1, name, location);
+        final int tblId = this.logTblId == LATE_BIND ? catalog.nextTblid++ : this.logTblId;
+        catalog.addTableInternal(tblId, nsid, tblVersion, name, location);
       }
 
       @Override
       void write(DataOutputStream dos) throws IOException {
         dos.writeByte(Type.CREATE_TABLE.opcode);
         dos.writeUTF(name);
+        dos.writeInt(logTblId);
+        dos.writeInt(tblVersion);
         dos.writeInt(nsid);
         dos.writeInt(nsVersion);
         dos.writeUTF(location);
@@ -382,10 +438,12 @@ public class LogCatalogFormat extends CatalogFormat {
 
       static CreateTable read(DataInputStream dis) throws IOException {
         String name = dis.readUTF();
+        int tblId = dis.readInt();
+        int tblVersion = dis.readInt();
         int nsid = dis.readInt();
         int nsVersion = dis.readInt();
         String location = dis.readUTF();
-        return new CreateTable(name, nsid, nsVersion, location);
+        return new CreateTable(name, tblId, tblVersion, nsid, nsVersion, location);
       }
     }
 
@@ -529,7 +587,7 @@ public class LogCatalogFormat extends CatalogFormat {
               actions.add(CreateNamespace.read(dis));
               break;
             case ADD_NAMESPACE_PROPERTY:
-              actions.add(UpdateNamespaceProperty.read(dis));
+              actions.add(AddNamespaceProperty.read(dis));
               break;
             case DROP_NAMESPACE_PROPERTY:
               actions.add(DropNamespaceProperty.read(dis));
@@ -581,7 +639,7 @@ public class LogCatalogFormat extends CatalogFormat {
             case CREATE_NAMESPACE:
               return CreateNamespace.read(dis);
             case ADD_NAMESPACE_PROPERTY:
-              return UpdateNamespaceProperty.read(dis);
+              return AddNamespaceProperty.read(dis);
             case CREATE_TABLE:
               return CreateTable.read(dis);
             default:
@@ -783,6 +841,11 @@ public class LogCatalogFormat extends CatalogFormat {
           Maps.newHashMap(tblLocations));
     }
 
+    List<LogAction> diff() {
+      // TODO
+      throw new UnsupportedOperationException("TODO");
+    }
+
     @Override
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
       try {
@@ -915,6 +978,49 @@ public class LogCatalogFormat extends CatalogFormat {
     Map<TableIdentifier, String> locations() {
       return tblIds.entrySet().stream()
           .collect(Collectors.toMap(Map.Entry::getKey, e -> tblLocations.get(e.getValue())));
+    }
+
+    List<LogAction> checkpointStream() {
+      List<LogAction> actions = Lists.newArrayList();
+      // TODO regions
+      // TODO ensure properties of deleted namespaces are removed
+      actions.add(new LogAction.Checkpoint(uuid(), nextNsid, nextTblid, -1, -1, -1));
+      // sort by nsid; sufficient for parentId, since namespaces never move, are created in order
+      for (Map.Entry<Namespace, Integer> e : nsids.entrySet().stream().sorted(Comparator.comparingInt(Map.Entry::getValue)).collect(Collectors.toList())) {
+        final Namespace ns = e.getKey();
+        final int nsid = e.getValue();
+        final int version = nsVersion.get(nsid);
+        final int levels = ns.length();
+        final Namespace parent =
+            levels > 1
+                ? Namespace.of(Arrays.copyOfRange(ns.levels(), 0, levels - 1))
+                : Namespace.empty();
+        final int parentId = nsids.get(parent);
+        actions.add(
+            new LogAction.CreateNamespace(0 == levels ? "" : ns.level(levels - 1), nsid, version, parentId, nsVersion.get(parentId)));
+      }
+      for (Map.Entry<Integer,Map<String,String>> e : nsProperties.entrySet()) {
+        final int nsid = e.getKey();
+        for (Map.Entry<String, String> prop : e.getValue().entrySet()) {
+          actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
+        }
+      }
+      for (Map.Entry<TableIdentifier, Integer> e : tblIds.entrySet()) {
+        final TableIdentifier ti = e.getKey();
+        final int tblId = e.getValue();
+        final int version = tblVersion.get(tblId);
+        final int nsid = nsids.get(ti.namespace());
+        actions.add(new LogAction.CreateTable(ti.name(), tblId, version, nsid, nsVersion.get(nsid), tblLocations.get(tblId)));
+      }
+      return actions;
+    }
+
+    void write(OutputStream out) throws IOException{
+      try (DataOutputStream dos = new DataOutputStream(out)) {
+        for (LogAction action : checkpointStream()) {
+          action.write(dos);
+        }
+      }
     }
 
     @Override
