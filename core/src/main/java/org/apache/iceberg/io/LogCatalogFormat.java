@@ -104,8 +104,7 @@ public class LogCatalogFormat extends CatalogFormat {
       }
       return catalog.merge();
     }
-
-    }
+  }
 
   // Log format
   // <len><op><payload>
@@ -404,7 +403,8 @@ public class LogCatalogFormat extends CatalogFormat {
         this(name, LATE_BIND, 1, nsid, nsVersion, location);
       }
 
-      CreateTable(String name, int logTblId, int tblVersion, int nsid, int nsVersion, String location) {
+      CreateTable(
+          String name, int logTblId, int tblVersion, int nsid, int nsVersion, String location) {
         this.name = name;
         this.logTblId = logTblId;
         this.tblVersion = tblVersion;
@@ -986,7 +986,10 @@ public class LogCatalogFormat extends CatalogFormat {
       // TODO ensure properties of deleted namespaces are removed
       actions.add(new LogAction.Checkpoint(uuid(), nextNsid, nextTblid, -1, -1, -1));
       // sort by nsid; sufficient for parentId, since namespaces never move, are created in order
-      for (Map.Entry<Namespace, Integer> e : nsids.entrySet().stream().sorted(Comparator.comparingInt(Map.Entry::getValue)).collect(Collectors.toList())) {
+      for (Map.Entry<Namespace, Integer> e :
+          nsids.entrySet().stream()
+              .sorted(Comparator.comparingInt(Map.Entry::getValue))
+              .collect(Collectors.toList())) {
         final Namespace ns = e.getKey();
         final int nsid = e.getValue();
         final int version = nsVersion.get(nsid);
@@ -997,9 +1000,14 @@ public class LogCatalogFormat extends CatalogFormat {
                 : Namespace.empty();
         final int parentId = nsids.get(parent);
         actions.add(
-            new LogAction.CreateNamespace(0 == levels ? "" : ns.level(levels - 1), nsid, version, parentId, nsVersion.get(parentId)));
+            new LogAction.CreateNamespace(
+                0 == levels ? "" : ns.level(levels - 1),
+                nsid,
+                version,
+                parentId,
+                nsVersion.get(parentId)));
       }
-      for (Map.Entry<Integer,Map<String,String>> e : nsProperties.entrySet()) {
+      for (Map.Entry<Integer, Map<String, String>> e : nsProperties.entrySet()) {
         final int nsid = e.getKey();
         for (Map.Entry<String, String> prop : e.getValue().entrySet()) {
           actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
@@ -1010,12 +1018,14 @@ public class LogCatalogFormat extends CatalogFormat {
         final int tblId = e.getValue();
         final int version = tblVersion.get(tblId);
         final int nsid = nsids.get(ti.namespace());
-        actions.add(new LogAction.CreateTable(ti.name(), tblId, version, nsid, nsVersion.get(nsid), tblLocations.get(tblId)));
+        actions.add(
+            new LogAction.CreateTable(
+                ti.name(), tblId, version, nsid, nsVersion.get(nsid), tblLocations.get(tblId)));
       }
       return actions;
     }
 
-    void write(OutputStream out) throws IOException{
+    void write(OutputStream out) throws IOException {
       try (DataOutputStream dos = new DataOutputStream(out)) {
         for (LogAction action : checkpointStream()) {
           action.write(dos);
