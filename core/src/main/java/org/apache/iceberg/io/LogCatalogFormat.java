@@ -25,7 +25,6 @@ import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -974,99 +973,6 @@ public class LogCatalogFormat extends CatalogFormat {
           + ", tblLocations="
           + tblLocations
           + '}';
-    }
-
-    Iterable<LogCatalogRegionFormat.NamespaceEntry> namespaceEntries() {
-      return () ->
-          new Iterator<LogCatalogRegionFormat.NamespaceEntry>() {
-            // sort by nsid; sufficient for parentId, since namespaces never move, are created in
-            // order
-            private final Iterator<Map.Entry<Namespace, Integer>> iter =
-                nsids.entrySet().stream()
-                    .sorted(Comparator.comparingInt(Map.Entry::getValue))
-                    .iterator();
-
-            @Override
-            public boolean hasNext() {
-              return iter.hasNext();
-            }
-
-            @Override
-            public LogCatalogRegionFormat.NamespaceEntry next() {
-              Map.Entry<Namespace, Integer> entry = iter.next();
-              final Namespace ns = entry.getKey();
-              final int levels = ns.length();
-              final Namespace parent =
-                  levels > 1
-                      ? Namespace.of(Arrays.copyOfRange(ns.levels(), 0, levels - 1))
-                      : Namespace.empty();
-              final int nsid = entry.getValue();
-              return new LogCatalogRegionFormat.NamespaceEntry(
-                  nsid,
-                  nsVersion.get(nsid),
-                  nsids.get(parent),
-                  0 == levels ? "" : ns.level(levels - 1));
-            }
-          };
-    }
-
-    Iterable<LogCatalogRegionFormat.NamespacePropertyEntry> namespacePropertyEntries() {
-      return () ->
-          new Iterator<LogCatalogRegionFormat.NamespacePropertyEntry>() {
-            private final Iterator<Map.Entry<Integer, Map<String, String>>> iter =
-                nsProperties.entrySet().iterator();
-            private Integer currentKey = null;
-            private Iterator<Map.Entry<String, String>> currentIter = null;
-
-            @Override
-            public boolean hasNext() {
-              if (currentIter == null || !currentIter.hasNext()) {
-                while (iter.hasNext()) {
-                  Map.Entry<Integer, Map<String, String>> e = iter.next();
-                  currentKey = e.getKey();
-                  currentIter = e.getValue().entrySet().iterator();
-                  if (currentIter.hasNext()) {
-                    return true;
-                  }
-                }
-                return false;
-              }
-              return true;
-            }
-
-            @Override
-            public LogCatalogRegionFormat.NamespacePropertyEntry next() {
-              Map.Entry<String, String> entry = currentIter.next();
-              return new LogCatalogRegionFormat.NamespacePropertyEntry(
-                  currentKey, entry.getKey(), entry.getValue());
-            }
-          };
-    }
-
-    Iterable<LogCatalogRegionFormat.TableEntry> tableEntries() {
-      return () ->
-          new Iterator<LogCatalogRegionFormat.TableEntry>() {
-            private final Iterator<Map.Entry<TableIdentifier, Integer>> iter =
-                tblIds.entrySet().iterator();
-
-            @Override
-            public boolean hasNext() {
-              return iter.hasNext();
-            }
-
-            @Override
-            public LogCatalogRegionFormat.TableEntry next() {
-              Map.Entry<TableIdentifier, Integer> entry = iter.next();
-              final TableIdentifier tblId = entry.getKey();
-              final int tblid = entry.getValue();
-              return new LogCatalogRegionFormat.TableEntry(
-                  tblid,
-                  tblVersion.get(tblid),
-                  nsids.get(tblId.namespace()),
-                  tblId.name(),
-                  tblLocations.get(tblid));
-            }
-          };
     }
   }
 }
