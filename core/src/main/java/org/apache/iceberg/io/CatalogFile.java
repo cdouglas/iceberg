@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.apache.commons.compress.utils.Lists;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -115,7 +116,9 @@ public abstract class CatalogFile {
     public Mut updateProperties(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
-      checkNamespaceExists(namespace);
+      if (checkNamespaceExists(namespace)) {
+        throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
+      }
       namespaceProperties.compute(
           namespace,
           (ignored, old) -> {
@@ -143,7 +146,9 @@ public abstract class CatalogFile {
     public Mut dropNamespace(Namespace namespace) {
       // TODO check for tables/child namespaces, refuse if not empty
       Preconditions.checkArgument(!Namespace.empty().equals(namespace), "Cannot drop empty namespace");
-      checkNamespaceExists(namespace);
+      if (checkNamespaceExists(namespace)) {
+        throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
+      }
       final boolean nsChildren = original.namespaces().stream().noneMatch(ns -> parentOf(ns).equals(namespace)) &&
                                  namespaces.entrySet().stream().noneMatch(e -> e.getValue() && parentOf(e.getKey()).equals(namespace));
       final boolean tblChildren = original.tables().stream().noneMatch(table -> table.namespace().equals(namespace)) &&
@@ -158,7 +163,9 @@ public abstract class CatalogFile {
 
     public Mut createTable(TableIdentifier table, String location) {
       // TODO: fix for swap (a -> b; b -> a)
-      checkNamespaceExists(table.namespace());
+      if (checkNamespaceExists(table.namespace())) {
+        throw new NoSuchNamespaceException("Namespace does not exist: %s", table.namespace());
+      }
       if (original.location(table) != null || tables.get(table) != null) {
         throw new AlreadyExistsException("Table already exists: %s", table);
       }
@@ -166,10 +173,8 @@ public abstract class CatalogFile {
       return this;
     }
 
-    private void checkNamespaceExists(Namespace namespace) {
-      if (!Namespace.empty().equals(namespace) && !original.containsNamespace(namespace) && !namespaces.getOrDefault(namespace, false)) {
-        throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
-      }
+    private boolean checkNamespaceExists(Namespace namespace) {
+      return !Namespace.empty().equals(namespace) && !original.containsNamespace(namespace) && !namespaces.getOrDefault(namespace, false);
     }
 
     public Mut updateTable(TableIdentifier table, String location) {

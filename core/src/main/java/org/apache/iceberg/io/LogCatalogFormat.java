@@ -211,14 +211,19 @@ public class LogCatalogFormat extends CatalogFormat {
       final int parentId;
       final int parentVersion;
 
-      CreateNamespace(String name) {
-        this(name, LATE_BIND, LATE_BIND, LATE_BIND, LATE_BIND);
+      // TODO clean up constructors...
+
+      // log, parent created in this transaction
+      CreateNamespace(String name, int version, int parentId) {
+        this(name, LATE_BIND, version, parentId, LATE_BIND);
       }
 
-      CreateNamespace(String name, int parentId, int parentVersion) {
-        this(name, LATE_BIND, LATE_BIND, parentId, parentVersion);
+      // log, parent exists
+      CreateNamespace(String name, int version, int parentId, int parentVersion) {
+        this(name, LATE_BIND, version, parentId, parentVersion);
       }
 
+      // checkpoint
       CreateNamespace(String name, int logNsid, int version, int parentId, int parentVersion) {
         this.name = name;
         this.logNsid = logNsid;
@@ -230,6 +235,9 @@ public class LogCatalogFormat extends CatalogFormat {
       @Override
       boolean verify(Mut catalog) {
         // concurrent creates are conflicts, but can be retried
+        if (parentVersion < 0) {
+          return true;
+        }
         Integer version = catalog.nsVersion.get(parentId);
         return version != null && version == parentVersion;
       }
@@ -310,10 +318,6 @@ public class LogCatalogFormat extends CatalogFormat {
       final String key;
       final String value;
 
-      AddNamespaceProperty(Namespace ns, String key, String value) {
-        this(LATE_BIND, LATE_BIND, key, value);
-      }
-
       AddNamespaceProperty(int nsid, String key, String value) {
         this(nsid, LATE_BIND, key, value);
       }
@@ -327,6 +331,9 @@ public class LogCatalogFormat extends CatalogFormat {
 
       @Override
       boolean verify(Mut catalog) {
+        if (LATE_BIND == version) {
+          return true;
+        }
         Integer version = catalog.nsVersion.get(nsid);
         return version != null && version == this.version;
       }
@@ -423,6 +430,9 @@ public class LogCatalogFormat extends CatalogFormat {
 
       @Override
       boolean verify(Mut catalog) {
+        if (tblVersion < 0) {
+          return true;
+        }
         Integer version = catalog.nsVersion.get(nsid);
         return version != null && version == nsVersion;
       }
@@ -771,6 +781,7 @@ public class LogCatalogFormat extends CatalogFormat {
         Preconditions.checkArgument(name.isEmpty(), "Invalid name for root namespace: %s", name);
         ns = Namespace.empty();
       } else {
+        // TODO check original. Idiot.
         Namespace parent = nsLookup.get(parentId);
         if (null == parent) {
           throw new IllegalStateException("Invalid parent namespace: " + parentId);
@@ -859,6 +870,7 @@ public class LogCatalogFormat extends CatalogFormat {
       final LogCatalogFile original = (LogCatalogFile) this.original;
       List<LogAction> actions = Lists.newArrayList();
       // create/delete namespaces
+      int nsVirtId = 0;
       for (Map.Entry<Namespace, Boolean> e : namespaces.entrySet().stream().sorted(Comparator.comparing(e -> e.getKey().toString())).collect(Collectors.toList())) {
         final Namespace ns = e.getKey();
         if (e.getValue()) {
@@ -866,21 +878,24 @@ public class LogCatalogFormat extends CatalogFormat {
           final Integer parentId = original.nsids.get(parent);
           if (null == parentId) {
             Preconditions.checkNotNull(namespaces.get(parent), "Parent namespace not found: %s", parent);
-            // parent namespace is part of this transaction
-            actions.add(new LogAction.CreateNamespace(nameOf(ns)));
+            // parent namespace is part of this transaction; assign virt ID
+            nsids.put(ns, --nsVirtId);
+            actions.add(new LogAction.CreateNamespace(nameOf(ns), nsVirtId, nsids.get(parent)));
           } else {
             // parent namespace is already in the catalog
             Preconditions.checkNotNull(original.nsids.get(parent), "Parent namespace not found: %s", parent);
-            actions.add(new LogAction.CreateNamespace(nameOf(ns), parentId, original.nsVersion.get(parentId)));
+            nsids.put(ns, --nsVirtId);
+            actions.add(new LogAction.CreateNamespace(nameOf(ns), nsVirtId, parentId, original.nsVersion.get(parentId)));
           }
         } else {
           actions.add(new LogAction.DropNamespace(nsids.get(e.getKey()), nsVersion.get(nsids.get(e.getKey()))));
         }
       }
       // update/delete properties
+      // TODO this increments the version on every property change. Not wrong, but excessive.
       for (Map.Entry<Namespace, Map<String, String>> e : namespaceProperties.entrySet()) {
-        final int nsid = nsids.get(e.getKey());
-        // TODO this increments the version on every property change. Not wrong, but excessive.
+        final Namespace ns = e.getKey();
+        final int nsid = original.nsids.getOrDefault(ns, nsids.get(ns));
         for (Map.Entry<String, String> prop : e.getValue().entrySet()) {
           if (e.getValue() != null) {
             actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
@@ -891,9 +906,11 @@ public class LogCatalogFormat extends CatalogFormat {
       }
       for (Map.Entry<TableIdentifier,String> t : tables.entrySet()) {
         final TableIdentifier ti = t.getKey();
-        final int nsid = nsids.get(ti.namespace());
+        final Namespace ns = ti.namespace();
+        final int nsid = original.nsids.getOrDefault(ns, nsids.get(ns));
         if (t.getValue() != null) {
-          actions.add(new LogAction.CreateTable(ti.name(), nsid, nsVersion.get(nsid), t.getValue()));
+          // sigh.
+          actions.add(new LogAction.CreateTable(ti.name(), nsid, nsVersion.getOrDefault(nsid, LogAction.CreateTable.LATE_BIND), t.getValue()));
         } else {
           final int tblId = tblIds.get(ti);
           actions.add(new LogAction.DropTable(tblId, tblVersion.get(tblId)));
@@ -971,21 +988,7 @@ public class LogCatalogFormat extends CatalogFormat {
       this.nsLookup = Maps.newHashMap();
       this.nsids.put(Namespace.empty(), 0);
       this.nsVersion.put(0, 1);
-    }
-
-    // copy constructor for now
-    LogCatalogFile(LogCatalogFile other) {
-        super(other.uuid(), other.location());
-        this.nextNsid = other.nextNsid;
-        this.nextTblid = other.nextTblid;
-        this.sealed = other.sealed;
-        this.nsids = Maps.newHashMap(other.nsids);
-        this.nsVersion = Maps.newHashMap(other.nsVersion);
-        this.nsProperties = Maps.newHashMap(other.nsProperties);
-        this.tblIds = Maps.newHashMap(other.tblIds);
-        this.tblVersion = Maps.newHashMap(other.tblVersion);
-        this.tblLocations = Maps.newHashMap(other.tblLocations);
-        this.nsLookup = Maps.newHashMap(other.nsLookup);
+      this.nsLookup.put(0, Namespace.empty());
     }
 
     LogCatalogFile(

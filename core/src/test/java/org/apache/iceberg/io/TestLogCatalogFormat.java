@@ -77,7 +77,7 @@ public class TestLogCatalogFormat {
     // Create a sample transaction to write to the stream
     UUID txnId = UUID.randomUUID();
     LogCatalogFormat.LogAction.CreateNamespace createNamespace =
-        new LogCatalogFormat.LogAction.CreateNamespace("testNamespace", 0, 1);
+        new LogCatalogFormat.LogAction.CreateNamespace("testNamespace", -1, 0, 1);
     final List<LogCatalogFormat.LogAction> actions = new ArrayList<>();
     actions.add(createNamespace);
     LogCatalogFormat.LogAction.Transaction transaction =
