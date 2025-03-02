@@ -84,10 +84,12 @@ public class CASCatalogFormat extends CatalogFormat {
     private final Map<TableIdentifier, String> tblLocations;
     private final Map<Namespace, Map<String, String>> namespaces;
 
+    // TODO find a way to document/constrain empty NS in empty catalogs
     CASCatalogFile(InputFile location) {
       super(location);
       this.tblLocations = Maps.newHashMap();
       this.namespaces = Maps.newHashMap();
+      namespaces.put(Namespace.empty(), Maps.newHashMap());
     }
 
     CASCatalogFile(
@@ -209,23 +211,30 @@ public class CASCatalogFormat extends CatalogFormat {
     }
 
     protected CatalogFile merge() {
-      final Map<Namespace, Map<String, String>> newNamespaces =
+      final Map<Namespace, Map<String, String>> nsProp =
           Maps.newHashMap(original.namespaceProperties());
-      // TODO need to merge namespace properties?
       merge(
-          newNamespaces,
-          namespaces,
+          nsProp,
+          namespaceProperties,
           (orig, next) -> {
             Map<String, String> nsProps = null == orig ? Maps.newHashMap() : Maps.newHashMap(orig);
             merge(nsProps, next, (x, y) -> y);
             return nsProps;
           });
+      for (Map.Entry<Namespace, Boolean> entry : namespaces.entrySet()) {
+        if (!entry.getValue()) {
+          nsProp.remove(entry.getKey());
+        }
+      }
 
-      final Map<TableIdentifier, String> newFqti = Maps.newHashMap(original.locations());
-      merge(newFqti, tables, (x, location) -> location);
-      return new CASCatalogFile(original.uuid(), newNamespaces, newFqti, original.location());
+      final Map<TableIdentifier, String> newTbl = Maps.newHashMap(original.locations());
+      merge(newTbl, tables, (x, location) -> location);
+      return new CASCatalogFile(original.uuid(), nsProp, newTbl, original.location());
     }
 
+    /**
+     * Given two maps o, u, overwrite values where u[k] is defined and remove them where u[k] == null
+     */
     private static <K, V, U> void merge(
         Map<K, V> original, Map<K, U> update, BiFunction<V, U, V> valueMapper) {
       for (Map.Entry<K, U> entry : update.entrySet()) {

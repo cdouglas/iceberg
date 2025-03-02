@@ -70,6 +70,8 @@ public class TestLogCatalogFormat {
     }
   }
 
+  // TODO include tests like drop + create table in the same transaction
+
   @Test
   public void testLogStream() throws IOException {
     // Create a sample transaction to write to the stream

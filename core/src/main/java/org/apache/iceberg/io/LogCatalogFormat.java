@@ -82,9 +82,9 @@ public class LogCatalogFormat extends CatalogFormat {
       }
       LogAction.Checkpoint chk = LogAction.Checkpoint.read(din);
       chk.apply(catalog);
-      // TODO bound stream to iterator
+      // TODO bound stream to chk.chkEnd
       for (LogAction action : LogAction.chkIterator(din)) {
-        // no validation necessary
+        // no validation necessary in this interval
         action.apply(catalog);
       }
       // TODO embed table regio
@@ -211,6 +211,10 @@ public class LogCatalogFormat extends CatalogFormat {
       final int parentId;
       final int parentVersion;
 
+      CreateNamespace(String name) {
+        this(name, LATE_BIND, LATE_BIND, LATE_BIND, LATE_BIND);
+      }
+
       CreateNamespace(String name, int parentId, int parentVersion) {
         this(name, LATE_BIND, LATE_BIND, parentId, parentVersion);
       }
@@ -305,6 +309,10 @@ public class LogCatalogFormat extends CatalogFormat {
       final int version;
       final String key;
       final String value;
+
+      AddNamespaceProperty(Namespace ns, String key, String value) {
+        this(LATE_BIND, LATE_BIND, key, value);
+      }
 
       AddNamespaceProperty(int nsid, String key, String value) {
         this(nsid, LATE_BIND, key, value);
@@ -815,7 +823,6 @@ public class LogCatalogFormat extends CatalogFormat {
     }
 
     void dropTableInternal(int tblId) {
-      // TODO Precondition: ensure no tables exist in this namespace (should be checked on insert)
       tblLocations.remove(tblId);
       tblVersion.remove(tblId);
     }
@@ -825,8 +832,14 @@ public class LogCatalogFormat extends CatalogFormat {
       tblVersion.put(tblId, version);
     }
 
+    // TODO consider doing a lot of work to make this into a stream::reduce
+    // i.e., put some thought into making LogActions composable, use ACI for batching and parallel evaluation
+    // or even better, defer all that until you start on Hydro. Table format transactions can be a baseline
+    // and you can build a more general-purpose transaction system- including reordering with DBSP- on top of that.
+
     LogCatalogFile merge() {
-      // TODO compute diff with original
+      // TODO merge with existing catalog file
+      diff().apply(this);
       return new LogCatalogFile(
           original.location(),
           uuid,
@@ -841,16 +854,69 @@ public class LogCatalogFormat extends CatalogFormat {
           Maps.newHashMap(tblLocations));
     }
 
-    List<LogAction> diff() {
-      // TODO
-      throw new UnsupportedOperationException("TODO");
+    LogAction.Transaction diff() {
+      // TODO when reading a new checkpoint, can reapply diff (may fail)
+      final LogCatalogFile original = (LogCatalogFile) this.original;
+      List<LogAction> actions = Lists.newArrayList();
+      // create/delete namespaces
+      for (Map.Entry<Namespace, Boolean> e : namespaces.entrySet().stream().sorted(Comparator.comparing(e -> e.getKey().toString())).collect(Collectors.toList())) {
+        final Namespace ns = e.getKey();
+        if (e.getValue()) {
+          final Namespace parent = parentOf(ns);
+          final Integer parentId = original.nsids.get(parent);
+          if (null == parentId) {
+            Preconditions.checkNotNull(namespaces.get(parent), "Parent namespace not found: %s", parent);
+            // parent namespace is part of this transaction
+            actions.add(new LogAction.CreateNamespace(nameOf(ns)));
+          } else {
+            // parent namespace is already in the catalog
+            Preconditions.checkNotNull(original.nsids.get(parent), "Parent namespace not found: %s", parent);
+            actions.add(new LogAction.CreateNamespace(nameOf(ns), parentId, original.nsVersion.get(parentId)));
+          }
+        } else {
+          actions.add(new LogAction.DropNamespace(nsids.get(e.getKey()), nsVersion.get(nsids.get(e.getKey()))));
+        }
+      }
+      // update/delete properties
+      for (Map.Entry<Namespace, Map<String, String>> e : namespaceProperties.entrySet()) {
+        final int nsid = nsids.get(e.getKey());
+        // TODO this increments the version on every property change. Not wrong, but excessive.
+        for (Map.Entry<String, String> prop : e.getValue().entrySet()) {
+          if (e.getValue() != null) {
+            actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
+          } else {
+            actions.add(new LogAction.DropNamespaceProperty(nsid, original.nsVersion.get(nsid), prop.getKey()));
+          }
+        }
+      }
+      for (Map.Entry<TableIdentifier,String> t : tables.entrySet()) {
+        final TableIdentifier ti = t.getKey();
+        final int nsid = nsids.get(ti.namespace());
+        if (t.getValue() != null) {
+          actions.add(new LogAction.CreateTable(ti.name(), nsid, nsVersion.get(nsid), t.getValue()));
+        } else {
+          final int tblId = tblIds.get(ti);
+          actions.add(new LogAction.DropTable(tblId, tblVersion.get(tblId)));
+        }
+      }
+      return new LogAction.Transaction(actions);
+    }
+
+    void write(OutputStream out) throws IOException {
+      ((LogCatalogFile)original).write(out);
+      try (DataOutputStream dos = new DataOutputStream(out)) {
+        diff().write(dos);
+      }
     }
 
     @Override
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
+      // refresh catalog file
       try {
-        // TODO
-        throw new UnsupportedOperationException("TODO");
+        // TODO actually do the I/O
+        // write original as checkpoint
+        // write diff as transaction
+        return merge();
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Cannot commit");
       }
@@ -903,6 +969,23 @@ public class LogCatalogFormat extends CatalogFormat {
       this.tblVersion = Maps.newHashMap();
       this.tblLocations = Maps.newHashMap();
       this.nsLookup = Maps.newHashMap();
+      this.nsids.put(Namespace.empty(), 0);
+      this.nsVersion.put(0, 1);
+    }
+
+    // copy constructor for now
+    LogCatalogFile(LogCatalogFile other) {
+        super(other.uuid(), other.location());
+        this.nextNsid = other.nextNsid;
+        this.nextTblid = other.nextTblid;
+        this.sealed = other.sealed;
+        this.nsids = Maps.newHashMap(other.nsids);
+        this.nsVersion = Maps.newHashMap(other.nsVersion);
+        this.nsProperties = Maps.newHashMap(other.nsProperties);
+        this.tblIds = Maps.newHashMap(other.tblIds);
+        this.tblVersion = Maps.newHashMap(other.tblVersion);
+        this.tblLocations = Maps.newHashMap(other.tblLocations);
+        this.nsLookup = Maps.newHashMap(other.nsLookup);
     }
 
     LogCatalogFile(
