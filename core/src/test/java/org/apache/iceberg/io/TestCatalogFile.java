@@ -63,20 +63,26 @@ public class TestCatalogFile {
     SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
     when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
 
+    final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
         format
             .empty(nullFile)
-            .createNamespace(NS1, Collections.emptyMap())
+            .createNamespace(NS1, ns1PropsInit)
             .createNamespace(NS2, Collections.emptyMap())
             .createTable(TBL1, "gs://bucket/path/to/table1")
             .createTable(TBL2, "gs://bucket/path/to/table2")
             .commit(fileIO); // ignored; just passing info between CatalogFile
 
     checkNamespaces(catalogFile, Namespace.empty(), NS1, NS2);
+    assertThat(catalogFile.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1PropsInit);
 
     final Map<String, String> ns1Props = Collections.singletonMap("key1", "value1");
     CatalogFile updateProp =
-        format.from(catalogFile).updateProperties(NS1, ns1Props).commit(fileIO);
+        format
+            .from(catalogFile)
+            .updateProperties(NS1, Collections.singletonMap("key0", null))
+            .updateProperties(NS1, ns1Props)
+            .commit(fileIO);
     assertThat(updateProp).isNotEqualTo(catalogFile);
     checkNamespaces(updateProp, Namespace.empty(), NS1, NS2);
     assertThat(updateProp.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);

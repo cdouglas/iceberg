@@ -323,37 +323,42 @@ public class LogCatalogFormat extends CatalogFormat {
 
     static class AddNamespaceProperty extends LogAction {
       private static final int LATE_BIND = -1;
-      final int nsid;
-      final int version;
+      final int logNsid;
+      final int logVersion;
       final String key;
       final String value;
 
-      AddNamespaceProperty(int nsid, String key, String value) {
-        this(nsid, LATE_BIND, key, value);
+      AddNamespaceProperty(int logNsid, String key, String value) {
+        this(logNsid, LATE_BIND, key, value);
+        Preconditions.checkArgument(logNsid < 0, "Namespace %d must be late-bound", logNsid);
       }
 
-      AddNamespaceProperty(int nsid, int version, String key, String value) {
-        this.nsid = nsid;
-        this.version = version;
+      AddNamespaceProperty(int logNsid, int logVersion, String key, String value) {
+        this.logNsid = logNsid;
+        this.logVersion = logVersion;
         this.key = key;
         this.value = value;
       }
 
       @Override
       boolean verify(Mut catalog) {
-        if (LATE_BIND == version) {
+        if (LATE_BIND == logVersion) {
           return true;
         }
-        Integer version = catalog.nsVersion.get(nsid);
-        return version != null && version == this.version;
+        Integer version = catalog.nsVersion.get(logNsid);
+        return version != null && version == this.logVersion;
       }
 
       @Override
       void apply(Mut catalog) {
-        if (version != LATE_BIND) {
-          // from the log; increment the namespace version
+        final int nsid;
+        if (LATE_BIND == logVersion) {
+          // created with namespace; don't increment the namespace version
+          nsid = catalog.nsRemap.get(logNsid);
+        } else {
           // TODO when building a transaction, make subsequent actions LATE_BIND
-          catalog.nsVersion.put(nsid, version + 1);
+          nsid = logNsid;
+          catalog.nsVersion.put(nsid, logVersion + 1);
         }
         catalog.addNamespacePropertyInternal(nsid, key, value);
       }
@@ -361,8 +366,8 @@ public class LogCatalogFormat extends CatalogFormat {
       @Override
       void write(DataOutputStream dos) throws IOException {
         dos.writeByte(Type.ADD_NAMESPACE_PROPERTY.opcode);
-        dos.writeInt(nsid);
-        dos.writeInt(version);
+        dos.writeInt(logNsid);
+        dos.writeInt(logVersion);
         dos.writeUTF(key);
         dos.writeUTF(value);
       }
@@ -932,9 +937,16 @@ public class LogCatalogFormat extends CatalogFormat {
         final Namespace ns = e.getKey();
         final int nsid = original.nsids.getOrDefault(ns, nsids.get(ns));
         for (Map.Entry<String, String> prop : e.getValue().entrySet()) {
-          if (e.getValue() != null) {
-            actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
+          if (prop.getValue() != null) {
+            if (nsid < 0) {
+              // namespace is created in this transaction; late-bind
+              actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
+            } else {
+              // namespcae exists; cite version
+              actions.add(new LogAction.AddNamespaceProperty(nsid, original.nsVersion.get(nsid), prop.getKey(), prop.getValue()));
+            }
           } else {
+            // TODO this isn't triggering?
             actions.add(new LogAction.DropNamespaceProperty(nsid, original.nsVersion.get(nsid), prop.getKey()));
           }
         }
@@ -1152,7 +1164,7 @@ public class LogCatalogFormat extends CatalogFormat {
       for (Map.Entry<Integer, Map<String, String>> e : nsProperties.entrySet()) {
         final int nsid = e.getKey();
         for (Map.Entry<String, String> prop : e.getValue().entrySet()) {
-          actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
+          actions.add(new LogAction.AddNamespaceProperty(nsid, nsVersion.get(nsid), prop.getKey(), prop.getValue()));
         }
       }
       for (Map.Entry<TableIdentifier, Integer> e : tblIds.entrySet()) {
