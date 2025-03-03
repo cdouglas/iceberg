@@ -59,6 +59,8 @@ public abstract class CatalogFile {
     return location;
   }
 
+  public abstract boolean createsHierarchicalNamespaces();
+
   public abstract String location(TableIdentifier table);
 
   public abstract Set<Namespace> namespaces();

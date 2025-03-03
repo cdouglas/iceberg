@@ -18,21 +18,23 @@
  */
 package org.apache.iceberg.io;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-
+import com.google.common.collect.Sets;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TestCatalogFile {
 
@@ -70,15 +72,17 @@ public class TestCatalogFile {
             .createTable(TBL2, "gs://bucket/path/to/table2")
             .commit(fileIO); // ignored; just passing info between CatalogFile
 
+    checkNamespaces(catalogFile, Namespace.empty(), NS1, NS2);
+
     final Map<String, String> ns1Props = Collections.singletonMap("key1", "value1");
     CatalogFile updateProp =
         format.from(catalogFile).updateProperties(NS1, ns1Props).commit(fileIO);
     assertThat(updateProp).isNotEqualTo(catalogFile);
-    assertThat(updateProp.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1, NS2);
+    checkNamespaces(updateProp, Namespace.empty(), NS1, NS2);
     assertThat(updateProp.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
 
     CatalogFile drop = format.from(updateProp).dropNamespace(NS2).commit(fileIO);
-    assertThat(drop.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1);
+    checkNamespaces(drop, Namespace.empty(), NS1);
     assertThat(drop.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
   }
 
@@ -113,5 +117,25 @@ public class TestCatalogFile {
     CatalogFile drop = format.from(updateProp).dropNamespace(NS2).commit(fileIO);
     assertThat(drop.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1);
     assertThat(drop.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
+  }
+
+  private static void checkNamespaces(CatalogFile catalogFile, Namespace... namespaces) {
+    if (catalogFile.createsHierarchicalNamespaces()) {
+      assertThat(catalogFile.namespaces()).containsExactlyInAnyOrder(allNamespaces(namespaces));
+    } else {
+      assertThat(catalogFile.namespaces()).containsExactlyInAnyOrder(namespaces);
+    }
+  }
+
+  // return ancestors of Namespaces as a set
+  static Namespace[] allNamespaces(Namespace... namespaces) {
+    Set<Namespace> allAncestors = Sets.newHashSet();
+    for (Namespace ns : namespaces) {
+      String[] levels = ns.levels();
+      for (int i = 0; i <= levels.length; i++) {
+        allAncestors.add(Namespace.of(Arrays.copyOfRange(levels, 0, i)));
+      }
+    }
+    return allAncestors.toArray(new Namespace[0]);
   }
 }

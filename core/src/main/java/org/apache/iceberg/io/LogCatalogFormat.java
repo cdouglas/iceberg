@@ -419,38 +419,51 @@ public class LogCatalogFormat extends CatalogFormat {
       private static final int LATE_BIND = -1;
       final String name;
       final int logTblId;
-      final int tblVersion;
-      final int nsid;
-      final int nsVersion;
+      final int logTblVersion;
+      final int logNsid;
+      final int logNsVersion;
       final String location;
 
-      CreateTable(String name, int nsid, int nsVersion, String location) {
-        this(name, LATE_BIND, 1, nsid, nsVersion, location);
+      // Namespace created in this transaction
+      CreateTable(String name, int logNsid, String location) {
+        this(name, LATE_BIND, 1, logNsid, LATE_BIND, location);
+        Preconditions.checkArgument(logNsid < 0, "Namespace must be late-bound");
       }
 
+      // Namespace exists
+      CreateTable(String name, int logNsid, int logNsVersion, String location) {
+        this(name, LATE_BIND, 1, logNsid, logNsVersion, location);
+      }
+
+      // created from checkpoint
       CreateTable(
-          String name, int logTblId, int tblVersion, int nsid, int nsVersion, String location) {
+              String name, int logTblId, int logTblVersion, int logNsid, int logNsVersion, String location) {
         this.name = name;
         this.logTblId = logTblId;
-        this.tblVersion = tblVersion;
-        this.nsid = nsid;
-        this.nsVersion = nsVersion;
+        this.logTblVersion = logTblVersion;
+        this.logNsid = logNsid;
+        this.logNsVersion = logNsVersion;
         this.location = location;
       }
 
       @Override
       boolean verify(Mut catalog) {
-        if (tblVersion < 0) {
+        if (logNsVersion < 0) {
+          // contained in a namespace created in this transaction
           return true;
         }
-        Integer version = catalog.nsVersion.get(nsid);
-        return version != null && version == nsVersion;
+        Integer version = catalog.nsVersion.get(logNsid);
+        return version != null && version == logNsVersion;
       }
 
       @Override
       void apply(Mut catalog) {
+        // restore NSID, version from log (checkpoint)
+        // TODO ID remapping needs an abstraction
+        // TODO reaching into internal maps is grotesque, clean this up
+        final int nsid = logNsVersion < 0 ? catalog.nsRemap.get(logNsid) : logNsid;
         final int tblId = this.logTblId == LATE_BIND ? catalog.nextTblid++ : this.logTblId;
-        catalog.addTableInternal(tblId, nsid, tblVersion, name, location);
+        catalog.addTableInternal(tblId, nsid, logTblVersion, name, location);
       }
 
       @Override
@@ -458,9 +471,9 @@ public class LogCatalogFormat extends CatalogFormat {
         dos.writeByte(Type.CREATE_TABLE.opcode);
         dos.writeUTF(name);
         dos.writeInt(logTblId);
-        dos.writeInt(tblVersion);
-        dos.writeInt(nsid);
-        dos.writeInt(nsVersion);
+        dos.writeInt(logTblVersion);
+        dos.writeInt(logNsid);
+        dos.writeInt(logNsVersion);
         dos.writeUTF(location);
       }
 
@@ -786,7 +799,7 @@ public class LogCatalogFormat extends CatalogFormat {
       this.uuid = uuid;
       this.nextNsid = nextNsid;
       this.nextTblid = nextTblid;
-      // TODO add compaction parameters so clients have the same criteria
+      // TODO add compaction parameters so clients use the same criteria
     }
 
     void addNamespaceInternal(String name, int parentId, int nsid, int version) {
@@ -871,7 +884,7 @@ public class LogCatalogFormat extends CatalogFormat {
 
     LogCatalogFile merge() {
       // TODO merge with existing catalog file
-      diff().apply(this);
+      // TODO location will need to be updated after CAS
       return new LogCatalogFile(
           original.location(),
           uuid,
@@ -909,7 +922,8 @@ public class LogCatalogFormat extends CatalogFormat {
             actions.add(new LogAction.CreateNamespace(nameOf(ns), nsVirtId, parentId, original.nsVersion.get(parentId)));
           }
         } else {
-          actions.add(new LogAction.DropNamespace(nsids.get(e.getKey()), nsVersion.get(nsids.get(e.getKey()))));
+          final int nsid = original.nsids.get(e.getKey());
+          actions.add(new LogAction.DropNamespace(nsid, original.nsVersion.get(nsid)));
         }
       }
       // update/delete properties
@@ -927,14 +941,23 @@ public class LogCatalogFormat extends CatalogFormat {
       }
       for (Map.Entry<TableIdentifier,String> t : tables.entrySet()) {
         final TableIdentifier ti = t.getKey();
+        final String location = t.getValue();
         final Namespace ns = ti.namespace();
-        final int nsid = original.nsids.getOrDefault(ns, nsids.get(ns));
-        if (t.getValue() != null) {
-          // sigh.
-          actions.add(new LogAction.CreateTable(ti.name(), nsid, nsVersion.getOrDefault(nsid, LogAction.CreateTable.LATE_BIND), t.getValue()));
+        final Integer parentId = original.nsids.get(ns);
+        if (location != null) {
+          // creating a table
+          if (null == parentId) {
+            // parent namespace is part of this transaction; assign virt ID
+            Preconditions.checkArgument(namespaces.get(ns), "Parent namespace not found: %s", ns);
+            actions.add(new LogAction.CreateTable(ti.name(), nsids.get(ns), location));
+          } else {
+            // parent namespace is already in the catalog
+            actions.add(new LogAction.CreateTable(ti.name(), parentId, original.nsVersion.get(parentId), location));
+          }
         } else {
+          // dropping a table
           final int tblId = tblIds.get(ti);
-          actions.add(new LogAction.DropTable(tblId, tblVersion.get(tblId)));
+          actions.add(new LogAction.DropTable(tblId, original.tblVersion.get(tblId)));
         }
       }
       return new LogAction.Transaction(actions);
@@ -954,7 +977,13 @@ public class LogCatalogFormat extends CatalogFormat {
         // TODO actually do the I/O
         // write original as checkpoint
         // write diff as transaction
-        return merge();
+        final LogCatalogFile base = (LogCatalogFile) original;
+        final Mut merged = new Mut(base.location());
+        for (LogAction action : base.checkpointStream()) {
+          action.apply(merged);
+        }
+        diff().apply(merged);
+        return merged.merge();
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Cannot commit");
       }
@@ -1037,6 +1066,12 @@ public class LogCatalogFormat extends CatalogFormat {
       this.nsLookup =
           nsids.entrySet().stream()
               .collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey));
+    }
+
+    // TODO move this to format
+    @Override
+    public boolean createsHierarchicalNamespaces() {
+      return true;
     }
 
     @Override

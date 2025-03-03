@@ -103,6 +103,11 @@ public class CASCatalogFormat extends CatalogFormat {
     }
 
     @Override
+    public boolean createsHierarchicalNamespaces() {
+      return false;
+    }
+
+    @Override
     public String location(TableIdentifier table) {
       return tblLocations.get(table);
     }
