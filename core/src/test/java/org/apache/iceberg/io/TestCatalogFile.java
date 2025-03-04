@@ -27,11 +27,14 @@ import java.util.Set;
 import java.util.stream.Stream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -149,6 +152,47 @@ public class TestCatalogFile {
                       .commit(fileIO);
       checkNamespaces(drop, Namespace.empty(), NS1, NS2, NS3);
     }
+  }
+
+  @ParameterizedTest
+  @MethodSource("catalogFormats")
+  @SuppressWarnings("unchecked")
+  // @Disabled("Requires changes in CatalogFile.Mut to support versioned changes") // JUnit5 doesn't report as ignored
+  public void testTableSwap(CatalogFormat format) throws Exception {
+    // TODO: Example transaction we do NOT support
+    // TODO: tracking create/delete in CatalogFile.Mut is insufficient to support this
+    // TODO: since the same TableIdentifier is both deleted and created in the same transaction
+    // TODO: would need to track operations + merge
+    assumeTrue(Boolean.getBoolean("dingos"), "Requires changes in CatalogFile.Mut to support versioned changes");
+    InputFile nullFile = mock(InputFile.class);
+    AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
+    CAS token = mock(CAS.class);
+    when(outputFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(token);
+    when(outputFile.writeAtomic(any(), any())).thenReturn(nullFile);
+    SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
+    when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
+
+    CatalogFile catalogFile =
+            format
+                    .empty(nullFile)
+                    .createNamespace(NS1, Collections.emptyMap())
+                    .createTable(TBL1, "gs://bucket/path/to/table1")
+                    .createTable(TBL2, "gs://bucket/path/to/table2")
+                    .commit(fileIO); // ignored; just passing info between CatalogFile
+
+    CatalogFile swap =
+            format
+                    .from(catalogFile)
+                    .dropTable(TBL1)
+                    .dropTable(TBL2)
+                    .createTable(TBL1, "gs://bucket/path/to/table2")
+                    .createTable(TBL2, "gs://bucket/path/to/table1")
+                    .commit(fileIO);
+    assertThat(swap).isNotEqualTo(catalogFile);
+    checkNamespaces(swap, Namespace.empty(), NS1);
+    assertThat(swap.tables()).containsExactlyInAnyOrder(TBL1, TBL2);
+    assertThat(swap.location(TBL1)).isEqualTo("gs://bucket/path/to/table2");
+    assertThat(swap.location(TBL2)).isEqualTo("gs://bucket/path/to/table1");
   }
 
   private static void checkNamespaces(CatalogFile catalogFile, Namespace... namespaces) {
