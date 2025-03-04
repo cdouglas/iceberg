@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import org.apache.commons.compress.utils.Lists;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -146,17 +145,29 @@ public abstract class CatalogFile {
     }
 
     public Mut dropNamespace(Namespace namespace) {
-      // TODO check for tables/child namespaces, refuse if not empty
       Preconditions.checkArgument(!Namespace.empty().equals(namespace), "Cannot drop empty namespace");
       if (checkNamespaceExists(namespace)) {
         throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
       }
-      final boolean nsChildren = original.namespaces().stream().noneMatch(ns -> parentOf(ns).equals(namespace)) &&
-                                 namespaces.entrySet().stream().noneMatch(e -> e.getValue() && parentOf(e.getKey()).equals(namespace));
-      final boolean tblChildren = original.tables().stream().noneMatch(table -> table.namespace().equals(namespace)) &&
-                                  tables.keySet().stream().noneMatch(table -> table.namespace().equals(namespace));
-      if (!nsChildren && !tblChildren) {
-        throw new IllegalStateException("Cannot drop non-empty namespace: " + namespace);
+      final boolean noNsChild =
+          original.namespaces().stream()
+              .filter(ns -> namespaces.getOrDefault(ns, true)) // filter out children marked for deletion
+              .map(Mut::parentOf)
+              .noneMatch(parent -> parent.equals(namespace)) &&
+          namespaces.entrySet().stream()
+              .filter(Map.Entry::getValue) // only new namespaces
+              .noneMatch(e -> parentOf(e.getKey()).equals(namespace));
+      final boolean noTblChild =
+          original.tables().stream()
+              .filter(tbl -> tables.get(tbl) == null)
+              .map(TableIdentifier::namespace)
+              .noneMatch(ns -> ns.equals(namespace)) &&
+          tables.entrySet().stream()
+              .filter(e -> e.getValue() != null) // only table creations
+              .map(e -> e.getKey().namespace())
+              .noneMatch(ns -> ns.equals(namespace));
+      if (!noNsChild || !noTblChild) {
+        throw new IllegalArgumentException("Cannot drop non-empty namespace: " + namespace);
       }
       namespaces.put(namespace, false);
       namespaceProperties.remove(namespace);

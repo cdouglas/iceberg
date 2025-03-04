@@ -31,6 +31,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -41,11 +42,12 @@ public class TestCatalogFile {
   private static final Namespace NS1 = Namespace.of("db", "dingos", "yaks", "prod");
   private static final Namespace NS2 = Namespace.of("db", "dingos", "yaks", "qa");
   private static final Namespace NS3 = Namespace.of("db", "dingos", "yaks", "dev");
-  private static final Namespace NS4 = Namespace.of("db", "dingos", "yaks", "dev", "staging");
+  private static final Namespace NS4 = Namespace.of("db", "dingos", "yaks", "ved", "staging");
   private static final TableIdentifier TBL1 = TableIdentifier.of(NS1, "table1");
   private static final TableIdentifier TBL2 = TableIdentifier.of(NS1, "table2");
   private static final TableIdentifier TBL3 = TableIdentifier.of(NS2, "table3");
   private static final TableIdentifier TBL4 = TableIdentifier.of(NS3, "table4");
+  private static final TableIdentifier TBL5 = TableIdentifier.of(Namespace.empty(), "table4");
 
   static Stream<CatalogFormat> catalogFormats() {
     return Stream.of(new CASCatalogFormat(), new LogCatalogFormat());
@@ -104,25 +106,49 @@ public class TestCatalogFile {
     SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
     when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
 
+    final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
             format
                     .empty(nullFile)
-                    .createNamespace(NS1, Collections.emptyMap())
+                    .createNamespace(NS1, ns1PropsInit)
                     .createNamespace(NS2, Collections.emptyMap())
                     .createTable(TBL1, "gs://bucket/path/to/table1")
                     .createTable(TBL2, "gs://bucket/path/to/table2")
                     .commit(fileIO); // ignored; just passing info between CatalogFile
 
+    checkNamespaces(catalogFile, Namespace.empty(), NS1, NS2);
+    assertThat(catalogFile.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1PropsInit);
+
     final Map<String, String> ns1Props = Collections.singletonMap("key1", "value1");
     CatalogFile updateProp =
-            format.from(catalogFile).updateProperties(NS1, ns1Props).commit(fileIO);
+            format
+                    .from(catalogFile)
+                    .updateProperties(NS1, Collections.singletonMap("key0", null)) // remove prop
+                    .updateProperties(NS1, ns1Props) // add prop, separate actoin
+                    .createTable(TBL3, "gs://bucket/path/to/table3") // add table
+                    .createNamespace(NS4, Collections.emptyMap()) // empty namespace
+                    .createTable(TBL5, "gs://bucket/path/to/table5") // add in root namespace
+                    .createNamespace(NS3, Collections.emptyMap()) // add namespace
+                    .createTable(TBL4, "gs://bucket/path/to/table4") // add tbl w/ namespace
+                    .commit(fileIO);
     assertThat(updateProp).isNotEqualTo(catalogFile);
-    assertThat(updateProp.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1, NS2);
+    checkNamespaces(updateProp, Namespace.empty(), NS1, NS2, NS3, NS4);
     assertThat(updateProp.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
+    assertThat(updateProp.tables()).containsExactlyInAnyOrder(TBL1, TBL2, TBL3, TBL4, TBL5);
 
-    CatalogFile drop = format.from(updateProp).dropNamespace(NS2).commit(fileIO);
-    assertThat(drop.namespaces()).containsExactlyInAnyOrder(Namespace.empty(), NS1);
-    assertThat(drop.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
+    assertThatThrownBy(() -> format.from(updateProp).dropNamespace(NS2).commit(fileIO))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Cannot drop non-empty namespace");
+    if (format instanceof LogCatalogFormat) {
+      // drop empty namespace and (after drop) empty parent
+      CatalogFile drop =
+              format
+                      .from(updateProp)
+                      .dropNamespace(NS4)
+                      .dropNamespace(Namespace.of(Arrays.copyOfRange(NS4.levels(), 0, NS4.length() - 1)))
+                      .commit(fileIO);
+      checkNamespaces(drop, Namespace.empty(), NS1, NS2, NS3);
+    }
   }
 
   private static void checkNamespaces(CatalogFile catalogFile, Namespace... namespaces) {

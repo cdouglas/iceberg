@@ -219,8 +219,8 @@ public class LogCatalogFormat extends CatalogFormat {
       }
 
       // log, parent exists
-      CreateNamespace(String name, int logVersion, int logParentId, int logParentVersion) {
-        this(name, LATE_BIND, logVersion, logParentId, logParentVersion);
+      CreateNamespace(String name, int logNsid, int logParentId, int logParentVersion) {
+        this(name, logNsid, LATE_BIND, logParentId, logParentVersion);
       }
 
       // checkpoint
@@ -913,6 +913,7 @@ public class LogCatalogFormat extends CatalogFormat {
       for (Map.Entry<Namespace, Boolean> e : namespaces.entrySet().stream().sorted(Comparator.comparing(e -> e.getKey().toString())).collect(Collectors.toList())) {
         final Namespace ns = e.getKey();
         if (e.getValue()) {
+          // create
           final Namespace parent = parentOf(ns);
           final Integer parentId = original.nsids.get(parent);
           if (null == parentId) {
@@ -927,6 +928,7 @@ public class LogCatalogFormat extends CatalogFormat {
             actions.add(new LogAction.CreateNamespace(nameOf(ns), nsVirtId, parentId, original.nsVersion.get(parentId)));
           }
         } else {
+          // drop
           final int nsid = original.nsids.get(e.getKey());
           actions.add(new LogAction.DropNamespace(nsid, original.nsVersion.get(nsid)));
         }
