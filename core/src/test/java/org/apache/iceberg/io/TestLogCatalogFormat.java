@@ -58,21 +58,6 @@ public class TestLogCatalogFormat {
   }
 
   @Test
-  public void testRegionFormat() {
-    final InputFile mockFile = mock(InputFile.class);
-    LogCatalogFile catalog = generateRandomLogCatalogFile(random.nextLong());
-    try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-      byte[] catabytes = toBytes(catalog);
-      // LogCatalogFile readCatalog = LogCatalogRegionFormat.readCatalogFile(catabytes,
-      // regionFormat);
-    } catch (IOException e) {
-      fail("Failed to write/read catalog file", e);
-    }
-  }
-
-  // TODO include tests like drop + create table in the same transaction
-
-  @Test
   public void testLogStream() throws IOException {
     // Create a sample transaction to write to the stream
     UUID txnId = UUID.randomUUID();

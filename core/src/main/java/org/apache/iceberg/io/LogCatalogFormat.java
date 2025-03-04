@@ -328,11 +328,12 @@ public class LogCatalogFormat extends CatalogFormat {
       final String key;
       final String value;
 
+      // checkpoint, ns created in txn
       AddNamespaceProperty(int logNsid, String key, String value) {
         this(logNsid, LATE_BIND, key, value);
-        Preconditions.checkArgument(logNsid < 0, "Namespace %d must be late-bound", logNsid);
       }
 
+      // log, ns exists
       AddNamespaceProperty(int logNsid, int logVersion, String key, String value) {
         this.logNsid = logNsid;
         this.logVersion = logVersion;
@@ -342,7 +343,7 @@ public class LogCatalogFormat extends CatalogFormat {
 
       @Override
       boolean verify(Mut catalog) {
-        if (LATE_BIND == logVersion) {
+        if (logVersion < 0) {
           return true;
         }
         Integer version = catalog.nsVersion.get(logNsid);
@@ -352,13 +353,15 @@ public class LogCatalogFormat extends CatalogFormat {
       @Override
       void apply(Mut catalog) {
         final int nsid;
-        if (LATE_BIND == logVersion) {
+        if (logNsid < 0) {
           // created with namespace; don't increment the namespace version
           nsid = catalog.nsRemap.get(logNsid);
         } else {
-          // TODO when building a transaction, make subsequent actions LATE_BIND
           nsid = logNsid;
-          catalog.nsVersion.put(nsid, logVersion + 1);
+          if (logVersion >= 0) {
+            // assign (possibly multiple times) updated version
+            catalog.nsVersion.put(nsid, logVersion + 1);
+          }
         }
         catalog.addNamespacePropertyInternal(nsid, key, value);
       }
@@ -976,13 +979,6 @@ public class LogCatalogFormat extends CatalogFormat {
       return new LogAction.Transaction(actions);
     }
 
-    void write(OutputStream out) throws IOException {
-      ((LogCatalogFile)original).write(out);
-      try (DataOutputStream dos = new DataOutputStream(out)) {
-        diff().write(dos);
-      }
-    }
-
     @Override
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
       // refresh catalog file
@@ -1165,7 +1161,7 @@ public class LogCatalogFormat extends CatalogFormat {
       for (Map.Entry<Integer, Map<String, String>> e : nsProperties.entrySet()) {
         final int nsid = e.getKey();
         for (Map.Entry<String, String> prop : e.getValue().entrySet()) {
-          actions.add(new LogAction.AddNamespaceProperty(nsid, nsVersion.get(nsid), prop.getKey(), prop.getValue()));
+          actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
         }
       }
       for (Map.Entry<TableIdentifier, Integer> e : tblIds.entrySet()) {
