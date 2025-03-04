@@ -948,7 +948,6 @@ public class LogCatalogFormat extends CatalogFormat {
               actions.add(new LogAction.AddNamespaceProperty(nsid, original.nsVersion.get(nsid), prop.getKey(), prop.getValue()));
             }
           } else {
-            // TODO this isn't triggering?
             actions.add(new LogAction.DropNamespaceProperty(nsid, original.nsVersion.get(nsid), prop.getKey()));
           }
         }

@@ -142,13 +142,18 @@ public class TestCatalogFile {
     assertThatThrownBy(() -> format.from(updateProp).dropNamespace(NS2).commit(fileIO))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("Cannot drop non-empty namespace");
-    if (format instanceof LogCatalogFormat) {
+    if (updateProp.createsHierarchicalNamespaces()) {
+      // fail to drop parent before child
+      final Namespace NS4parent = Namespace.of(Arrays.copyOfRange(NS4.levels(), 0, NS4.length() - 1));
+      assertThatThrownBy(() -> format.from(updateProp).dropNamespace(NS4parent).commit(fileIO))
+              .isInstanceOf(IllegalArgumentException.class)
+              .hasMessageContaining("Cannot drop non-empty namespace");
       // drop empty namespace and (after drop) empty parent
       CatalogFile drop =
               format
                       .from(updateProp)
                       .dropNamespace(NS4)
-                      .dropNamespace(Namespace.of(Arrays.copyOfRange(NS4.levels(), 0, NS4.length() - 1)))
+                      .dropNamespace(NS4parent)
                       .commit(fileIO);
       checkNamespaces(drop, Namespace.empty(), NS1, NS2, NS3);
     }
