@@ -157,7 +157,6 @@ public class TestCatalogFile {
   @ParameterizedTest
   @MethodSource("catalogFormats")
   @SuppressWarnings("unchecked")
-  // @Disabled("Requires changes in CatalogFile.Mut to support versioned changes") // JUnit5 doesn't report as ignored
   public void testTableSwap(CatalogFormat format) throws Exception {
     // TODO: Example transaction we do NOT support
     // TODO: tracking create/delete in CatalogFile.Mut is insufficient to support this
