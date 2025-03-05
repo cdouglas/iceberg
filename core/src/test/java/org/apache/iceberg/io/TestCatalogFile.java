@@ -31,10 +31,13 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.stream.Stream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -54,18 +57,28 @@ public class TestCatalogFile {
     return Stream.of(new CASCatalogFormat(), new LogCatalogFormat());
   }
 
-  @ParameterizedTest
-  @MethodSource("catalogFormats")
+  private final Random random = new Random();
+  private InputFile nullFile;
+  private SupportsAtomicOperations<CAS> fileIO;
+
+  @BeforeEach
   @SuppressWarnings("unchecked")
-  public void testCatalogNamespace(CatalogFormat format) throws IOException {
-    InputFile nullFile = mock(InputFile.class);
+  public void before(TestInfo info) throws IOException {
+    final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
+    random.setSeed(System.currentTimeMillis());
+    System.out.println(testName + " seed: " + random.nextLong());
+    nullFile = mock(InputFile.class);
     AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
     CAS token = mock(CAS.class);
     when(outputFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(token);
     when(outputFile.writeAtomic(any(), any())).thenReturn(nullFile);
-    SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
+    fileIO = mock(SupportsAtomicOperations.class);
     when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
+  }
 
+  @ParameterizedTest
+  @MethodSource("catalogFormats")
+  public void testCatalogNamespace(CatalogFormat format) {
     final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
         format
@@ -97,16 +110,7 @@ public class TestCatalogFile {
 
   @ParameterizedTest
   @MethodSource("catalogFormats")
-  @SuppressWarnings("unchecked")
-  public void testNamespaceTransaction(CatalogFormat format) throws IOException {
-    InputFile nullFile = mock(InputFile.class);
-    AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
-    CAS token = mock(CAS.class);
-    when(outputFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(token);
-    when(outputFile.writeAtomic(any(), any())).thenReturn(nullFile);
-    SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
-    when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
-
+  public void testNamespaceTransaction(CatalogFormat format) {
     final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
         format
@@ -157,8 +161,7 @@ public class TestCatalogFile {
 
   @ParameterizedTest
   @MethodSource("catalogFormats")
-  @SuppressWarnings("unchecked")
-  public void testTableSwap(CatalogFormat format) throws Exception {
+  public void testTableSwap(CatalogFormat format) {
     // TODO: Example transaction we do NOT support
     // TODO: tracking create/delete in CatalogFile.Mut is insufficient to support this
     // TODO: since the same TableIdentifier is both deleted and created in the same transaction
@@ -166,13 +169,6 @@ public class TestCatalogFile {
     assumeTrue(
         Boolean.getBoolean("dingos"),
         "Requires changes in CatalogFile.Mut to support versioned changes");
-    InputFile nullFile = mock(InputFile.class);
-    AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
-    CAS token = mock(CAS.class);
-    when(outputFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(token);
-    when(outputFile.writeAtomic(any(), any())).thenReturn(nullFile);
-    SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
-    when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
 
     CatalogFile catalogFile =
         format
