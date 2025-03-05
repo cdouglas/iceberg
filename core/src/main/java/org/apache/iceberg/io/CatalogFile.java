@@ -98,17 +98,24 @@ public abstract class CatalogFile {
     public Mut createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
-      Preconditions.checkArgument(!namespace.equals(Namespace.empty()), "Cannot create empty namespace");
-      if (original.containsNamespace(namespace) || (namespaces.containsKey(namespace) && !namespaces.get(namespace))) {
+      Preconditions.checkArgument(
+          !namespace.equals(Namespace.empty()), "Cannot create empty namespace");
+      if (original.containsNamespace(namespace)
+          || (namespaces.containsKey(namespace) && !namespaces.get(namespace))) {
         throw new AlreadyExistsException(
             "Cannot create namespace %s. Namespace already exists", namespace);
       }
-      for (Namespace ancestor = parentOf(namespace); !original.containsNamespace(ancestor); ancestor = parentOf(ancestor)) {
+      for (Namespace ancestor = parentOf(namespace);
+          !original.containsNamespace(ancestor);
+          ancestor = parentOf(ancestor)) {
         if (namespaces.containsKey(ancestor)) {
-            if (!namespaces.get(ancestor)) {
-                throw new IllegalStateException(String.format("Cannot create namespace %s. Parent namespace %s is marked for deletion", namespace, ancestor));
-            }
-            break;
+          if (!namespaces.get(ancestor)) {
+            throw new IllegalStateException(
+                String.format(
+                    "Cannot create namespace %s. Parent namespace %s is marked for deletion",
+                    namespace, ancestor));
+          }
+          break;
         }
         namespaces.put(ancestor, true);
       }
@@ -130,7 +137,7 @@ public abstract class CatalogFile {
               old.putAll(properties);
               return old;
             }
-            return  Maps.newHashMap(properties);
+            return Maps.newHashMap(properties);
           });
       return this;
     }
@@ -143,32 +150,36 @@ public abstract class CatalogFile {
     static Namespace parentOf(Namespace ns) {
       final int levels = ns.length();
       return levels > 1
-                      ? Namespace.of(Arrays.copyOfRange(ns.levels(), 0, levels - 1))
-                      : Namespace.empty();
+          ? Namespace.of(Arrays.copyOfRange(ns.levels(), 0, levels - 1))
+          : Namespace.empty();
     }
 
     public Mut dropNamespace(Namespace namespace) {
-      Preconditions.checkArgument(!Namespace.empty().equals(namespace), "Cannot drop empty namespace");
+      Preconditions.checkArgument(
+          !Namespace.empty().equals(namespace), "Cannot drop empty namespace");
       if (checkNamespaceExists(namespace)) {
         throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
       }
       final boolean noNsChild =
           original.namespaces().stream()
-              .filter(ns -> namespaces.getOrDefault(ns, true)) // filter out children marked for deletion
-              .map(Mut::parentOf)
-              .noneMatch(parent -> parent.equals(namespace)) &&
-          namespaces.entrySet().stream()
-              .filter(Map.Entry::getValue) // only new namespaces
-              .noneMatch(e -> parentOf(e.getKey()).equals(namespace));
+                  .filter(
+                      ns ->
+                          namespaces.getOrDefault(
+                              ns, true)) // filter out children marked for deletion
+                  .map(Mut::parentOf)
+                  .noneMatch(parent -> parent.equals(namespace))
+              && namespaces.entrySet().stream()
+                  .filter(Map.Entry::getValue) // only new namespaces
+                  .noneMatch(e -> parentOf(e.getKey()).equals(namespace));
       final boolean noTblChild =
           original.tables().stream()
-              .filter(tbl -> tables.get(tbl) == null)
-              .map(TableIdentifier::namespace)
-              .noneMatch(ns -> ns.equals(namespace)) &&
-          tables.entrySet().stream()
-              .filter(e -> e.getValue() != null) // only table creations
-              .map(e -> e.getKey().namespace())
-              .noneMatch(ns -> ns.equals(namespace));
+                  .filter(tbl -> tables.get(tbl) == null)
+                  .map(TableIdentifier::namespace)
+                  .noneMatch(ns -> ns.equals(namespace))
+              && tables.entrySet().stream()
+                  .filter(e -> e.getValue() != null) // only table creations
+                  .map(e -> e.getKey().namespace())
+                  .noneMatch(ns -> ns.equals(namespace));
       if (!noNsChild || !noTblChild) {
         throw new IllegalArgumentException("Cannot drop non-empty namespace: " + namespace);
       }
@@ -215,7 +226,9 @@ public abstract class CatalogFile {
     }
 
     private boolean checkNamespaceExists(Namespace namespace) {
-      return !Namespace.empty().equals(namespace) && !original.containsNamespace(namespace) && !namespaces.getOrDefault(namespace, false);
+      return !Namespace.empty().equals(namespace)
+          && !original.containsNamespace(namespace)
+          && !namespaces.getOrDefault(namespace, false);
     }
 
     public abstract CatalogFile commit(SupportsAtomicOperations<CAS> fileIO);

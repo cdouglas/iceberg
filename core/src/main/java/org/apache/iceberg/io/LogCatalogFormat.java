@@ -224,7 +224,8 @@ public class LogCatalogFormat extends CatalogFormat {
       }
 
       // checkpoint
-      CreateNamespace(String name, int logNsid, int logVersion, int logParentId, int logParentVersion) {
+      CreateNamespace(
+          String name, int logNsid, int logVersion, int logParentId, int logParentVersion) {
         this.name = name;
         this.logNsid = logNsid;
         this.logVersion = logVersion;
@@ -251,13 +252,15 @@ public class LogCatalogFormat extends CatalogFormat {
           nsid = catalog.remap(logNsid);
           parentId = logParentId < 0 ? catalog.nsRemap.get(logParentId) : logParentId;
           version = 1;
-          catalog.nsVersion.compute(parentId, (k, ver) -> {
-            if (null == ver) {
-              ver = ((LogCatalogFile) catalog.original).nsVersion.get(k);
-              Preconditions.checkNotNull(ver, "Parent namespace not found: %s", k);
-            }
-            return ver + 1;
-          });
+          catalog.nsVersion.compute(
+              parentId,
+              (k, ver) -> {
+                if (null == ver) {
+                  ver = ((LogCatalogFile) catalog.original).nsVersion.get(k);
+                  Preconditions.checkNotNull(ver, "Parent namespace not found: %s", k);
+                }
+                return ver + 1;
+              });
         } else {
           // restore NSID, version from log (checkpoint)
           nsid = logNsid;
@@ -445,7 +448,12 @@ public class LogCatalogFormat extends CatalogFormat {
 
       // created from checkpoint
       CreateTable(
-              String name, int logTblId, int logTblVersion, int logNsid, int logNsVersion, String location) {
+          String name,
+          int logTblId,
+          int logTblVersion,
+          int logNsid,
+          int logNsVersion,
+          String location) {
         this.name = name;
         this.logTblId = logTblId;
         this.logTblVersion = logTblVersion;
@@ -886,9 +894,12 @@ public class LogCatalogFormat extends CatalogFormat {
     }
 
     // TODO consider doing a lot of work to make this into a stream::reduce
-    // i.e., put some thought into making LogActions composable, use ACI for batching and parallel evaluation
-    // or even better, defer all that until you start on Hydro. Table format transactions can be a baseline
-    // and you can build a more general-purpose transaction system- including reordering with DBSP- on top of that.
+    // i.e., put some thought into making LogActions composable, use ACI for batching and parallel
+    // evaluation
+    // or even better, defer all that until you start on Hydro. Table format transactions can be a
+    // baseline
+    // and you can build a more general-purpose transaction system- including reordering with DBSP-
+    // on top of that.
 
     LogCatalogFile merge() {
       // TODO merge with existing catalog file
@@ -913,7 +924,10 @@ public class LogCatalogFormat extends CatalogFormat {
       List<LogAction> actions = Lists.newArrayList();
       // create/delete namespaces
       int nsVirtId = 0;
-      for (Map.Entry<Namespace, Boolean> e : namespaces.entrySet().stream().sorted(Comparator.comparing(e -> e.getKey().toString())).collect(Collectors.toList())) {
+      for (Map.Entry<Namespace, Boolean> e :
+          namespaces.entrySet().stream()
+              .sorted(Comparator.comparing(e -> e.getKey().toString()))
+              .collect(Collectors.toList())) {
         final Namespace ns = e.getKey();
         if (e.getValue()) {
           // create
@@ -921,14 +935,18 @@ public class LogCatalogFormat extends CatalogFormat {
           final Integer parentId = original.nsids.get(parent);
           if (null == parentId) {
             // parent namespace is part of this transaction; assign virt ID
-            Preconditions.checkNotNull(namespaces.get(parent), "Parent namespace not found: %s", parent);
+            Preconditions.checkNotNull(
+                namespaces.get(parent), "Parent namespace not found: %s", parent);
             nsids.put(ns, --nsVirtId);
             actions.add(new LogAction.CreateNamespace(nameOf(ns), nsVirtId, nsids.get(parent)));
           } else {
             // parent namespace is already in the catalog
-            Preconditions.checkNotNull(original.nsids.get(parent), "Parent namespace not found: %s", parent);
+            Preconditions.checkNotNull(
+                original.nsids.get(parent), "Parent namespace not found: %s", parent);
             nsids.put(ns, --nsVirtId);
-            actions.add(new LogAction.CreateNamespace(nameOf(ns), nsVirtId, parentId, original.nsVersion.get(parentId)));
+            actions.add(
+                new LogAction.CreateNamespace(
+                    nameOf(ns), nsVirtId, parentId, original.nsVersion.get(parentId)));
           }
         } else {
           // drop
@@ -948,15 +966,18 @@ public class LogCatalogFormat extends CatalogFormat {
               actions.add(new LogAction.AddNamespaceProperty(nsid, prop.getKey(), prop.getValue()));
             } else {
               // namespcae exists; cite version
-              actions.add(new LogAction.AddNamespaceProperty(nsid, original.nsVersion.get(nsid), prop.getKey(), prop.getValue()));
+              actions.add(
+                  new LogAction.AddNamespaceProperty(
+                      nsid, original.nsVersion.get(nsid), prop.getKey(), prop.getValue()));
             }
           } else {
-            actions.add(new LogAction.DropNamespaceProperty(nsid, original.nsVersion.get(nsid), prop.getKey()));
+            actions.add(
+                new LogAction.DropNamespaceProperty(
+                    nsid, original.nsVersion.get(nsid), prop.getKey()));
           }
         }
       }
-      // TODO what about UpdateTable, you fucking muppet?
-      for (Map.Entry<TableIdentifier,String> t : tables.entrySet()) {
+      for (Map.Entry<TableIdentifier, String> t : tables.entrySet()) {
         final TableIdentifier ti = t.getKey();
         final String location = t.getValue();
         final Namespace ns = ti.namespace();
@@ -969,7 +990,9 @@ public class LogCatalogFormat extends CatalogFormat {
             actions.add(new LogAction.CreateTable(ti.name(), nsids.get(ns), location));
           } else {
             // parent namespace is already in the catalog
-            actions.add(new LogAction.CreateTable(ti.name(), parentId, original.nsVersion.get(parentId), location));
+            actions.add(
+                new LogAction.CreateTable(
+                    ti.name(), parentId, original.nsVersion.get(parentId), location));
           }
         } else {
           // dropping a table

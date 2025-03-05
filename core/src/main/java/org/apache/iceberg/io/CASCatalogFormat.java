@@ -238,7 +238,8 @@ public class CASCatalogFormat extends CatalogFormat {
     }
 
     /**
-     * Given two maps o, u, overwrite values where u[k] is defined and remove them where u[k] == null
+     * Given two maps o, u, overwrite values where u[k] is defined and remove them where u[k] ==
+     * null
      */
     private static <K, V, U> void merge(
         Map<K, V> original, Map<K, U> update, BiFunction<V, U, V> valueMapper) {

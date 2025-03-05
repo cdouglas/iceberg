@@ -18,6 +18,14 @@
  */
 package org.apache.iceberg.io;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import com.google.common.collect.Sets;
 import java.io.IOException;
 import java.util.Arrays;
@@ -27,18 +35,8 @@ import java.util.Set;
 import java.util.stream.Stream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class TestCatalogFile {
 
@@ -111,51 +109,48 @@ public class TestCatalogFile {
 
     final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
-            format
-                    .empty(nullFile)
-                    .createNamespace(NS1, ns1PropsInit)
-                    .createNamespace(NS2, Collections.emptyMap())
-                    .createTable(TBL1, "gs://bucket/path/to/table1")
-                    .createTable(TBL2, "gs://bucket/path/to/table2")
-                    .commit(fileIO); // ignored; just passing info between CatalogFile
+        format
+            .empty(nullFile)
+            .createNamespace(NS1, ns1PropsInit)
+            .createNamespace(NS2, Collections.emptyMap())
+            .createTable(TBL1, "gs://bucket/path/to/table1")
+            .createTable(TBL2, "gs://bucket/path/to/table2")
+            .commit(fileIO); // ignored; just passing info between CatalogFile
 
     checkNamespaces(catalogFile, Namespace.empty(), NS1, NS2);
     assertThat(catalogFile.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1PropsInit);
 
     final Map<String, String> ns1Props = Collections.singletonMap("key1", "value1");
     CatalogFile updateProp =
-            format
-                    .from(catalogFile)
-                    .updateProperties(NS1, Collections.singletonMap("key0", null)) // remove prop
-                    .updateProperties(NS1, ns1Props) // add prop, separate actoin
-                    .updateTable(TBL2, "gs://bucket/path/to/table2.1")
-                    .createTable(TBL3, "gs://bucket/path/to/table3") // add table
-                    .createNamespace(NS4, Collections.emptyMap()) // empty namespace
-                    .createTable(TBL5, "gs://bucket/path/to/table5") // add in root namespace
-                    .createNamespace(NS3, Collections.emptyMap()) // add namespace
-                    .createTable(TBL4, "gs://bucket/path/to/table4") // add tbl w/ namespace
-                    .commit(fileIO);
+        format
+            .from(catalogFile)
+            .updateProperties(NS1, Collections.singletonMap("key0", null)) // remove prop
+            .updateProperties(NS1, ns1Props) // add prop, separate actoin
+            .updateTable(TBL2, "gs://bucket/path/to/table2.1")
+            .createTable(TBL3, "gs://bucket/path/to/table3") // add table
+            .createNamespace(NS4, Collections.emptyMap()) // empty namespace
+            .createTable(TBL5, "gs://bucket/path/to/table5") // add in root namespace
+            .createNamespace(NS3, Collections.emptyMap()) // add namespace
+            .createTable(TBL4, "gs://bucket/path/to/table4") // add tbl w/ namespace
+            .commit(fileIO);
     assertThat(updateProp).isNotEqualTo(catalogFile);
     checkNamespaces(updateProp, Namespace.empty(), NS1, NS2, NS3, NS4);
     assertThat(updateProp.namespaceProperties(NS1)).containsExactlyEntriesOf(ns1Props);
     assertThat(updateProp.tables()).containsExactlyInAnyOrder(TBL1, TBL2, TBL3, TBL4, TBL5);
 
     assertThatThrownBy(() -> format.from(updateProp).dropNamespace(NS2).commit(fileIO))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("Cannot drop non-empty namespace");
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot drop non-empty namespace");
     if (updateProp.createsHierarchicalNamespaces()) {
       // fail to drop parent before child
-      final Namespace NS4parent = Namespace.of(Arrays.copyOfRange(NS4.levels(), 0, NS4.length() - 1));
+      final Namespace NS4parent =
+          Namespace.of(Arrays.copyOfRange(NS4.levels(), 0, NS4.length() - 1));
       assertThatThrownBy(() -> format.from(updateProp).dropNamespace(NS4parent).commit(fileIO))
-              .isInstanceOf(IllegalArgumentException.class)
-              .hasMessageContaining("Cannot drop non-empty namespace");
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Cannot drop non-empty namespace");
       // drop empty namespace and (after drop) empty parent
       CatalogFile drop =
-              format
-                      .from(updateProp)
-                      .dropNamespace(NS4)
-                      .dropNamespace(NS4parent)
-                      .commit(fileIO);
+          format.from(updateProp).dropNamespace(NS4).dropNamespace(NS4parent).commit(fileIO);
       checkNamespaces(drop, Namespace.empty(), NS1, NS2, NS3);
     }
   }
@@ -168,7 +163,9 @@ public class TestCatalogFile {
     // TODO: tracking create/delete in CatalogFile.Mut is insufficient to support this
     // TODO: since the same TableIdentifier is both deleted and created in the same transaction
     // TODO: would need to track operations + merge
-    assumeTrue(Boolean.getBoolean("dingos"), "Requires changes in CatalogFile.Mut to support versioned changes");
+    assumeTrue(
+        Boolean.getBoolean("dingos"),
+        "Requires changes in CatalogFile.Mut to support versioned changes");
     InputFile nullFile = mock(InputFile.class);
     AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
     CAS token = mock(CAS.class);
@@ -178,21 +175,21 @@ public class TestCatalogFile {
     when(fileIO.newOutputFile(any(InputFile.class))).thenReturn(outputFile);
 
     CatalogFile catalogFile =
-            format
-                    .empty(nullFile)
-                    .createNamespace(NS1, Collections.emptyMap())
-                    .createTable(TBL1, "gs://bucket/path/to/table1")
-                    .createTable(TBL2, "gs://bucket/path/to/table2")
-                    .commit(fileIO); // ignored; just passing info between CatalogFile
+        format
+            .empty(nullFile)
+            .createNamespace(NS1, Collections.emptyMap())
+            .createTable(TBL1, "gs://bucket/path/to/table1")
+            .createTable(TBL2, "gs://bucket/path/to/table2")
+            .commit(fileIO); // ignored; just passing info between CatalogFile
 
     CatalogFile swap =
-            format
-                    .from(catalogFile)
-                    .dropTable(TBL1)
-                    .dropTable(TBL2)
-                    .createTable(TBL1, "gs://bucket/path/to/table2")
-                    .createTable(TBL2, "gs://bucket/path/to/table1")
-                    .commit(fileIO);
+        format
+            .from(catalogFile)
+            .dropTable(TBL1)
+            .dropTable(TBL2)
+            .createTable(TBL1, "gs://bucket/path/to/table2")
+            .createTable(TBL2, "gs://bucket/path/to/table1")
+            .commit(fileIO);
     assertThat(swap).isNotEqualTo(catalogFile);
     checkNamespaces(swap, Namespace.empty(), NS1);
     assertThat(swap.tables()).containsExactlyInAnyOrder(TBL1, TBL2);
