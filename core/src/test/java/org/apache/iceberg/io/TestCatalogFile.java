@@ -128,6 +128,7 @@ public class TestCatalogFile {
                     .from(catalogFile)
                     .updateProperties(NS1, Collections.singletonMap("key0", null)) // remove prop
                     .updateProperties(NS1, ns1Props) // add prop, separate actoin
+                    .updateTable(TBL2, "gs://bucket/path/to/table2.1")
                     .createTable(TBL3, "gs://bucket/path/to/table3") // add table
                     .createNamespace(NS4, Collections.emptyMap()) // empty namespace
                     .createTable(TBL5, "gs://bucket/path/to/table5") // add in root namespace

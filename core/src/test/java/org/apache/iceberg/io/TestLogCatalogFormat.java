@@ -91,7 +91,7 @@ public class TestLogCatalogFormat {
   }
 
   @Test
-  public void testRandomFile() throws IOException {
+  public void testEquivalenceSerde() throws IOException {
     final long seed = random.nextLong();
     LogCatalogFile a = generateRandomLogCatalogFile(seed);
     LogCatalogFile b = generateRandomLogCatalogFile(seed);

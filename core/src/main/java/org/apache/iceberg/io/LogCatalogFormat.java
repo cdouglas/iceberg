@@ -955,13 +955,14 @@ public class LogCatalogFormat extends CatalogFormat {
           }
         }
       }
+      // TODO what about UpdateTable, you fucking muppet?
       for (Map.Entry<TableIdentifier,String> t : tables.entrySet()) {
         final TableIdentifier ti = t.getKey();
         final String location = t.getValue();
         final Namespace ns = ti.namespace();
         final Integer parentId = original.nsids.get(ns);
         if (location != null) {
-          // creating a table
+          // creating/updating a table
           if (null == parentId) {
             // parent namespace is part of this transaction; assign virt ID
             Preconditions.checkArgument(namespaces.get(ns), "Parent namespace not found: %s", ns);
@@ -975,6 +976,12 @@ public class LogCatalogFormat extends CatalogFormat {
           final int tblId = tblIds.get(ti);
           actions.add(new LogAction.DropTable(tblId, original.tblVersion.get(tblId)));
         }
+      }
+      for (Map.Entry<TableIdentifier, String> t : tableUpdates.entrySet()) {
+        final TableIdentifier ti = t.getKey();
+        final String location = t.getValue();
+        final int tblId = original.tblIds.get(ti);
+        actions.add(new LogAction.UpdateTable(tblId, original.tblVersion.get(tblId), location));
       }
       return new LogAction.Transaction(actions);
     }

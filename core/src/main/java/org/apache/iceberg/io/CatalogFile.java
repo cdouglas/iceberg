@@ -58,6 +58,7 @@ public abstract class CatalogFile {
     return location;
   }
 
+  // hack to account for recording namespaces as a hierarchy, rather than a flat list
   public abstract boolean createsHierarchicalNamespaces();
 
   public abstract String location(TableIdentifier table);
@@ -78,12 +79,14 @@ public abstract class CatalogFile {
 
     protected final CatalogFile original;
     protected final Map<TableIdentifier, String> tables;
+    protected final Map<TableIdentifier, String> tableUpdates; // TODO extend this to metadata
     protected final Map<Namespace, Boolean> namespaces;
     protected final Map<Namespace, Map<String, String>> namespaceProperties;
 
     protected Mut(CatalogFile original) {
       this.original = original;
       this.tables = Maps.newHashMap();
+      this.tableUpdates = Maps.newHashMap();
       this.namespaces = Maps.newHashMap();
       this.namespaceProperties = Maps.newHashMap();
     }
@@ -186,15 +189,20 @@ public abstract class CatalogFile {
       return this;
     }
 
-    private boolean checkNamespaceExists(Namespace namespace) {
-      return !Namespace.empty().equals(namespace) && !original.containsNamespace(namespace) && !namespaces.getOrDefault(namespace, false);
-    }
-
     public Mut updateTable(TableIdentifier table, String location) {
       if (null == original.location(table)) {
         throw new NoSuchNamespaceException("Table does not exist: %s", table);
       }
-      tables.put(table, location);
+      final String newloc = tables.get(table);
+      if (original.location(table) != null && tables.containsKey(table) && newloc == null) {
+        throw new IllegalArgumentException("Cannot update table marked for deletion: " + table);
+      }
+      if (newloc != null) {
+        // TODO extend w/ metadata
+        tables.put(table, location);
+      } else {
+        tableUpdates.put(table, location);
+      }
       return this;
     }
 
@@ -204,6 +212,10 @@ public abstract class CatalogFile {
       }
       tables.put(tableId, null);
       return this;
+    }
+
+    private boolean checkNamespaceExists(Namespace namespace) {
+      return !Namespace.empty().equals(namespace) && !original.containsNamespace(namespace) && !namespaces.getOrDefault(namespace, false);
     }
 
     public abstract CatalogFile commit(SupportsAtomicOperations<CAS> fileIO);
