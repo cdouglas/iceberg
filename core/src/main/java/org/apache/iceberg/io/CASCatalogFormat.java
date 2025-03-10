@@ -234,6 +234,7 @@ public class CASCatalogFormat extends CatalogFormat {
 
       final Map<TableIdentifier, String> newTbl = Maps.newHashMap(original.locations());
       merge(newTbl, tables, (x, location) -> location);
+      merge(newTbl, tableUpdates, (x, location) -> location);
       return new CASCatalogFile(original.uuid(), nsProp, newTbl, original.location());
     }
 
