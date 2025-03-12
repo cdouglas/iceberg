@@ -96,7 +96,7 @@ public class ADLSFileIOTest {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
     AzureSAS creds =
-        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/lstnsgym-20250228.json"));
+        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/lstnsgym-20250930.json"));
     if (creds != null) {
       azureProperties = Maps.newHashMap();
       azureProperties.put(
@@ -353,7 +353,7 @@ public class ADLSFileIOTest {
     // ADLSLocation loc = new ADLSLocation(AZURITE_CONTAINER.location("path/to/file.txt"));
     // DataLakeFileClient client = io.client(loc).getFileClient(loc.path());
     AzureSAS tok =
-        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/lstnsgym-20250228.json"));
+        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/lstnsgym-20250930.json"));
     DataLakeServiceClient serviceClient =
         new DataLakeServiceClientBuilder()
             .endpoint(tok.endpoint)

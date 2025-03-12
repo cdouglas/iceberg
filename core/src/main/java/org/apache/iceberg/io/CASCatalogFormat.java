@@ -183,7 +183,7 @@ public class CASCatalogFormat extends CatalogFormat {
     }
   }
 
-  static class Mut extends CatalogFile.Mut {
+  static class Mut extends CatalogFile.Mut<Mut> {
     Mut(InputFile location) {
       this(new CASCatalogFile(location));
     }

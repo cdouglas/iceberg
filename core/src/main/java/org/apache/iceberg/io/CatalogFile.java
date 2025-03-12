@@ -75,7 +75,7 @@ public abstract class CatalogFile {
 
   abstract Map<TableIdentifier, String> locations();
 
-  public abstract static class Mut {
+  public abstract static class Mut<T extends Mut<T>> {
 
     protected final CatalogFile original;
     protected final Map<TableIdentifier, String> tables;
@@ -91,11 +91,16 @@ public abstract class CatalogFile {
       this.namespaceProperties = Maps.newHashMap();
     }
 
-    public Mut createNamespace(Namespace namespace) {
+    @SuppressWarnings("unchecked")
+    private T self() {
+      return (T) this;
+    }
+
+    public T createNamespace(Namespace namespace) {
       return createNamespace(namespace, Collections.emptyMap());
     }
 
-    public Mut createNamespace(Namespace namespace, Map<String, String> properties) {
+    public T createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
       Preconditions.checkArgument(
@@ -121,10 +126,10 @@ public abstract class CatalogFile {
       }
       namespaces.put(namespace, true);
       namespaceProperties.put(namespace, properties);
-      return this;
+      return self();
     }
 
-    public Mut updateProperties(Namespace namespace, Map<String, String> properties) {
+    public T updateProperties(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
       if (checkNamespaceExists(namespace)) {
@@ -139,7 +144,7 @@ public abstract class CatalogFile {
             }
             return Maps.newHashMap(properties);
           });
-      return this;
+      return self();
     }
 
     static String nameOf(Namespace ns) {
@@ -154,7 +159,7 @@ public abstract class CatalogFile {
           : Namespace.empty();
     }
 
-    public Mut dropNamespace(Namespace namespace) {
+    public T dropNamespace(Namespace namespace) {
       Preconditions.checkArgument(
           !Namespace.empty().equals(namespace), "Cannot drop empty namespace");
       if (checkNamespaceExists(namespace)) {
@@ -185,10 +190,10 @@ public abstract class CatalogFile {
       }
       namespaces.put(namespace, false);
       namespaceProperties.remove(namespace);
-      return this;
+      return self();
     }
 
-    public Mut createTable(TableIdentifier table, String location) {
+    public T createTable(TableIdentifier table, String location) {
       // TODO: fix for swap (a -> b; b -> a)
       if (checkNamespaceExists(table.namespace())) {
         throw new NoSuchNamespaceException("Namespace does not exist: %s", table.namespace());
@@ -197,10 +202,10 @@ public abstract class CatalogFile {
         throw new AlreadyExistsException("Table already exists: %s", table);
       }
       tables.put(table, location);
-      return this;
+      return self();
     }
 
-    public Mut updateTable(TableIdentifier table, String location) {
+    public T updateTable(TableIdentifier table, String location) {
       if (null == original.location(table)) {
         throw new NoSuchNamespaceException("Table does not exist: %s", table);
       }
@@ -214,15 +219,15 @@ public abstract class CatalogFile {
       } else {
         tableUpdates.put(table, location);
       }
-      return this;
+      return self();
     }
 
-    public Mut dropTable(TableIdentifier tableId) {
+    public T dropTable(TableIdentifier tableId) {
       if (null == original.location(tableId)) {
         throw new NoSuchTableException("Table does not exist: %s", tableId);
       }
       tables.put(tableId, null);
-      return this;
+      return self();
     }
 
     private boolean checkNamespaceExists(Namespace namespace) {

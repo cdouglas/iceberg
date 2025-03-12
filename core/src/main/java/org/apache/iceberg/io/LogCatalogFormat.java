@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.io;
 
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -36,6 +37,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.apache.hadoop.util.LimitInputStream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
@@ -82,14 +84,14 @@ public class LogCatalogFormat extends CatalogFormat {
       }
       LogAction.Checkpoint chk = LogAction.Checkpoint.read(din);
       chk.apply(catalog);
-      // TODO bound stream to chk.chkEnd
-      for (LogAction action : LogAction.chkIterator(din)) {
+      InputStream chkStream = new DataInputStream(new LimitInputStream(in, chk.chkEnd));
+      for (LogAction action : LogAction.chkIterator(new DataInputStream(chkStream))) {
         // no validation necessary in this interval
         action.apply(catalog);
       }
-      // TODO embed table regio
-      if (chk.chkEnd != chk.tblEmbedEnd) {
-        throw new IllegalStateException("No.");
+      // TODO embed table region
+      if (chk.tblEmbedEnd != 0) {
+        throw new IllegalStateException("TODO");
       }
       // TODO buffer committedTxn, in case it's relevant
       // in.seek(chk.committedTxnEnd);
@@ -750,7 +752,8 @@ public class LogCatalogFormat extends CatalogFormat {
     }
   }
 
-  static class Mut extends CatalogFile.Mut {
+  // TODO move this to LogCatalogFile
+  static class Mut extends CatalogFile.Mut<Mut> {
     // namespace IDs are internal to the catalog format
 
     private UUID uuid = null;
@@ -1161,11 +1164,11 @@ public class LogCatalogFormat extends CatalogFormat {
           .collect(Collectors.toMap(Map.Entry::getKey, e -> tblLocations.get(e.getValue())));
     }
 
+    // emit stream of actions that recreate this catalog, NOT including Checkpoint action
     List<LogAction> checkpointStream() {
       List<LogAction> actions = Lists.newArrayList();
       // TODO regions
       // TODO ensure properties of deleted namespaces are removed
-      actions.add(new LogAction.Checkpoint(uuid(), nextNsid, nextTblid, -1, -1, -1));
       // sort by nsid; sufficient for parentId, since namespaces never move, are created in order
       for (Map.Entry<Namespace, Integer> e :
           nsids.entrySet().stream()
@@ -1206,11 +1209,18 @@ public class LogCatalogFormat extends CatalogFormat {
       return actions;
     }
 
-    void write(OutputStream out) throws IOException {
-      try (DataOutputStream dos = new DataOutputStream(out)) {
+    void writeCheckpoint(OutputStream out) throws IOException {
+
+      try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+           DataOutputStream dos = new DataOutputStream(bos);
+           DataOutputStream chk = new DataOutputStream(out)) {
         for (LogAction action : checkpointStream()) {
           action.write(dos);
         }
+        final byte[] chkData = bos.toByteArray();// SIGH. You suck.
+        final LogAction.Checkpoint chkAction = new LogAction.Checkpoint(uuid(), nextNsid, nextTblid, chkData.length, 0, 0);
+        chkAction.write(chk);
+        out.write(chkData);
       }
     }
 
