@@ -117,21 +117,28 @@ public class TestLogCatalogFormat {
 
   @Test
   public void testApplyTransaction() throws IOException {
+    final Namespace dingos = Namespace.of("dingos");
+    final Namespace dingos_yaks = Namespace.of("dingos", "yaks");
+    final Namespace yaks = Namespace.of("yaks");
+    final Namespace yaks_dingos = Namespace.of("yaks", "dingos");
+    final TableIdentifier tblY = TableIdentifier.of(dingos_yaks, "tblY");
+    final TableIdentifier tblD = TableIdentifier.of(dingos, "tblD");
+
     // prototyping commit
     final long seed = random.nextLong();
     LogCatalogFile orig = generateRandomLogCatalogFile(seed);
     final byte[] origBytes = toBytes(orig);
     final int origLen = origBytes.length;
     LogCatalogFormat.LogAction.Transaction txnA = new LogCatalogFormat.Mut(orig)
-            .createNamespace(Namespace.of("dingos"))
-            .createNamespace(Namespace.of("dingos", "yaks"))
-            .createTable(TableIdentifier.of(Namespace.of("dingos", "yaks"), "tblY"), "yak://chinchilla/tblY")
+            .createNamespace(dingos)
+            .createNamespace(dingos_yaks)
+            .createTable(tblY, "yak://chinchilla/tblY")
             .diff();
     final byte[] txnABytes = toBytes(txnA);
     // should NOT apply; version conflict at root
     LogCatalogFormat.LogAction.Transaction txnB = new LogCatalogFormat.Mut(orig)
-            .createNamespace(Namespace.of("yaks"))
-            .createNamespace(Namespace.of("yaks.dingos"))
+            .createNamespace(yaks)
+            .createNamespace(yaks_dingos)
             .diff();
     final byte[] txnBBytes = toBytes(txnB);
     final byte[] appended = Arrays.copyOf(origBytes, origBytes.length + txnABytes.length + txnBBytes.length);
@@ -143,11 +150,11 @@ public class TestLogCatalogFormat {
     LogCatalogFormat.Mut catalog = new LogCatalogFormat.Mut(mockFile);
     LogCatalogFormat format = new LogCatalogFormat();
     final LogCatalogFile c = format.readInternal(catalog, new ByteArrayInputStream(appended));
-    assertThat(c.containsNamespace(Namespace.of("dingos"))).isTrue();
-    assertThat(c.containsNamespace(Namespace.of("dingos", "yaks"))).isTrue();
-    assertThat(c.containsNamespace(Namespace.of("yaks"))).isFalse();
-    assertThat(c.containsNamespace(Namespace.of("yaks", "dingos"))).isFalse();
-    assertThat(c.location(TableIdentifier.of(Namespace.of("dingos", "yaks"), "tblY"))).isEqualTo("yak://chinchilla/tblY");
+    assertThat(c.containsNamespace(dingos)).isTrue();
+    assertThat(c.containsNamespace(dingos_yaks)).isTrue();
+    assertThat(c.containsNamespace(yaks)).isFalse();
+    assertThat(c.containsNamespace(yaks_dingos)).isFalse();
+    assertThat(c.location(tblY)).isEqualTo("yak://chinchilla/tblY");
     // (amid random CatalogFile)
     // dingos.yaks.tblY exists
 
@@ -157,25 +164,24 @@ public class TestLogCatalogFormat {
         appendBytes(appended,
                 // update dingos.yaks.tblY
                 toBytes(new LogCatalogFormat.Mut(c)
-                  .updateTable(TableIdentifier.of(Namespace.of("dingos", "yaks"), "tblY"), "yak://chinchilla/tblY2")
+                  .updateTable(tblY, "yak://chinchilla/tblY2")
                   .diff()),
                 // create "dingos.tblD"
                 toBytes(new LogCatalogFormat.Mut(c)
-                  .createTable(TableIdentifier.of(
-                          Namespace.of("dingos"), "tblD"), "yak://chinchilla/tblD")
+                  .createTable(tblD, "yak://chinchilla/tblD")
                   .diff()),
                 // attempt to create "yaks", "dingos.tblD", update "dingos.yaks.tblY"
                 // should fail, table already updated
                 toBytes(new LogCatalogFormat.Mut(c)
-                  .createNamespace(Namespace.of("yaks"))
-                  .updateTable(TableIdentifier.of(Namespace.of("dingos", "yaks"), "tblY"), "yak://chinchilla/tblY3")
+                  .createNamespace(yaks)
+                  .updateTable(tblY, "yak://chinchilla/tblY3")
                   .diff())
                 )
                 )
               );
-    assertThat(d.location(TableIdentifier.of(Namespace.of("dingos", "yaks"), "tblY"))).isEqualTo("yak://chinchilla/tblY2");
-    assertThat(d.location(TableIdentifier.of(Namespace.of("dingos"), "tblD"))).isEqualTo("yak://chinchilla/tblD");
-    assertThat(d.containsNamespace(Namespace.of("yaks"))).isFalse();
+    assertThat(d.location(tblY)).isEqualTo("yak://chinchilla/tblY2");
+    assertThat(d.location(tblD)).isEqualTo("yak://chinchilla/tblD");
+    assertThat(d.containsNamespace(yaks)).isFalse();
   }
 
   private LogCatalogFile generateRandomLogCatalogFile(long seed) {
