@@ -129,19 +129,19 @@ public class TestLogCatalogFormat {
     LogCatalogFile orig = generateRandomLogCatalogFile(seed);
     final byte[] origBytes = toBytes(orig);
     final int origLen = origBytes.length;
-    LogCatalogFormat.LogAction.Transaction txnA = new LogCatalogFormat.Mut(orig)
+    LogCatalogFormat.LogAction.Transaction txnA =
+        new LogCatalogFormat.Mut(orig)
             .createNamespace(dingos)
             .createNamespace(dingos_yaks)
             .createTable(tblY, "yak://chinchilla/tblY")
             .diff();
     final byte[] txnABytes = toBytes(txnA);
     // should NOT apply; version conflict at root
-    LogCatalogFormat.LogAction.Transaction txnB = new LogCatalogFormat.Mut(orig)
-            .createNamespace(yaks)
-            .createNamespace(yaks_dingos)
-            .diff();
+    LogCatalogFormat.LogAction.Transaction txnB =
+        new LogCatalogFormat.Mut(orig).createNamespace(yaks).createNamespace(yaks_dingos).diff();
     final byte[] txnBBytes = toBytes(txnB);
-    final byte[] appended = Arrays.copyOf(origBytes, origBytes.length + txnABytes.length + txnBBytes.length);
+    final byte[] appended =
+        Arrays.copyOf(origBytes, origBytes.length + txnABytes.length + txnBBytes.length);
     System.arraycopy(txnABytes, 0, appended, origLen, txnABytes.length);
     System.arraycopy(txnBBytes, 0, appended, origLen + txnABytes.length, txnBBytes.length);
     assertThat(appendBytes(origBytes, txnABytes, txnBBytes)).isEqualTo(appended);
@@ -160,25 +160,28 @@ public class TestLogCatalogFormat {
 
     catalog = new LogCatalogFormat.Mut(mockFile);
     final LogCatalogFile d =
-      format.readInternal(catalog, new ByteArrayInputStream(
-        appendBytes(appended,
-                // update dingos.yaks.tblY
-                toBytes(new LogCatalogFormat.Mut(c)
-                  .updateTable(tblY, "yak://chinchilla/tblY2")
-                  .diff()),
-                // create "dingos.tblD"
-                toBytes(new LogCatalogFormat.Mut(c)
-                  .createTable(tblD, "yak://chinchilla/tblD")
-                  .diff()),
-                // attempt to create "yaks", "dingos.tblD", update "dingos.yaks.tblY"
-                // should fail, table already updated
-                toBytes(new LogCatalogFormat.Mut(c)
-                  .createNamespace(yaks)
-                  .updateTable(tblY, "yak://chinchilla/tblY3")
-                  .diff())
-                )
-                )
-              );
+        format.readInternal(
+            catalog,
+            new ByteArrayInputStream(
+                appendBytes(
+                    appended,
+                    // update dingos.yaks.tblY
+                    toBytes(
+                        new LogCatalogFormat.Mut(c)
+                            .updateTable(tblY, "yak://chinchilla/tblY2")
+                            .diff()),
+                    // create "dingos.tblD"
+                    toBytes(
+                        new LogCatalogFormat.Mut(c)
+                            .createTable(tblD, "yak://chinchilla/tblD")
+                            .diff()),
+                    // attempt to create "yaks", "dingos.tblD", update "dingos.yaks.tblY"
+                    // should fail, table already updated
+                    toBytes(
+                        new LogCatalogFormat.Mut(c)
+                            .createNamespace(yaks)
+                            .updateTable(tblY, "yak://chinchilla/tblY3")
+                            .diff()))));
     assertThat(d.location(tblY)).isEqualTo("yak://chinchilla/tblY2");
     assertThat(d.location(tblD)).isEqualTo("yak://chinchilla/tblD");
     assertThat(d.containsNamespace(yaks)).isFalse();
@@ -261,7 +264,8 @@ public class TestLogCatalogFormat {
   }
 
   static byte[] appendBytes(byte[] orig, byte[]... append) {
-    final byte[] appended = Arrays.copyOf(orig, orig.length + Arrays.stream(append).mapToInt(a -> a.length).sum());
+    final byte[] appended =
+        Arrays.copyOf(orig, orig.length + Arrays.stream(append).mapToInt(a -> a.length).sum());
     int offset = orig.length;
     for (byte[] a : append) {
       System.arraycopy(a, 0, appended, offset, a.length);
@@ -272,14 +276,14 @@ public class TestLogCatalogFormat {
 
   static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions) {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
-         DataOutputStream dos = new DataOutputStream(bos)) {
+        DataOutputStream dos = new DataOutputStream(bos)) {
       diffActions.write(dos);
       return bos.toByteArray();
     } catch (IOException e) {
       fail("Failed to write/read catalog file", e);
       throw new IllegalStateException("Failed to write/read diff", e);
     }
-}
+  }
 
   static byte[] toBytes(LogCatalogFile catalog) {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {

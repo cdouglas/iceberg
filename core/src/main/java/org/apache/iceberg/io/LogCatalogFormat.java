@@ -1212,13 +1212,14 @@ public class LogCatalogFormat extends CatalogFormat {
     void writeCheckpoint(OutputStream out) throws IOException {
 
       try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
-           DataOutputStream dos = new DataOutputStream(bos);
-           DataOutputStream chk = new DataOutputStream(out)) {
+          DataOutputStream dos = new DataOutputStream(bos);
+          DataOutputStream chk = new DataOutputStream(out)) {
         for (LogAction action : checkpointStream()) {
           action.write(dos);
         }
-        final byte[] chkData = bos.toByteArray();// SIGH. You suck.
-        final LogAction.Checkpoint chkAction = new LogAction.Checkpoint(uuid(), nextNsid, nextTblid, chkData.length, 0, 0);
+        final byte[] chkData = bos.toByteArray(); // SIGH. You suck.
+        final LogAction.Checkpoint chkAction =
+            new LogAction.Checkpoint(uuid(), nextNsid, nextTblid, chkData.length, 0, 0);
         chkAction.write(chk);
         out.write(chkData);
       }
