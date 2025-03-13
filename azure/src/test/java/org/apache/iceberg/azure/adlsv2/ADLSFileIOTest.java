@@ -303,6 +303,25 @@ public class ADLSFileIOTest {
                 512 * 1024, 1024 * 1024));
   }
 
+  @Test
+  public void testAtomicAppend() throws IOException {
+    final String path = "path/to/file.txt";
+    final String location = az.location(path);
+    final byte[] base = new byte[1024 * 1024];
+    random.nextBytes(base);
+    ADLSFileIO io = createFileIO();
+
+    final OutputFile out = io.newOutputFile(location);
+    try (OutputStream os = out.createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(base));
+    }
+
+    final InputFile in = io.newInputFile(location);
+    assertThat(in.exists()).isTrue();
+    // TODO prepare concurrent appends, exactly one should succeed
+    // TODO document behavior of etag in testcase
+  }
+
   private byte[] randBytes(int len) {
     final byte[] bytes = new byte[len];
     random.nextBytes(bytes);

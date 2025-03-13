@@ -25,6 +25,7 @@ import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import com.azure.storage.file.datalake.models.PathHttpHeaders;
 import com.azure.storage.file.datalake.models.PathInfo;
+import com.azure.storage.file.datalake.options.DataLakeFileFlushOptions;
 import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
 import java.io.IOException;
 import java.io.InputStream;
@@ -51,16 +52,18 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
       DataLakeFileClient fileClient,
       AzureProperties azureProperties,
       MetricsContext metrics) {
-    this(location, fileClient, azureProperties, null, metrics);
+    this(location, fileClient, azureProperties, 0, null, metrics);
   }
 
   ADLSOutputFile(
       String location,
       DataLakeFileClient fileClient,
       AzureProperties azureProperties,
+      long length,
       DataLakeRequestConditions conditions,
       MetricsContext metrics) {
     super(location, fileClient, azureProperties, metrics);
+    this.length = length;
     this.conditions = conditions;
   }
 
@@ -81,7 +84,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
 
   @Override
   public PositionOutputStream createOrOverwrite() {
-    // !#! TODO update this.length
+    // !#! TODO update this.length on close
     return new ADLSOutputStream(fileClient(), azureProperties(), metrics());
   }
 
@@ -106,11 +109,10 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
 
   @Override
   public ADLSInputFile writeAtomic(CAS checksum, Supplier<InputStream> source) throws IOException {
-    // writeAtomic(token, source)
-    // CAS (impl; TODO come back for docs)
-    // APPEND
-    //   read object,
     // TODO this is very ugly. clean it up later.
+    // XXX what is the contract, here? should length be updated after the write succeeds?
+    // XXX can an OutputFile be reused, or is it one-time use binding input and output constraints
+    // XXX to an atomic operation?
     ADLSChecksum token = (ADLSChecksum) checksum;
     switch (token.getStrategy()) {
       case CAS:
@@ -122,39 +124,40 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
     }
   }
 
-  @SuppressWarnings("deprecation") // not clear how else to support this
-  private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
-      throws IOException {
-    try (InputStream src = source.get()) {
-      final Response<PathInfo> resp =
-          fileClient()
-              .uploadWithResponse(
-                  new FileParallelUploadOptions(src, checksum.contentLength())
-                      .setRequestConditions(conditions)
-                      .setHeaders(
-                          new PathHttpHeaders()
-                              .setContentMd5(checksum.contentChecksumBytes())
-                              .setContentType("binary")),
-                  null, // no timeout
-                  Context.NONE);
-      this.length = checksum.contentLength();
-      final PathInfo info = resp.getValue();
-      return new ADLSInputFile(
-          location(),
-          checksum.contentLength(),
-          fileClient(),
-          azureProperties(),
-          metrics(),
-          new DataLakeRequestConditions().setIfMatch(info.getETag()));
-    } catch (DataLakeStorageException e) {
-      if (412 == e.getStatusCode()) {
-        // precondition failed
-        throw new SupportsAtomicOperations.CASException("Target modified", e);
-      }
-      throw e;
-    }
+  private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source) {
+    // TODO etag
+    final long appendLen = checksum.contentLength();
+    DataLakeRequestConditions cond = new DataLakeRequestConditions().setIfMatch(null);
+    fileClient()
+        .appendWithResponse(
+            source.get(),
+            length, // client.getProperties().getFileSize(),
+            appendLen,
+            checksum.contentChecksumBytes(),
+            null,
+            null,
+            Context.NONE);
+    final DataLakeFileFlushOptions flushOpts =
+        new DataLakeFileFlushOptions()
+            .setClose(true)
+            .setRequestConditions(cond)
+            .setUncommittedDataRetained(false);
+    // throws on failure
+    final Response<PathInfo> resp =
+        fileClient().flushWithResponse(length + appendLen, flushOpts, null, Context.NONE);
+    // update length to orig len + append (succeeded)
+    this.length += appendLen;
+    final PathInfo info = resp.getValue();
+    return new ADLSInputFile(
+        location(),
+        length + appendLen,
+        fileClient(),
+        azureProperties(),
+        metrics(),
+        new DataLakeRequestConditions().setIfMatch(info.getETag()));
   }
 
+  @SuppressWarnings("deprecation") // not clear how else to support atomic CAS
   private ADLSInputFile replaceDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
       throws IOException {
     // Annoyingly, the checksum is not validated server-side, but stored as metadata. The

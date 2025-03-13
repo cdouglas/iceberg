@@ -96,7 +96,8 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
     final String path = replace.location();
     if (replace instanceof ADLSInputFile) {
       DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
-      return new ADLSOutputFile(path, fileClient(path), azureProperties, conditions, metrics);
+      return new ADLSOutputFile(
+          path, fileClient(path), azureProperties, replace.getLength(), conditions, metrics);
     }
     // TODO just throw.
     return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics);

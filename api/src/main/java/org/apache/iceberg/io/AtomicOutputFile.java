@@ -49,5 +49,6 @@ public interface AtomicOutputFile<T> extends OutputFile {
    * @return an {@link InputFile} with metadata identifying the file written, could be used in a
    *     subsequent call to {@link SupportsAtomicOperations#newOutputFile(InputFile)}
    */
+  // TODO don't throw CASException, just return null and let caller throw
   InputFile writeAtomic(T token, Supplier<InputStream> source) throws IOException;
 }

@@ -54,7 +54,7 @@ public class ADLSChecksum implements FileChecksum, CAS {
   }
 
   public AtomicOutputFile.Strategy getStrategy() {
-    return AtomicOutputFile.Strategy.CAS;
+    return strategy;
   }
 
   @Override

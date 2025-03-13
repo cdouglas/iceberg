@@ -50,6 +50,13 @@ public class TestLogCatalogFormat {
 
   private final Random random = new Random();
 
+  private final Namespace dingos = Namespace.of("dingos");
+  private final Namespace dingos_yaks = Namespace.of("dingos", "yaks");
+  private final Namespace yaks = Namespace.of("yaks");
+  private final Namespace yaks_dingos = Namespace.of("yaks", "dingos");
+  private final TableIdentifier tblY = TableIdentifier.of(dingos_yaks, "tblY");
+  private final TableIdentifier tblD = TableIdentifier.of(dingos, "tblD");
+
   @BeforeEach
   public void before(TestInfo info) {
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
@@ -117,16 +124,8 @@ public class TestLogCatalogFormat {
 
   @Test
   public void testApplyTransaction() throws IOException {
-    final Namespace dingos = Namespace.of("dingos");
-    final Namespace dingos_yaks = Namespace.of("dingos", "yaks");
-    final Namespace yaks = Namespace.of("yaks");
-    final Namespace yaks_dingos = Namespace.of("yaks", "dingos");
-    final TableIdentifier tblY = TableIdentifier.of(dingos_yaks, "tblY");
-    final TableIdentifier tblD = TableIdentifier.of(dingos, "tblD");
-
     // prototyping commit
-    final long seed = random.nextLong();
-    LogCatalogFile orig = generateRandomLogCatalogFile(seed);
+    LogCatalogFile orig = generateRandomLogCatalogFile(random.nextLong());
     final byte[] origBytes = toBytes(orig);
     final int origLen = origBytes.length;
     LogCatalogFormat.LogAction.Transaction txnA =
@@ -185,6 +184,58 @@ public class TestLogCatalogFormat {
     assertThat(d.location(tblY)).isEqualTo("yak://chinchilla/tblY2");
     assertThat(d.location(tblD)).isEqualTo("yak://chinchilla/tblD");
     assertThat(d.containsNamespace(yaks)).isFalse();
+  }
+
+  @Test
+  public void testSealTransaction() throws IOException {
+    LogCatalogFile orig = generateRandomLogCatalogFile(random.nextLong());
+    InputFile mockFile = mock(InputFile.class);
+    LogCatalogFormat.Mut catalog = new LogCatalogFormat.Mut(mockFile);
+    LogCatalogFormat format = new LogCatalogFormat();
+    final byte[] bBytes =
+        appendBytes(
+            toBytes(orig),
+            toBytes(
+                new LogCatalogFormat.Mut(orig)
+                    .createNamespace(dingos)
+                    .createNamespace(dingos_yaks)
+                    .createTable(tblY, "yak://chinchilla/tblY")
+                    .diff()));
+    final LogCatalogFile b = format.readInternal(catalog, new ByteArrayInputStream(bBytes));
+
+    catalog = new LogCatalogFormat.Mut(mockFile);
+    final byte[] cBytes =
+        appendBytes(
+            toBytes(b),
+            toBytes(
+                new LogCatalogFormat.Mut(b).updateTable(tblY, "yak://chinchilla/tblY2").diff(),
+                true), // SEAL LOG at this point
+            toBytes(
+                new LogCatalogFormat.Mut(b)
+                    .createNamespace(yaks)
+                    .createNamespace(yaks_dingos)
+                    .diff()),
+            toBytes(new LogCatalogFormat.Mut(b).createTable(tblD, "yak://chinchilla/tblD").diff()));
+    final LogCatalogFile c = format.readInternal(catalog, new ByteArrayInputStream(cBytes));
+
+    assertThat(c.containsNamespace(dingos)).isTrue();
+    assertThat(c.containsNamespace(dingos_yaks)).isTrue();
+    assertThat(c.location(tblY)).isEqualTo("yak://chinchilla/tblY2");
+    // valid transactions after sealed are ignored
+    assertThat(c.containsNamespace(yaks)).isFalse();
+    assertThat(c.containsNamespace(yaks_dingos)).isFalse();
+    assertThat(c.location(tblD)).isNull();
+    assertThat(c.sealed).isTrue();
+  }
+
+  @Test
+  public void testTransactionPresenceLog() {
+    // TODO validate transaction by checking commit
+  }
+
+  @Test
+  public void testTransactionPresenceCheckpoint() {
+    // TODO committed transactions preserved across checkpoints
   }
 
   private LogCatalogFile generateRandomLogCatalogFile(long seed) {
@@ -275,6 +326,13 @@ public class TestLogCatalogFormat {
   }
 
   static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions) {
+    return toBytes(diffActions, false);
+  }
+
+  static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions, boolean seal) {
+    if (seal) {
+      diffActions.seal();
+    }
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
         DataOutputStream dos = new DataOutputStream(bos)) {
       diffActions.write(dos);

@@ -905,8 +905,6 @@ public class LogCatalogFormat extends CatalogFormat {
     // on top of that.
 
     LogCatalogFile merge() {
-      // TODO merge with existing catalog file
-      // TODO location will need to be updated after CAS
       return new LogCatalogFile(
           original.location(),
           uuid,
@@ -921,6 +919,10 @@ public class LogCatalogFormat extends CatalogFormat {
           Maps.newHashMap(tblLocations));
     }
 
+    /**
+     * Compute a transaction that represents the difference between the original catalog state and
+     * the changes applied subsequently.
+     */
     LogAction.Transaction diff() {
       // TODO when reading a new checkpoint, can reapply diff (may fail)
       final LogCatalogFile original = (LogCatalogFile) this.original;
@@ -1012,13 +1014,58 @@ public class LogCatalogFormat extends CatalogFormat {
       return new LogAction.Transaction(actions);
     }
 
+    private InputFile tryAppend(SupportsAtomicOperations fileIO, InputFile in, byte[] txnBytes) {
+      // prepare output based on txn bytes
+      // attempt writeAtomic
+      return null;
+    }
+
+    static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions) {
+      try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+          DataOutputStream dos = new DataOutputStream(bos)) {
+        diffActions.write(dos);
+        return bos.toByteArray();
+      } catch (IOException e) {
+        throw new UncheckedIOException("Failed to write/read diff", e);
+      }
+    }
+
     @Override
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
-      // refresh catalog file
+      final long MAX_CATALOG_SIZE = 16L * 1024 * 1024; // TODO from config/global
       try {
-        // TODO actually do the I/O
+        // final InputFile current = original.location();
+        // LogAction.Transaction txn = diff();
+        // final byte[] txnBytes = toBytes(txn);
+        // boolean seal = current.getLength() + txnBytes.length > MAX_CATALOG_SIZE;
+        // // i.e., adding this transaction exceeds the maximum size
+        // if (MAX_CATALOG_SIZE - current.getLength() < txnBytes.length) {
+        //   // TODO after a compaction, need to undo the flag
+        //   // TODO arguably a reason to only include a seal Action in an empty Txn
+        //   txn.seal();
+        // }
+        // while (true) {
+        //   InputFile appended = tryAppend(fileIO, current, txnBytes);
+        //   if (appended != null) {
+        //     // append succeeded, now read and verify the new catalog
+        //     final LogCatalogFile base = (LogCatalogFile) original;
+        //     final Mut merged = new Mut(base.location());
+        //     for (LogAction action : base.checkpointStream()) {
+        //       action.apply(merged);
+        //     }
+        //     diff().apply(merged);
+        //     return merged.merge();
+        //   }
+        //   // attempt to append transaction to end of catalog
+        //   InputFile append = tryAppend(fileIO, txnBytes);
+        //   if (append != null) {
+        //     return null; // TODO read and verify this transaction is present
+        //   }
+        // }
+        // TODO move to writeCheckpoint
         // write original as checkpoint
         // write diff as transaction
+        // InputFile current = original.location();
         final LogCatalogFile base = (LogCatalogFile) original;
         final Mut merged = new Mut(base.location());
         for (LogAction action : base.checkpointStream()) {
