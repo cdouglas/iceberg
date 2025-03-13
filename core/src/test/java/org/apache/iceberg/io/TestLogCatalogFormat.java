@@ -38,7 +38,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.io.LogCatalogFormat.LogCatalogFile;
@@ -192,50 +195,39 @@ public class TestLogCatalogFormat {
     InputFile mockFile = mock(InputFile.class);
     LogCatalogFormat.Mut catalog = new LogCatalogFormat.Mut(mockFile);
     LogCatalogFormat format = new LogCatalogFormat();
-    final byte[] bBytes =
-        appendBytes(
-            toBytes(orig),
-            toBytes(
-                new LogCatalogFormat.Mut(orig)
-                    .createNamespace(dingos)
-                    .createNamespace(dingos_yaks)
-                    .createTable(tblY, "yak://chinchilla/tblY")
-                    .diff()));
+    final LogCatalogFormat.LogAction.Transaction txnA =
+        new LogCatalogFormat.Mut(orig)
+            .createNamespace(dingos)
+            .createNamespace(dingos_yaks)
+            .createTable(tblY, "yak://chinchilla/tblY")
+            .diff();
+    final byte[] bBytes = appendBytes(toBytes(orig), toBytes(txnA));
     final LogCatalogFile b = format.readInternal(catalog, new ByteArrayInputStream(bBytes));
 
     catalog = new LogCatalogFormat.Mut(mockFile);
-    final byte[] cBytes =
-        appendBytes(
-            toBytes(b),
-            toBytes(
-                new LogCatalogFormat.Mut(b).updateTable(tblY, "yak://chinchilla/tblY2").diff(),
-                true), // SEAL LOG at this point
-            toBytes(
-                new LogCatalogFormat.Mut(b)
-                    .createNamespace(yaks)
-                    .createNamespace(yaks_dingos)
-                    .diff()),
-            toBytes(new LogCatalogFormat.Mut(b).createTable(tblD, "yak://chinchilla/tblD").diff()));
+    final LogCatalogFormat.LogAction.Transaction txnB =
+        new LogCatalogFormat.Mut(b).updateTable(tblY, "yak://chinchilla/tblY2").diff();
+    txnB.seal(); // SEAL LOG at this point
+    final LogCatalogFormat.LogAction.Transaction txnC =
+        new LogCatalogFormat.Mut(b).createNamespace(yaks).createNamespace(yaks_dingos).diff();
+    final LogCatalogFormat.LogAction.Transaction txnD =
+        new LogCatalogFormat.Mut(b).createTable(tblD, "yak://chinchilla/tblD").diff();
+    final byte[] cBytes = appendBytes(toBytes(b), toBytes(txnB), toBytes(txnC), toBytes(txnD));
     final LogCatalogFile c = format.readInternal(catalog, new ByteArrayInputStream(cBytes));
 
     assertThat(c.containsNamespace(dingos)).isTrue();
     assertThat(c.containsNamespace(dingos_yaks)).isTrue();
     assertThat(c.location(tblY)).isEqualTo("yak://chinchilla/tblY2");
+    // TODO checkpoint needs to preserve committed transactions
+    // assertThat(c.containsTransaction(txnA.txnId)).isTrue();
+    assertThat(c.containsTransaction(txnB.txnId)).isTrue();
     // valid transactions after sealed are ignored
     assertThat(c.containsNamespace(yaks)).isFalse();
     assertThat(c.containsNamespace(yaks_dingos)).isFalse();
     assertThat(c.location(tblD)).isNull();
     assertThat(c.sealed).isTrue();
-  }
-
-  @Test
-  public void testTransactionPresenceLog() {
-    // TODO validate transaction by checking commit
-  }
-
-  @Test
-  public void testTransactionPresenceCheckpoint() {
-    // TODO committed transactions preserved across checkpoints
+    assertThat(c.containsTransaction(txnC.txnId)).isFalse();
+    assertThat(c.containsTransaction(txnD.txnId)).isFalse();
   }
 
   private LogCatalogFile generateRandomLogCatalogFile(long seed) {
@@ -300,6 +292,11 @@ public class TestLogCatalogFormat {
       nsVersion.put(nsid, nsVersion.get(nsid) + rand.nextInt(2) + 1);
     }
 
+    Set<UUID> committedTxn =
+        IntStream.range(0, rand.nextInt(20) + 10)
+            .mapToObj(ignored -> new UUID(rand.nextLong(), rand.nextLong()))
+            .collect(Collectors.toSet());
+
     return new LogCatalogFile(
         location,
         uuid,
@@ -311,7 +308,8 @@ public class TestLogCatalogFormat {
         nsProperties,
         tblIds,
         tblVersion,
-        tblLocations);
+        tblLocations,
+        committedTxn);
   }
 
   static byte[] appendBytes(byte[] orig, byte[]... append) {

@@ -45,6 +45,7 @@ import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTest
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 @SuppressWarnings("checkstyle:VisibilityModifier")
 public class LogCatalogFormat extends CatalogFormat {
@@ -95,6 +96,8 @@ public class LogCatalogFormat extends CatalogFormat {
       }
       // TODO buffer committedTxn, in case it's relevant
       // in.seek(chk.committedTxnEnd);
+      // TODO limit log to target offset, to read a prefix of the object
+      // TODO take this limit from the InputFile
       for (LogAction.Transaction txn : LogAction.logIterator(din)) {
         if (txn.verify(catalog)) {
           txn.apply(catalog);
@@ -609,6 +612,7 @@ public class LogCatalogFormat extends CatalogFormat {
       @Override
       void apply(Mut catalog) {
         actions.forEach(a -> a.apply(catalog));
+        catalog.addCommittedTxn(txnId);
       }
 
       @Override
@@ -760,6 +764,7 @@ public class LogCatalogFormat extends CatalogFormat {
     private int nextNsid = 1;
     private int nextTblid = 1;
     private boolean sealed = false;
+    private final Set<UUID> committedTxn = Sets.newHashSet();
 
     // CREATE TABLE namespaces (
     //   nsid INT,
@@ -819,6 +824,10 @@ public class LogCatalogFormat extends CatalogFormat {
       this.nextNsid = nextNsid;
       this.nextTblid = nextTblid;
       // TODO add compaction parameters so clients use the same criteria
+    }
+
+    void addCommittedTxn(UUID txnId) {
+      committedTxn.add(txnId);
     }
 
     void addNamespaceInternal(String name, int parentId, int nsid, int version) {
@@ -916,7 +925,8 @@ public class LogCatalogFormat extends CatalogFormat {
           Maps.newHashMap(nsProperties),
           Maps.newHashMap(tblIds),
           Maps.newHashMap(tblVersion),
-          Maps.newHashMap(tblLocations));
+          Maps.newHashMap(tblLocations),
+          Sets.newHashSet(committedTxn));
     }
 
     /**
@@ -1102,6 +1112,8 @@ public class LogCatalogFormat extends CatalogFormat {
     final int nextTblid;
     final boolean sealed;
 
+    private final Set<UUID> committedTxn;
+
     private final Map<Namespace, Integer> nsids;
     private final Map<Integer, Integer> nsVersion;
     private final Map<Integer, Namespace> nsLookup;
@@ -1125,6 +1137,7 @@ public class LogCatalogFormat extends CatalogFormat {
       this.tblVersion = Maps.newHashMap();
       this.tblLocations = Maps.newHashMap();
       this.nsLookup = Maps.newHashMap();
+      this.committedTxn = Sets.newHashSet();
       this.nsids.put(Namespace.empty(), 0);
       this.nsVersion.put(0, 1);
       this.nsLookup.put(0, Namespace.empty());
@@ -1141,7 +1154,8 @@ public class LogCatalogFormat extends CatalogFormat {
         Map<Integer, Map<String, String>> nsProperties,
         Map<TableIdentifier, Integer> tblIds,
         Map<Integer, Integer> tblVersion,
-        Map<Integer, String> tblLocations) {
+        Map<Integer, String> tblLocations,
+        Set<UUID> committedTxn) {
       super(catalogUUID, location);
       this.sealed = sealed;
       this.nextNsid = nextNsid;
@@ -1152,6 +1166,7 @@ public class LogCatalogFormat extends CatalogFormat {
       this.tblIds = tblIds;
       this.tblVersion = tblVersion;
       this.tblLocations = tblLocations;
+      this.committedTxn = committedTxn;
       this.nsLookup =
           nsids.entrySet().stream()
               .collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey));
@@ -1161,6 +1176,10 @@ public class LogCatalogFormat extends CatalogFormat {
     @Override
     public boolean createsHierarchicalNamespaces() {
       return true;
+    }
+
+    public boolean containsTransaction(UUID txnId) {
+      return committedTxn.contains(txnId);
     }
 
     @Override
