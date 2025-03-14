@@ -1044,7 +1044,10 @@ public class LogCatalogFormat extends CatalogFormat {
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
       final long MAX_CATALOG_SIZE = 16L * 1024 * 1024; // TODO from config/global
       try {
-        // final InputFile current = original.location();
+        final InputFile current = original.location();
+        if (!current.exists()) {
+          // TODO attempt CAS, fail on error
+        }
         // LogAction.Transaction txn = diff();
         // final byte[] txnBytes = toBytes(txn);
         // boolean seal = current.getLength() + txnBytes.length > MAX_CATALOG_SIZE;

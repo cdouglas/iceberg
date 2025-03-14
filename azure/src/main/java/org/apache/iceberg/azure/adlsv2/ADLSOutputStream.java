@@ -18,7 +18,6 @@
  */
 package org.apache.iceberg.azure.adlsv2;
 
-import com.azure.storage.common.ParallelTransferOptions;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.options.DataLakeFileOutputStreamOptions;
 import java.io.IOException;

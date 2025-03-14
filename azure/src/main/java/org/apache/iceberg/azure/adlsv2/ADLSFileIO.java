@@ -24,12 +24,9 @@ import com.azure.storage.file.datalake.DataLakeDirectoryClient;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
-import com.azure.storage.file.datalake.DataLakeServiceClient;
-import com.azure.storage.file.datalake.DataLakeServiceClientBuilder;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import com.azure.storage.file.datalake.models.ListPathsOptions;
-import com.azure.storage.file.datalake.models.PathProperties;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -100,8 +97,9 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
     final String path = replace.location();
     if (replace instanceof ADLSInputFile) {
       DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
+      final long objLength = replace.exists() ? replace.getLength() : -1L;
       return new ADLSOutputFile(
-          path, fileClient(path), azureProperties, replace.getLength(), conditions, metrics);
+          path, fileClient(path), azureProperties, objLength, conditions, metrics);
     }
     // TODO just throw.
     return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics);
