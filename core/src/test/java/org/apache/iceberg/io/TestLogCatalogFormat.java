@@ -324,13 +324,6 @@ public class TestLogCatalogFormat {
   }
 
   static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions) {
-    return toBytes(diffActions, false);
-  }
-
-  static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions, boolean seal) {
-    if (seal) {
-      diffActions.seal();
-    }
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
         DataOutputStream dos = new DataOutputStream(bos)) {
       diffActions.write(dos);

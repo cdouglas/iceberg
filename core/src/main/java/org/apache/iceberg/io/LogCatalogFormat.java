@@ -48,17 +48,17 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 @SuppressWarnings("checkstyle:VisibilityModifier")
-public class LogCatalogFormat extends CatalogFormat {
+public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
   // UUID generation
   private static final Random random = new Random();
 
   @Override
-  public CatalogFile.Mut empty(InputFile input) {
+  public CatalogFile.Mut<Mut> empty(InputFile input) {
     return new Mut(input);
   }
 
   @Override
-  public CatalogFile.Mut from(CatalogFile other) {
+  public CatalogFile.Mut<Mut> from(CatalogFile other) {
     if (!(other instanceof LogCatalogFile)) {
       throw new IllegalArgumentException("Cannot convert to LogCatalogFile: " + other);
     }
@@ -757,7 +757,7 @@ public class LogCatalogFormat extends CatalogFormat {
   }
 
   // TODO move this to LogCatalogFile
-  static class Mut extends CatalogFile.Mut<Mut> {
+  public static class Mut extends CatalogFile.Mut<Mut> {
     // namespace IDs are internal to the catalog format
 
     private UUID uuid = null;

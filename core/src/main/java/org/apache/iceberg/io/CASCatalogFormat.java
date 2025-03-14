@@ -41,15 +41,15 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 // Old implementation, used in sp24 class project
-public class CASCatalogFormat extends CatalogFormat {
+public class CASCatalogFormat extends CatalogFormat<CASCatalogFormat.Mut> {
 
   @Override
-  public CatalogFile.Mut empty(InputFile location) {
+  public CatalogFile.Mut<Mut> empty(InputFile location) {
     return new Mut(location);
   }
 
   @Override
-  public CatalogFile.Mut from(CatalogFile other) {
+  public CatalogFile.Mut<Mut> from(CatalogFile other) {
     return new Mut(other);
   }
 
@@ -183,7 +183,7 @@ public class CASCatalogFormat extends CatalogFormat {
     }
   }
 
-  static class Mut extends CatalogFile.Mut<Mut> {
+  public static class Mut extends CatalogFile.Mut<Mut> {
     Mut(InputFile location) {
       this(new CASCatalogFile(location));
     }

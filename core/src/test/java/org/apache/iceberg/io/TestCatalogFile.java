@@ -78,7 +78,7 @@ public class TestCatalogFile {
 
   @ParameterizedTest
   @MethodSource("catalogFormats")
-  public void testCatalogNamespace(CatalogFormat format) {
+  public void testCatalogNamespace(CatalogFormat<?> format) {
     final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
         format
@@ -110,7 +110,7 @@ public class TestCatalogFile {
 
   @ParameterizedTest
   @MethodSource("catalogFormats")
-  public void testNamespaceTransaction(CatalogFormat format) {
+  public void testNamespaceTransaction(CatalogFormat<?> format) {
     final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
         format
@@ -161,7 +161,7 @@ public class TestCatalogFile {
 
   @ParameterizedTest
   @MethodSource("catalogFormats")
-  public void testTableSwap(CatalogFormat format) {
+  public void testTableSwap(CatalogFormat<?> format) {
     // TODO: Example transaction we do NOT support
     // TODO: tracking create/delete in CatalogFile.Mut is insufficient to support this
     // TODO: since the same TableIdentifier is both deleted and created in the same transaction
