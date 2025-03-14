@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.io;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -1024,19 +1025,43 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
       return new LogAction.Transaction(actions);
     }
 
-    private InputFile tryAppend(SupportsAtomicOperations fileIO, InputFile in, byte[] txnBytes) {
+    private LogCatalogFile tryAppend(SupportsAtomicOperations fileIO, InputFile in) {
       // prepare output based on txn bytes
       // attempt writeAtomic
       return null;
     }
 
-    static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions) {
-      try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
-          DataOutputStream dos = new DataOutputStream(bos)) {
-        diffActions.write(dos);
-        return bos.toByteArray();
-      } catch (IOException e) {
-        throw new UncheckedIOException("Failed to write/read diff", e);
+    // write the original- which could include a long log- as a checkpoint
+    // write the diff as a transaction
+    // TODO absurd, reudundant computation of merge state
+    // TODO ensure InputFile includes accurate length (should be)
+    private LogCatalogFile tryCAS(SupportsAtomicOperations fileIO, InputFile current) {
+      try {
+        // SIGH
+        Preconditions.checkArgument(current.location().equals(original.location().location()));
+        final LogCatalogFile base = (LogCatalogFile) original;
+        final LogAction.Transaction txn = diff();
+        AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(current);
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             DataOutputStream daos = new DataOutputStream(baos)) {
+          base.writeCheckpoint(baos);
+          txn.write(daos);
+          final byte[] checkpointBytes = baos.toByteArray();
+          try (ByteArrayInputStream serBytes = new ByteArrayInputStream(checkpointBytes)) {
+            serBytes.mark(checkpointBytes.length);
+            CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.CAS);
+            serBytes.reset();
+            InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
+            final Mut merged = new Mut(newCatalog);
+            for (LogAction action : base.checkpointStream()) {
+              action.apply(merged);
+            }
+            diff().apply(merged);
+            return merged.merge();
+          }
+        }
+      } catch (SupportsAtomicOperations.CASException | IOException e) {
+        throw new CommitFailedException(e, "Failed to create catalog");
       }
     }
 
@@ -1044,10 +1069,13 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
       final long MAX_CATALOG_SIZE = 16L * 1024 * 1024; // TODO from config/global
       try {
-        final InputFile current = original.location();
-        if (!current.exists()) {
-          // TODO attempt CAS, fail on error
-        }
+        //// final InputFile current = original.location();
+        //// if (!current.exists()) {
+        ////   if (null == tryCAS(fileIO, current)) {
+        ////     throw new CommitFailedException("Failed to initialize catalog");
+        ////   }
+        //// }
+        //// return tryCAS(fileIO, current);
         // LogAction.Transaction txn = diff();
         // final byte[] txnBytes = toBytes(txn);
         // boolean seal = current.getLength() + txnBytes.length > MAX_CATALOG_SIZE;
@@ -1075,17 +1103,17 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
         //     return null; // TODO read and verify this transaction is present
         //   }
         // }
-        // TODO move to writeCheckpoint
-        // write original as checkpoint
-        // write diff as transaction
-        // InputFile current = original.location();
+        // TODO worked in tests, preserve for sanity
         final LogCatalogFile base = (LogCatalogFile) original;
-        final Mut merged = new Mut(base.location());
+        final Mut merged = new Mut(base.location()); // empty catalog
+
+        // FFS.
+        new LogAction.Checkpoint(base.uuid(), base.nextNsid, base.nextTblid, -1, -1, -1).apply(merged);
         for (LogAction action : base.checkpointStream()) {
-          action.apply(merged);
+          action.apply(merged); // apply original
         }
-        diff().apply(merged);
-        return merged.merge();
+        diff().apply(merged); // create transaction and apply
+        return merged.merge(); // return merged result
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Cannot commit");
       }

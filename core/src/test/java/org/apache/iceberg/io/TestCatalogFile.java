@@ -68,6 +68,7 @@ public class TestCatalogFile {
     random.setSeed(System.currentTimeMillis());
     System.out.println(testName + " seed: " + random.nextLong());
     nullFile = mock(InputFile.class);
+    when(nullFile.location()).thenReturn("null://null/null/null");
     AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
     CAS token = mock(CAS.class);
     when(outputFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(token);
