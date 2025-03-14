@@ -127,7 +127,6 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
   private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source) {
     // TODO etag
     final long appendLen = checksum.contentLength();
-    DataLakeRequestConditions cond = new DataLakeRequestConditions().setIfMatch(null);
     fileClient()
         .appendWithResponse(
             source.get(),
@@ -140,7 +139,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
     final DataLakeFileFlushOptions flushOpts =
         new DataLakeFileFlushOptions()
             .setClose(true)
-            .setRequestConditions(cond)
+            .setRequestConditions(conditions)
             .setUncommittedDataRetained(false);
     // throws on failure
     final Response<PathInfo> resp =

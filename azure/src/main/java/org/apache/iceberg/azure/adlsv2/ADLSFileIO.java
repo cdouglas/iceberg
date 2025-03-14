@@ -20,12 +20,16 @@ package org.apache.iceberg.azure.adlsv2;
 
 import com.azure.core.http.HttpClient;
 import com.azure.core.util.Context;
+import com.azure.storage.file.datalake.DataLakeDirectoryClient;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
+import com.azure.storage.file.datalake.DataLakeServiceClient;
+import com.azure.storage.file.datalake.DataLakeServiceClientBuilder;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import com.azure.storage.file.datalake.models.ListPathsOptions;
+import com.azure.storage.file.datalake.models.PathProperties;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -138,7 +142,12 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
 
   private DataLakeFileClient fileClient(String path) {
     ADLSLocation location = new ADLSLocation(path);
-    return client(location).getFileClient(location.path());
+    String dirPath = location.path().substring(0, location.path().lastIndexOf('/'));
+    String fileName = location.path().substring(location.path().lastIndexOf('/') + 1);
+    DataLakeDirectoryClient dirClient = client(location).getDirectoryClient(dirPath);
+    DataLakeFileClient fileClient = dirClient.getFileClient(fileName);
+
+    return fileClient;
   }
 
   @Override

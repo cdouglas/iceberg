@@ -55,6 +55,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.time.OffsetDateTime;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Random;
@@ -84,7 +85,7 @@ import org.slf4j.LoggerFactory;
 public class ADLSFileIOTest {
   protected static AzuriteContainer azuriteContainer = null;
 
-  private final Random random = new Random(1);
+  private final Random random = new Random();
   private static final Logger LOG = LoggerFactory.getLogger(ADLSFileIOTest.class);
   private static String uniqTestRun = UUID.randomUUID().toString();
 
@@ -104,10 +105,12 @@ public class ADLSFileIOTest {
       // sascfg.put(AzureProperties.ADLS_CONNECTION_STRING_PREFIX + "lstnsgym.dfs.core.windows.net",
       // creds.connectionString);
       az = new AzureSAS.SasResolver(creds);
+      LOG.info("Using remote storage");
     } else {
       azuriteContainer = new AzuriteContainer();
       azuriteContainer.start();
       az = azuriteContainer;
+      LOG.info("Using local storage");
     }
   }
 
@@ -305,10 +308,9 @@ public class ADLSFileIOTest {
 
   @Test
   public void testAtomicAppend() throws IOException {
-    final String path = "path/to/file.txt";
+    final String path = "path/to/dingos";
     final String location = az.location(path);
-    final byte[] base = new byte[1024 * 1024];
-    random.nextBytes(base);
+    final byte[] base = randBytes(1024 * 1024);
     ADLSFileIO io = createFileIO();
 
     final OutputFile out = io.newOutputFile(location);
@@ -318,8 +320,29 @@ public class ADLSFileIOTest {
 
     final InputFile in = io.newInputFile(location);
     assertThat(in.exists()).isTrue();
+    final AtomicOutputFile<CAS> overwriteFile = io.newOutputFile(in);
+    final byte[] overwriteBytes = randBytes(1024);
+    random.nextBytes(overwriteBytes);
+    final CAS cas = overwriteFile.prepare(
+            () -> new ByteArrayInputStream(overwriteBytes),
+            AtomicOutputFile.Strategy.CAS);
+    final InputFile casin = overwriteFile.writeAtomic(cas, () -> new ByteArrayInputStream(overwriteBytes));
+
     // TODO prepare concurrent appends, exactly one should succeed
     // TODO document behavior of etag in testcase
+    final AtomicOutputFile<CAS> appendFile = io.newOutputFile(casin);
+    final byte[] appendBytes = randBytes(1024);
+    random.nextBytes(appendBytes);
+    final CAS chk =
+            appendFile.prepare(() -> new ByteArrayInputStream(appendBytes), AtomicOutputFile.Strategy.APPEND);
+    appendFile.writeAtomic(chk, () -> new ByteArrayInputStream(appendBytes));
+    final InputFile appended = io.newInputFile(location);
+    assertThat(appended.exists()).isTrue();
+    final byte[] actual = new byte[1024 + 1024];
+    try (InputStream is = appended.newStream()) {
+      IOUtil.readFully(is, actual, 0, actual.length);
+    }
+    assertThat(actual).isEqualTo(concatBytes(overwriteBytes, appendBytes));
   }
 
   private byte[] randBytes(int len) {
@@ -364,10 +387,20 @@ public class ADLSFileIOTest {
             .setUncommittedDataRetained(false);
     return client.flushWithResponse(origLen + bytes.length, flushOpts, null, Context.NONE);
   }
+  static byte[] concatBytes(byte[] orig, byte[]... append) {
+    final byte[] appended =
+            Arrays.copyOf(orig, orig.length + Arrays.stream(append).mapToInt(a -> a.length).sum());
+    int offset = orig.length;
+    for (byte[] a : append) {
+      System.arraycopy(a, 0, appended, offset, a.length);
+      offset += a.length;
+    }
+    return appended;
+  }
 
   @Test
   @SuppressWarnings("deprecation") // getHeaderValue; InvalidFlush not in SDK
-  public void scratchADLS() {
+  public void scratchADLS() throws IOException {
     // ADLSFileIO io = createFileIO();
     // ADLSLocation loc = new ADLSLocation(AZURITE_CONTAINER.location("path/to/file.txt"));
     // DataLakeFileClient client = io.client(loc).getFileClient(loc.path());
@@ -397,6 +430,11 @@ public class ADLSFileIOTest {
             new DataLakeRequestConditions().setIfMatch(origResp.getValue().getETag()));
     System.out.println(
         "DEBUG1: " + client.getProperties().getFileSize() + " + " + overResp.getValue().getETag());
+    final byte[] actualOverBytes = new byte[overBytes.length];
+    try (InputStream is = client.openInputStream().getInputStream()) {
+      IOUtil.readFully(is, actualOverBytes, 0, actualOverBytes.length);
+    }
+    assertThat(actualOverBytes).isEqualTo(overBytes);
 
     // TODO update length to be known offset + length of new data
     final byte[] appendBytes = randBytes(1024 + random.nextInt(1024));
@@ -411,41 +449,26 @@ public class ADLSFileIOTest {
             + client.getProperties().getFileSize()
             + " + "
             + appendResp.getValue().getETag());
+    final byte[] expectedAppendResult = new byte[overBytes.length + appendBytes.length];
+    try (InputStream is = client.openInputStream().getInputStream()) {
+      IOUtil.readFully(is, expectedAppendResult, 0, expectedAppendResult.length);
+    }
+    assertThat(client.getProperties().getFileSize()).isEqualTo(overBytes.length + appendBytes.length);
+    assertThat(expectedAppendResult).isEqualTo(concatBytes(overBytes, appendBytes));
 
     final byte[] appendBytes2 = randBytes(1024 + random.nextInt(1024));
     // fail, off by 1
-    final Response<PathInfo> appendResp2;
-    try {
-      // final Response<PathInfo> appendResp2 = appendBytes(client, overBytes.length +
-      // appendBytes.length - 1, appendBytes2, new
-      // DataLakeRequestConditions().setIfMatch(appendResp.getValue().getETag()));
-      appendResp2 =
-          appendBytes(
-              client,
-              overBytes.length + appendBytes.length - 1,
-              appendBytes2,
-              new DataLakeRequestConditions().setIfMatch(appendResp.getValue().getETag()));
-      System.out.println(
-          "DEBUG3: "
-              + client.getProperties().getFileSize()
-              + " + "
-              + appendResp2.getValue().getETag());
-    } catch (DataLakeStorageException e) {
-      assertThat(e.getResponse().getHeaderValue("x-ms-error-code"))
-          .isEqualTo("InvalidFlushPosition");
-    }
-
-    // final byte[] overBytes2 = randBytes(1024 + random.nextInt(1024));
-    // final Response<PathInfo> overResp2 = writeBytes(client, overBytes2, new
-    // DataLakeRequestConditions().setIfMatch(appendResp2.getValue().getETag()));
-    // System.out.println("DEBUG4: " + client.getProperties().getFileSize() + " + " +
-    // overResp2.getValue().getETag());
-
-    // final byte[] failBytes = randBytes(1024 + random.nextInt(1024));
-    // final Response<PathInfo> failResp = writeBytes(client, failBytes, new
-    // DataLakeRequestConditions().setIfMatch(origResp.getValue().getETag()));
-    // System.out.println("DEBUG3: " + client.getProperties().getFileSize() + " + " +
-    // failResp.getValue().getETag());
+    DataLakeStorageException appendFailure =
+            Assertions.assertThrows(
+                    DataLakeStorageException.class,
+                    () ->
+                      appendBytes(
+                              client,
+                              overBytes.length + appendBytes.length - 1,
+                              appendBytes2,
+                              new DataLakeRequestConditions().setIfMatch(appendResp.getValue().getETag())));
+    assertThat(appendFailure.getResponse().getHeaderValue("x-ms-error-code"))
+            .isEqualTo("InvalidFlushPosition");
   }
 
   @Test
