@@ -936,6 +936,7 @@ public class LogCatalogFormat
     void dropTableInternal(int tblId) {
       tblLocations.remove(tblId);
       tblVersion.remove(tblId);
+      tblIds.values().removeIf(id -> id.equals(tblId));
     }
 
     void updateTableInternal(int tblId, int version, String location) {
