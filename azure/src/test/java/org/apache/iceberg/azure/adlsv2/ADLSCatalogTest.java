@@ -32,7 +32,6 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
-import org.apache.iceberg.io.CASCatalogFormat;
 import org.apache.iceberg.io.CatalogFormat;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.io.LogCatalogFormat;
@@ -143,7 +142,7 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
     final Map<String, String> properties = Maps.newHashMap();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
     final String location = warehouseLocation + "/catalog";
-    CatalogFormat<?,?> format = new LogCatalogFormat();
+    CatalogFormat<?, ?> format = new LogCatalogFormat();
     catalog = new FileIOCatalog("test", location, null, format, io, Maps.newHashMap());
     catalog.initialize(testName, properties);
   }
@@ -160,6 +159,7 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
 
   @Override
   protected boolean supportsConcurrentCreate() {
+    // TODO LogCatalogFormat supports concurrent create in different namespaces
     return false;
   }
 

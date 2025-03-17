@@ -82,7 +82,9 @@ public class LogCatalogFormat
   static LogCatalogFile readInternal(Mut catalog, InputStream in) throws IOException {
     return readInternal(catalog, in, Integer.MAX_VALUE);
   }
-  // XXX full log slurped into memory to be lazy
+  // TODO this is written very... badly.
+  // TODO available() only really works to map to an Iterator<T> if it's backed by a byte array
+  // TODO do this properly, where the Limit is not MAX_VALUE but the expected byte count
   @VisibleForTesting
   static LogCatalogFile readInternal(Mut catalog, InputStream in, int catalogLen)
       throws IOException {
@@ -92,7 +94,9 @@ public class LogCatalogFormat
       }
       LogAction.Checkpoint chk = LogAction.Checkpoint.read(din);
       chk.apply(catalog);
-      InputStream chkStream = new DataInputStream(new LimitInputStream(in, chk.chkEnd));
+      byte[] chkBytes = new byte[(int) chk.chkEnd];
+      IOUtil.readFully(in, chkBytes, 0, chkBytes.length);
+      InputStream chkStream = new DataInputStream(new ByteArrayInputStream(chkBytes));
       for (LogAction action : LogAction.chkIterator(new DataInputStream(chkStream))) {
         // no validation necessary in this interval
         action.apply(catalog);
@@ -105,9 +109,16 @@ public class LogCatalogFormat
       // in.seek(chk.committedTxnEnd);
       // TODO limit log to target offset, to read a prefix of the object
       // TODO take this limit from the InputFile
-      int logLen = (int) catalogLen; // TODO correct metadata
-      for (LogAction.Transaction txn :
-          LogAction.logIterator(new DataInputStream(new LimitInputStream(in, logLen)))) {
+      // TODO HACK to get around current callers backed by byte arrays (accurately report available())
+      final InputStream logStream;
+      if (catalogLen == Integer.MAX_VALUE) {
+        logStream = new LimitInputStream(in, Integer.MAX_VALUE);
+      } else {
+        byte[] logBytes = new byte[(int) (catalogLen - chk.chkEnd - chk.length())];
+        IOUtil.readFully(in, logBytes, 0, logBytes.length);
+        logStream = new ByteArrayInputStream(logBytes);
+      }
+      for (LogAction.Transaction txn : LogAction.logIterator(new DataInputStream(logStream))) {
         if (txn.verify(catalog)) {
           txn.apply(catalog);
         }
@@ -178,6 +189,11 @@ public class LogCatalogFormat
         this.chkEnd = chkEnd;
         this.tblEmbedEnd = tblEmbedEnd;
         this.committedTxnEnd = committedTxnEnd;
+      }
+
+      int length() {
+        // opcode UUID [fields]
+        return 1 + 16 + 4 + 4 + 8 + 8 + 8;
       }
 
       @Override
@@ -626,6 +642,9 @@ public class LogCatalogFormat
 
       @Override
       void write(DataOutputStream dos) throws IOException {
+        if (actions.isEmpty()) {
+          return;
+        }
         dos.writeByte(Type.TRANSACTION.opcode);
         dos.writeLong(txnId.getMostSignificantBits());
         dos.writeLong(txnId.getLeastSignificantBits());
@@ -1030,7 +1049,7 @@ public class LogCatalogFormat
           }
         } else {
           // dropping a table
-          final int tblId = tblIds.get(ti);
+          final int tblId = original.tblIds.get(ti);
           actions.add(new LogAction.DropTable(tblId, original.tblVersion.get(tblId)));
         }
       }
@@ -1041,12 +1060,6 @@ public class LogCatalogFormat
         actions.add(new LogAction.UpdateTable(tblId, original.tblVersion.get(tblId), location));
       }
       return new LogAction.Transaction(actions);
-    }
-
-    private LogCatalogFile tryAppend(SupportsAtomicOperations fileIO, InputFile in) {
-      // prepare output based on txn bytes
-      // attempt writeAtomic
-      return null;
     }
 
     // write the original- which could include a long log- as a checkpoint
@@ -1226,6 +1239,9 @@ public class LogCatalogFormat
       this.nsLookup =
           nsids.entrySet().stream()
               .collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey));
+      if (!nsids.containsKey(Namespace.empty())) {
+        throw new IllegalStateException("Missing root/empty namespace");
+      }
     }
 
     // TODO move this to format
@@ -1263,7 +1279,7 @@ public class LogCatalogFormat
       if (nsid == null) {
         return null;
       }
-      return Collections.unmodifiableMap(nsProperties.get(nsid));
+      return Collections.unmodifiableMap(nsProperties.getOrDefault(nsid, Collections.emptyMap()));
     }
 
     @Override

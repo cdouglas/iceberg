@@ -100,6 +100,7 @@ public abstract class CatalogFile {
       return createNamespace(namespace, Collections.emptyMap());
     }
 
+    // XXX this is adding "" to namespaces as a new namespace. Should ensure != empty
     public T createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
@@ -110,6 +111,7 @@ public abstract class CatalogFile {
         throw new AlreadyExistsException(
             "Cannot create namespace %s. Namespace already exists", namespace);
       }
+      // XXX original is missing empty namespace??
       for (Namespace ancestor = parentOf(namespace);
           !original.containsNamespace(ancestor);
           ancestor = parentOf(ancestor)) {
