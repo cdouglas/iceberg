@@ -1096,7 +1096,7 @@ public class LogCatalogFormat
           }
         }
       } catch (SupportsAtomicOperations.CASException | IOException e) {
-        throw new CommitFailedException(e, "Failed to create catalog");
+        throw new CommitFailedException(e, "Cannot commit: %s", e.getMessage());
       }
     }
 
