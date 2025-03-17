@@ -75,7 +75,7 @@ public abstract class CatalogFile {
 
   abstract Map<TableIdentifier, String> locations();
 
-  public abstract static class Mut<T extends Mut<T>> {
+  public abstract static class Mut<C extends CatalogFile, T extends Mut<C, T>> {
 
     protected final CatalogFile original;
     protected final Map<TableIdentifier, String> tables;
@@ -236,6 +236,6 @@ public abstract class CatalogFile {
           && !namespaces.getOrDefault(namespace, false);
     }
 
-    public abstract CatalogFile commit(SupportsAtomicOperations<CAS> fileIO);
+    public abstract C commit(SupportsAtomicOperations<CAS> fileIO);
   }
 }

@@ -59,7 +59,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   private String catalogName = "fileio";
   private String catalogLocation;
   private String warehouseLocation;
-  private CatalogFormat format;
+  private CatalogFormat<?,?> format;
   private SupportsAtomicOperations<CAS> fileIO;
   private final Map<String, String> catalogProperties;
 
@@ -73,7 +73,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       String catalogName,
       String catalogLocation,
       Configuration conf,
-      CatalogFormat format,
+      CatalogFormat<?,?> format,
       SupportsAtomicOperations<CAS> fileIO,
       Map<String, String> catalogProperties) {
     this.catalogName = catalogName;

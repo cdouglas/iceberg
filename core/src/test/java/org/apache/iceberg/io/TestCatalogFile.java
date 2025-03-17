@@ -53,7 +53,7 @@ public class TestCatalogFile {
   private static final TableIdentifier TBL4 = TableIdentifier.of(NS3, "table4");
   private static final TableIdentifier TBL5 = TableIdentifier.of(Namespace.empty(), "table4");
 
-  static Stream<CatalogFormat> catalogFormats() {
+  static Stream<CatalogFormat<?,?>> catalogFormats() {
     return Stream.of(new CASCatalogFormat(), new LogCatalogFormat());
   }
 
@@ -79,7 +79,14 @@ public class TestCatalogFile {
 
   @ParameterizedTest
   @MethodSource("catalogFormats")
-  public void testCatalogNamespace(CatalogFormat<?> format) {
+  public void testEmptyCatalog(CatalogFormat<?,?> format) {
+    CatalogFile empty = format.empty(nullFile).commit(fileIO);
+    assertThat(empty.containsNamespace(Namespace.empty())).isTrue();
+  }
+
+  @ParameterizedTest
+  @MethodSource("catalogFormats")
+  public void testCatalogNamespace(CatalogFormat<?,?> format) {
     final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
         format
@@ -111,7 +118,7 @@ public class TestCatalogFile {
 
   @ParameterizedTest
   @MethodSource("catalogFormats")
-  public void testNamespaceTransaction(CatalogFormat<?> format) {
+  public void testNamespaceTransaction(CatalogFormat<?,?> format) {
     final Map<String, String> ns1PropsInit = Collections.singletonMap("key0", "value0");
     CatalogFile catalogFile =
         format
@@ -162,7 +169,7 @@ public class TestCatalogFile {
 
   @ParameterizedTest
   @MethodSource("catalogFormats")
-  public void testTableSwap(CatalogFormat<?> format) {
+  public void testTableSwap(CatalogFormat<?,?> format) {
     // TODO: Example transaction we do NOT support
     // TODO: tracking create/delete in CatalogFile.Mut is insufficient to support this
     // TODO: since the same TableIdentifier is both deleted and created in the same transaction

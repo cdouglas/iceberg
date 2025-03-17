@@ -25,7 +25,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -71,21 +73,6 @@ public class TestLogCatalogFormat {
   public void testLogStream() throws IOException {
     // Create a sample transaction to write to the stream
     UUID txnId = UUID.randomUUID();
-    DataInputStream dis = getDataInputStream(txnId);
-    LogCatalogFormat.LogAction.LogStream logStream = new LogCatalogFormat.LogAction.LogStream(dis);
-
-    // Verify that the LogStream correctly reads the transaction
-    assertTrue(logStream.hasNext());
-    LogCatalogFormat.LogAction.Transaction readTransaction = logStream.next();
-    assertEquals(txnId, readTransaction.txnId);
-    assertTrue(readTransaction.sealed());
-    assertEquals(1, readTransaction.actions.size());
-    assertInstanceOf(
-        LogCatalogFormat.LogAction.CreateNamespace.class, readTransaction.actions.get(0));
-    assertFalse(logStream.hasNext());
-  }
-
-  private static DataInputStream getDataInputStream(UUID txnId) throws IOException {
     LogCatalogFormat.LogAction.CreateNamespace createNamespace =
         new LogCatalogFormat.LogAction.CreateNamespace("testNamespace", -1, 0, 1);
     final List<LogCatalogFormat.LogAction> actions = new ArrayList<>();
@@ -101,7 +88,18 @@ public class TestLogCatalogFormat {
 
     // Read the transaction from the byte array using LogStream
     ByteArrayInputStream bais = new ByteArrayInputStream(data);
-    return new DataInputStream(bais);
+    DataInputStream dis = new DataInputStream(bais);
+    LogCatalogFormat.LogAction.LogStream logStream = new LogCatalogFormat.LogAction.LogStream(dis);
+
+    // Verify that the LogStream correctly reads the transaction
+    assertTrue(logStream.hasNext());
+    LogCatalogFormat.LogAction.Transaction readTransaction = logStream.next();
+    assertEquals(txnId, readTransaction.txnId);
+    assertTrue(readTransaction.sealed());
+    assertEquals(1, readTransaction.actions.size());
+    assertInstanceOf(
+        LogCatalogFormat.LogAction.CreateNamespace.class, readTransaction.actions.get(0));
+    assertFalse(logStream.hasNext());
   }
 
   @Test
@@ -120,7 +118,7 @@ public class TestLogCatalogFormat {
     LogCatalogFormat.Mut catalog = new LogCatalogFormat.Mut(mockFile);
     LogCatalogFormat format = new LogCatalogFormat();
     try (ByteArrayInputStream bis = new ByteArrayInputStream(aBytes)) {
-      LogCatalogFile c = format.readInternal(catalog, bis);
+      LogCatalogFile c = LogCatalogFormat.readInternal(catalog, bis);
       assertEquals(a, c);
     }
   }
@@ -151,7 +149,8 @@ public class TestLogCatalogFormat {
     InputFile mockFile = mock(InputFile.class);
     LogCatalogFormat.Mut catalog = new LogCatalogFormat.Mut(mockFile);
     LogCatalogFormat format = new LogCatalogFormat();
-    final LogCatalogFile c = format.readInternal(catalog, new ByteArrayInputStream(appended));
+    final LogCatalogFile c =
+        LogCatalogFormat.readInternal(catalog, new ByteArrayInputStream(appended));
     assertThat(c.containsNamespace(dingos)).isTrue();
     assertThat(c.containsNamespace(dingos_yaks)).isTrue();
     assertThat(c.containsNamespace(yaks)).isFalse();
@@ -162,7 +161,7 @@ public class TestLogCatalogFormat {
 
     catalog = new LogCatalogFormat.Mut(mockFile);
     final LogCatalogFile d =
-        format.readInternal(
+        LogCatalogFormat.readInternal(
             catalog,
             new ByteArrayInputStream(
                 appendBytes(
@@ -202,7 +201,8 @@ public class TestLogCatalogFormat {
             .createTable(tblY, "yak://chinchilla/tblY")
             .diff();
     final byte[] bBytes = appendBytes(toBytes(orig), toBytes(txnA));
-    final LogCatalogFile b = format.readInternal(catalog, new ByteArrayInputStream(bBytes));
+    final LogCatalogFile b =
+        LogCatalogFormat.readInternal(catalog, new ByteArrayInputStream(bBytes));
 
     catalog = new LogCatalogFormat.Mut(mockFile);
     final LogCatalogFormat.LogAction.Transaction txnB =
@@ -213,7 +213,8 @@ public class TestLogCatalogFormat {
     final LogCatalogFormat.LogAction.Transaction txnD =
         new LogCatalogFormat.Mut(b).createTable(tblD, "yak://chinchilla/tblD").diff();
     final byte[] cBytes = appendBytes(toBytes(b), toBytes(txnB), toBytes(txnC), toBytes(txnD));
-    final LogCatalogFile c = format.readInternal(catalog, new ByteArrayInputStream(cBytes));
+    final LogCatalogFile c =
+        LogCatalogFormat.readInternal(catalog, new ByteArrayInputStream(cBytes));
 
     assertThat(c.containsNamespace(dingos)).isTrue();
     assertThat(c.containsNamespace(dingos_yaks)).isTrue();
@@ -228,6 +229,20 @@ public class TestLogCatalogFormat {
     assertThat(c.sealed).isTrue();
     assertThat(c.containsTransaction(txnC.txnId)).isFalse();
     assertThat(c.containsTransaction(txnD.txnId)).isFalse();
+  }
+
+  @Test
+  @SuppressWarnings("unchecked") // mocks
+  public void testCASCommitPath() throws IOException {
+    InputFile initFile = mock(InputFile.class);
+    when(initFile.exists()).thenReturn(false);
+    when(initFile.location()).thenReturn("yak://chinchilla/prod/catalog");
+    SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
+    AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
+    when(fileIO.newOutputFile(eq(initFile))).thenReturn(outputFile);
+
+    LogCatalogFormat format = new LogCatalogFormat();
+    LogCatalogFile init = format.empty(initFile).commit(fileIO);
   }
 
   private LogCatalogFile generateRandomLogCatalogFile(long seed) {

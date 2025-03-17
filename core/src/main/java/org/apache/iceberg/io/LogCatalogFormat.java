@@ -49,17 +49,18 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 @SuppressWarnings("checkstyle:VisibilityModifier")
-public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
+public class LogCatalogFormat
+    extends CatalogFormat<LogCatalogFormat.LogCatalogFile, LogCatalogFormat.Mut> {
   // UUID generation
   private static final Random random = new Random();
 
   @Override
-  public CatalogFile.Mut<Mut> empty(InputFile input) {
+  public CatalogFile.Mut<LogCatalogFile, Mut> empty(InputFile input) {
     return new Mut(input);
   }
 
   @Override
-  public CatalogFile.Mut<Mut> from(CatalogFile other) {
+  public CatalogFile.Mut<LogCatalogFile, Mut> from(CatalogFile other) {
     if (!(other instanceof LogCatalogFile)) {
       throw new IllegalArgumentException("Cannot convert to LogCatalogFile: " + other);
     }
@@ -67,19 +68,24 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
   }
 
   @Override
-  public CatalogFile read(SupportsAtomicOperations fileIO, InputFile catalogLocation) {
+  public LogCatalogFile read(SupportsAtomicOperations fileIO, InputFile catalogLocation) {
     // intentionally drop metadata cached on InputFile
     InputFile refresh = fileIO.newInputFile(catalogLocation.location());
     Mut catalog = new Mut(refresh);
     try (SeekableInputStream in = refresh.newStream()) {
-      return readInternal(catalog, in);
+      return readInternal(catalog, in, (int) refresh.getLength());
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
   }
 
+  static LogCatalogFile readInternal(Mut catalog, InputStream in) throws IOException {
+    return readInternal(catalog, in, Integer.MAX_VALUE);
+  }
+  // XXX full log slurped into memory to be lazy
   @VisibleForTesting
-  LogCatalogFile readInternal(Mut catalog, InputStream in) throws IOException {
+  static LogCatalogFile readInternal(Mut catalog, InputStream in, int catalogLen)
+      throws IOException {
     try (DataInputStream din = new DataInputStream(in)) {
       if (din.readByte() != LogAction.Type.CHECKPOINT.opcode) {
         throw new IllegalStateException("Invalid magic bits");
@@ -99,7 +105,9 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
       // in.seek(chk.committedTxnEnd);
       // TODO limit log to target offset, to read a prefix of the object
       // TODO take this limit from the InputFile
-      for (LogAction.Transaction txn : LogAction.logIterator(din)) {
+      int logLen = (int) catalogLen; // TODO correct metadata
+      for (LogAction.Transaction txn :
+          LogAction.logIterator(new DataInputStream(new LimitInputStream(in, logLen)))) {
         if (txn.verify(catalog)) {
           txn.apply(catalog);
         }
@@ -758,7 +766,7 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
   }
 
   // TODO move this to LogCatalogFile
-  public static class Mut extends CatalogFile.Mut<Mut> {
+  public static class Mut extends CatalogFile.Mut<LogCatalogFile, Mut> {
     // namespace IDs are internal to the catalog format
 
     private UUID uuid = null;
@@ -800,10 +808,20 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
     private final Map<Integer, Integer> tblVersion = Maps.newHashMap();
     private final Map<Integer, String> tblLocations = Maps.newHashMap();
 
+    // empty
     Mut(InputFile input) {
       this(new LogCatalogFile(input));
     }
 
+    // empty w/ checkpoint data (useful for merge)
+    Mut(InputFile input, UUID uuid, int nextNsid, int nextTblid) {
+      this(new LogCatalogFile(input));
+      this.uuid = uuid;
+      this.nextNsid = nextNsid;
+      this.nextTblid = nextTblid;
+    }
+
+    // changes to be applied to this catalog
     Mut(LogCatalogFile other) {
       super(other);
     }
@@ -1042,10 +1060,9 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
         final LogCatalogFile base = (LogCatalogFile) original;
         final LogAction.Transaction txn = diff();
         AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(current);
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-             DataOutputStream daos = new DataOutputStream(baos)) {
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
           base.writeCheckpoint(baos);
-          txn.write(daos);
+          txn.write(new DataOutputStream(baos));
           final byte[] checkpointBytes = baos.toByteArray();
           try (ByteArrayInputStream serBytes = new ByteArrayInputStream(checkpointBytes)) {
             serBytes.mark(checkpointBytes.length);
@@ -1053,11 +1070,15 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
             serBytes.reset();
             InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
             final Mut merged = new Mut(newCatalog);
-            for (LogAction action : base.checkpointStream()) {
-              action.apply(merged);
-            }
-            diff().apply(merged);
-            return merged.merge();
+            // TODO: newCatalog should have the offset of the checkpoint - txn bytes
+            LogCatalogFile ret =
+                LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(checkpointBytes));
+            return ret;
+            // for (LogAction action : base.checkpointStream()) {
+            //   action.apply(merged);
+            // }
+            // diff().apply(merged);
+            // return merged.merge();
           }
         }
       } catch (SupportsAtomicOperations.CASException | IOException e) {
@@ -1069,13 +1090,16 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
       final long MAX_CATALOG_SIZE = 16L * 1024 * 1024; // TODO from config/global
       try {
-        //// final InputFile current = original.location();
-        //// if (!current.exists()) {
-        ////   if (null == tryCAS(fileIO, current)) {
-        ////     throw new CommitFailedException("Failed to initialize catalog");
-        ////   }
-        //// }
-        //// return tryCAS(fileIO, current);
+        final InputFile current = original.location();
+        if (!current.exists()) {
+          // TODO make tryCAS return null/error instead of throwing
+          final LogCatalogFile init = tryCAS(fileIO, current);
+          if (null == init) {
+            throw new CommitFailedException("Failed to initialize catalog");
+          }
+          return init;
+        }
+        return tryCAS(fileIO, current);
         // LogAction.Transaction txn = diff();
         // final byte[] txnBytes = toBytes(txn);
         // boolean seal = current.getLength() + txnBytes.length > MAX_CATALOG_SIZE;
@@ -1104,16 +1128,17 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
         //   }
         // }
         // TODO worked in tests, preserve for sanity
-        final LogCatalogFile base = (LogCatalogFile) original;
-        final Mut merged = new Mut(base.location()); // empty catalog
+        // final LogCatalogFile base = (LogCatalogFile) original;
+        // final Mut merged = new Mut(base.location()); // empty catalog
 
-        // FFS.
-        new LogAction.Checkpoint(base.uuid(), base.nextNsid, base.nextTblid, -1, -1, -1).apply(merged);
-        for (LogAction action : base.checkpointStream()) {
-          action.apply(merged); // apply original
-        }
-        diff().apply(merged); // create transaction and apply
-        return merged.merge(); // return merged result
+        // // FFS.
+        // new LogAction.Checkpoint(base.uuid(), base.nextNsid, base.nextTblid, -1, -1,
+        // -1).apply(merged);
+        // for (LogAction action : base.checkpointStream()) {
+        //   action.apply(merged); // apply original
+        // }
+        // diff().apply(merged); // create transaction and apply
+        // return merged.merge(); // return merged result
       } catch (SupportsAtomicOperations.CASException e) {
         throw new CommitFailedException(e, "Cannot commit");
       }
@@ -1138,7 +1163,7 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
     return new UUID(msb, lsb);
   }
 
-  static class LogCatalogFile extends CatalogFile {
+  public static class LogCatalogFile extends CatalogFile {
     final int nextNsid;
     final int nextTblid;
     final boolean sealed;
@@ -1307,7 +1332,6 @@ public class LogCatalogFormat extends CatalogFormat<LogCatalogFormat.Mut> {
     }
 
     void writeCheckpoint(OutputStream out) throws IOException {
-
       try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
           DataOutputStream dos = new DataOutputStream(bos);
           DataOutputStream chk = new DataOutputStream(out)) {

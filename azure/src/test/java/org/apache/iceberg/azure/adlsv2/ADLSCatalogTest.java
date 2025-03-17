@@ -32,9 +32,9 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
-import org.apache.iceberg.io.CASCatalogFormat;
 import org.apache.iceberg.io.CatalogFormat;
 import org.apache.iceberg.io.FileIOCatalog;
+import org.apache.iceberg.io.LogCatalogFormat;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -142,7 +142,7 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
     final Map<String, String> properties = Maps.newHashMap();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
     final String location = warehouseLocation + "/catalog";
-    CatalogFormat format = new CASCatalogFormat();
+    CatalogFormat<?> format = new LogCatalogFormat();
     catalog = new FileIOCatalog("test", location, null, format, io, Maps.newHashMap());
     catalog.initialize(testName, properties);
   }
