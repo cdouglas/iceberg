@@ -31,5 +31,6 @@ public abstract class CatalogFormat<C extends CatalogFile, T extends CatalogFile
 
   public abstract C read(SupportsAtomicOperations fileIO, InputFile in);
 
+  // TODO change argument to C, to ensure it must come from *Format::read
   public abstract CatalogFile.Mut<C, T> from(CatalogFile other);
 }

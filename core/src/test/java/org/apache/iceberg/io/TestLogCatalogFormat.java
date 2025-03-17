@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -34,6 +35,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -42,6 +44,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.apache.iceberg.catalog.Namespace;
@@ -50,6 +53,7 @@ import org.apache.iceberg.io.LogCatalogFormat.LogCatalogFile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.mockito.ArgumentCaptor;
 
 public class TestLogCatalogFormat {
 
@@ -233,16 +237,76 @@ public class TestLogCatalogFormat {
 
   @Test
   @SuppressWarnings("unchecked") // mocks
-  public void testCASCommitPath() throws IOException {
+  public void testCASInitCommitPath() throws IOException {
+    final String CATALOG_LOC = "yak://chinchilla/prod/catalog";
     InputFile initFile = mock(InputFile.class);
     when(initFile.exists()).thenReturn(false);
-    when(initFile.location()).thenReturn("yak://chinchilla/prod/catalog");
+    when(initFile.location()).thenReturn(CATALOG_LOC);
+
     SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
     AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
     when(fileIO.newOutputFile(eq(initFile))).thenReturn(outputFile);
 
+    CAS cas = mock(CAS.class);
+    InputFile casFile = mock(InputFile.class);
+    when(outputFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(cas);
+    ArgumentCaptor<Supplier<InputStream>> inputStreamCaptor = ArgumentCaptor.forClass(Supplier.class);
+    when(outputFile.writeAtomic(any(), inputStreamCaptor.capture())).thenReturn(casFile);
+
+    // COMMIT init update
     LogCatalogFormat format = new LogCatalogFormat();
-    LogCatalogFile init = format.empty(initFile).commit(fileIO);
+    LogCatalogFile init = format.empty(initFile)
+            .createNamespace(dingos)
+            .createNamespace(dingos_yaks)
+            .createTable(tblY, "yak://chinchilla/tblY")
+            .commit(fileIO);
+    Supplier<InputStream> capturedSupplier = inputStreamCaptor.getValue();
+
+    final byte[] capturedBytes;
+    try (InputStream is = capturedSupplier.get();
+         ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+        byte[] buffer = new byte[1024];
+        int length;
+        while ((length = is.read(buffer)) != -1) {
+            baos.write(buffer, 0, length);
+        }
+        capturedBytes = baos.toByteArray();
+    }
+
+    // VERIFY init LogCatalogFile returned matches bytes written
+    LogCatalogFile written = LogCatalogFormat.readInternal(new LogCatalogFormat.Mut(casFile), new ByteArrayInputStream(capturedBytes));
+    assertThat(written).isEqualTo(init);
+
+    InputFile updFile = mock(InputFile.class);
+    AtomicOutputFile<CAS> updateFile = mock(AtomicOutputFile.class);
+    when(casFile.exists()).thenReturn(true);
+    when(casFile.location()).thenReturn(CATALOG_LOC);
+    // refreshed, so not eq(casFile)
+    when(fileIO.newOutputFile((InputFile) any())).thenReturn(updateFile);
+    when(updateFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(cas);
+    ArgumentCaptor<Supplier<InputStream>> updateStreamCaptor = ArgumentCaptor.forClass(Supplier.class);
+    when(updateFile.writeAtomic(any(), updateStreamCaptor.capture())).thenReturn(updFile);
+
+    // COMMIT via from, check bytes written match LogCatalogFile instance returned
+    LogCatalogFile upd = format.from(written).createNamespace(yaks).commit(fileIO);
+    assertThat(upd.containsNamespace(yaks)).isTrue();
+    Supplier<InputStream> updSupplier = updateStreamCaptor.getValue();
+
+    final byte[] capturedUpdateBytes;
+    try (InputStream is = updSupplier.get();
+         ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+      byte[] buffer = new byte[1024];
+      int length;
+      while ((length = is.read(buffer)) != -1) {
+        baos.write(buffer, 0, length);
+      }
+      capturedUpdateBytes = baos.toByteArray();
+    }
+
+    // VERIFY updated LogCatalogFile matches bytes written
+    LogCatalogFile writtenUpdate = LogCatalogFormat.readInternal(new LogCatalogFormat.Mut(updFile), new ByteArrayInputStream(capturedUpdateBytes));
+    assertThat(writtenUpdate).isEqualTo(upd);
+    assertThat(writtenUpdate.containsNamespace(yaks)).isTrue();
   }
 
   private LogCatalogFile generateRandomLogCatalogFile(long seed) {
