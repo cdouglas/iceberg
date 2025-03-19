@@ -82,9 +82,8 @@ public class LogCatalogFormat
   static LogCatalogFile readInternal(Mut catalog, InputStream in) throws IOException {
     return readInternal(catalog, in, Integer.MAX_VALUE);
   }
+
   // TODO this is written very... badly.
-  // TODO available() only really works to map to an Iterator<T> if it's backed by a byte array
-  // TODO do this properly, where the Limit is not MAX_VALUE but the expected byte count
   @VisibleForTesting
   static LogCatalogFile readInternal(Mut catalog, InputStream in, int catalogLen)
       throws IOException {
@@ -94,27 +93,26 @@ public class LogCatalogFormat
       }
       LogAction.Checkpoint chk = LogAction.Checkpoint.read(din);
       chk.apply(catalog);
-      byte[] chkBytes = new byte[(int) chk.chkEnd];
+      byte[] chkBytes = new byte[(int) chk.chkLen];
       IOUtil.readFully(in, chkBytes, 0, chkBytes.length);
       InputStream chkStream = new DataInputStream(new ByteArrayInputStream(chkBytes));
       for (LogAction action : LogAction.chkIterator(new DataInputStream(chkStream))) {
         // no validation necessary in this interval
         action.apply(catalog);
       }
-      // TODO embed table region
       if (chk.tblEmbedEnd != 0) {
+        // TODO embed table region
         throw new IllegalStateException("TODO");
       }
-      // TODO buffer committedTxn, in case it's relevant
-      // in.seek(chk.committedTxnEnd);
-      // TODO limit log to target offset, to read a prefix of the object
-      // TODO take this limit from the InputFile
-      // TODO HACK to get around current callers backed by byte arrays (accurately report available())
+      byte[] txnBytes = new byte[(int) chk.committedTxnLen];
+      IOUtil.readFully(in, txnBytes, 0, txnBytes.length);
+      catalog.committedTransactionBytes(txnBytes);
       final InputStream logStream;
       if (catalogLen == Integer.MAX_VALUE) {
+        // TODO HACK to get around current callers in tests backed by byte arrays
         logStream = new LimitInputStream(in, Integer.MAX_VALUE);
       } else {
-        byte[] logBytes = new byte[(int) (catalogLen - chk.chkEnd - chk.length())];
+        byte[] logBytes = new byte[catalogLen - chk.length() - chk.chkLen - chk.tblEmbedEnd - chk.committedTxnLen];
         IOUtil.readFully(in, logBytes, 0, logBytes.length);
         logStream = new ByteArrayInputStream(logBytes);
       }
@@ -172,28 +170,28 @@ public class LogCatalogFormat
       final UUID catalogUUID;
       final int nextNsid;
       final int nextTblid;
-      final long chkEnd;
-      final long tblEmbedEnd;
-      final long committedTxnEnd;
+      final int chkLen;
+      final int tblEmbedEnd;
+      final int committedTxnLen;
 
       Checkpoint(
           UUID catalogUUID,
           int nextNsid,
           int nextTblid,
-          long chkEnd,
-          long tblEmbedEnd,
-          long committedTxnEnd) {
+          int chkLen,
+          int tblEmbedEnd,
+          int committedTxnLen) {
         this.catalogUUID = catalogUUID;
         this.nextNsid = nextNsid;
         this.nextTblid = nextTblid;
-        this.chkEnd = chkEnd;
+        this.chkLen = chkLen;
         this.tblEmbedEnd = tblEmbedEnd;
-        this.committedTxnEnd = committedTxnEnd;
+        this.committedTxnLen = committedTxnLen;
       }
 
       int length() {
         // opcode UUID [fields]
-        return 1 + 16 + 4 + 4 + 8 + 8 + 8;
+        return 1 + 16 + 5 * Integer.BYTES;
       }
 
       @Override
@@ -214,9 +212,9 @@ public class LogCatalogFormat
         dos.writeLong(catalogUUID.getLeastSignificantBits());
         dos.writeInt(nextNsid);
         dos.writeInt(nextTblid);
-        dos.writeLong(chkEnd);
-        dos.writeLong(tblEmbedEnd);
-        dos.writeLong(committedTxnEnd);
+        dos.writeInt(chkLen);
+        dos.writeInt(tblEmbedEnd);
+        dos.writeInt(committedTxnLen);
       }
 
       static Checkpoint read(DataInputStream dis) throws IOException {
@@ -225,11 +223,11 @@ public class LogCatalogFormat
         UUID catalogUUID = new UUID(msb, lsb);
         int nextNsid = dis.readInt();
         int nextTblid = dis.readInt();
-        long chkEnd = dis.readLong();
-        long tblEmbedEnd = dis.readLong();
-        long committedTxnEnd = dis.readLong();
+        int chkLen = dis.readInt();
+        int tblEmbedEnd = dis.readInt();
+        int committedTxnLen = dis.readInt();
         return new Checkpoint(
-            catalogUUID, nextNsid, nextTblid, chkEnd, tblEmbedEnd, committedTxnEnd);
+            catalogUUID, nextNsid, nextTblid, chkLen, tblEmbedEnd, committedTxnLen);
       }
     }
 
@@ -286,7 +284,7 @@ public class LogCatalogFormat
               parentId,
               (k, ver) -> {
                 if (null == ver) {
-                  ver = ((LogCatalogFile) catalog.original).nsVersion.get(k);
+                  ver = catalog.original.nsVersion.get(k);
                   Preconditions.checkNotNull(ver, "Parent namespace not found: %s", k);
                 }
                 return ver + 1;
@@ -881,7 +879,7 @@ public class LogCatalogFormat
         // TODO check original. Idiot.
         Namespace parent = nsLookup.get(parentId);
         if (null == parent) {
-          parent = ((LogCatalogFile) original).nsLookup.get(parentId);
+          parent = original.nsLookup.get(parentId);
           if (null == parent) {
             throw new IllegalStateException("Invalid parent namespace: " + parentId);
           }
@@ -952,6 +950,11 @@ public class LogCatalogFormat
     // and you can build a more general-purpose transaction system- including reordering with DBSP-
     // on top of that.
 
+    // store the serialized bytes for committted transactions (lazily resolve)
+    void committedTransactionBytes(byte[] committedTxnBytes) {
+      // TODO
+    }
+
     LogCatalogFile merge() {
       return new LogCatalogFile(
           original.location(),
@@ -974,7 +977,6 @@ public class LogCatalogFormat
      */
     LogAction.Transaction diff() {
       // TODO when reading a new checkpoint, can reapply diff (may fail)
-      final LogCatalogFile original = (LogCatalogFile) this.original;
       List<LogAction> actions = Lists.newArrayList();
       // create/delete namespaces
       int nsVirtId = 0;
@@ -1065,17 +1067,15 @@ public class LogCatalogFormat
 
     // write the original- which could include a long log- as a checkpoint
     // write the diff as a transaction
-    // TODO absurd, reudundant computation of merge state
+    // TODO absurd, redundant computation of merge state
     // TODO ensure InputFile includes accurate length (should be)
-    private LogCatalogFile tryCAS(SupportsAtomicOperations fileIO, InputFile current) {
+    private LogCatalogFile tryCAS(InputFile current, LogAction.Transaction txn, SupportsAtomicOperations fileIO) {
       try {
         // SIGH
         Preconditions.checkArgument(current.location().equals(original.location().location()));
-        final LogCatalogFile base = (LogCatalogFile) original;
-        final LogAction.Transaction txn = diff();
         AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(current);
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-          base.writeCheckpoint(baos);
+          original.writeCheckpoint(baos);
           txn.write(new DataOutputStream(baos));
           final byte[] checkpointBytes = baos.toByteArray();
           try (ByteArrayInputStream serBytes = new ByteArrayInputStream(checkpointBytes)) {
@@ -1085,14 +1085,7 @@ public class LogCatalogFormat
             InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
             final Mut merged = new Mut(newCatalog);
             // TODO: newCatalog should have the offset of the checkpoint - txn bytes
-            LogCatalogFile ret =
-                LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(checkpointBytes));
-            return ret;
-            // for (LogAction action : base.checkpointStream()) {
-            //   action.apply(merged);
-            // }
-            // diff().apply(merged);
-            // return merged.merge();
+            return LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(checkpointBytes));
           }
         }
       } catch (SupportsAtomicOperations.CASException | IOException e) {
@@ -1100,23 +1093,65 @@ public class LogCatalogFormat
       }
     }
 
+    // TODO obviously, these should be combined
+    private LogCatalogFile tryAppend(InputFile current, LogAction.Transaction txn, SupportsAtomicOperations fileIO) {
+      try {
+        AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(current);
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             DataOutputStream dos = new DataOutputStream(baos)) {
+          txn.write(dos);
+          byte[] txnBytes = baos.toByteArray();
+          try (ByteArrayInputStream serBytes = new ByteArrayInputStream(txnBytes)) {
+            serBytes.mark(txnBytes.length);
+            CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.APPEND);
+            serBytes.reset();
+            InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
+            final Mut merged = new Mut(newCatalog);
+            return LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(txnBytes));
+          }
+        }
+      } catch (IOException e) {
+        throw new UncheckedIOException("Commit failed", e);
+      }
+    }
+
     @Override
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
       final long MAX_CATALOG_SIZE = 16L * 1024 * 1024; // TODO from config/global
-      try {
-        final InputFile current = original.location();
-        if (!current.exists()) {
-          // TODO make tryCAS return null/error instead of throwing
-          final LogCatalogFile init = tryCAS(fileIO, current);
-          if (null == init) {
-            throw new CommitFailedException("Failed to initialize catalog");
+        InputFile current = original.location();
+        LogAction.Transaction txn = diff();
+
+        try {
+          // case 0: initial commit of the catalog
+          if (!current.exists()) {
+            // TODO make tryCAS return null/error instead of throwing
+            return tryCAS(current, txn, fileIO);
           }
-          return init;
+        } catch (SupportsAtomicOperations.CASException e) {
+          throw new CommitFailedException(e, "Cannot commit: %s", e.getMessage());
         }
-        return tryCAS(fileIO, current);
-        // LogAction.Transaction txn = diff();
-        // final byte[] txnBytes = toBytes(txn);
-        // boolean seal = current.getLength() + txnBytes.length > MAX_CATALOG_SIZE;
+        return tryCAS(current, txn, fileIO);
+
+        // invariants: current is the current state of the InputFile
+        // original is the state of the catalog this transaction was created from
+        // while (true) {
+        //   try {
+        //     // case 1: original LogCatalogFile is sealed
+        //     if (original.sealed) {
+        //       return tryCAS(current, txn, fileIO);
+        //     }
+        //   } catch (SupportsAtomicOperations.CASException e) {
+        //     current = fileIO.newInputFile(original.location().location());
+        //   }
+        // }
+        // case 2: appending to the end of the file is below the max size
+        //   // tryAppend
+        // case 3: appending will exceed the max size
+        //   // rewrite bytes w/ seal, tryAppend
+        // case 4: original file already exceeds threshold
+        //   //
+
+        // TODO seal transaction if it exceeds the threshold
         // // i.e., adding this transaction exceeds the maximum size
         // if (MAX_CATALOG_SIZE - current.getLength() < txnBytes.length) {
         //   // TODO after a compaction, need to undo the flag
@@ -1141,25 +1176,11 @@ public class LogCatalogFormat
         //     return null; // TODO read and verify this transaction is present
         //   }
         // }
-        // TODO worked in tests, preserve for sanity
-        // final LogCatalogFile base = (LogCatalogFile) original;
-        // final Mut merged = new Mut(base.location()); // empty catalog
-
-        // // FFS.
-        // new LogAction.Checkpoint(base.uuid(), base.nextNsid, base.nextTblid, -1, -1,
-        // -1).apply(merged);
-        // for (LogAction action : base.checkpointStream()) {
-        //   action.apply(merged); // apply original
-        // }
-        // diff().apply(merged); // create transaction and apply
-        // return merged.merge(); // return merged result
-      } catch (SupportsAtomicOperations.CASException e) {
-        throw new CommitFailedException(e, "Cannot commit");
-      }
     }
   }
 
   // UUIDv7 generator ; useful for transaction IDs
+  // TODO omit 2 bits of entropy to fit align to 9 bytes
   static UUID generate() {
     long timestamp = System.currentTimeMillis();
     long unixTsMs = timestamp & 0xFFFFFFFFFFFFL; // 48 bits for timestamp
@@ -1245,7 +1266,7 @@ public class LogCatalogFormat
       }
     }
 
-    // TODO move this to format
+    // TODO move this to format (why does this here?)
     @Override
     public boolean createsHierarchicalNamespaces() {
       return true;
@@ -1350,16 +1371,31 @@ public class LogCatalogFormat
 
     void writeCheckpoint(OutputStream out) throws IOException {
       try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
-          DataOutputStream dos = new DataOutputStream(bos);
           DataOutputStream chk = new DataOutputStream(out)) {
-        for (LogAction action : checkpointStream()) {
-          action.write(dos);
+        final byte[] chkData;
+        try (DataOutputStream chkdos = new DataOutputStream(bos)) {
+          for (LogAction action : checkpointStream()) {
+            action.write(chkdos);
+          }
+          chkData = bos.toByteArray(); // SIGH. You suck.
         }
-        final byte[] chkData = bos.toByteArray(); // SIGH. You suck.
+
+        bos.reset();
+
+        final byte[] txnData;
+        try (DataOutputStream txndos = new DataOutputStream(bos)) {
+          for (UUID u : committedTxn.stream().sorted().collect(Collectors.toList())) {
+            txndos.writeLong(u.getMostSignificantBits());
+            txndos.writeLong(u.getLeastSignificantBits());
+          }
+          txnData = bos.toByteArray();
+        }
         final LogAction.Checkpoint chkAction =
-            new LogAction.Checkpoint(uuid(), nextNsid, nextTblid, chkData.length, 0, 0);
+            new LogAction.Checkpoint(
+                uuid(), nextNsid, nextTblid, chkData.length, 0, txnData.length);
         chkAction.write(chk);
         out.write(chkData);
+        out.write(txnData);
       }
     }
 

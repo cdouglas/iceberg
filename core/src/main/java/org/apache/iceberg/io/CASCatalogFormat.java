@@ -51,7 +51,7 @@ public class CASCatalogFormat
 
   @Override
   public CatalogFile.Mut<CASCatalogFile, Mut> from(CatalogFile other) {
-    return new Mut(other);
+    return new Mut((CASCatalogFile) other);
   }
 
   @Override
@@ -189,7 +189,7 @@ public class CASCatalogFormat
       this(new CASCatalogFile(location));
     }
 
-    Mut(CatalogFile original) {
+    Mut(CASCatalogFile original) {
       super(original);
     }
 

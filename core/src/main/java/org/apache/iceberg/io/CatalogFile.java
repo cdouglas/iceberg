@@ -77,13 +77,13 @@ public abstract class CatalogFile {
 
   public abstract static class Mut<C extends CatalogFile, T extends Mut<C, T>> {
 
-    protected final CatalogFile original;
+    protected final C original;
     protected final Map<TableIdentifier, String> tables;
     protected final Map<TableIdentifier, String> tableUpdates; // TODO extend this to metadata
     protected final Map<Namespace, Boolean> namespaces;
     protected final Map<Namespace, Map<String, String>> namespaceProperties;
 
-    protected Mut(CatalogFile original) {
+    protected Mut(C original) {
       this.original = original;
       this.tables = Maps.newHashMap();
       this.tableUpdates = Maps.newHashMap();
@@ -100,7 +100,6 @@ public abstract class CatalogFile {
       return createNamespace(namespace, Collections.emptyMap());
     }
 
-    // XXX this is adding "" to namespaces as a new namespace. Should ensure != empty
     public T createNamespace(Namespace namespace, Map<String, String> properties) {
       Preconditions.checkNotNull(namespace, "Namespace cannot be null");
       Preconditions.checkNotNull(properties, "Properties cannot be null");
@@ -111,7 +110,6 @@ public abstract class CatalogFile {
         throw new AlreadyExistsException(
             "Cannot create namespace %s. Namespace already exists", namespace);
       }
-      // XXX original is missing empty namespace??
       for (Namespace ancestor = parentOf(namespace);
           !original.containsNamespace(ancestor);
           ancestor = parentOf(ancestor)) {
@@ -216,9 +214,9 @@ public abstract class CatalogFile {
         throw new IllegalArgumentException("Cannot update table marked for deletion: " + table);
       }
       if (newloc != null) {
-        // TODO extend w/ metadata
         tables.put(table, location);
       } else {
+        // TODO implement w.r.t. tableID to follow table renames (currently implemented as drop/add)
         tableUpdates.put(table, location);
       }
       return self();
