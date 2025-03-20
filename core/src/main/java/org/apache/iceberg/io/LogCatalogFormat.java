@@ -34,6 +34,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
@@ -144,7 +145,7 @@ public class LogCatalogFormat
       DROP_NAMESPACE_PROPERTY(7), // <nsid> <version> <key>
       TRANSACTION(8); // <txid> <sealed> <n_actions> <action>*
 
-      private final int opcode;
+      final int opcode;
 
       Type(int opcode) {
         this.opcode = opcode;
@@ -619,7 +620,7 @@ public class LogCatalogFormat
         this.sealed = sealed;
       }
 
-      boolean sealed() {
+      boolean isSealed() {
         return sealed;
       }
 
@@ -651,6 +652,14 @@ public class LogCatalogFormat
         for (LogAction action : actions) {
           action.write(dos);
         }
+      }
+
+      static void seal(byte[] serTxn) {
+        serTxn[17] = 1;
+      }
+
+      static void unseal(byte[] serTxn) {
+        serTxn[17] = 0;
       }
 
       static Transaction read(DataInputStream dis) throws IOException {
@@ -859,7 +868,7 @@ public class LogCatalogFormat
       this.uuid = uuid;
       this.nextNsid = nextNsid;
       this.nextTblid = nextTblid;
-      // TODO add compaction parameters so clients use the same criteria
+      // TODO add compaction parameters so clients use the same criteria?
     }
 
     void addCommittedTxn(UUID txnId) {
@@ -876,7 +885,6 @@ public class LogCatalogFormat
         Preconditions.checkArgument(name.isEmpty(), "Invalid name for root namespace: %s", name);
         ns = Namespace.empty();
       } else {
-        // TODO check original. Idiot.
         Namespace parent = nsLookup.get(parentId);
         if (null == parent) {
           parent = original.nsLookup.get(parentId);
@@ -909,7 +917,6 @@ public class LogCatalogFormat
     }
 
     void dropNamespaceInternal(int nsid) {
-      // TODO Precondition: ensure no tables exist in this namespace (should be checked on insert)
       Namespace ns = nsLookup.remove(nsid);
       if (null == ns) {
         throw new IllegalStateException("Invalid namespace: " + nsid);
@@ -952,7 +959,7 @@ public class LogCatalogFormat
 
     // store the serialized bytes for committted transactions (lazily resolve)
     void committedTransactionBytes(byte[] committedTxnBytes) {
-      // TODO
+      LogCatalogFile.readCommittedTxn(committedTxn, committedTxnBytes);
     }
 
     LogCatalogFile merge() {
@@ -976,7 +983,6 @@ public class LogCatalogFormat
      * the changes applied subsequently.
      */
     LogAction.Transaction diff() {
-      // TODO when reading a new checkpoint, can reapply diff (may fail)
       List<LogAction> actions = Lists.newArrayList();
       // create/delete namespaces
       int nsVirtId = 0;
@@ -1069,14 +1075,14 @@ public class LogCatalogFormat
     // write the diff as a transaction
     // TODO absurd, redundant computation of merge state
     // TODO ensure InputFile includes accurate length (should be)
-    private LogCatalogFile tryCAS(InputFile current, LogAction.Transaction txn, SupportsAtomicOperations fileIO) {
+    private Optional<LogCatalogFile> tryCAS(InputFile current, byte[] txnBytes, SupportsAtomicOperations fileIO) {
       try {
         // SIGH
         Preconditions.checkArgument(current.location().equals(original.location().location()));
         AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(current);
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-          original.writeCheckpoint(baos);
-          txn.write(new DataOutputStream(baos));
+          original.writeCheckpoint(baos); // original is sealed, create, all the same case
+          baos.write(txnBytes);
           final byte[] checkpointBytes = baos.toByteArray();
           try (ByteArrayInputStream serBytes = new ByteArrayInputStream(checkpointBytes)) {
             serBytes.mark(checkpointBytes.length);
@@ -1085,97 +1091,111 @@ public class LogCatalogFormat
             InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
             final Mut merged = new Mut(newCatalog);
             // TODO: newCatalog should have the offset of the checkpoint - txn bytes
-            return LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(checkpointBytes));
+            return Optional.of(LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(checkpointBytes)));
           }
         }
-      } catch (SupportsAtomicOperations.CASException | IOException e) {
+      } catch (SupportsAtomicOperations.CASException e) {
+        return Optional.empty();
+      } catch (IOException e) {
         throw new CommitFailedException(e, "Cannot commit: %s", e.getMessage());
       }
     }
 
     // TODO obviously, these should be combined
-    private LogCatalogFile tryAppend(InputFile current, LogAction.Transaction txn, SupportsAtomicOperations fileIO) {
+    private Optional<LogCatalogFile> tryAppend(InputFile current, LogAction.Transaction txn, byte[] txnBytes, SupportsAtomicOperations fileIO) {
       try {
         AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(current);
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-             DataOutputStream dos = new DataOutputStream(baos)) {
-          txn.write(dos);
-          byte[] txnBytes = baos.toByteArray();
-          try (ByteArrayInputStream serBytes = new ByteArrayInputStream(txnBytes)) {
-            serBytes.mark(txnBytes.length);
-            CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.APPEND);
-            serBytes.reset();
-            InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
-            final Mut merged = new Mut(newCatalog);
-            return LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(txnBytes));
+        try (ByteArrayInputStream serBytes = new ByteArrayInputStream(txnBytes)) {
+          serBytes.mark(txnBytes.length);
+          CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.APPEND);
+          serBytes.reset();
+          InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
+          // TODO temporary; reading back what we wrote
+          final Mut merged = new Mut(newCatalog);
+          try (SeekableInputStream in = newCatalog.newStream()) {
+            return Optional.of(readInternal(merged, in, (int) newCatalog.getLength()));
+          } catch (IOException e) {
+            throw new UncheckedIOException(e);
           }
         }
+      } catch (SupportsAtomicOperations.AppendException e) {
+        // annoyingly, metadata is not included in the error message (i.e., the correct length/etag)
+        return Optional.empty();
       } catch (IOException e) {
-        throw new UncheckedIOException("Commit failed", e);
+        throw new UncheckedIOException("Cannot commit: " + e.getMessage(), e);
+      }
+    }
+
+    static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions) {
+      try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+           DataOutputStream dos = new DataOutputStream(bos)) {
+        diffActions.write(dos);
+        return bos.toByteArray();
+      } catch (IOException e) {
+        throw new UncheckedIOException("Failed to write/read diff", e);
       }
     }
 
     @Override
     public LogCatalogFile commit(SupportsAtomicOperations fileIO) {
+      final long IO_ATTEMPTS = 10;
       final long MAX_CATALOG_SIZE = 16L * 1024 * 1024; // TODO from config/global
-        InputFile current = original.location();
-        LogAction.Transaction txn = diff();
+      LogCatalogFile baseCatalog = original;
+      InputFile current = original.location();
+      final LogAction.Transaction txn = diff();
+      final byte[] txnBytes = toBytes(txn);
 
-        try {
-          // case 0: initial commit of the catalog
-          if (!current.exists()) {
-            // TODO make tryCAS return null/error instead of throwing
-            return tryCAS(current, txn, fileIO);
+      // case 0: initial commit of the catalog
+      if (!current.exists()) {
+        return tryCAS(current, txnBytes, fileIO).orElseThrow(() -> new CommitFailedException("Cannot commit: catalog creation failed"));
+      }
+
+      for (int attempts = 0; attempts < IO_ATTEMPTS; ++attempts) {
+        // case 1: original LogCatalogFile is sealed
+        if (baseCatalog.sealed) {
+          LogAction.Transaction.unseal(txnBytes);
+          Optional<LogCatalogFile> rslt = tryCAS(current, txnBytes, fileIO);
+          if (rslt.isPresent()) {
+            LogCatalogFile newCatalog = rslt.get();
+            if (!newCatalog.containsTransaction(txn.txnId)) {
+              throw new CommitFailedException("Cannot commit: conflicting, concurrent transaction");
+            }
+            return newCatalog;
           }
-        } catch (SupportsAtomicOperations.CASException e) {
-          throw new CommitFailedException(e, "Cannot commit: %s", e.getMessage());
+        } else {
+          if (current.getLength() + txnBytes.length > MAX_CATALOG_SIZE) {
+            LogAction.Transaction.seal(txnBytes);
+          }
+          Optional<LogCatalogFile> rslt = tryAppend(current, txn, txnBytes, fileIO);
+          if (rslt.isPresent()) {
+            LogCatalogFile newCatalog = rslt.get();
+            if (!newCatalog.containsTransaction(txn.txnId)) {
+              throw new CommitFailedException("Cannot commit: conflicting, concurrent transaction");
+            }
+            return newCatalog;
+          }
         }
-        return tryCAS(current, txn, fileIO);
-
-        // invariants: current is the current state of the InputFile
-        // original is the state of the catalog this transaction was created from
-        // while (true) {
-        //   try {
-        //     // case 1: original LogCatalogFile is sealed
-        //     if (original.sealed) {
-        //       return tryCAS(current, txn, fileIO);
-        //     }
-        //   } catch (SupportsAtomicOperations.CASException e) {
-        //     current = fileIO.newInputFile(original.location().location());
-        //   }
-        // }
-        // case 2: appending to the end of the file is below the max size
-        //   // tryAppend
-        // case 3: appending will exceed the max size
-        //   // rewrite bytes w/ seal, tryAppend
-        // case 4: original file already exceeds threshold
-        //   //
-
-        // TODO seal transaction if it exceeds the threshold
-        // // i.e., adding this transaction exceeds the maximum size
-        // if (MAX_CATALOG_SIZE - current.getLength() < txnBytes.length) {
-        //   // TODO after a compaction, need to undo the flag
-        //   // TODO arguably a reason to only include a seal Action in an empty Txn
-        //   txn.seal();
-        // }
-        // while (true) {
-        //   InputFile appended = tryAppend(fileIO, current, txnBytes);
-        //   if (appended != null) {
-        //     // append succeeded, now read and verify the new catalog
-        //     final LogCatalogFile base = (LogCatalogFile) original;
-        //     final Mut merged = new Mut(base.location());
-        //     for (LogAction action : base.checkpointStream()) {
-        //       action.apply(merged);
-        //     }
-        //     diff().apply(merged);
-        //     return merged.merge();
-        //   }
-        //   // attempt to append transaction to end of catalog
-        //   InputFile append = tryAppend(fileIO, txnBytes);
-        //   if (append != null) {
-        //     return null; // TODO read and verify this transaction is present
-        //   }
-        // }
+        long oldLength = current.getLength();
+        current = fileIO.newInputFile(current.location());
+        if (current.getLength() < oldLength) {
+          // TODO are there any metadata that identify the old/new blob? etag always changes
+          LogAction.Transaction.unseal(txnBytes);
+          Mut catalog = new Mut(current);
+          try (SeekableInputStream in = current.newStream()) {
+            return readInternal(catalog, in, (int) current.getLength());
+          } catch (IOException e) {
+            throw new UncheckedIOException(e);
+          }
+        }
+      }
+      throw new CommitFailedException("Cannot commit: exceeded atomic IO attempts");
+      // case 2: appending to the end of the file is below the max size
+      //   // tryAppend
+      // case 3: appending will exceed the max size
+      //   // rewrite bytes w/ seal, tryAppend
+      // case 4: original file already exceeds threshold, but not sealed?
+      //   //  tryCAS for position append is sufficient
+      //   //  should append w/ seal instead
     }
   }
 
@@ -1369,6 +1389,29 @@ public class LogCatalogFormat
       return actions;
     }
 
+    // absolutely disgusting
+    static void readCommittedTxn(Set<UUID> committedTxn, byte[] txnBytes) {
+      try (ByteArrayInputStream bais = new ByteArrayInputStream(txnBytes);
+           DataInputStream txndis = new DataInputStream(bais)) {
+        int nTxn = txndis.readInt();
+        for (int i = 0; i < nTxn; ++i) {
+          long msb = txndis.readLong();
+          long lsb = txndis.readLong();
+          committedTxn.add(new UUID(msb, lsb));
+        }
+      } catch (IOException e) {
+        throw new UncheckedIOException(e); // not possible
+      }
+    }
+
+    void writeCommittedTxn(DataOutputStream txndos) throws IOException {
+      txndos.writeInt(committedTxn.size());
+      for (UUID u : committedTxn.stream().sorted().collect(Collectors.toList())) {
+        txndos.writeLong(u.getMostSignificantBits());
+        txndos.writeLong(u.getLeastSignificantBits());
+      }
+    }
+
     void writeCheckpoint(OutputStream out) throws IOException {
       try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
           DataOutputStream chk = new DataOutputStream(out)) {
@@ -1384,10 +1427,7 @@ public class LogCatalogFormat
 
         final byte[] txnData;
         try (DataOutputStream txndos = new DataOutputStream(bos)) {
-          for (UUID u : committedTxn.stream().sorted().collect(Collectors.toList())) {
-            txndos.writeLong(u.getMostSignificantBits());
-            txndos.writeLong(u.getLeastSignificantBits());
-          }
+          writeCommittedTxn(txndos);
           txnData = bos.toByteArray();
         }
         final LogAction.Checkpoint chkAction =

@@ -99,7 +99,7 @@ public class TestLogCatalogFormat {
     assertTrue(logStream.hasNext());
     LogCatalogFormat.LogAction.Transaction readTransaction = logStream.next();
     assertEquals(txnId, readTransaction.txnId);
-    assertTrue(readTransaction.sealed());
+    assertTrue(readTransaction.isSealed());
     assertEquals(1, readTransaction.actions.size());
     assertInstanceOf(
         LogCatalogFormat.LogAction.CreateNamespace.class, readTransaction.actions.get(0));
@@ -233,6 +233,32 @@ public class TestLogCatalogFormat {
     assertThat(c.sealed).isTrue();
     assertThat(c.containsTransaction(txnC.txnId)).isFalse();
     assertThat(c.containsTransaction(txnD.txnId)).isFalse();
+  }
+
+  @Test
+  public void testUnsealSerializedTransaction() throws IOException {
+    // you're going to hell
+    LogCatalogFile orig = generateRandomLogCatalogFile(random.nextLong());
+    final LogCatalogFormat.LogAction.Transaction txnA =
+            new LogCatalogFormat.Mut(orig)
+                    .createNamespace(dingos)
+                    .createNamespace(dingos_yaks)
+                    .createTable(tblY, "yak://chinchilla/tblY")
+                    .diff();
+    assertThat(txnA.isSealed()).isFalse();
+    byte[] txnABytes = toBytes(txnA);
+    try (ByteArrayInputStream bais = new ByteArrayInputStream(txnABytes);
+         DataInputStream dis = new DataInputStream(bais)) {
+      assertEquals(LogCatalogFormat.LogAction.Type.TRANSACTION.opcode, dis.readByte());
+      dis.mark(txnABytes.length - 1);
+      assertThat(LogCatalogFormat.LogAction.Transaction.read(dis).isSealed()).isFalse();
+      LogCatalogFormat.LogAction.Transaction.seal(txnABytes);
+      dis.reset();
+      assertThat(LogCatalogFormat.LogAction.Transaction.read(dis).isSealed()).isTrue();
+      LogCatalogFormat.LogAction.Transaction.unseal(txnABytes);
+      dis.reset();
+      assertThat(LogCatalogFormat.LogAction.Transaction.read(dis).isSealed()).isFalse();
+    }
   }
 
   @Test

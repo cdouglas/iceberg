@@ -70,6 +70,7 @@ import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -351,11 +352,11 @@ public class ADLSFileIOTest {
     final CAS failChk =
         failAppend.prepare(
             () -> new ByteArrayInputStream(appendBytes), AtomicOutputFile.Strategy.APPEND);
-    DataLakeStorageException appendFailure =
-        Assertions.assertThrows(
-            DataLakeStorageException.class,
-            () -> failAppend.writeAtomic(failChk, () -> new ByteArrayInputStream(appendBytes)));
-    assertThat(appendFailure.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET.toString());
+    SupportsAtomicOperations.AppendException appendFailure =
+            Assertions.assertThrows(
+                    SupportsAtomicOperations.AppendException.class,
+                    () -> failAppend.writeAtomic(failChk, () -> new ByteArrayInputStream(appendBytes)));
+    assertThat(((DataLakeStorageException)appendFailure.getCause()).getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET.toString());
   }
 
   private byte[] randBytes(int len) {
@@ -383,7 +384,7 @@ public class ADLSFileIOTest {
 
   private static Response<PathInfo> appendBytes(
       DataLakeFileClient client, long origLen, byte[] bytes, DataLakeRequestConditions cond) {
-    final FileChecksum chk = new ADLSChecksum(AtomicOutputFile.Strategy.CAS);
+    final FileChecksum chk = new ADLSChecksum(AtomicOutputFile.Strategy.APPEND);
     chk.update(bytes, 0, bytes.length);
     client.appendWithResponse(
         new ByteArrayInputStream(bytes),

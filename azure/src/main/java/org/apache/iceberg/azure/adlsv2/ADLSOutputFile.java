@@ -126,34 +126,45 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
 
   private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source) {
     // TODO etag
-    final long appendLen = checksum.contentLength();
-    fileClient()
-        .appendWithResponse(
-            source.get(),
-            length, // client.getProperties().getFileSize(),
-            appendLen,
-            checksum.contentChecksumBytes(),
-            null,
-            null,
-            Context.NONE);
-    final DataLakeFileFlushOptions flushOpts =
-        new DataLakeFileFlushOptions()
-            .setClose(true)
-            .setRequestConditions(conditions)
-            .setUncommittedDataRetained(false);
-    // throws on failure
-    final Response<PathInfo> resp =
-        fileClient().flushWithResponse(length + appendLen, flushOpts, null, Context.NONE);
-    // update length to orig len + append (succeeded)
-    this.length += appendLen;
-    final PathInfo info = resp.getValue();
-    return new ADLSInputFile(
-        location(),
-        length + appendLen,
-        fileClient(),
-        azureProperties(),
-        metrics(),
-        new DataLakeRequestConditions().setIfMatch(info.getETag()));
+    try {
+      final long appendLen = checksum.contentLength();
+      fileClient()
+              .appendWithResponse(
+                      source.get(),
+                      length, // client.getProperties().getFileSize(),
+                      appendLen,
+                      checksum.contentChecksumBytes(),
+                      null,
+                      null,
+                      Context.NONE);
+      final DataLakeFileFlushOptions flushOpts =
+              new DataLakeFileFlushOptions()
+                      .setClose(true)
+                      .setRequestConditions(conditions)
+                      .setUncommittedDataRetained(false);
+      // throws on failure
+      final Response<PathInfo> resp =
+              fileClient().flushWithResponse(length + appendLen, flushOpts, null, Context.NONE);
+      // update length to orig len + append (succeeded)
+      this.length += appendLen;
+      final PathInfo info = resp.getValue();
+      return new ADLSInputFile(
+              location(),
+              length,
+              fileClient(),
+              azureProperties(),
+              metrics(),
+              new DataLakeRequestConditions().setIfMatch(info.getETag()));
+    } catch (DataLakeStorageException e) {
+      if (412 == e.getStatusCode()) {
+        // precondition failed
+        throw new SupportsAtomicOperations.AppendException("Target modified", e);
+      }
+      if (e.getErrorCode().equals("InvalidFlushPosition")) {
+        throw new SupportsAtomicOperations.AppendException("Wrong length", e);
+      }
+      throw e;
+    }
   }
 
   @SuppressWarnings("deprecation") // not clear how else to support atomic CAS
