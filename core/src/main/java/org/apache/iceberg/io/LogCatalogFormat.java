@@ -506,6 +506,7 @@ public class LogCatalogFormat
         // restore NSID, version from log (checkpoint)
         // TODO ID remapping needs an abstraction
         // TODO reaching into internal maps is grotesque, clean this up
+        // TODO XXX create table should also increment the namespace version, so concurrent creates fail validation
         final int nsid = logNsVersion < 0 ? catalog.nsRemap.get(logNsid) : logNsid;
         final int tblId = this.logTblId == LATE_BIND ? catalog.nextTblid++ : this.logTblId;
         catalog.addTableInternal(tblId, nsid, logTblVersion, name, location);
