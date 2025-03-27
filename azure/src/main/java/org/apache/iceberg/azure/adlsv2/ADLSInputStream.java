@@ -21,6 +21,7 @@ package org.apache.iceberg.azure.adlsv2;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeFileOpenInputStreamResult;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import com.azure.storage.file.datalake.models.FileRange;
 import com.azure.storage.file.datalake.models.PathProperties;
 import com.azure.storage.file.datalake.options.DataLakeFileInputStreamOptions;
@@ -93,12 +94,19 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
     } else {
       options.setRange(new FileRange(pos));
     }
-    DataLakeFileOpenInputStreamResult result = fileClient.openInputStream(options);
-    this.stream = result.getInputStream();
-    if (null == fileSize) {
-      fileSize = result.getProperties().getFileSize();
+    try {
+      DataLakeFileOpenInputStreamResult result = fileClient.openInputStream(options);
+      this.stream = result.getInputStream();
+      if (null == fileSize) {
+        fileSize = result.getProperties().getFileSize();
+      }
+      return result.getProperties();
+    } catch (DataLakeStorageException e) {
+      if (e.getStatusCode() == 409) {
+
+      }
+      throw e;
     }
-    return result.getProperties();
   }
 
   /**

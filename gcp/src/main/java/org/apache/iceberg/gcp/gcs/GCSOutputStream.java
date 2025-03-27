@@ -154,6 +154,9 @@ class GCSOutputStream extends PositionOutputStream {
         // note: LocalStorageHelper throws 404,
         throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
+      if (e.getCode() == 429) { // Too many requests
+        throw new SupportsAtomicOperations.CASException("Rate limit exceeded", e);
+      }
       throw e;
     }
   }
@@ -181,6 +184,9 @@ class GCSOutputStream extends PositionOutputStream {
         // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
         // note: LocalStorageHelper throws 404,
         throw new SupportsAtomicOperations.CASException("Target modified", e);
+      }
+      if (e.getCode() == 429) { // Too many requests
+        throw new SupportsAtomicOperations.CASException("Rate limit exceeded", e);
       }
       throw e;
     }
