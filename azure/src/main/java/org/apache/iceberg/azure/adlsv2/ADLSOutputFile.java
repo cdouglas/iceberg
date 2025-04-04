@@ -160,7 +160,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
         // precondition failed
         throw new SupportsAtomicOperations.AppendException("Target modified", e);
       }
-      if (e.getErrorCode().equals("InvalidFlushPosition")) {
+      if (400 == e.getStatusCode() && e.getErrorCode().equals("InvalidFlushPosition")) {
         throw new SupportsAtomicOperations.AppendException("Wrong length", e);
       }
       throw e;
@@ -198,6 +198,16 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
     } catch (DataLakeStorageException e) {
       if (412 == e.getStatusCode()) {
         // precondition failed
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
+      }
+      if (400 == e.getStatusCode() && e.getErrorCode().equals("InvalidFlushPosition")) {
+        // spurious
+        // https://learn.microsoft.com/en-us/rest/api/storageservices/datalakestoragegen2/path/update?view=rest-storageservices-datalakestoragegen2-2019-12-12
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
+      }
+      if (409 == e.getStatusCode() && e.getErrorCode().equals("InvalidFlushOperation")) {
+        // spurious
+        // https://learn.microsoft.com/en-us/rest/api/storageservices/datalakestoragegen2/path/update?view=rest-storageservices-datalakestoragegen2-2019-12-12&tabs=flush
         throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
       throw e;
