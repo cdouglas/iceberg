@@ -147,7 +147,11 @@ public class S3OutputFile extends BaseS3File
           metrics(),
           response.eTag());
     } catch (S3Exception e) {
-      if (412 == e.statusCode()) {
+      if (409 == e.statusCode() && "PreconditionFailed".equals(e.awsErrorDetails().errorCode())) {
+        // conflicting operation
+        throw new SupportsAtomicOperations.CASException("Conflicting operation", e);
+      }
+      if (412 == e.statusCode() && "PreconditionFailed".equals(e.awsErrorDetails().errorCode())) {
         // precondition failed
         throw new SupportsAtomicOperations.CASException("Target modified", e);
       }

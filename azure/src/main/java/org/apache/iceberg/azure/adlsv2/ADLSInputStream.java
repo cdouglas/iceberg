@@ -102,7 +102,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       }
       return result.getProperties();
     } catch (DataLakeStorageException e) {
-      if (e.getStatusCode() == 409) {
+      if (e.getStatusCode() == 409) { // BlobModifiedWhileReading
 
       }
       throw e;
