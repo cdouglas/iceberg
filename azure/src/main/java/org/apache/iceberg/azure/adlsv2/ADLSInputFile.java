@@ -67,7 +67,7 @@ class ADLSInputFile extends BaseADLSFile implements InputFile {
       } catch (DataLakeStorageException e) {
         if (e.getStatusCode() == 404) {
           // *should* be possible to atomically get properties and !exists, but whatever
-          return null;
+          invariants = new DataLakeRequestConditions().setIfNoneMatch("*");
         }
       }
     }
