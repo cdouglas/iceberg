@@ -1,43 +1,33 @@
-# Schedule
+# Tasks
 
-Week 1: CAS Catalog (S3) ✅ \
-Week 2: Catalog Append (Azure) \
-✅ Refactor to prepare/writeAtomic
-🟩 Microbenchmark for Catalog
-🟩
-🟩
-🟩
-
-Week 3: Embed Table Metadata + simulator \
-Week 4: ibid \
-Week 5: Blind appends (Azure) \
-Week 6: Lease+Position appends (Azure, AWS) \
-Week 7: Lambda Append (S3)
-
-
-
-<!--
-## Aggressive Schedule
-
-Week 1: CAS Catalog (S3) ✅ \
-Week 2: Embed Table Metadata \
-Week 3: ibid \
-Week 4: Split table entries \
-Week 5: ibid \
-Week 6: Parquet/ORC Append (Azure) \
-Week 7: Blind appends (Azure) \
-Week 8: Lease+Position appends (Azure) \
-Week 9: Catalog Append (Azure) \
-Week 10: Metadata Append (Azure) \
-Week 11: Lambda Append (S3) \
-Week 12: Experiments
--->
+- [ ] Implementation
+  - [ ] YCSB
+    - [x] Direct CAS
+      - [x] S3
+      - [x] Azure
+      - [x] GCP
+    - [ ] Direct Append
+      - [ ] S3
+      - [x] Azure
+    - [ ] Direct object lambda
+      - [ ] S3
+      - [ ] Azure (via functions?)
+    - [x] Catalog CAS
+      - [x] S3
+      - [x] Azure
+      - [x] GCP
+    - [ ] Catalog Append
+      - [ ] S3
+      - [ ] Azure
+    - 
+- [ ] Evaluation
+  - [ ] Clean up results (throw out outliers, include error bars)
+  - [ ] 
+- [ ] Writing
+  - [ ] Outline Intro
+  - [ ] Outline background
 
 # Model
-
-## Simulator 
-
-We write a simple discrete event simulator to explore the space.
 
 ## Store latency
 
@@ -56,42 +46,6 @@ To motivate the following, we assume average read latencies for "hot" objects fr
 | 8MiB        | 170                   |
 | 16MiB       | 300                   |
 | 32MiB       | 850                   |
-
-<!-- 
-
-#### ChatGPT riffing
-
-Doesn't match. Forget it.
-
- GPT Avg Read Latency | GPT Avg Write Latency |
-----------------------|-----------------------| 
- 7 ms                 | 8 ms                  |
- 25 ms                | 30 ms                 |
- 60 ms                | 70 ms                 |
- 125 ms               | 150 ms                |
- 225 ms               | 260 ms                |
- 450 ms               | 500 ms                |
-
-
-| Object Size | Average Read Latency | Average Write Latency |
-|-------------|-----------------------|-----------------------|
-| 1 KB        | 7 ms                 | 8 ms                 |
-| 1 MB        | 25 ms                | 30 ms                |
-| 4 MB        | 60 ms                | 70 ms                |
-| 8 MB        | 125 ms               | 150 ms               |
-| 16 MB       | 225 ms               | 260 ms               |
-| 32 MB       | 450 ms               | 500 ms               |
-
-| Object Size | Read Latency        | Write Latency       |
-|-------------|---------------------|---------------------|
-| 1 KB        | 5 - 10 ms | 5 - 12 ms |
-| 1 MB        | 20 - 30 ms| 22 - 35 ms|
-| 4 MB        | 50 - 70 ms| 55 - 80 ms|
-| 8 MB        | 100 - 150 ms| 110 - 170 ms|
-| 16 MB       | 200 - 250 ms| 220 - 280 ms|
-| 32 MB       | 400 - 500 ms| 440 - 550 ms|
-
--->
 
 ### Assumptions
 

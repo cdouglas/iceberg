@@ -19,8 +19,10 @@
 package org.apache.iceberg.aws.s3;
 
 import java.util.Base64;
+import java.util.zip.CRC32;
 import java.util.zip.Checksum;
 import org.apache.commons.codec.digest.PureJavaCrc32C;
+import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.FileChecksum;
 import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
@@ -29,11 +31,30 @@ import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 public class S3Checksum implements FileChecksum, CAS {
 
   private long length = 0L;
-  private final Checksum crc32c = new PureJavaCrc32C();
+  private final Checksum crc;
+  private final AtomicOutputFile.Strategy strategy;
+
+  public S3Checksum(AtomicOutputFile.Strategy strategy) {
+      this.strategy = strategy;
+      switch (strategy) {
+        case CAS:
+          this.crc = new PureJavaCrc32C();
+          break;
+        case APPEND:
+          this.crc = new CRC32();
+          break;
+        default:
+          throw new IllegalArgumentException("Unsupported strategy: " + strategy);
+      }
+  }
+
+  public AtomicOutputFile.Strategy getStrategy() {
+    return strategy;
+  }
 
   @Override
   public void update(byte[] bytes, int off, int len) {
-    crc32c.update(bytes, off, len);
+    crc.update(bytes, off, len);
     length += len;
   }
 
@@ -44,7 +65,7 @@ public class S3Checksum implements FileChecksum, CAS {
 
   @Override
   public byte[] contentChecksumBytes() {
-    return Ints.toByteArray((int) crc32c.getValue());
+    return Ints.toByteArray((int) crc.getValue());
   }
 
   @Override

@@ -44,30 +44,31 @@ public class S3OutputFile extends BaseS3File
     implements NativelyEncryptedFile, AtomicOutputFile<CAS> {
   private NativeFileCryptoParameters nativeEncryptionParameters;
   private final String etag;
+  private Long length;
 
   public static S3OutputFile fromLocation(
-      String location,
-      S3Client client,
-      S3FileIOProperties s3FileIOProperties,
-      MetricsContext metrics) {
+          String location,
+          S3Client client,
+          S3FileIOProperties s3FileIOProperties,
+          MetricsContext metrics) {
     return new S3OutputFile(
-        client,
-        new S3URI(location, s3FileIOProperties.bucketToAccessPointMapping()),
-        s3FileIOProperties,
-        metrics);
+            client,
+            new S3URI(location, s3FileIOProperties.bucketToAccessPointMapping()),
+            s3FileIOProperties,
+            metrics);
   }
 
   S3OutputFile(
-      S3Client client, S3URI uri, S3FileIOProperties s3FileIOProperties, MetricsContext metrics) {
+          S3Client client, S3URI uri, S3FileIOProperties s3FileIOProperties, MetricsContext metrics) {
     this(client, uri, s3FileIOProperties, metrics, null);
   }
 
   S3OutputFile(
-      S3Client client,
-      S3URI uri,
-      S3FileIOProperties s3FileIOProperties,
-      MetricsContext metrics,
-      String etag) {
+          S3Client client,
+          S3URI uri,
+          S3FileIOProperties s3FileIOProperties,
+          MetricsContext metrics,
+          String etag) {
     super(client, uri, s3FileIOProperties, metrics);
     this.etag = etag;
   }
@@ -116,10 +117,10 @@ public class S3OutputFile extends BaseS3File
     // S3OutputStream forces multipart upload w/ attendant MD5 and work pool... meh, do it manually
     // in writeAtomic
     // Catalog + metadata writes are likely smaller than multipart would justify, anyway
-    final S3Checksum checksum = new S3Checksum();
+    final S3Checksum checksum = new S3Checksum(howto);
     try (InputStream in = source.get();
-        FileChecksumOutputStream chk =
-            new FileChecksumOutputStream(new NullOutputStream(), checksum)) {
+         FileChecksumOutputStream chk =
+                 new FileChecksumOutputStream(new NullOutputStream(), checksum)) {
       ByteStreams.copy(in, chk);
     }
     return checksum;
@@ -127,25 +128,38 @@ public class S3OutputFile extends BaseS3File
 
   @Override
   public InputFile writeAtomic(CAS token, Supplier<InputStream> source) throws IOException {
+    final S3Checksum tok = (S3Checksum) token;
+    switch (tok.getStrategy()) {
+      case CAS:
+        return replaceDestObj(tok, source);
+      case APPEND:
+        return appendDestObj(tok, source);
+      default:
+        throw new UnsupportedOperationException("Unrecognized strategy: " + tok.getStrategy());
+    }
+  }
+
+  private S3InputFile replaceDestObj(S3Checksum token, Supplier<InputStream> source)
+          throws IOException {
     try (InputStream src = source.get()) {
       final S3URI location = uri();
       PutObjectRequest req =
-          PutObjectRequest.builder()
-              .bucket(location.bucket())
-              .key(location.key())
-              .checksumCRC32C(token.contentHeaderString())
-              .contentLength(token.contentLength())
-              .ifMatch(etag)
-              .build();
+              PutObjectRequest.builder()
+                      .bucket(location.bucket())
+                      .key(location.key())
+                      .checksumCRC32C(token.contentHeaderString())
+                      .contentLength(token.contentLength())
+                      .ifMatch(etag)
+                      .build();
       RequestBody content = RequestBody.fromInputStream(src, token.contentLength());
       PutObjectResponse response = client().putObject(req, content);
       return new S3InputFile(
-          client(),
-          location,
-          token.contentLength(), // TODO should be identical, but get from resposne?
-          s3FileIOProperties(),
-          metrics(),
-          response.eTag());
+              client(),
+              location,
+              token.contentLength(), // TODO should be identical, but get from response?
+              s3FileIOProperties(),
+              metrics(),
+              response.eTag());
     } catch (S3Exception e) {
       if (409 == e.statusCode() && "ConditionalRequestConflict".equals(e.awsErrorDetails().errorCode())) {
         // conflicting operation
@@ -158,4 +172,41 @@ public class S3OutputFile extends BaseS3File
       throw e;
     }
   }
+
+  private S3InputFile appendDestObj(S3Checksum token, Supplier<InputStream> source)
+          throws IOException {
+    final long objLength = getObjectMetadata().contentLength();
+    try (InputStream src = source.get()) {
+      final S3URI location = uri();
+      PutObjectRequest req =
+              PutObjectRequest.builder()
+                      .bucket(location.bucket())
+                      .key(location.key())
+                      .checksumCRC32(token.contentHeaderString())
+                      .contentLength(token.contentLength())
+                      .ifMatch(etag)
+                      .writeOffsetBytes(objLength)
+                      .build();
+      RequestBody content = RequestBody.fromInputStream(src, token.contentLength());
+      PutObjectResponse response = client().putObject(req, content);
+      return new S3InputFile(
+              client(),
+              location,
+              objLength + token.contentLength(),
+              s3FileIOProperties(),
+              metrics(),
+              response.eTag());
+    } catch (S3Exception e) {
+      if (409 == e.statusCode() && "ConditionalRequestConflict".equals(e.awsErrorDetails().errorCode())) {
+        // conflicting operation
+        throw new SupportsAtomicOperations.AppendException("Conflicting operation", e);
+      }
+      if (412 == e.statusCode() && "PreconditionFailed".equals(e.awsErrorDetails().errorCode())) {
+        // precondition failed
+        throw new SupportsAtomicOperations.AppendException("Target modified", e);
+      }
+      throw e;
+    }
+  }
+
 }

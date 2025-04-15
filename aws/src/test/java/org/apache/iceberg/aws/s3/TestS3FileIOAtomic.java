@@ -25,6 +25,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.UUID;
@@ -34,6 +35,7 @@ import org.apache.iceberg.aws.AwsClientFactory;
 import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.relocated.com.google.common.io.CharStreams;
 import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
@@ -151,7 +153,6 @@ public class TestS3FileIOAtomic {
     PutObjectRequest req1 = PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).build();
     RequestBody body1 = RequestBody.fromBytes("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
     s3.putObject(req1, body1);
-    PutObjectResponse resp1 = s3.putObject(req1, body1);
 
     // let's see if this works
     S3FileIO fileIO = new S3FileIO(() -> s3);
@@ -184,6 +185,78 @@ public class TestS3FileIOAtomic {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
           .isEqualTo("shaved my hamster");
     }
+  }
+
+  @Test
+  public void testAppend() throws IOException, S3Exception {
+    final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
+    final String objName = "bananaslugs";
+    final String path = "s3://" + EXPR_BUCKET + "/" + objName;
+
+    PutObjectRequest req1 = PutObjectRequest.builder().bucket(EXPR_BUCKET).key(objName).build();
+    RequestBody body1 = RequestBody.fromBytes("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
+    PutObjectResponse resp1 = s3.putObject(req1, body1);
+
+    // let's see if this works
+    S3FileIO fileIO = new S3FileIO(() -> s3);
+    final InputFile inf = fileIO.newInputFile(path);
+    try (InputStream i = inf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+              .isEqualTo("shaved my kiwis");
+    }
+
+    final AtomicOutputFile<CAS> outf = fileIO.newOutputFile(inf);
+    final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
+    final CAS chk =
+            outf.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+    InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
+    try (InputStream i = replf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+              .isEqualTo("shaved my kiwisshaved my hamster");
+    }
+  }
+
+  @Test
+  public void testAppendConditions() throws IOException, S3Exception {
+    final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
+    final String objName = "bananaslugs";
+    final String path = "s3://" + EXPR_BUCKET + "/" + objName;
+
+    S3FileIO fileIO = new S3FileIO(() -> s3);
+    final OutputFile orig = fileIO.newOutputFile(path);
+    try (OutputStream out = orig.createOrOverwrite()) {
+      out.write("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
+    }
+    final InputFile inf = fileIO.newInputFile(path);
+    try (InputStream i = inf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+              .isEqualTo("shaved my kiwis");
+    }
+
+    final AtomicOutputFile<CAS> app1 = fileIO.newOutputFile(inf);
+    final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
+    final CAS chk1 =
+            app1.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+    InputFile replf = app1.writeAtomic(chk1, () -> new ByteArrayInputStream(replContent));
+    try (InputStream i = replf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+              .isEqualTo("shaved my kiwisshaved my hamster");
+    }
+
+    final AtomicOutputFile<CAS> app3 = fileIO.newOutputFile(replf);
+    final byte[] replContent3 = "shaved my yak".getBytes(StandardCharsets.UTF_8);
+    final CAS chk3 = app3.prepare(() -> new ByteArrayInputStream(replContent3), AtomicOutputFile.Strategy.APPEND);
+    InputFile replf3 = app3.writeAtomic(chk3, () -> new ByteArrayInputStream(replContent3));
+    try (InputStream i = replf3.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+              .isEqualTo("shaved my kiwisshaved my hamstershaved my yak");
+    }
+
+    final AtomicOutputFile<CAS> app2 = fileIO.newOutputFile(inf);
+    final CAS chk2 =
+            app2.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+    assertThatThrownBy(() -> app2.writeAtomic(chk2, () -> new ByteArrayInputStream(replContent)))
+            .isInstanceOf(SupportsAtomicOperations.AppendException.class);
   }
 
   static class SuccessCleanupExtension implements TestWatcher {
