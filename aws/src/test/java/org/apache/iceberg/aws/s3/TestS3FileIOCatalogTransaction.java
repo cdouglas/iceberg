@@ -23,6 +23,7 @@ import java.util.UUID;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTransactionTests;
 import org.apache.iceberg.io.CASCatalogFormat;
+import org.apache.iceberg.io.CatalogFormat;
 import org.apache.iceberg.io.FileIOCatalog;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.AfterEach;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.extension.TestWatcher;
 @ExtendWith(TestS3Catalog.SuccessCleanupExtension.class)
 public class TestS3FileIOCatalogTransaction extends CatalogTransactionTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "casalog";
+  private static final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
 
   private static String uniqTestRun;
   private static String warehouseLocation;
@@ -65,14 +67,15 @@ public class TestS3FileIOCatalogTransaction extends CatalogTransactionTests<File
   public void before(TestInfo info) {
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
     warehouseLocation =
-        "s3://" + TEST_BUCKET + "/" + uniqTestRun + "/" + testName + "_" + info.getDisplayName();
+        "s3://" + EXPR_BUCKET + "/" + uniqTestRun + "/" + testName + "_" + info.getDisplayName();
     cleanupWarehouseLocation();
 
     final S3FileIO io = new S3FileIO(); // () -> s3);
     io.initialize(Maps.newHashMap());
     final String location = warehouseLocation + "/catalog";
+    final CatalogFormat<?,?> format = new CASCatalogFormat(); // new LogCatalogFormat();
     catalog =
-        new FileIOCatalog("test", location, null, new CASCatalogFormat(), io, Maps.newHashMap());
+        new FileIOCatalog("test", location, null, format, io, Maps.newHashMap());
 
     final Map<String, String> properties = Maps.newHashMap();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);

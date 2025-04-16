@@ -41,7 +41,10 @@ public class S3Checksum implements FileChecksum, CAS {
           this.crc = new PureJavaCrc32C();
           break;
         case APPEND:
-          this.crc = new CRC32();
+          this.crc = new PureJavaCrc32C();
+          // TODO why does TestS3FileIOAtomic::testAppendConditions fail with CRC32C (pass w/ CRC32)?
+          // TODO but TestS3Catalog fails with CRC32 (pass w/ CRC32C)?
+          // this.crc = new CRC32();
           break;
         default:
           throw new IllegalArgumentException("Unsupported strategy: " + strategy);

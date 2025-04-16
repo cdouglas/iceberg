@@ -182,7 +182,7 @@ public class S3OutputFile extends BaseS3File
               PutObjectRequest.builder()
                       .bucket(location.bucket())
                       .key(location.key())
-                      .checksumCRC32(token.contentHeaderString())
+                      .checksumCRC32C(token.contentHeaderString())
                       .contentLength(token.contentLength())
                       .ifMatch(etag)
                       .writeOffsetBytes(objLength)

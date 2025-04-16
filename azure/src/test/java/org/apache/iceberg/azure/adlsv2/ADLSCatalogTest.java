@@ -142,6 +142,7 @@ public class ADLSCatalogTest extends CatalogTests<FileIOCatalog> {
     final Map<String, String> properties = Maps.newHashMap();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
     final String location = warehouseLocation + "/catalog";
+    // TODO current status, LogCatalogFormat should throw CommitFailed exception instead of IllegalStateException
     CatalogFormat<?, ?> format = new LogCatalogFormat();
     catalog = new FileIOCatalog("test", location, null, format, io, Maps.newHashMap());
     catalog.initialize(testName, properties);

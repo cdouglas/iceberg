@@ -23,7 +23,9 @@ import java.util.UUID;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.io.CASCatalogFormat;
+import org.apache.iceberg.io.CatalogFormat;
 import org.apache.iceberg.io.FileIOCatalog;
+import org.apache.iceberg.io.LogCatalogFormat;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -36,6 +38,7 @@ import org.junit.jupiter.api.extension.TestWatcher;
 @ExtendWith(TestS3Catalog.SuccessCleanupExtension.class)
 public class TestS3Catalog extends CatalogTests<FileIOCatalog> {
   private static final String TEST_BUCKET = "casalog";
+  private static final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
 
   private static String uniqTestRun;
   private static String warehouseLocation;
@@ -65,7 +68,7 @@ public class TestS3Catalog extends CatalogTests<FileIOCatalog> {
   public void before(TestInfo info) {
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
     warehouseLocation =
-        "s3://" + TEST_BUCKET + "/" + uniqTestRun + "/" + testName + "_" + info.getDisplayName();
+        "s3://" + EXPR_BUCKET + "/" + uniqTestRun + "/" + testName + "_" + info.getDisplayName();
     cleanupWarehouseLocation();
 
     // s3 = AwsClientFactories.defaultFactory().s3();
@@ -73,8 +76,12 @@ public class TestS3Catalog extends CatalogTests<FileIOCatalog> {
     final S3FileIO io = new S3FileIO(); // () -> s3);
     io.initialize(Maps.newHashMap());
     final String location = warehouseLocation + "/catalog";
+    // TODO current status, LogCatalogFormat should throw CommitFailed exception instead of IllegalStateException
+    // Note from: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-tutorial-Upload.html
+    // "If you're uploading a single object that's less than 16 MB in size, you can also specify a pre-calculated checksum value. When you provide a pre-calculated value, Amazon S3 compares it with the value that it calculates by using the selected checksum function. If the values don't match, the upload won't start."
+    final CatalogFormat<?,?> format = new LogCatalogFormat();
     catalog =
-        new FileIOCatalog("test", location, null, new CASCatalogFormat(), io, Maps.newHashMap());
+        new FileIOCatalog("test", location, null, format, io, Maps.newHashMap());
 
     final Map<String, String> properties = Maps.newHashMap();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
