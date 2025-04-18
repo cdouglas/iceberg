@@ -42,6 +42,7 @@ import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -223,6 +224,7 @@ public class TestS3FileIOAtomic {
     final String path = "s3://" + EXPR_BUCKET + "/" + objName;
 
     S3FileIO fileIO = new S3FileIO(() -> s3);
+    fileIO.initialize(Maps.newHashMap());
     final OutputFile orig = fileIO.newOutputFile(path);
     try (OutputStream out = orig.createOrOverwrite()) {
       out.write("shaved my kiwis".getBytes(StandardCharsets.UTF_8));

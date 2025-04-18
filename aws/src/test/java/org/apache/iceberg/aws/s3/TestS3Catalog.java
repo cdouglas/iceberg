@@ -73,7 +73,7 @@ public class TestS3Catalog extends CatalogTests<FileIOCatalog> {
 
     // s3 = AwsClientFactories.defaultFactory().s3();
     // StaticClientFactory.client = s3;
-    final S3FileIO io = new S3FileIO(); // () -> s3);
+    final S3FileIO io = new S3FileIO();
     io.initialize(Maps.newHashMap());
     final String location = warehouseLocation + "/catalog";
     // TODO current status, LogCatalogFormat should throw CommitFailed exception instead of IllegalStateException
