@@ -113,7 +113,14 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     }
     if (null == format) {
       // TODO configuration
-      format = new CASCatalogFormat();
+      String formatStr = properties.getOrDefault(FILE_FORMAT, "cas");
+      if ("cas".equals(formatStr)) {
+        format = new CASCatalogFormat();
+      } else if ("append".equals(formatStr)) {
+        format = new LogCatalogFormat();
+      } else {
+        throw new IllegalArgumentException("Unknown catalog format: " + formatStr);
+      }
     }
     if (null == fileIO) {
       // TODO check warehouseLocation schema?
