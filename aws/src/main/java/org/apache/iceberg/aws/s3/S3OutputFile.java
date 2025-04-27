@@ -36,6 +36,7 @@ import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.InvalidWriteOffsetException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
@@ -196,6 +197,8 @@ public class S3OutputFile extends BaseS3File
               s3FileIOProperties(),
               metrics(),
               response.eTag());
+    } catch (InvalidWriteOffsetException e) {
+      throw new SupportsAtomicOperations.AppendException("Wrong offset", e);
     } catch (S3Exception e) {
       if (409 == e.statusCode() && "ConditionalRequestConflict".equals(e.awsErrorDetails().errorCode())) {
         // conflicting operation
