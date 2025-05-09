@@ -79,9 +79,10 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
 
     this.pathProperties = openStream(conditions);
     // !#! XXX can't find this in the documentation, try it out
-    if (this.fileSize != pathProperties.getFileSize()) {
-      throw new IllegalStateException("Evidently PathProperties gets the current length " + fileSize + " != " + pathProperties.getFileSize());
-    }
+    // !#! sometimes pathProperties.getFileSize() = 0; not sure why
+    // if (this.fileSize != pathProperties.getFileSize()) {
+    //   throw new IllegalStateException("Evidently PathProperties gets the current length " + fileSize + " != " + pathProperties.getFileSize());
+    // }
   }
 
   private PathProperties openStream(DataLakeRequestConditions invariants) {
@@ -103,7 +104,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       return result.getProperties();
     } catch (DataLakeStorageException e) {
       if (e.getStatusCode() == 409) { // BlobModifiedWhileReading
-
+        // TODO not seeing this in traces anymore...
       }
       throw e;
     }

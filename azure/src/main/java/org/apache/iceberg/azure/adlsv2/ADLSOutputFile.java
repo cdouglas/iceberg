@@ -210,6 +210,10 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
         // https://learn.microsoft.com/en-us/rest/api/storageservices/datalakestoragegen2/path/update?view=rest-storageservices-datalakestoragegen2-2019-12-12&tabs=flush
         throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
+      if (409 == e.getStatusCode() && e.getErrorCode().equals("PathAlreadyExists")) {
+        // include among atomic errors
+        throw new SupportsAtomicOperations.CASException("Location exists", e);
+      }
       throw e;
     }
   }
