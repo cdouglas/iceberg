@@ -205,6 +205,14 @@ public abstract class CatalogFile {
       return self();
     }
 
+    public T readTable(TableIdentifier table) {
+      if (original.location(table) != null && tables.containsKey(table) && tables.get(table) == null) {
+        throw new IllegalArgumentException("Cannot include read dependency on table marked for deletion: " + table);
+      }
+      // TODO: this needs to be part of the diff computed by CatalogFile
+      return self();
+    }
+
     public T updateTable(TableIdentifier table, String location) {
       if (null == original.location(table)) {
         throw new NoSuchNamespaceException("Table does not exist: %s", table);

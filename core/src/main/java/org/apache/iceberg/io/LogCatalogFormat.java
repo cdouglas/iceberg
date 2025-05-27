@@ -138,12 +138,16 @@ public class LogCatalogFormat
           0), // <UUID> <next_nsid> <next_tblid> <chk_end> <tbl_embed_end> <committed_txn_end>
       CREATE_TABLE(1), // <nsid> <ns_ver> <name> <location>
       UPDATE_TABLE(2), // <tbl_id> <tbl_ver> <location>
-      DROP_TABLE(3), // <tbl_id> <tbl_ver>
-      CREATE_NAMESPACE(4), // <parent_id> <parent_version> <name>
-      DROP_NAMESPACE(5), // <nsid> <version>
-      ADD_NAMESPACE_PROPERTY(6), // <nsid> <version> <key> <value>
-      DROP_NAMESPACE_PROPERTY(7), // <nsid> <version> <key>
-      TRANSACTION(8); // <txid> <sealed> <n_actions> <action>*
+      READ_TABLE(3), // <tbl_id> <tbl_ver>
+      DROP_TABLE(4), // <tbl_id> <tbl_ver>
+      CREATE_NAMESPACE(5), // <parent_id> <parent_version> <name>
+      DROP_NAMESPACE(6), // <nsid> <version>
+      ADD_NAMESPACE_PROPERTY(7), // <nsid> <version> <key> <value>
+      DROP_NAMESPACE_PROPERTY(8), // <nsid> <version> <key>
+      TRANSACTION(9); // <txid> <sealed> <n_actions> <action>*
+
+      // TODO YOU FUCKING IDIOT
+      // TODO include READ_TABLE operations as constraints on serializable transactions
 
       final int opcode;
 
@@ -568,6 +572,35 @@ public class LogCatalogFormat
       }
     }
 
+    static class ReadTable extends LogAction {
+      final int tblId;
+      final int version;
+      ReadTable(int tblId, int version) {
+        this.tblId = tblId;
+        this.version = version;
+      }
+      @Override
+      boolean verify(Mut catalog) {
+        Integer version = catalog.tblVersion.get(tblId);
+        return version != null && version == this.version;
+      }
+      @Override
+      void apply(Mut catalog) {
+        // do nothing
+      }
+      @Override
+      void write(DataOutputStream dos) throws IOException {
+        dos.writeByte(Type.READ_TABLE.opcode);
+        dos.writeInt(tblId);
+        dos.writeInt(version);
+      }
+      static ReadTable read(DataInputStream dis) throws IOException {
+        int tblId = dis.readInt();
+        int version = dis.readInt();
+        return new ReadTable(tblId, version);
+      }
+    }
+
     static class UpdateTable extends LogAction {
       final int tblId;
       final int version;
@@ -679,6 +712,9 @@ public class LogCatalogFormat
             case UPDATE_TABLE:
               actions.add(UpdateTable.read(dis));
               break;
+            case READ_TABLE:
+              actions.add(ReadTable.read(dis));
+              break;
             case DROP_TABLE:
               actions.add(DropTable.read(dis));
               break;
@@ -696,8 +732,6 @@ public class LogCatalogFormat
               break;
             case TRANSACTION:
               throw new IllegalStateException("Nested transactions are not supported");
-            default:
-              throw new IllegalArgumentException("Unknown action type: " + type);
           }
         }
         return new Transaction(uuid, actions, sealed);
@@ -776,6 +810,7 @@ public class LogCatalogFormat
             case CHECKPOINT:
             case CREATE_TABLE:
             case UPDATE_TABLE:
+            case READ_TABLE:
             case DROP_TABLE:
             case CREATE_NAMESPACE:
             case ADD_NAMESPACE_PROPERTY:

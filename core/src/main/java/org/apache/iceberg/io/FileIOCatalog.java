@@ -358,7 +358,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     // TableCommit validations check the table UUID and snapshot ref for each table
     // if all validations pass for the current CatalogFile, then attempt atomic replace
     final CatalogFile current = getCatalogFile();
-    final CatalogFile.Mut newCatalog = format.from(current);
+    final CatalogFile.Mut<?,?> newCatalog = format.from(current);
     for (TableCommit commit : commits) {
       final TableIdentifier tableId = commit.identifier();
       // use fixed catalog snapshot for validation
