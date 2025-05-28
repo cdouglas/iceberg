@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.catalog;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -99,7 +100,11 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       // only commit if there were change
       if (!tableCommits.isEmpty()) {
         // TODO: remove this cast once commitTransaction(..) is defined at the Catalog level
-        ((SupportsCatalogTransactions) origin).commitTransaction(tableCommits);
+        // TODO: Again, this is a hack and we need to propagate the version this transaction actually depends on
+        final List<TableIdentifier> readIdent = IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()
+            ? initiallyReadTableMetadataByRef.keySet().stream().map(TableRef::identifier).collect(Collectors.toList())
+            : Collections.emptyList();
+        ((SupportsCatalogTransactions) origin).commitTransaction(readIdent, tableCommits);
       }
 
       // TODO: we should probably be refreshing metadata from all affected tables after the TX

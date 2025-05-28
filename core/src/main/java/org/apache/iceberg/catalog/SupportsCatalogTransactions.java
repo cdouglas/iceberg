@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.catalog;
 
+import java.util.Collections;
 import java.util.List;
 import org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
@@ -32,7 +33,12 @@ public interface SupportsCatalogTransactions {
    */
   CatalogTransaction createTransaction(IsolationLevel isolationLevel);
 
-  void commitTransaction(List<TableCommit> commits);
+  // TODO wrong, but we're going to live with it
+  void commitTransaction(List<TableIdentifier> readTables, List<TableCommit> commits);
+
+  default void commitTransaction(List<TableCommit> commits) {
+    commitTransaction(Collections.emptyList(), commits);
+  }
 
   default void commitTransaction(TableCommit... commits) {
     commitTransaction(ImmutableList.<TableCommit>builder().add(commits).build());

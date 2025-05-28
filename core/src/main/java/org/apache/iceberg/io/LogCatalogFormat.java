@@ -1098,6 +1098,14 @@ public class LogCatalogFormat
           actions.add(new LogAction.DropTable(tblId, original.tblVersion.get(tblId)));
         }
       }
+      for (TableIdentifier ti : readTables) {
+        if (original.tblIds.containsKey(ti)) {
+          // tbl existed when txn started, rely on that version
+          final int tblId = original.tblIds.get(ti);
+          actions.add(new LogAction.ReadTable(tblId, original.tblVersion.get(tblId)));
+        }
+        // else: created and read this table, create will fail validation
+      }
       for (Map.Entry<TableIdentifier, String> t : tableUpdates.entrySet()) {
         final TableIdentifier ti = t.getKey();
         final String location = t.getValue();

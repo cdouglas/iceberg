@@ -273,7 +273,7 @@ public class RESTCatalog
    *     applied across multiple tables.
    */
   @Override
-  public void commitTransaction(List<TableCommit> commits) {
+  public void commitTransaction(List<TableIdentifier> ignored, List<TableCommit> commits) {
     sessionCatalog.commitTransaction(context, commits);
   }
 

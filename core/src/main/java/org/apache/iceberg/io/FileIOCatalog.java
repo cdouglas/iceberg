@@ -354,11 +354,18 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   // SupportsCatalogTransaction
 
   @Override
-  public void commitTransaction(List<TableCommit> commits) {
+  public void commitTransaction(List<TableIdentifier> readTables, List<TableCommit> commits) {
+    // TODO XXX This is wrong. The read version needs to be extracted from the spaghetti
+    //      XXX in BaseCatalogTransaction and resolved against table identifiers, but I'm
+    //      XXX tired of tinkering with this fucking codebase.
     // TableCommit validations check the table UUID and snapshot ref for each table
     // if all validations pass for the current CatalogFile, then attempt atomic replace
     final CatalogFile current = getCatalogFile();
     final CatalogFile.Mut<?,?> newCatalog = format.from(current);
+    for (TableIdentifier readTable : readTables) {
+      final FileIOTableOperations ops = newTableOps(readTable, current);
+      newCatalog.readTable(readTable);
+    }
     for (TableCommit commit : commits) {
       final TableIdentifier tableId = commit.identifier();
       // use fixed catalog snapshot for validation
@@ -372,7 +379,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       if (newMetadata.changes().isEmpty()) {
         continue;
       }
-      // !#! HERE
+      // !#! HERE; inline metadata
       final String newLocation = ops.writeUpdateMetadata(false, newMetadata);
       newCatalog.updateTable(tableId, newLocation);
     }

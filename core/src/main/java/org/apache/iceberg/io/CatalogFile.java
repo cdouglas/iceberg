@@ -31,6 +31,7 @@ import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 /** Snapshot of Catalog state used in FileIOCatalog. */
 public abstract class CatalogFile {
@@ -78,6 +79,7 @@ public abstract class CatalogFile {
   public abstract static class Mut<C extends CatalogFile, T extends Mut<C, T>> {
 
     protected final C original;
+    protected final Set<TableIdentifier> readTables;
     protected final Map<TableIdentifier, String> tables;
     protected final Map<TableIdentifier, String> tableUpdates; // TODO extend this to metadata
     protected final Map<Namespace, Boolean> namespaces;
@@ -86,6 +88,7 @@ public abstract class CatalogFile {
     protected Mut(C original) {
       this.original = original;
       this.tables = Maps.newHashMap();
+      this.readTables = Sets.newHashSet();
       this.tableUpdates = Maps.newHashMap();
       this.namespaces = Maps.newHashMap();
       this.namespaceProperties = Maps.newHashMap();
@@ -206,10 +209,12 @@ public abstract class CatalogFile {
     }
 
     public T readTable(TableIdentifier table) {
-      if (original.location(table) != null && tables.containsKey(table) && tables.get(table) == null) {
+      final String newloc = tables.get(table);
+      if (original.location(table) != null && tables.containsKey(table) && newloc == null) {
+        // TODO eh... this should be legal.
         throw new IllegalArgumentException("Cannot include read dependency on table marked for deletion: " + table);
       }
-      // TODO: this needs to be part of the diff computed by CatalogFile
+      readTables.add(table);
       return self();
     }
 
