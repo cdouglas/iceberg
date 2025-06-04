@@ -252,7 +252,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     } catch (CommitFailedException e) {
       return false; // sigh.
     }
-    return false;
+    return true;
   }
 
   @Override
