@@ -287,7 +287,7 @@ public class ADLSFileIOTest {
     assertThat(in.exists()).isTrue();
 
     // overwrite fails, checksum does not match
-    final AtomicOutputFile<CAS> overwrite = io.newOutputFile(in);
+    final AtomicOutputFile overwrite = io.newOutputFile(in);
     final byte[] overbytes = new byte[1024 * 1024];
     random.nextBytes(overbytes);
     final CAS chk =
@@ -321,7 +321,7 @@ public class ADLSFileIOTest {
 
     final InputFile in = io.newInputFile(location);
     assertThat(in.exists()).isTrue();
-    final AtomicOutputFile<CAS> overwriteFile = io.newOutputFile(in);
+    final AtomicOutputFile overwriteFile = io.newOutputFile(in);
     final byte[] overwriteBytes = randBytes(1024);
     random.nextBytes(overwriteBytes);
     final CAS cas =
@@ -332,7 +332,7 @@ public class ADLSFileIOTest {
 
     // TODO prepare concurrent appends, exactly one should succeed
     // TODO document behavior of etag in testcase
-    final AtomicOutputFile<CAS> appendFile = io.newOutputFile(casin);
+    final AtomicOutputFile appendFile = io.newOutputFile(casin);
     final byte[] appendBytes = randBytes(1024);
     random.nextBytes(appendBytes);
     final CAS chk =
@@ -348,7 +348,7 @@ public class ADLSFileIOTest {
     assertThat(actual).isEqualTo(concatBytes(overwriteBytes, appendBytes));
 
     // attempt another append, but will fail
-    final AtomicOutputFile<CAS> failAppend = io.newOutputFile(casin);
+    final AtomicOutputFile failAppend = io.newOutputFile(casin);
     final CAS failChk =
         failAppend.prepare(
             () -> new ByteArrayInputStream(appendBytes), AtomicOutputFile.Strategy.APPEND);
@@ -497,7 +497,7 @@ public class ADLSFileIOTest {
     ADLSFileIO io = createFileIO();
 
     final InputFile init = io.newInputFile(location);
-    final AtomicOutputFile<CAS> initFile = io.newOutputFile(init);
+    final AtomicOutputFile initFile = io.newOutputFile(init);
     final byte[] overwriteBytes = randBytes(1024);
     random.nextBytes(overwriteBytes);
     final CAS cas =

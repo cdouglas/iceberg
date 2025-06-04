@@ -269,8 +269,8 @@ public class TestLogCatalogFormat {
     when(initFile.exists()).thenReturn(false);
     when(initFile.location()).thenReturn(CATALOG_LOC);
 
-    SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
-    AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
+    SupportsAtomicOperations fileIO = mock(SupportsAtomicOperations.class);
+    AtomicOutputFile outputFile = mock(AtomicOutputFile.class);
     when(fileIO.newOutputFile(eq(initFile))).thenReturn(outputFile);
 
     CAS cas = mock(CAS.class);
@@ -304,7 +304,7 @@ public class TestLogCatalogFormat {
     assertThat(written.containsNamespace(Namespace.empty())).isTrue();
 
     InputFile updFile = mock(InputFile.class);
-    AtomicOutputFile<CAS> updateFile = mock(AtomicOutputFile.class);
+    AtomicOutputFile updateFile = mock(AtomicOutputFile.class);
     when(casFile.exists()).thenReturn(true);
     when(casFile.location()).thenReturn(CATALOG_LOC);
     // refreshed, so not eq(casFile)
@@ -347,8 +347,8 @@ public class TestLogCatalogFormat {
     when(initFile.exists()).thenReturn(false);
     when(initFile.location()).thenReturn(CATALOG_LOC);
 
-    SupportsAtomicOperations<CAS> fileIO = mock(SupportsAtomicOperations.class);
-    AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
+    SupportsAtomicOperations fileIO = mock(SupportsAtomicOperations.class);
+    AtomicOutputFile outputFile = mock(AtomicOutputFile.class);
     when(fileIO.newOutputFile(eq(initFile))).thenReturn(outputFile);
 
     CAS cas = mock(CAS.class);
@@ -387,7 +387,7 @@ public class TestLogCatalogFormat {
     assertThat(written).isEqualTo(init);
 
     InputFile updFile = mock(InputFile.class);
-    AtomicOutputFile<CAS> updateFile = mock(AtomicOutputFile.class);
+    AtomicOutputFile updateFile = mock(AtomicOutputFile.class);
     when(casFile.exists()).thenReturn(true);
     when(casFile.location()).thenReturn(CATALOG_LOC);
     // refreshed, so not eq(casFile)

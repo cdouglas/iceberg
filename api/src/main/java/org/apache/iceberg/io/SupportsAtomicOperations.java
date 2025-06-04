@@ -18,14 +18,14 @@
  */
 package org.apache.iceberg.io;
 
-public interface SupportsAtomicOperations<T> extends FileIO {
+public interface SupportsAtomicOperations extends FileIO {
   /**
    * Create a new atomic output file that will replace the given input file.
    *
    * @param replace an input file to replace
    * @return a new atomic output file
    */
-  AtomicOutputFile<T> newOutputFile(InputFile replace);
+  AtomicOutputFile newOutputFile(InputFile replace);
 
   class AtomicOperationException extends RuntimeException {
     public AtomicOperationException(String message, Exception cause) {

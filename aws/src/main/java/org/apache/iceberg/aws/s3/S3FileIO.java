@@ -76,7 +76,7 @@ import software.amazon.awssdk.services.s3.model.Tagging;
  * schemes s3a, s3n, https are also treated as s3 file paths. Using this FileIO with other schemes
  * will result in {@link org.apache.iceberg.exceptions.ValidationException}.
  */
-public class S3FileIO implements CredentialSupplier, DelegateFileIO, SupportsAtomicOperations<CAS> {
+public class S3FileIO implements CredentialSupplier, DelegateFileIO, SupportsAtomicOperations {
   private static final Logger LOG = LoggerFactory.getLogger(S3FileIO.class);
   private static final String DEFAULT_METRICS_IMPL =
       "org.apache.iceberg.hadoop.HadoopMetricsContext";

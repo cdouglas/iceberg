@@ -194,10 +194,10 @@ public class CASCatalogFormat
     }
 
     @Override
-    public CASCatalogFile commit(SupportsAtomicOperations<CAS> fileIO) {
+    public CASCatalogFile commit(SupportsAtomicOperations fileIO) {
       try {
         CatalogFile catalog = merge();
-        final AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(original.location());
+        final AtomicOutputFile outputFile = fileIO.newOutputFile(original.location());
         try {
           byte[] ffs = asBytes(catalog);
           try (ByteArrayInputStream serBytes = new ByteArrayInputStream(asBytes(catalog))) {

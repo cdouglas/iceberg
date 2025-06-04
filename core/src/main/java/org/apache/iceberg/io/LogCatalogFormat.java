@@ -1123,7 +1123,7 @@ public class LogCatalogFormat
       try {
         // SIGH
         Preconditions.checkArgument(current.location().equals(original.location().location()));
-        AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(current);
+        AtomicOutputFile outputFile = fileIO.newOutputFile(current);
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
           original.writeCheckpoint(baos); // original is sealed, create, all the same case
           baos.write(txnBytes);
@@ -1148,7 +1148,7 @@ public class LogCatalogFormat
     // TODO obviously, these should be combined
     private Optional<LogCatalogFile> tryAppend(InputFile current, LogAction.Transaction txn, byte[] txnBytes, SupportsAtomicOperations fileIO) {
       try {
-        AtomicOutputFile<CAS> outputFile = fileIO.newOutputFile(current);
+        AtomicOutputFile outputFile = fileIO.newOutputFile(current);
         try (ByteArrayInputStream serBytes = new ByteArrayInputStream(txnBytes)) {
           serBytes.mark(txnBytes.length);
           CAS token = outputFile.prepare(() -> serBytes, AtomicOutputFile.Strategy.APPEND);
