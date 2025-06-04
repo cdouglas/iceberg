@@ -19,6 +19,7 @@
 package org.apache.iceberg.io;
 
 import java.util.Comparator;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -39,11 +40,13 @@ import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableCommit;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.base.Strings;
+import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.LocationUtil;
@@ -54,6 +57,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   // TODO buildTable overridden in BaseMetastoreCatalog?
 
   private static final String FILE_FORMAT = "fileio.catalog.format";
+  private static final Joiner DOT = Joiner.on(".");
 
   private Configuration conf; // TODO: delete
   private String catalogName = "fileio";
@@ -146,32 +150,56 @@ public class FileIOCatalog extends BaseMetastoreCatalog
           "Cannot list tables for namespace. Namespace does not exist: %s", namespace);
     }
     return getCatalogFile().tables().stream()
-        .filter(t -> t.namespace().isEmpty() || t.namespace().equals(namespace))
+        .filter(t -> namespace.isEmpty() || t.namespace().equals(namespace))
         .sorted(Comparator.comparing(TableIdentifier::toString))
         .collect(Collectors.toList());
   }
 
   @Override
   public boolean dropTable(TableIdentifier identifier, boolean purge) {
-    final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = format.read(fileIO, catalog);
+    FileIOTableOperations ops = newTableOps(identifier);
+    TableMetadata lastMetadata = purge ? ops.current() : null;
+
+    CatalogFile catalogFile = format.read(fileIO, fileIO.newInputFile(catalogLocation));
     try {
       format.from(catalogFile).dropTable(identifier).commit(fileIO);
-      return true;
     } catch (CommitFailedException | NoSuchTableException e) {
       return false;
     }
+
+    if (purge && lastMetadata != null) {
+      CatalogUtil.dropTableData(ops.io(), lastMetadata);
+    }
+
+    return true;
   }
 
   @Override
   public void renameTable(TableIdentifier from, TableIdentifier to) {
-    final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    final CatalogFile catalogFile = format.read(fileIO, catalog);
-    format
-        .from(catalogFile)
-        .dropTable(from)
-        .createTable(to, catalogFile.location(from))
-        .commit(fileIO);
+    if (from.equals(to)) {
+      return;
+    }
+
+    CatalogFile catalogFile = getCatalogFile();
+
+    if (!catalogFile.containsNamespace(to.namespace())) {
+      throw new NoSuchNamespaceException(
+          "Cannot rename %s to %s. Namespace does not exist: %s",
+          from,
+          to,
+          to.namespace());
+    }
+
+    String fromLocation = catalogFile.location(from);
+    if (fromLocation == null) {
+      throw new NoSuchTableException("Cannot rename %s to %s. Table does not exist", from, to);
+    }
+
+    if (catalogFile.location(to) != null) {
+      throw new AlreadyExistsException("Cannot rename %s to %s. Table already exists", from, to);
+    }
+
+    format.from(catalogFile).dropTable(from).createTable(to, fromLocation).commit(fileIO);
   }
 
   @Override
@@ -214,7 +242,26 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   @Override
   public List<Namespace> listNamespaces(Namespace namespace) throws NoSuchNamespaceException {
-    return Lists.newArrayList(getCatalogFile().namespaces().iterator());
+    CatalogFile catalogFile = getCatalogFile();
+    Set<Namespace> all = catalogFile.namespaces();
+
+    String search = namespace.isEmpty() ? "" : DOT.join(namespace.levels()) + ".";
+    int searchLevels = namespace.levels().length;
+
+    List<Namespace> matches =
+        all.stream()
+            .filter(n -> DOT.join(n.levels()).startsWith(search))
+            .collect(Collectors.toList());
+
+    if (!namespace.isEmpty() && !all.contains(namespace) && matches.isEmpty()) {
+      throw new NoSuchNamespaceException("Namespace does not exist: %s", namespace);
+    }
+
+    return matches.stream()
+        .map(n -> Namespace.of(Arrays.copyOf(n.levels(), searchLevels + 1)))
+        .distinct()
+        .sorted(Comparator.comparing(n -> DOT.join(n.levels())))
+        .collect(Collectors.toList());
   }
 
   @Override
@@ -230,16 +277,16 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
   @Override
   public boolean dropNamespace(Namespace namespace) throws NamespaceNotEmptyException {
-    final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    // XXX TODO wait, wtf?
-    //     TODO catalog ops must also follow the refresh cycle, or only TableOperations detect
-    // concurrent changes?
-    final CatalogFile catalogFile = format.read(fileIO, catalog);
-    try {
-      format.from(catalogFile).dropNamespace(namespace).commit(fileIO);
-    } catch (NoSuchNamespaceException e) {
-      return false; // sigh.
+    CatalogFile catalogFile = getCatalogFile();
+    if (!catalogFile.containsNamespace(namespace)) {
+      return false;
     }
+
+    if (!listNamespaces(namespace).isEmpty() || !listTables(namespace).isEmpty()) {
+      throw new NamespaceNotEmptyException("Namespace %s is not empty", namespace);
+    }
+
+    format.from(catalogFile).dropNamespace(namespace).commit(fileIO);
     return true;
   }
 
