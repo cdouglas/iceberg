@@ -162,7 +162,7 @@ public class TestS3FileIOAtomic {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
           .isEqualTo("shaved my kiwis");
     }
-    final AtomicOutputFile<CAS> outf = fileIO.newOutputFile(inf);
+    final AtomicOutputFile outf = fileIO.newOutputFile(inf);
     final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
     final CAS chk =
         outf.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.CAS);
@@ -173,7 +173,7 @@ public class TestS3FileIOAtomic {
           .isEqualTo("shaved my hamster");
     }
 
-    final AtomicOutputFile<CAS> outfFail = fileIO.newOutputFile(inf);
+    final AtomicOutputFile outfFail = fileIO.newOutputFile(inf);
     final byte[] failContent = "shaved your mom".getBytes(StandardCharsets.UTF_8);
     final CAS chkFail =
         outfFail.prepare(
@@ -206,7 +206,7 @@ public class TestS3FileIOAtomic {
               .isEqualTo("shaved my kiwis");
     }
 
-    final AtomicOutputFile<CAS> outf = fileIO.newOutputFile(inf);
+    final AtomicOutputFile outf = fileIO.newOutputFile(inf);
     final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
     final CAS chk =
             outf.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
@@ -235,7 +235,7 @@ public class TestS3FileIOAtomic {
               .isEqualTo("shaved my kiwis");
     }
 
-    final AtomicOutputFile<CAS> app1 = fileIO.newOutputFile(inf);
+    final AtomicOutputFile app1 = fileIO.newOutputFile(inf);
     final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
     final CAS chk1 =
             app1.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
@@ -245,7 +245,7 @@ public class TestS3FileIOAtomic {
               .isEqualTo("shaved my kiwisshaved my hamster");
     }
 
-    final AtomicOutputFile<CAS> app3 = fileIO.newOutputFile(replf);
+    final AtomicOutputFile app3 = fileIO.newOutputFile(replf);
     final byte[] replContent3 = "shaved my yak".getBytes(StandardCharsets.UTF_8);
     final CAS chk3 = app3.prepare(() -> new ByteArrayInputStream(replContent3), AtomicOutputFile.Strategy.APPEND);
     InputFile replf3 = app3.writeAtomic(chk3, () -> new ByteArrayInputStream(replContent3));
@@ -254,7 +254,7 @@ public class TestS3FileIOAtomic {
               .isEqualTo("shaved my kiwisshaved my hamstershaved my yak");
     }
 
-    final AtomicOutputFile<CAS> app2 = fileIO.newOutputFile(inf);
+    final AtomicOutputFile app2 = fileIO.newOutputFile(inf);
     final CAS chk2 =
             app2.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
     assertThatThrownBy(() -> app2.writeAtomic(chk2, () -> new ByteArrayInputStream(replContent)))

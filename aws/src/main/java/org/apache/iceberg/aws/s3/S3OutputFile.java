@@ -42,7 +42,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 public class S3OutputFile extends BaseS3File
-    implements NativelyEncryptedFile, AtomicOutputFile<CAS> {
+    implements NativelyEncryptedFile, AtomicOutputFile {
   private NativeFileCryptoParameters nativeEncryptionParameters;
   private final String etag;
   private Long length;

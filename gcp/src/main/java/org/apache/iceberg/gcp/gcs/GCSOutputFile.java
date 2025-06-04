@@ -34,7 +34,7 @@ import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
-class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile<CAS> {
+class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
   static GCSOutputFile fromLocation(
       String location, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {

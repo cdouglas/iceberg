@@ -249,6 +249,6 @@ public abstract class CatalogFile {
           && !namespaces.getOrDefault(namespace, false);
     }
 
-    public abstract C commit(SupportsAtomicOperations<CAS> fileIO);
+    public abstract C commit(SupportsAtomicOperations fileIO);
   }
 }

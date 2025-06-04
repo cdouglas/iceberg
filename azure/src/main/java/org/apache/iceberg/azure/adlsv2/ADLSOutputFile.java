@@ -42,7 +42,7 @@ import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
-class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile<CAS> {
+class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
 
   private Long length;
   private final DataLakeRequestConditions conditions;

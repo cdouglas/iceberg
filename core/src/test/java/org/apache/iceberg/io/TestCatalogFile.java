@@ -59,7 +59,7 @@ public class TestCatalogFile {
 
   private final Random random = new Random();
   private InputFile nullFile;
-  private SupportsAtomicOperations<CAS> fileIO;
+  private SupportsAtomicOperations fileIO;
 
   @BeforeEach
   @SuppressWarnings("unchecked")
@@ -69,7 +69,7 @@ public class TestCatalogFile {
     System.out.println(testName + " seed: " + random.nextLong());
     nullFile = mock(InputFile.class);
     when(nullFile.location()).thenReturn("null://null/null/null");
-    AtomicOutputFile<CAS> outputFile = mock(AtomicOutputFile.class);
+    AtomicOutputFile outputFile = mock(AtomicOutputFile.class);
     CAS token = mock(CAS.class);
     when(outputFile.prepare(any(), eq(AtomicOutputFile.Strategy.CAS))).thenReturn(token);
     when(outputFile.writeAtomic(any(), any())).thenReturn(nullFile);

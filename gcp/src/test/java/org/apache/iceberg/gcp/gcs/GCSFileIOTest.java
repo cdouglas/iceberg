@@ -253,7 +253,7 @@ public class GCSFileIOTest {
     assertThat(in.exists()).isTrue();
 
     // overwrite fails, checksum does not match
-    final AtomicOutputFile<CAS> overwrite = io.newOutputFile(in);
+    final AtomicOutputFile overwrite = io.newOutputFile(in);
     final byte[] overbytes = new byte[1024 * 1024];
     random.nextBytes(overbytes);
     final CAS chk =

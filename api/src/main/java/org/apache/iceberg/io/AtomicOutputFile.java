@@ -22,7 +22,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.function.Supplier;
 
-public interface AtomicOutputFile<T> extends OutputFile {
+public interface AtomicOutputFile extends OutputFile {
 
   // TODO do this cleanly later; options pattern for prepare, actually align the types
   // TODO so FileIO compatibility is explicit
@@ -38,7 +38,7 @@ public interface AtomicOutputFile<T> extends OutputFile {
    * @param source Invoked to obtain an InputStream for the future output.
    * @param howto append/CAS
    */
-  T prepare(Supplier<InputStream> source, Strategy howto) throws IOException;
+  CAS prepare(Supplier<InputStream> source, Strategy howto) throws IOException;
 
   /**
    * Atomically replace the contents of the target AtomicOutputFile using the contents of the stream
@@ -50,5 +50,5 @@ public interface AtomicOutputFile<T> extends OutputFile {
    *     subsequent call to {@link SupportsAtomicOperations#newOutputFile(InputFile)}
    */
   // TODO don't throw CASException, just return null and let caller throw
-  InputFile writeAtomic(T token, Supplier<InputStream> source) throws IOException;
+  InputFile writeAtomic(CAS token, Supplier<InputStream> source) throws IOException;
 }

@@ -60,7 +60,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   private String catalogLocation;
   private String warehouseLocation;
   private CatalogFormat<?, ?> format;
-  private SupportsAtomicOperations<CAS> fileIO;
+  private SupportsAtomicOperations fileIO;
   private final Map<String, String> catalogProperties;
 
   @SuppressWarnings("unused") // reflection cstr
@@ -74,7 +74,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       String catalogLocation,
       Configuration conf,
       CatalogFormat<?, ?> format,
-      SupportsAtomicOperations<CAS> fileIO,
+      SupportsAtomicOperations fileIO,
       Map<String, String> catalogProperties) {
     this.catalogName = catalogName;
     this.catalogLocation = catalogLocation;
@@ -131,7 +131,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
       // TODO handle this more gracefully; use listings/HadoopCatalog?
       // TODO remove generics
       fileIO =
-          (SupportsAtomicOperations<CAS>) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
+          (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
     }
     final InputFile catalogFile = fileIO.newInputFile(catalogLocation);
     if (!catalogFile.exists()) {
@@ -267,14 +267,14 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     private final String catalogLocation;
     private final TableIdentifier tableId;
     private final CatalogFormat format;
-    private final SupportsAtomicOperations<CAS> fileIO;
+    private final SupportsAtomicOperations fileIO;
     private volatile CatalogFile lastCatalogFile = null;
 
     FileIOTableOperations(
         TableIdentifier tableId,
         String catalogLocation,
         CatalogFormat format,
-        SupportsAtomicOperations<CAS> fileIO) {
+        SupportsAtomicOperations fileIO) {
       this(tableId, catalogLocation, format, fileIO, null);
     }
 
@@ -282,7 +282,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
         TableIdentifier tableId,
         String catalogLocation,
         CatalogFormat format,
-        SupportsAtomicOperations<CAS> fileIO,
+        SupportsAtomicOperations fileIO,
         CatalogFile catalogFile) {
       this.fileIO = fileIO;
       this.format = format;
@@ -296,7 +296,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     }
 
     @Override
-    public SupportsAtomicOperations<CAS> io() {
+    public SupportsAtomicOperations io() {
       return fileIO;
     }
 
