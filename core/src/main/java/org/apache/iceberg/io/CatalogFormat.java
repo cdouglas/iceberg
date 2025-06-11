@@ -18,19 +18,12 @@
  */
 package org.apache.iceberg.io;
 
-public abstract class CatalogFormat<C extends CatalogFile, T extends CatalogFile.Mut<C, T>> {
+public interface CatalogFormat<C extends CatalogFile, T extends CatalogFile.Mut<C, T>> {
 
-  // Ah. you were trying to ensure the CatalogFormat and FileIO class
-  // were compatible... not sure this is useful, as generic type parameters
-  // are discarded at runtime? Remove generic from type for now, maybe
-  // revisit later?
-  // would need this parameter to get bound to the CatalogFile<T> s.t.
-  // it could not be passed to a FileIO class that did not support it
+  CatalogFile.Mut<C, T> empty(InputFile inputFile);
 
-  public abstract CatalogFile.Mut<C, T> empty(InputFile inputFile);
-
-  public abstract C read(SupportsAtomicOperations fileIO, InputFile in);
+  C read(SupportsAtomicOperations fileIO, InputFile in);
 
   // TODO change argument to C, to ensure it must come from *Format::read
-  public abstract CatalogFile.Mut<C, T> from(CatalogFile other);
+  CatalogFile.Mut<C, T> from(CatalogFile other);
 }

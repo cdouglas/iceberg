@@ -51,9 +51,16 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 @SuppressWarnings("checkstyle:VisibilityModifier")
 public class LogCatalogFormat
-    extends CatalogFormat<LogCatalogFormat.LogCatalogFile, LogCatalogFormat.Mut> {
+    implements CatalogFormat<LogCatalogFormat.LogCatalogFile, LogCatalogFormat.Mut> {
   // UUID generation
   private static final Random random = new Random();
+
+  public LogCatalogFormat() {
+    this(Collections.emptyMap());
+  }
+
+  public LogCatalogFormat(Map<String,String> properties) {
+  }
 
   @Override
   public CatalogFile.Mut<LogCatalogFile, Mut> empty(InputFile input) {

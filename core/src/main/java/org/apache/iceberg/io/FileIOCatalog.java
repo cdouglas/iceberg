@@ -113,7 +113,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     }
     if (null == format) {
       // TODO configuration
-      String formatStr = properties.getOrDefault(FILE_FORMAT, "cas");
+      String formatStr = properties.getOrDefault(FILE_FORMAT, "append");
       if ("cas".equals(formatStr)) {
         format = new CASCatalogFormat();
       } else if ("append".equals(formatStr)) {
