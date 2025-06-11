@@ -240,15 +240,15 @@ public class TestLogCatalogFormat {
     // you're going to hell
     LogCatalogFile orig = generateRandomLogCatalogFile(random.nextLong());
     final LogCatalogFormat.LogAction.Transaction txnA =
-            new LogCatalogFormat.Mut(orig)
-                    .createNamespace(dingos)
-                    .createNamespace(dingos_yaks)
-                    .createTable(tblY, "yak://chinchilla/tblY")
-                    .diff();
+        new LogCatalogFormat.Mut(orig)
+            .createNamespace(dingos)
+            .createNamespace(dingos_yaks)
+            .createTable(tblY, "yak://chinchilla/tblY")
+            .diff();
     assertThat(txnA.isSealed()).isFalse();
     byte[] txnABytes = toBytes(txnA);
     try (ByteArrayInputStream bais = new ByteArrayInputStream(txnABytes);
-         DataInputStream dis = new DataInputStream(bais)) {
+        DataInputStream dis = new DataInputStream(bais)) {
       assertEquals(LogCatalogFormat.LogAction.Type.TRANSACTION.opcode, dis.readByte());
       dis.mark(txnABytes.length - 1);
       assertThat(LogCatalogFormat.LogAction.Transaction.read(dis).isSealed()).isFalse();

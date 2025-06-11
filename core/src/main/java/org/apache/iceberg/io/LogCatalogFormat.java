@@ -59,8 +59,7 @@ public class LogCatalogFormat
     this(Collections.emptyMap());
   }
 
-  public LogCatalogFormat(Map<String,String> properties) {
-  }
+  public LogCatalogFormat(Map<String, String> properties) {}
 
   @Override
   public CatalogFile.Mut<LogCatalogFile, Mut> empty(InputFile input) {
@@ -120,7 +119,9 @@ public class LogCatalogFormat
         // TODO HACK to get around current callers in tests backed by byte arrays
         logStream = new LimitInputStream(in, Integer.MAX_VALUE);
       } else {
-        byte[] logBytes = new byte[catalogLen - chk.length() - chk.chkLen - chk.tblEmbedEnd - chk.committedTxnLen];
+        byte[] logBytes =
+            new byte
+                [catalogLen - chk.length() - chk.chkLen - chk.tblEmbedEnd - chk.committedTxnLen];
         IOUtil.readFully(in, logBytes, 0, logBytes.length);
         logStream = new ByteArrayInputStream(logBytes);
       }
@@ -517,7 +518,8 @@ public class LogCatalogFormat
         // restore NSID, version from log (checkpoint)
         // TODO ID remapping needs an abstraction
         // TODO reaching into internal maps is grotesque, clean this up
-        // TODO XXX create table should also increment the namespace version, so concurrent creates fail validation
+        // TODO XXX create table should also increment the namespace version, so concurrent creates
+        // fail validation
         final int nsid = logNsVersion < 0 ? catalog.nsRemap.get(logNsid) : logNsid;
         final int tblId = this.logTblId == LATE_BIND ? catalog.nextTblid++ : this.logTblId;
         catalog.addTableInternal(tblId, nsid, logTblVersion, name, location);
@@ -582,25 +584,30 @@ public class LogCatalogFormat
     static class ReadTable extends LogAction {
       final int tblId;
       final int version;
+
       ReadTable(int tblId, int version) {
         this.tblId = tblId;
         this.version = version;
       }
+
       @Override
       boolean verify(Mut catalog) {
         Integer version = catalog.tblVersion.get(tblId);
         return version != null && version == this.version;
       }
+
       @Override
       void apply(Mut catalog) {
         // do nothing
       }
+
       @Override
       void write(DataOutputStream dos) throws IOException {
         dos.writeByte(Type.READ_TABLE.opcode);
         dos.writeInt(tblId);
         dos.writeInt(version);
       }
+
       static ReadTable read(DataInputStream dis) throws IOException {
         int tblId = dis.readInt();
         int version = dis.readInt();
@@ -1126,7 +1133,8 @@ public class LogCatalogFormat
     // write the diff as a transaction
     // TODO absurd, redundant computation of merge state
     // TODO ensure InputFile includes accurate length (should be)
-    private Optional<LogCatalogFile> tryCAS(InputFile current, byte[] txnBytes, SupportsAtomicOperations fileIO) {
+    private Optional<LogCatalogFile> tryCAS(
+        InputFile current, byte[] txnBytes, SupportsAtomicOperations fileIO) {
       try {
         // SIGH
         Preconditions.checkArgument(current.location().equals(original.location().location()));
@@ -1142,7 +1150,8 @@ public class LogCatalogFormat
             InputFile newCatalog = outputFile.writeAtomic(token, () -> serBytes);
             final Mut merged = new Mut(newCatalog);
             // TODO: newCatalog should have the offset of the checkpoint - txn bytes
-            return Optional.of(LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(checkpointBytes)));
+            return Optional.of(
+                LogCatalogFormat.readInternal(merged, new ByteArrayInputStream(checkpointBytes)));
           }
         }
       } catch (SupportsAtomicOperations.CASException e) {
@@ -1153,7 +1162,11 @@ public class LogCatalogFormat
     }
 
     // TODO obviously, these should be combined
-    private Optional<LogCatalogFile> tryAppend(InputFile current, LogAction.Transaction txn, byte[] txnBytes, SupportsAtomicOperations fileIO) {
+    private Optional<LogCatalogFile> tryAppend(
+        InputFile current,
+        LogAction.Transaction txn,
+        byte[] txnBytes,
+        SupportsAtomicOperations fileIO) {
       try {
         AtomicOutputFile outputFile = fileIO.newOutputFile(current);
         try (ByteArrayInputStream serBytes = new ByteArrayInputStream(txnBytes)) {
@@ -1179,7 +1192,7 @@ public class LogCatalogFormat
 
     static byte[] toBytes(LogCatalogFormat.LogAction.Transaction diffActions) {
       try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
-           DataOutputStream dos = new DataOutputStream(bos)) {
+          DataOutputStream dos = new DataOutputStream(bos)) {
         diffActions.write(dos);
         return bos.toByteArray();
       } catch (IOException e) {
@@ -1198,7 +1211,8 @@ public class LogCatalogFormat
 
       // case 0: initial commit of the catalog
       if (!current.exists()) {
-        return tryCAS(current, txnBytes, fileIO).orElseThrow(() -> new CommitFailedException("Cannot commit: catalog creation failed"));
+        return tryCAS(current, txnBytes, fileIO)
+            .orElseThrow(() -> new CommitFailedException("Cannot commit: catalog creation failed"));
       }
 
       for (int attempts = 0; attempts < IO_ATTEMPTS; ++attempts) {
@@ -1443,7 +1457,7 @@ public class LogCatalogFormat
     // absolutely disgusting
     static void readCommittedTxn(Set<UUID> committedTxn, byte[] txnBytes) {
       try (ByteArrayInputStream bais = new ByteArrayInputStream(txnBytes);
-           DataInputStream txndis = new DataInputStream(bais)) {
+          DataInputStream txndis = new DataInputStream(bais)) {
         int nTxn = txndis.readInt();
         for (int i = 0; i < nTxn; ++i) {
           long msb = txndis.readLong();

@@ -37,12 +37,12 @@ import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.SupportsAtomicOperations;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.io.CharStreams;
 import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
-import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -203,17 +203,17 @@ public class TestS3FileIOAtomic {
     final InputFile inf = fileIO.newInputFile(path);
     try (InputStream i = inf.newStream()) {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
-              .isEqualTo("shaved my kiwis");
+          .isEqualTo("shaved my kiwis");
     }
 
     final AtomicOutputFile outf = fileIO.newOutputFile(inf);
     final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
     final CAS chk =
-            outf.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+        outf.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
     InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
     try (InputStream i = replf.newStream()) {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
-              .isEqualTo("shaved my kiwisshaved my hamster");
+          .isEqualTo("shaved my kiwisshaved my hamster");
     }
   }
 
@@ -232,33 +232,35 @@ public class TestS3FileIOAtomic {
     final InputFile inf = fileIO.newInputFile(path);
     try (InputStream i = inf.newStream()) {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
-              .isEqualTo("shaved my kiwis");
+          .isEqualTo("shaved my kiwis");
     }
 
     final AtomicOutputFile app1 = fileIO.newOutputFile(inf);
     final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
     final CAS chk1 =
-            app1.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+        app1.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
     InputFile replf = app1.writeAtomic(chk1, () -> new ByteArrayInputStream(replContent));
     try (InputStream i = replf.newStream()) {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
-              .isEqualTo("shaved my kiwisshaved my hamster");
+          .isEqualTo("shaved my kiwisshaved my hamster");
     }
 
     final AtomicOutputFile app3 = fileIO.newOutputFile(replf);
     final byte[] replContent3 = "shaved my yak".getBytes(StandardCharsets.UTF_8);
-    final CAS chk3 = app3.prepare(() -> new ByteArrayInputStream(replContent3), AtomicOutputFile.Strategy.APPEND);
+    final CAS chk3 =
+        app3.prepare(
+            () -> new ByteArrayInputStream(replContent3), AtomicOutputFile.Strategy.APPEND);
     InputFile replf3 = app3.writeAtomic(chk3, () -> new ByteArrayInputStream(replContent3));
     try (InputStream i = replf3.newStream()) {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
-              .isEqualTo("shaved my kiwisshaved my hamstershaved my yak");
+          .isEqualTo("shaved my kiwisshaved my hamstershaved my yak");
     }
 
     final AtomicOutputFile app2 = fileIO.newOutputFile(inf);
     final CAS chk2 =
-            app2.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+        app2.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
     assertThatThrownBy(() -> app2.writeAtomic(chk2, () -> new ByteArrayInputStream(replContent)))
-            .isInstanceOf(SupportsAtomicOperations.AppendException.class);
+        .isInstanceOf(SupportsAtomicOperations.AppendException.class);
   }
 
   static class SuccessCleanupExtension implements TestWatcher {

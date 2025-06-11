@@ -212,7 +212,8 @@ public abstract class CatalogFile {
       final String newloc = tables.get(table);
       if (original.location(table) != null && tables.containsKey(table) && newloc == null) {
         // TODO eh... this should be legal.
-        throw new IllegalArgumentException("Cannot include read dependency on table marked for deletion: " + table);
+        throw new IllegalArgumentException(
+            "Cannot include read dependency on table marked for deletion: " + table);
       }
       readTables.add(table);
       return self();

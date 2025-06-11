@@ -48,7 +48,8 @@ import org.slf4j.LoggerFactory;
 @ExtendWith(ADLSCatalogTest.SuccessCleanupExtension.class)
 public class ADLSFileIOCatalogTransactionTests extends CatalogTransactionTests<FileIOCatalog> {
   // static final String SAS_FILE = "/home/chris/work/.cloud/azure/lstnsgym-20250930.json";
-  static final String SAS_FILE = "/home/chris/src/YCSB/catalog-bench/azure/infra/tokens/client1_20250527.json";
+  static final String SAS_FILE =
+      "/home/chris/src/YCSB/catalog-bench/azure/infra/tokens/client1_20250527.json";
   private static final String TEST_BUCKET = "lst-consistency/TEST_BUCKET";
   private static final Logger LOG = LoggerFactory.getLogger(ADLSCatalogTest.class);
   protected static AzuriteContainer azuriteContainer = null;
@@ -63,12 +64,12 @@ public class ADLSFileIOCatalogTransactionTests extends CatalogTransactionTests<F
   public static void initStorage() throws IOException {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: {}", uniqTestRun);
-    AzureSAS creds =
-        AzureSAS.readCreds(new File(SAS_FILE));
+    AzureSAS creds = AzureSAS.readCreds(new File(SAS_FILE));
     if (creds != null) {
       azureProperties = Maps.newHashMap();
       azureProperties.put(
-          AzureProperties.ADLS_SAS_TOKEN_PREFIX + creds.account + ".dfs.core.windows.net", creds.sasToken);
+          AzureProperties.ADLS_SAS_TOKEN_PREFIX + creds.account + ".dfs.core.windows.net",
+          creds.sasToken);
       az = new AzureSAS.SasResolver(creds);
       LOG.info("Using remote storage");
     } else {

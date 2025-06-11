@@ -33,7 +33,6 @@ import org.apache.iceberg.aws.S3FileIOAwsClientFactories;
 import org.apache.iceberg.common.DynConstructors;
 import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.BulkDeletionFailureException;
-import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.CredentialSupplier;
 import org.apache.iceberg.io.DelegateFileIO;
 import org.apache.iceberg.io.FileInfo;

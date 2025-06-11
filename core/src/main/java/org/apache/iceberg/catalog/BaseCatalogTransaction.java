@@ -100,10 +100,14 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       // only commit if there were change
       if (!tableCommits.isEmpty()) {
         // TODO: remove this cast once commitTransaction(..) is defined at the Catalog level
-        // TODO: Again, this is a hack and we need to propagate the version this transaction actually depends on
-        final List<TableIdentifier> readIdent = IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()
-            ? initiallyReadTableMetadataByRef.keySet().stream().map(TableRef::identifier).collect(Collectors.toList())
-            : Collections.emptyList();
+        // TODO: Again, this is a hack and we need to propagate the version this transaction
+        // actually depends on
+        final List<TableIdentifier> readIdent =
+            IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()
+                ? initiallyReadTableMetadataByRef.keySet().stream()
+                    .map(TableRef::identifier)
+                    .collect(Collectors.toList())
+                : Collections.emptyList();
         ((SupportsCatalogTransactions) origin).commitTransaction(readIdent, tableCommits);
       }
 

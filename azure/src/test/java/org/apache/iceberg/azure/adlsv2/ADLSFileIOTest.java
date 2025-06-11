@@ -353,10 +353,11 @@ public class ADLSFileIOTest {
         failAppend.prepare(
             () -> new ByteArrayInputStream(appendBytes), AtomicOutputFile.Strategy.APPEND);
     SupportsAtomicOperations.AppendException appendFailure =
-            Assertions.assertThrows(
-                    SupportsAtomicOperations.AppendException.class,
-                    () -> failAppend.writeAtomic(failChk, () -> new ByteArrayInputStream(appendBytes)));
-    assertThat(((DataLakeStorageException)appendFailure.getCause()).getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET.toString());
+        Assertions.assertThrows(
+            SupportsAtomicOperations.AppendException.class,
+            () -> failAppend.writeAtomic(failChk, () -> new ByteArrayInputStream(appendBytes)));
+    assertThat(((DataLakeStorageException) appendFailure.getCause()).getErrorCode())
+        .isEqualTo(BlobErrorCode.CONDITION_NOT_MET.toString());
   }
 
   private byte[] randBytes(int len) {

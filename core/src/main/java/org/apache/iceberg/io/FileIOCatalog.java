@@ -130,8 +130,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
 
       // TODO handle this more gracefully; use listings/HadoopCatalog?
       // TODO remove generics
-      fileIO =
-          (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
+      fileIO = (SupportsAtomicOperations) CatalogUtil.loadFileIO(fileIOImpl, properties, getConf());
     }
     final InputFile catalogFile = fileIO.newInputFile(catalogLocation);
     if (!catalogFile.exists()) {
@@ -361,7 +360,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     // TableCommit validations check the table UUID and snapshot ref for each table
     // if all validations pass for the current CatalogFile, then attempt atomic replace
     final CatalogFile current = getCatalogFile();
-    final CatalogFile.Mut<?,?> newCatalog = format.from(current);
+    final CatalogFile.Mut<?, ?> newCatalog = format.from(current);
     for (TableIdentifier readTable : readTables) {
       final FileIOTableOperations ops = newTableOps(readTable, current);
       newCatalog.readTable(readTable);
