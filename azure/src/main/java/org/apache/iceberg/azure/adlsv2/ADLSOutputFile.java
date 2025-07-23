@@ -125,7 +125,6 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
   }
 
   private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source) {
-    // TODO etag
     try {
       final long appendLen = checksum.contentLength();
       fileClient()

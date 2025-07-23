@@ -230,7 +230,8 @@ public abstract class CatalogFile {
       if (newloc != null) {
         tables.put(table, location);
       } else {
-        // TODO implement w.r.t. tableID to follow table renames (currently implemented as drop/add)
+        // TODO implement w.r.t. tableID to follow table renames (currently implemented as drop/add)?
+        // TODO questionable, as writers should fail a to commit to a renamed table?
         tableUpdates.put(table, location);
       }
       return self();
