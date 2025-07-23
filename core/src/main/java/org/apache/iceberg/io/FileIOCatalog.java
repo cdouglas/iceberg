@@ -265,14 +265,14 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   static class FileIOTableOperations extends BaseMetastoreTableOperations {
     private final String catalogLocation;
     private final TableIdentifier tableId;
-    private final CatalogFormat<?,?> format;
+    private final CatalogFormat format;
     private final SupportsAtomicOperations fileIO;
     private volatile CatalogFile lastCatalogFile = null;
 
     FileIOTableOperations(
         TableIdentifier tableId,
         String catalogLocation,
-        CatalogFormat<?,?> format,
+        CatalogFormat format,
         SupportsAtomicOperations fileIO) {
       this(tableId, catalogLocation, format, fileIO, null);
     }
@@ -280,7 +280,7 @@ public class FileIOCatalog extends BaseMetastoreCatalog
     FileIOTableOperations(
         TableIdentifier tableId,
         String catalogLocation,
-        CatalogFormat<?,?> format,
+        CatalogFormat format,
         SupportsAtomicOperations fileIO,
         CatalogFile catalogFile) {
       this.fileIO = fileIO;

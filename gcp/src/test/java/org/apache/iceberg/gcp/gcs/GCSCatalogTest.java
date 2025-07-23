@@ -38,7 +38,6 @@ import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.CASCatalogFormat;
 import org.apache.iceberg.io.FileIOCatalog;
-import org.apache.iceberg.io.LogCatalogFormat;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.BeforeAll;
@@ -122,7 +121,7 @@ public class GCSCatalogTest extends CatalogTests<FileIOCatalog> {
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
     final String location = warehouseLocation + "/catalog";
     catalog =
-        new FileIOCatalog("test", location, null, new LogCatalogFormat(), io, Maps.newHashMap());
+        new FileIOCatalog("test", location, null, new CASCatalogFormat(), io, Maps.newHashMap());
     catalog.initialize(testName, properties);
   }
 

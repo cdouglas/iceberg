@@ -36,7 +36,7 @@ import org.junit.jupiter.api.extension.TestWatcher;
 
 @ExtendWith(TestS3Catalog.SuccessCleanupExtension.class)
 public class TestS3Catalog extends CatalogTests<FileIOCatalog> {
-  private static final String TEST_BUCKET = "lst-pbafvfgrapl";
+  private static final String TEST_BUCKET = "casalog";
   private static final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
 
   private static String uniqTestRun;
