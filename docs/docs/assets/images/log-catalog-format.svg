@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">LogCatalogFormat checkpoint and log illustration</title>
+  <desc id="desc">Diagram showing a checkpoint with nested namespaces and tables and an appended log with three update table actions.</desc>
+  <style>
+    .box { stroke: #1b2838; stroke-width: 2; rx: 10; ry: 10; }
+    .title { font: 700 20px 'Helvetica Neue', Arial, sans-serif; fill: #0f172a; }
+    .body { font: 400 16px 'Helvetica Neue', Arial, sans-serif; fill: #111827; }
+    .small { font: 400 14px 'Helvetica Neue', Arial, sans-serif; fill: #111827; }
+  </style>
+
+  <rect x="80" y="120" width="620" height="460" fill="#e2e8f0" class="box" />
+  <text x="390" y="150" text-anchor="middle" class="title">Checkpoint (LogAction.CHECKPOINT)</text>
+  <text x="110" y="185" class="body">Catalog UUID: 3f1d…e57b (example)</text>
+  <text x="110" y="210" class="body">Next namespace id: 6     Next table id: 8</text>
+  <text x="110" y="240" class="body">Checkpoint actions (replayed in order):</text>
+  <text x="130" y="270" class="body">• ns#0 root</text>
+  <text x="150" y="300" class="body">• ns#1 analytics</text>
+  <text x="170" y="330" class="body">• ns#2 web</text>
+  <text x="190" y="360" class="body">• tbl#3 analytics.web.events @v2 → …/metadata/events-v2</text>
+  <text x="190" y="390" class="body">• tbl#4 analytics.web.sessions @v1 → …/metadata/sessions-v1</text>
+  <text x="170" y="420" class="body">• ns#5 ops</text>
+  <text x="190" y="450" class="body">• tbl#6 analytics.ops.staging_metrics @v4 → …/metadata/staging-v4</text>
+  <text x="110" y="490" class="body">Committed transaction region (bytes): txn 0–12 sealed in snapshot</text>
+  <text x="110" y="520" class="body">Table embedding region: unused in this example</text>
+
+  <rect x="780" y="200" width="360" height="320" fill="#dbeafe" class="box" />
+  <text x="960" y="230" text-anchor="middle" class="title">LogActions in current snapshot</text>
+  <text x="800" y="265" class="body">Log stream appended after checkpoint:</text>
+  <text x="800" y="295" class="body">Transaction #13 (sealed) → applied if verify() passes</text>
+  <text x="820" y="325" class="body">• UPDATE_TABLE tbl#3 events @v3 → s3://lake/analytics/web/events/metadata/v3</text>
+  <text x="820" y="355" class="body">• UPDATE_TABLE tbl#4 sessions @v2 → s3://lake/analytics/web/sessions/metadata/v2</text>
+  <text x="820" y="385" class="body">• UPDATE_TABLE tbl#6 staging_metrics @v5 → s3://lake/analytics/ops/staging/metadata/v5</text>
+  <text x="800" y="430" class="body">Sealed flag stops replay once committed log is consumed</text>
+
+  <line x1="700" y1="350" x2="780" y2="350" stroke="#0f172a" stroke-width="3" marker-end="url(#arrow)" />
+  <text x="710" y="330" class="small">Replay log after checkpoint bytes</text>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f172a" />
+    </marker>
+  </defs>
+</svg>
