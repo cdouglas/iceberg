@@ -308,6 +308,13 @@ public class TableProperties {
   public static final String DEFAULT_WRITE_METRICS_MODE = "write.metadata.metrics.default";
   public static final String DEFAULT_WRITE_METRICS_MODE_DEFAULT = "truncate(16)";
 
+  public static final String COMPACTION_MAP_ENABLED = "write.compaction-map.enabled";
+  public static final boolean COMPACTION_MAP_ENABLED_DEFAULT = false;
+
+  public static final String COMPACTION_MAP_TARGET_SIZE_BYTES =
+      "write.compaction-map.target-size-bytes";
+  public static final long COMPACTION_MAP_TARGET_SIZE_BYTES_DEFAULT = 8 * 1024 * 1024; // 8 MB
+
   public static final String DEFAULT_NAME_MAPPING = "schema.name-mapping.default";
 
   public static final String WRITE_AUDIT_PUBLISH_ENABLED = "write.wap.enabled";
