@@ -87,7 +87,8 @@ public class TestManifestListVersions {
           EXISTING_ROWS,
           DELETED_FILES,
           DELETED_ROWS,
-          FIRST_ROW_ID);
+          FIRST_ROW_ID,
+          null);
 
   private static final ManifestFile TEST_DELETE_MANIFEST =
       new GenericManifestFile(
@@ -106,6 +107,7 @@ public class TestManifestListVersions {
           EXISTING_ROWS,
           DELETED_FILES,
           DELETED_ROWS,
+          null,
           null);
 
   @TempDir private Path temp;
@@ -205,6 +207,7 @@ public class TestManifestListVersions {
             EXISTING_ROWS,
             DELETED_FILES,
             DELETED_ROWS,
+            null,
             null);
 
     // write uses firstRowId=SNAPSHOT_FIRST_ROW_ID and ADDED_ROWS are assigned
@@ -252,6 +255,7 @@ public class TestManifestListVersions {
             EXISTING_ROWS,
             DELETED_FILES,
             DELETED_ROWS,
+            null,
             null);
 
     // write uses firstRowId=SNAPSHOT_FIRST_ROW_ID and ADDED_ROWS are assigned twice
@@ -420,6 +424,7 @@ public class TestManifestListVersions {
             EXISTING_ROWS,
             DELETED_FILES,
             DELETED_ROWS,
+            null,
             null);
 
     InputFile manifestList =

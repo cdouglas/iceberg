@@ -888,6 +888,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
           existingRows,
           deletedFiles,
           deletedRows,
+          null,
           null);
 
     } catch (IOException e) {

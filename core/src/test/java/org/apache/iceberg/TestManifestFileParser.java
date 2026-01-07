@@ -97,7 +97,8 @@ public class TestManifestFileParser {
         30L,
         0,
         0L,
-        10L);
+        10L,
+        null);
   }
 
   private String manifestFileJson() {

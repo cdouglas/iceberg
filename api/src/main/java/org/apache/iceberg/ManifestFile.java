@@ -95,7 +95,13 @@ public interface ManifestFile {
           "first_row_id",
           Types.LongType.get(),
           "Starting row ID to assign to new rows in ADDED data files");
-  // next ID to assign: 521
+  Types.NestedField COMPACTION_MAP_LOCATION =
+      optional(
+          521,
+          "compaction_map_location",
+          Types.StringType.get(),
+          "Location URI of the compaction map file for this manifest");
+  // next ID to assign: 522
 
   Schema SCHEMA =
       new Schema(
@@ -114,7 +120,8 @@ public interface ManifestFile {
           DELETED_ROWS_COUNT,
           PARTITION_SUMMARIES,
           KEY_METADATA,
-          FIRST_ROW_ID);
+          FIRST_ROW_ID,
+          COMPACTION_MAP_LOCATION);
 
   static Schema schema() {
     return SCHEMA;
@@ -218,6 +225,14 @@ public interface ManifestFile {
   /** Returns the writer format version of the manifest, or 0 if it predates format tracking. */
   default int formatVersion() {
     return 0;
+  }
+
+  /**
+   * Returns the location URI of the compaction map file for this manifest, or null if no compaction
+   * map is associated with this manifest.
+   */
+  default String compactionMapLocation() {
+    return null;
   }
 
   /**
