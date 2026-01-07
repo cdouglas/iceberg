@@ -19,12 +19,15 @@
 package org.apache.iceberg;
 
 import java.io.IOException;
+import java.util.Locale;
+import java.util.UUID;
 import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileAppender;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 
 /**
  * Utility class for reading and writing compaction maps in Avro format.
@@ -33,6 +36,34 @@ import org.apache.iceberg.io.OutputFile;
  */
 class CompactionMaps {
   private CompactionMaps() {}
+
+  /**
+   * Generates a new compaction map file location for the given snapshot.
+   *
+   * <p>The file will be located in the table's metadata directory following the pattern: {@code
+   * compaction-map-<snapshotId>-<uuid>.avro}
+   *
+   * @param table the table for which to generate a compaction map file location
+   * @param snapshotId the snapshot ID for which the compaction map is being created
+   * @return an output file for the compaction map
+   */
+  static OutputFile newCompactionMapFile(Table table, long snapshotId) {
+    Preconditions.checkArgument(
+        table instanceof HasTableOperations,
+        "Table must have operations to retrieve metadata location");
+
+    String fileName =
+        String.format(
+            Locale.ROOT,
+            "compaction-map-%d-%s%s",
+            snapshotId,
+            UUID.randomUUID(),
+            FileFormat.AVRO.addExtension(""));
+
+    return table
+        .io()
+        .newOutputFile(((HasTableOperations) table).operations().metadataFileLocation(fileName));
+  }
 
   /**
    * Reads a compaction map from an Avro file.
