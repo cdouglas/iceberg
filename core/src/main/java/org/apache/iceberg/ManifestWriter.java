@@ -54,6 +54,7 @@ public abstract class ManifestWriter<F extends ContentFile<F>> implements FileAp
   private int deletedFiles = 0;
   private long deletedRows = 0L;
   private Long minDataSequenceNumber = null;
+  private String compactionMapLocation = null;
 
   private ManifestWriter(
       PartitionSpec spec, EncryptedOutputFile file, Long snapshotId, Long firstRowId) {
@@ -190,6 +191,18 @@ public abstract class ManifestWriter<F extends ContentFile<F>> implements FileAp
     return writer.length();
   }
 
+  /**
+   * Sets the compaction map location for this manifest.
+   *
+   * <p>This should be called before toManifestFile() if the manifest is tracking files created by a
+   * compaction operation.
+   *
+   * @param location the location of the compaction map file, or null if not applicable
+   */
+  public void setCompactionMapLocation(String location) {
+    this.compactionMapLocation = location;
+  }
+
   public ManifestFile toManifestFile() {
     Preconditions.checkState(closed, "Cannot build ManifestFile, writer is not closed");
     // if the minSequenceNumber is null, then no manifests with a sequence number have been written,
@@ -213,7 +226,7 @@ public abstract class ManifestWriter<F extends ContentFile<F>> implements FileAp
         deletedFiles,
         deletedRows,
         firstRowId,
-        null);
+        compactionMapLocation);
   }
 
   @Override
