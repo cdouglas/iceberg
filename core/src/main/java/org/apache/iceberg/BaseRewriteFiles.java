@@ -26,6 +26,7 @@ import org.apache.iceberg.util.DataFileSet;
 class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> implements RewriteFiles {
   private final DataFileSet replacedDataFiles = DataFileSet.create();
   private Long startingSnapshotId = null;
+  private String compactionMapLocation = null;
 
   BaseRewriteFiles(String tableName, TableOperations ops) {
     super(tableName, ops);
@@ -129,6 +130,34 @@ class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> implements 
   public BaseRewriteFiles toBranch(String branch) {
     targetBranch(branch);
     return this;
+  }
+
+  /**
+   * Sets the location of the compaction map for this rewrite operation.
+   *
+   * <p>When data files are rewritten during compaction, a compaction map tracks the position
+   * transformations from source to target files. This method allows compaction operations to
+   * associate the map location with the rewrite, enabling position delete remapping.
+   *
+   * <p>The compaction map location will be attached to the manifest file(s) containing the added
+   * data files, allowing transactions with position deletes to detect compactions and remap their
+   * deletes appropriately.
+   *
+   * @param location the location of the compaction map file, or null to clear
+   * @return this for method chaining
+   */
+  public BaseRewriteFiles setCompactionMapLocation(String location) {
+    this.compactionMapLocation = location;
+    return this;
+  }
+
+  /**
+   * Returns the compaction map location for this rewrite operation, or null if not set.
+   *
+   * @return the compaction map location
+   */
+  public String compactionMapLocation() {
+    return compactionMapLocation;
   }
 
   @Override
