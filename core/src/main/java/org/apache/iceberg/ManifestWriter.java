@@ -212,7 +212,8 @@ public abstract class ManifestWriter<F extends ContentFile<F>> implements FileAp
         existingRows,
         deletedFiles,
         deletedRows,
-        firstRowId);
+        firstRowId,
+        null);
   }
 
   @Override

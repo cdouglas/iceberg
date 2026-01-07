@@ -62,6 +62,7 @@ public class GenericManifestFile extends SupportsIndexProjection
   private PartitionFieldSummary[] partitions = null;
   private byte[] keyMetadata = null;
   private Long firstRowId = null;
+  private String compactionMapLocation = null;
 
   /** Used by Avro reflection to instantiate this class when reading manifest files. */
   public GenericManifestFile(Schema avroSchema) {
@@ -113,7 +114,8 @@ public class GenericManifestFile extends SupportsIndexProjection
       Long existingRowsCount,
       Integer deletedFilesCount,
       Long deletedRowsCount,
-      Long firstRowId) {
+      Long firstRowId,
+      String compactionMapLocation) {
     super(ManifestFile.schema().columns().size());
     this.avroSchema = AVRO_SCHEMA;
     this.manifestPath = path;
@@ -132,6 +134,7 @@ public class GenericManifestFile extends SupportsIndexProjection
     this.partitions = partitions == null ? null : partitions.toArray(new PartitionFieldSummary[0]);
     this.keyMetadata = ByteBuffers.toByteArray(keyMetadata);
     this.firstRowId = firstRowId;
+    this.compactionMapLocation = compactionMapLocation;
   }
 
   /**
@@ -174,6 +177,7 @@ public class GenericManifestFile extends SupportsIndexProjection
             ? null
             : Arrays.copyOf(toCopy.keyMetadata, toCopy.keyMetadata.length);
     this.firstRowId = toCopy.firstRowId;
+    this.compactionMapLocation = toCopy.compactionMapLocation;
   }
 
   /** Constructor for Java serialization. */
@@ -275,6 +279,11 @@ public class GenericManifestFile extends SupportsIndexProjection
   }
 
   @Override
+  public String compactionMapLocation() {
+    return compactionMapLocation;
+  }
+
+  @Override
   public int size() {
     return ManifestFile.schema().columns().size();
   }
@@ -323,6 +332,8 @@ public class GenericManifestFile extends SupportsIndexProjection
         return keyMetadata();
       case 15:
         return firstRowId();
+      case 16:
+        return compactionMapLocation();
       default:
         throw new UnsupportedOperationException("Unknown field ordinal: " + basePos);
     }
@@ -383,6 +394,9 @@ public class GenericManifestFile extends SupportsIndexProjection
         return;
       case 15:
         this.firstRowId = (Long) value;
+        return;
+      case 16:
+        this.compactionMapLocation = value != null ? value.toString() : null;
         return;
       default:
         // ignore the object, it must be from a newer version of the format
@@ -470,7 +484,8 @@ public class GenericManifestFile extends SupportsIndexProjection
                 toCopy.existingRowsCount(),
                 toCopy.deletedFilesCount(),
                 toCopy.deletedRowsCount(),
-                toCopy.firstRowId());
+                toCopy.firstRowId(),
+                toCopy.compactionMapLocation());
       }
     }
 

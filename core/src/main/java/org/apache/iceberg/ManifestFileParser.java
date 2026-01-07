@@ -45,6 +45,7 @@ class ManifestFileParser {
   private static final String PARTITION_FIELD_SUMMARY = "partition-field-summary";
   private static final String KEY_METADATA = "key-metadata";
   private static final String FIRST_ROW_ID = "first-row-id";
+  private static final String COMPACTION_MAP_LOCATION = "compaction-map-location";
 
   private ManifestFileParser() {}
 
@@ -93,6 +94,8 @@ class ManifestFileParser {
     }
 
     JsonUtil.writeLongFieldIfPresent(FIRST_ROW_ID, manifestFile.firstRowId(), generator);
+    JsonUtil.writeStringFieldIfPresent(
+        COMPACTION_MAP_LOCATION, manifestFile.compactionMapLocation(), generator);
 
     generator.writeEndObject();
   }
@@ -143,6 +146,8 @@ class ManifestFileParser {
 
     Long firstRowId = JsonUtil.getLongOrNull(FIRST_ROW_ID, jsonNode);
 
+    String compactionMapLocation = JsonUtil.getStringOrNull(COMPACTION_MAP_LOCATION, jsonNode);
+
     return new GenericManifestFile(
         path,
         length,
@@ -159,7 +164,8 @@ class ManifestFileParser {
         existingRowsCount,
         deletedFilesCount,
         deletedRowsCount,
-        firstRowId);
+        firstRowId,
+        compactionMapLocation);
   }
 
   private static class PartitionFieldSummaryParser {
