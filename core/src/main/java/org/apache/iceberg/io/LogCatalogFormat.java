@@ -154,9 +154,6 @@ public class LogCatalogFormat
       DROP_NAMESPACE_PROPERTY(8), // <nsid> <version> <key>
       TRANSACTION(9); // <txid> <sealed> <n_actions> <action>*
 
-      // TODO YOU FUCKING IDIOT
-      // TODO include READ_TABLE operations as constraints on serializable transactions
-
       final int opcode;
 
       Type(int opcode) {
@@ -490,8 +487,8 @@ public class LogCatalogFormat
       // created from checkpoint
       CreateTable(
           String name,
-          int logTblId,
-          int logTblVersion,
+          int logTblId, // only used in checkpoints
+          int logTblVersion, // only used in checkpoints
           int logNsid,
           int logNsVersion,
           String location) {
@@ -534,6 +531,7 @@ public class LogCatalogFormat
         dos.writeInt(logNsid);
         dos.writeInt(logNsVersion);
         dos.writeUTF(location);
+        // TODO include UUID? Redundant w/ tblId
       }
 
       static CreateTable read(DataInputStream dis) throws IOException {
@@ -1242,11 +1240,15 @@ public class LogCatalogFormat
         }
         long oldLength = current.getLength();
         current = fileIO.newInputFile(current.location());
+        // TODO this check is very suspicious. Looks like it's trying to capture
+        //      another writer does a CAS? But... it's returning the catalog
+        //      from the store?
         if (current.getLength() < oldLength) {
           // TODO are there any metadata that identify the old/new blob? etag always changes
           LogAction.Transaction.unseal(txnBytes);
           Mut catalog = new Mut(current);
           try (SeekableInputStream in = current.newStream()) {
+            // XXX return? looking for this transaction in the merged result?
             return readInternal(catalog, in, (int) current.getLength());
           } catch (IOException e) {
             throw new UncheckedIOException(e);

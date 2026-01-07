@@ -230,13 +230,11 @@ public class FileIOCatalog extends BaseMetastoreCatalog
   @Override
   public boolean dropNamespace(Namespace namespace) throws NamespaceNotEmptyException {
     final InputFile catalog = fileIO.newInputFile(catalogLocation);
-    // XXX TODO wait, wtf?
-    //     TODO catalog ops must also follow the refresh cycle, or only TableOperations detect
-    // concurrent changes?
     final CatalogFile catalogFile = format.read(fileIO, catalog);
     try {
       format.from(catalogFile).dropNamespace(namespace).commit(fileIO);
     } catch (NoSuchNamespaceException e) {
+      // TODO should also catch CommitFailedException?
       return false; // sigh.
     }
     return true;
