@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
@@ -51,6 +52,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Queues;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.relocated.com.google.common.math.IntMath;
@@ -215,8 +217,59 @@ public class RewriteDataFilesSparkAction
             newJobGroupInfo("REWRITE-DATA-FILES", desc), () -> runner.rewrite(fileGroup));
 
     fileGroup.setOutputFiles(addedFiles);
+
+    // Extract position mappings for compaction map generation
+    extractPositionMappings(fileGroup);
+
     LOG.info("Rewrite Files Ready to be Committed - {}", desc);
     return fileGroup;
+  }
+
+  /**
+   * Extract position mappings from a rewrite file group.
+   *
+   * <p>This method builds position mappings from source files to target files based on the rewrite
+   * operation. For bin-pack strategies, it assumes row order is preserved and maps source file
+   * positions sequentially to target file offsets.
+   *
+   * <p>Note: This is a simple implementation for bin-pack rewrites. More complex strategies (e.g.,
+   * sorted rewrites) would require position tracking during the actual rewrite operation.
+   *
+   * @param fileGroup the file group after rewriting
+   */
+  private void extractPositionMappings(RewriteFileGroup fileGroup) {
+    Set<DataFile> sourceFiles = fileGroup.rewrittenFiles();
+    Set<DataFile> targetFiles = fileGroup.addedFiles();
+
+    if (sourceFiles.isEmpty() || targetFiles.isEmpty()) {
+      return;
+    }
+
+    Map<String, RewriteFileGroup.FilePositionMapping> mappings = Maps.newHashMap();
+
+    // For single target file (common bin-pack case), map all sources sequentially
+    if (targetFiles.size() == 1) {
+      DataFile targetFile = targetFiles.iterator().next();
+      long targetOffset = 0;
+
+      for (DataFile sourceFile : sourceFiles) {
+        String sourceFilePath = sourceFile.path().toString();
+        String targetFilePath = targetFile.path().toString();
+        long sourceRowCount = sourceFile.recordCount();
+        long targetRowCount = targetFile.recordCount();
+
+        RewriteFileGroup.FilePositionMapping mapping =
+            new RewriteFileGroup.FilePositionMapping(
+                sourceFilePath, targetFilePath, sourceRowCount, targetRowCount, targetOffset);
+
+        mappings.put(sourceFilePath, mapping);
+        targetOffset += sourceRowCount;
+      }
+
+      fileGroup.setPositionMappings(mappings);
+    }
+    // For multiple target files, position tracking would need to be done during rewrite
+    // Skip for now - the commit manager will log a warning
   }
 
   private ExecutorService rewriteService() {

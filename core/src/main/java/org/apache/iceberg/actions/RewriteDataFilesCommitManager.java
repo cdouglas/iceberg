@@ -20,7 +20,6 @@ package org.apache.iceberg.actions;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.BaseRewriteFiles;
@@ -31,9 +30,9 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.RewriteFiles;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.util.DataFileSet;
@@ -202,15 +201,16 @@ public class RewriteDataFilesCommitManager {
    * Build a compaction map from file groups by tracking position mappings from source to target
    * files.
    *
-   * <p>For each file group, this method creates file-level mappings assuming that row order is
-   * preserved during compaction (valid for bin-pack strategy). Each source file's rows [0, N) are
-   * mapped to a range in the target file(s) based on the file's position in the bin-pack order.
+   * <p>This method checks if file groups have explicit position mappings (from Spark-level
+   * tracking). If available, those mappings are used to build accurate compaction maps. Otherwise,
+   * it falls back to simple offset-based mapping for bin-pack scenarios.
    *
    * @param fileGroups the file groups being rewritten
    * @return the compaction map with file-level position mappings
    */
   private CompactionMap buildCompactionMap(Set<RewriteFileGroup> fileGroups) {
-    CompactionMapBuilder builder = new CompactionMapBuilder(startingSnapshotId, startingSnapshotId + 1);
+    CompactionMapBuilder builder =
+        new CompactionMapBuilder(startingSnapshotId, startingSnapshotId + 1);
 
     for (RewriteFileGroup group : fileGroups) {
       // Get source and target files
@@ -221,29 +221,38 @@ public class RewriteDataFilesCommitManager {
         continue;
       }
 
-      // Simple bin-pack mapping: all sources map to target files
-      // For more complex scenarios, we'd need position tracking during the actual rewrite
-      // For now, we assume a single target file per group (common bin-pack case)
-      if (targetFiles.size() == 1) {
-        DataFile targetFile = targetFiles.iterator().next();
-        long targetOffset = 0;
+      // Check if we have explicit position mappings from Spark-level tracking
+      Map<String, RewriteFileGroup.FilePositionMapping> positionMappings = group.positionMappings();
 
-        // Map each source file to the target file with sequential offsets
-        for (DataFile sourceFile : sourceFiles) {
+      if (positionMappings != null && !positionMappings.isEmpty()) {
+        // Use explicit position mappings from rewrite operation
+        for (RewriteFileGroup.FilePositionMapping mapping : positionMappings.values()) {
           builder
-              .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
-              .addRun(0L, targetOffset, sourceFile.recordCount());
-
-          targetOffset += sourceFile.recordCount();
+              .addFileMapping(mapping.sourceFile(), mapping.targetFile())
+              .addRun(0L, mapping.targetOffset(), mapping.sourceRowCount());
         }
       } else {
-        // Multiple target files - more complex mapping
-        // This would require detailed position tracking from the rewrite operation
-        // For now, log a warning and skip
-        LOG.warn(
-            "Skipping compaction map for group with multiple target files ({}). "
-                + "Multi-target compaction maps require position tracking during rewrite.",
-            targetFiles.size());
+        // Fallback: Simple bin-pack mapping for backward compatibility
+        // Assumes row order is preserved and all sources map to a single target
+        if (targetFiles.size() == 1) {
+          DataFile targetFile = targetFiles.iterator().next();
+          long targetOffset = 0;
+
+          // Map each source file to the target file with sequential offsets
+          for (DataFile sourceFile : sourceFiles) {
+            builder
+                .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
+                .addRun(0L, targetOffset, sourceFile.recordCount());
+
+            targetOffset += sourceFile.recordCount();
+          }
+        } else {
+          // Multiple target files without position tracking - cannot build accurate map
+          LOG.warn(
+              "Skipping compaction map for group with multiple target files ({}). "
+                  + "Multi-target compaction maps require position tracking during rewrite.",
+              targetFiles.size());
+        }
       }
     }
 

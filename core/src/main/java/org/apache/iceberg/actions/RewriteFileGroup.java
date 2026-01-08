@@ -20,6 +20,7 @@ package org.apache.iceberg.actions;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.iceberg.DataFile;
@@ -29,6 +30,7 @@ import org.apache.iceberg.RewriteJobOrder;
 import org.apache.iceberg.actions.RewriteDataFiles.FileGroupInfo;
 import org.apache.iceberg.relocated.com.google.common.base.MoreObjects;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.util.DataFileSet;
 import org.apache.iceberg.util.DeleteFileSet;
@@ -40,6 +42,7 @@ import org.apache.iceberg.util.DeleteFileSet;
 public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTask, DataFile> {
   private final int outputSpecId;
   private DataFileSet addedFiles = DataFileSet.create();
+  private Map<String, FilePositionMapping> positionMappings = Maps.newHashMap();
 
   public RewriteFileGroup(
       FileGroupInfo info,
@@ -70,6 +73,14 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
 
   public Set<DataFile> addedFiles() {
     return addedFiles;
+  }
+
+  public void setPositionMappings(Map<String, FilePositionMapping> mappings) {
+    this.positionMappings = mappings;
+  }
+
+  public Map<String, FilePositionMapping> positionMappings() {
+    return positionMappings;
   }
 
   public RewriteDataFiles.FileGroupRewriteResult asResult() {
@@ -116,6 +127,64 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
         return Comparator.comparing(RewriteFileGroup::inputFileNum, Comparator.reverseOrder());
       default:
         return (unused, unused2) -> 0;
+    }
+  }
+
+  /**
+   * Represents position mapping from a source file to a target file during a rewrite operation.
+   *
+   * <p>This metadata tracks how rows from source files are mapped to target files, which is used to
+   * generate compaction maps for remapping position deletes.
+   */
+  public static class FilePositionMapping {
+    private final String sourceFile;
+    private final String targetFile;
+    private final long sourceRowCount;
+    private final long targetRowCount;
+    private final long targetOffset;
+
+    public FilePositionMapping(
+        String sourceFile,
+        String targetFile,
+        long sourceRowCount,
+        long targetRowCount,
+        long targetOffset) {
+      this.sourceFile = sourceFile;
+      this.targetFile = targetFile;
+      this.sourceRowCount = sourceRowCount;
+      this.targetRowCount = targetRowCount;
+      this.targetOffset = targetOffset;
+    }
+
+    public String sourceFile() {
+      return sourceFile;
+    }
+
+    public String targetFile() {
+      return targetFile;
+    }
+
+    public long sourceRowCount() {
+      return sourceRowCount;
+    }
+
+    public long targetRowCount() {
+      return targetRowCount;
+    }
+
+    public long targetOffset() {
+      return targetOffset;
+    }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("sourceFile", sourceFile)
+          .add("targetFile", targetFile)
+          .add("sourceRowCount", sourceRowCount)
+          .add("targetRowCount", targetRowCount)
+          .add("targetOffset", targetOffset)
+          .toString();
     }
   }
 }
