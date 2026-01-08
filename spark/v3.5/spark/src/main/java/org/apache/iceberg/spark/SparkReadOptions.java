@@ -95,4 +95,9 @@ public class SparkReadOptions {
   public static final String TIMESTAMP_AS_OF = "timestampAsOf";
 
   public static final String AGGREGATE_PUSH_DOWN_ENABLED = "aggregate-push-down-enabled";
+
+  // Enable tracking of source file and position during compaction rewrites
+  // This is used to generate accurate compaction maps for merge compactions
+  public static final String TRACK_SOURCE_POSITIONS = "track-source-positions";
+  public static final boolean TRACK_SOURCE_POSITIONS_DEFAULT = false;
 }
