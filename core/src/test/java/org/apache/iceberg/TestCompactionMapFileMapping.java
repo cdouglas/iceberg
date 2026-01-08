@@ -231,20 +231,23 @@ public class TestCompactionMapFileMapping {
     CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
 
     // S3 path
-    builder.addFileMapping("s3://bucket/path/file1.parquet", "s3://bucket/output/file1.parquet")
+    builder
+        .addFileMapping("s3://bucket/path/file1.parquet", "s3://bucket/output/file1.parquet")
         .addRun(0L, 0L, 100L);
 
     // HDFS path
-    builder.addFileMapping("hdfs://namenode/path/file2.parquet", "hdfs://namenode/output/file2.parquet")
+    builder
+        .addFileMapping(
+            "hdfs://namenode/path/file2.parquet", "hdfs://namenode/output/file2.parquet")
         .addRun(0L, 0L, 100L);
 
     // Local file path
-    builder.addFileMapping("file:///tmp/file3.parquet", "file:///tmp/output/file3.parquet")
+    builder
+        .addFileMapping("file:///tmp/file3.parquet", "file:///tmp/output/file3.parquet")
         .addRun(0L, 0L, 100L);
 
     // Relative path (though not recommended)
-    builder.addFileMapping("data/file4.parquet", "output/file4.parquet")
-        .addRun(0L, 0L, 100L);
+    builder.addFileMapping("data/file4.parquet", "output/file4.parquet").addRun(0L, 0L, 100L);
 
     CompactionMap map = builder.build();
 
@@ -252,7 +255,8 @@ public class TestCompactionMapFileMapping {
 
     // Verify paths are preserved exactly
     assertThat(map.fileMappings().get(0).sourceFile()).isEqualTo("s3://bucket/path/file1.parquet");
-    assertThat(map.fileMappings().get(1).sourceFile()).isEqualTo("hdfs://namenode/path/file2.parquet");
+    assertThat(map.fileMappings().get(1).sourceFile())
+        .isEqualTo("hdfs://namenode/path/file2.parquet");
     assertThat(map.fileMappings().get(2).sourceFile()).isEqualTo("file:///tmp/file3.parquet");
     assertThat(map.fileMappings().get(3).sourceFile()).isEqualTo("data/file4.parquet");
   }
@@ -263,19 +267,24 @@ public class TestCompactionMapFileMapping {
     CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
 
     // Files 1 & 2 bin-packed into target1
-    builder.addFileMapping("s3://bucket/small1.parquet", "s3://bucket/target1.parquet")
+    builder
+        .addFileMapping("s3://bucket/small1.parquet", "s3://bucket/target1.parquet")
         .addRun(0L, 0L, 50L);
-    builder.addFileMapping("s3://bucket/small2.parquet", "s3://bucket/target1.parquet")
+    builder
+        .addFileMapping("s3://bucket/small2.parquet", "s3://bucket/target1.parquet")
         .addRun(0L, 50L, 50L);
 
     // Files 3 & 4 bin-packed into target2
-    builder.addFileMapping("s3://bucket/small3.parquet", "s3://bucket/target2.parquet")
+    builder
+        .addFileMapping("s3://bucket/small3.parquet", "s3://bucket/target2.parquet")
         .addRun(0L, 0L, 75L);
-    builder.addFileMapping("s3://bucket/small4.parquet", "s3://bucket/target2.parquet")
+    builder
+        .addFileMapping("s3://bucket/small4.parquet", "s3://bucket/target2.parquet")
         .addRun(0L, 75L, 25L);
 
     // File 5 mapped 1:1 to target3
-    builder.addFileMapping("s3://bucket/medium.parquet", "s3://bucket/target3.parquet")
+    builder
+        .addFileMapping("s3://bucket/medium.parquet", "s3://bucket/target3.parquet")
         .addRun(0L, 0L, 100L);
 
     CompactionMap map = builder.build();
@@ -291,17 +300,19 @@ public class TestCompactionMapFileMapping {
         .isEqualTo(3);
 
     // Verify bin-pack target1 has correct offsets
-    long target1Total = map.fileMappings().stream()
-        .filter(m -> m.targetFile().equals("s3://bucket/target1.parquet"))
-        .mapToLong(m -> m.runs().get(0).length())
-        .sum();
+    long target1Total =
+        map.fileMappings().stream()
+            .filter(m -> m.targetFile().equals("s3://bucket/target1.parquet"))
+            .mapToLong(m -> m.runs().get(0).length())
+            .sum();
     assertThat(target1Total).isEqualTo(100L); // 50 + 50
 
     // Verify bin-pack target2 has correct offsets
-    long target2Total = map.fileMappings().stream()
-        .filter(m -> m.targetFile().equals("s3://bucket/target2.parquet"))
-        .mapToLong(m -> m.runs().get(0).length())
-        .sum();
+    long target2Total =
+        map.fileMappings().stream()
+            .filter(m -> m.targetFile().equals("s3://bucket/target2.parquet"))
+            .mapToLong(m -> m.runs().get(0).length())
+            .sum();
     assertThat(target2Total).isEqualTo(100L); // 75 + 25
   }
 
@@ -310,7 +321,8 @@ public class TestCompactionMapFileMapping {
     // Test the mapPosition utility in Run
     CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
 
-    builder.addFileMapping("s3://bucket/source.parquet", "s3://bucket/target.parquet")
+    builder
+        .addFileMapping("s3://bucket/source.parquet", "s3://bucket/target.parquet")
         .addRun(100L, 0L, 50L); // Source positions 100-149 -> target positions 0-49
 
     CompactionMap map = builder.build();

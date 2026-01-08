@@ -157,6 +157,9 @@ public class BaseRowDelta extends MergingSnapshotProducer<RowDelta> implements R
         failMissingDeletePaths();
       }
 
+      // Check for compaction-aware read conflicts (REPLACE operations)
+      validateCompactionAwareConflicts(base, startingSnapshotId, conflictDetectionFilter, parent);
+
       if (validateNewDataFiles) {
         validateAddedDataFiles(base, startingSnapshotId, conflictDetectionFilter, parent);
       }

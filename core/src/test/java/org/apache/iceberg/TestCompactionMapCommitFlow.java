@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Set;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
-import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,7 +62,8 @@ public class TestCompactionMapCommitFlow {
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
-    table.updateProperties()
+    table
+        .updateProperties()
         .set(TableProperties.FORMAT_VERSION, "4")
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
@@ -188,7 +188,8 @@ public class TestCompactionMapCommitFlow {
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table_persist");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
-    table.updateProperties()
+    table
+        .updateProperties()
         .set(TableProperties.FORMAT_VERSION, "4")
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
@@ -250,7 +251,8 @@ public class TestCompactionMapCommitFlow {
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table_multiple");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
-    table.updateProperties()
+    table
+        .updateProperties()
         .set(TableProperties.FORMAT_VERSION, "4")
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();

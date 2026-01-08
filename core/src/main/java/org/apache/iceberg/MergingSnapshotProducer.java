@@ -415,6 +415,99 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   }
 
   /**
+   * Validates that REPLACE operations (compactions) are compaction-aware for SERIALIZABLE
+   * isolation.
+   *
+   * <p>This method checks if concurrent REPLACE operations have compaction maps. If compaction maps
+   * exist, the operation only changed data file structure, not logical content, so it's not a read
+   * conflict. If no compaction maps exist, it's treated as a real data change and validation fails.
+   *
+   * @param base table metadata to validate
+   * @param startingSnapshotId id of the snapshot current at the start of the operation
+   * @param conflictDetectionFilter an expression used to find conflicting data files
+   * @param parent ending snapshot
+   */
+  protected void validateCompactionAwareConflicts(
+      TableMetadata base,
+      Long startingSnapshotId,
+      Expression conflictDetectionFilter,
+      Snapshot parent) {
+    // if there is no current table state, no conflicts
+    if (parent == null || startingSnapshotId == null) {
+      return;
+    }
+
+    // Get all REPLACE operations between starting snapshot and parent
+    Iterable<Snapshot> snapshots =
+        SnapshotUtil.ancestorsBetween(parent.snapshotId(), startingSnapshotId, base::snapshot);
+
+    for (Snapshot snapshot : snapshots) {
+      // Only check REPLACE operations (compactions)
+      if (!DataOperations.REPLACE.equals(snapshot.operation())) {
+        continue;
+      }
+
+      // Check if this REPLACE has compaction maps
+      boolean hasCompactionMaps = false;
+      for (ManifestFile manifest : snapshot.dataManifests(ops().io())) {
+        if (manifest.compactionMapLocation() != null) {
+          hasCompactionMaps = true;
+          break;
+        }
+      }
+
+      if (hasCompactionMaps) {
+        // REPLACE with compaction map = data structure changed, not content
+        // This is not a read conflict for SERIALIZABLE isolation
+        continue;
+      }
+
+      // No compaction map = actual data change, validate for conflicts
+      // Check if any added files from this snapshot match the conflict detection filter
+      Set<Long> replaceSnapshot = ImmutableSet.of(snapshot.snapshotId());
+      List<ManifestFile> replaceManifests = Lists.newArrayList();
+
+      for (ManifestFile manifest : snapshot.dataManifests(ops().io())) {
+        if (manifest.snapshotId() == snapshot.snapshotId()) {
+          replaceManifests.add(manifest);
+        }
+      }
+
+      if (replaceManifests.isEmpty()) {
+        continue;
+      }
+
+      ManifestGroup manifestGroup =
+          new ManifestGroup(ops().io(), replaceManifests, ImmutableList.of())
+              .caseSensitive(caseSensitive)
+              .filterManifestEntries(entry -> replaceSnapshot.contains(entry.snapshotId()))
+              .specsById(base.specsById())
+              .ignoreDeleted()
+              .ignoreExisting();
+
+      if (conflictDetectionFilter != null) {
+        manifestGroup = manifestGroup.filterData(conflictDetectionFilter);
+      }
+
+      try (CloseableIterable<ManifestEntry<DataFile>> entries = manifestGroup.entries();
+          CloseableIterator<ManifestEntry<DataFile>> conflicts = entries.iterator()) {
+        if (conflicts.hasNext()) {
+          throw new ValidationException(
+              "Found conflicting files from REPLACE operation without compaction map that can contain records matching %s: %s",
+              conflictDetectionFilter,
+              Iterators.toString(
+                  Iterators.transform(conflicts, entry -> entry.file().location().toString())));
+        }
+      } catch (IOException e) {
+        throw new UncheckedIOException(
+            String.format(
+                "Failed to validate REPLACE operations matching %s", conflictDetectionFilter),
+            e);
+      }
+    }
+  }
+
+  /**
    * Returns an iterable of files matching a filter have been added to a branch since a starting
    * snapshot.
    *

@@ -23,7 +23,8 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.util.DataFileSet;
 
-public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> implements RewriteFiles {
+public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
+    implements RewriteFiles {
   private final DataFileSet replacedDataFiles = DataFileSet.create();
   private final DataFileSet addedDataFiles = DataFileSet.create();
   private Long startingSnapshotId = null;
@@ -185,8 +186,7 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> impl
   }
 
   private boolean shouldGenerateCompactionMap(TableMetadata base) {
-    return base
-        .properties()
+    return base.properties()
         .getOrDefault(
             org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED,
             String.valueOf(org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT))
@@ -199,8 +199,10 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> impl
       return; // Nothing to map
     }
 
-    long sourceSnapshotId = startingSnapshotId != null ? startingSnapshotId :
-        (snapshot != null ? snapshot.snapshotId() : base.lastSequenceNumber());
+    long sourceSnapshotId =
+        startingSnapshotId != null
+            ? startingSnapshotId
+            : (snapshot != null ? snapshot.snapshotId() : base.lastSequenceNumber());
     long targetSnapshotId = snapshotId();
 
     CompactionMapBuilder builder = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
@@ -222,9 +224,10 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> impl
       // Multiple target files - more complex mapping would require position tracking
       // For now, log and skip (consistent with RewriteDataFilesCommitManager approach)
       org.slf4j.LoggerFactory.getLogger(BaseRewriteFiles.class)
-          .warn("Skipping compaction map for rewrite with multiple target files ({}). " +
-               "Multi-target compaction maps require position tracking during rewrite.",
-               addedDataFiles.size());
+          .warn(
+              "Skipping compaction map for rewrite with multiple target files ({}). "
+                  + "Multi-target compaction maps require position tracking during rewrite.",
+              addedDataFiles.size());
       return;
     }
 
@@ -252,8 +255,10 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> impl
       this.compactionMapLocation = mapFile.location();
 
       org.slf4j.LoggerFactory.getLogger(BaseRewriteFiles.class)
-          .info("Wrote compaction map with {} file mappings to {}",
-               map.fileMappings().size(), mapFile.location());
+          .info(
+              "Wrote compaction map with {} file mappings to {}",
+              map.fileMappings().size(),
+              mapFile.location());
     } catch (java.io.IOException e) {
       throw new java.io.UncheckedIOException("Failed to write compaction map", e);
     }

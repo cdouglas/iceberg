@@ -98,11 +98,11 @@ public class TestPositionDeleteRemappingIntegration {
   public void testBinPackScenario() {
     // Scenario: 5 small files -> 2 target files
     String[] sources = {
-        "s3://bucket/s1.parquet",
-        "s3://bucket/s2.parquet",
-        "s3://bucket/s3.parquet",
-        "s3://bucket/s4.parquet",
-        "s3://bucket/s5.parquet"
+      "s3://bucket/s1.parquet",
+      "s3://bucket/s2.parquet",
+      "s3://bucket/s3.parquet",
+      "s3://bucket/s4.parquet",
+      "s3://bucket/s5.parquet"
     };
 
     String target1 = "s3://bucket/t1.parquet";
@@ -158,8 +158,7 @@ public class TestPositionDeleteRemappingIntegration {
     // source[100-149] -> target[50-99] (gap at source 50-99)
     // source[200-249] -> target[100-149] (gap at source 150-199)
     CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
-    CompactionMapBuilder.FileMappingBuilder fileBuilder =
-        builder.addFileMapping(source, target);
+    CompactionMapBuilder.FileMappingBuilder fileBuilder = builder.addFileMapping(source, target);
     fileBuilder.addRun(0L, 0L, 50L);
     fileBuilder.addRun(100L, 50L, 50L);
     fileBuilder.addRun(200L, 100L, 50L);
@@ -225,10 +224,8 @@ public class TestPositionDeleteRemappingIntegration {
     CompactionMap map = builder.build();
 
     // Create deletes on both compacted and non-compacted files
-    PositionDelete<?> deleteCompacted =
-        PositionDelete.create().set(compactedFile, 50L, null);
-    PositionDelete<?> deleteNonCompacted =
-        PositionDelete.create().set(nonCompactedFile, 50L, null);
+    PositionDelete<?> deleteCompacted = PositionDelete.create().set(compactedFile, 50L, null);
+    PositionDelete<?> deleteNonCompacted = PositionDelete.create().set(nonCompactedFile, 50L, null);
 
     // Remap deletes
     PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
