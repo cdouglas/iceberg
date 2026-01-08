@@ -60,11 +60,11 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
             .option(SparkReadOptions.FILE_OPEN_COST, "0")
             .load(groupId);
 
-    // If position tracking is enabled, select metadata columns _file and _pos
-    // These will be used to generate accurate compaction maps with run-based mappings
-    if (trackPositions) {
-      scanDF = scanDF.selectExpr("*", "_file", "_pos");
-    }
+    // TODO: Position tracking for compaction maps
+    // When trackPositions is true, the read side should expose _file and _pos metadata columns
+    // which can then be selected here with: scanDF = scanDF.selectExpr("*", "_file", "_pos")
+    // The write side (PositionTrackingDataWriter) will extract these and record mappings
+    // For now, compaction map generation is stubbed out pending read-side implementation
 
     // write the packed data into new files where each split becomes a new file
     scanDF
@@ -74,7 +74,6 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
         .option(SparkWriteOptions.TARGET_FILE_SIZE_BYTES, group.maxOutputFileSize())
         .option(SparkWriteOptions.DISTRIBUTION_MODE, distributionMode(group).modeName())
         .option(SparkWriteOptions.OUTPUT_SPEC_ID, group.outputSpecId())
-        .option(SparkWriteOptions.TRACK_SOURCE_POSITIONS, String.valueOf(trackPositions))
         .mode("append")
         .save(groupId);
   }
