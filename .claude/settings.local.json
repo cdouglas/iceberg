@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(./gradlew test:*)",
+      "Bash(./gradlew :iceberg-core:test:*)",
+      "Bash(./gradlew spotlessApply:*)",
+      "Bash(./gradlew :iceberg-core:compileJava:*)",
+      "Bash(./gradlew:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(xargs cat:*)",
+      "Bash(find:*)"
+    ]
+  }
+}

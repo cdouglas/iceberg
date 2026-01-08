@@ -206,7 +206,9 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
         dsSchema,
         useFanoutWriter,
         writeProperties,
-        sortOrderId);
+        sortOrderId,
+        writeConf.trackSourcePositions(),
+        writeConf.rewrittenFileSetId());
   }
 
   private void commitOperation(SnapshotUpdate<?> operation, String description) {
@@ -677,6 +679,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     private final String queryId;
     private final Map<String, String> writeProperties;
     private final int sortOrderId;
+    private final boolean trackSourcePositions;
+    private final String fileSetId;
 
     protected WriterFactory(
         Broadcast<Table> tableBroadcast,
@@ -688,7 +692,9 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
         StructType dsSchema,
         boolean useFanoutWriter,
         Map<String, String> writeProperties,
-        int sortOrderId) {
+        int sortOrderId,
+        boolean trackSourcePositions,
+        String fileSetId) {
       this.tableBroadcast = tableBroadcast;
       this.format = format;
       this.outputSpecId = outputSpecId;
@@ -699,6 +705,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       this.queryId = queryId;
       this.writeProperties = writeProperties;
       this.sortOrderId = sortOrderId;
+      this.trackSourcePositions = trackSourcePositions;
+      this.fileSetId = fileSetId;
     }
 
     @Override
@@ -726,20 +734,29 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
               .dataSortOrder(table.sortOrders().get(sortOrderId))
               .build();
 
+      DataWriter<InternalRow> writer;
       if (spec.isUnpartitioned()) {
-        return new UnpartitionedDataWriter(writerFactory, fileFactory, io, spec, targetFileSize);
+        writer = new UnpartitionedDataWriter(writerFactory, fileFactory, io, spec, targetFileSize);
 
       } else {
-        return new PartitionedDataWriter(
-            writerFactory,
-            fileFactory,
-            io,
-            spec,
-            writeSchema,
-            dsSchema,
-            targetFileSize,
-            useFanoutWriter);
+        writer =
+            new PartitionedDataWriter(
+                writerFactory,
+                fileFactory,
+                io,
+                spec,
+                writeSchema,
+                dsSchema,
+                targetFileSize,
+                useFanoutWriter);
       }
+
+      // Wrap with position tracking if enabled
+      if (trackSourcePositions && fileSetId != null) {
+        writer = new PositionTrackingDataWriter(writer, table, fileSetId, dsSchema);
+      }
+
+      return writer;
     }
   }
 
