@@ -19,9 +19,13 @@
 package org.apache.iceberg;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 /**
@@ -66,7 +70,7 @@ class CompactionMapValidator {
    * Checks if any of the given delete files reference data files that were compacted.
    *
    * @param deleteFiles the delete files to check
-   * @throws ValidationException if any delete files reference compacted data files
+   * @throws CompactionConflictException if any delete files reference compacted data files
    */
   void validateNoCompactedReferences(List<DeleteFile> deleteFiles) {
     if (deleteFiles.isEmpty()) {
@@ -74,41 +78,56 @@ class CompactionMapValidator {
     }
 
     // Find all compaction maps in the snapshot history since the transaction started
-    Set<String> compactedFiles = findCompactedFiles();
+    Map<String, String> compactionMaps = findCompactionMaps();
 
-    if (compactedFiles.isEmpty()) {
+    if (compactionMaps.isEmpty()) {
       return; // No compactions occurred
     }
 
     // Check if any delete files reference compacted files
-    Set<String> conflicts = findConflicts(deleteFiles, compactedFiles);
+    Set<String> conflicts = findConflicts(deleteFiles, compactionMaps.keySet());
 
-    ValidationException.check(
-        conflicts.isEmpty(),
-        "Cannot commit position deletes: referenced data files were compacted: %s. "
-            + "Use compaction maps to remap position deletes before retrying.",
-        conflicts);
+    if (!conflicts.isEmpty()) {
+      // Build map of conflicting files to their compaction map locations
+      Map<String, String> conflictLocations = Maps.newHashMap();
+      for (String conflictFile : conflicts) {
+        conflictLocations.put(conflictFile, compactionMaps.get(conflictFile));
+      }
+
+      throw new CompactionConflictException(
+          String.format(
+              "Cannot commit position deletes: referenced data files were compacted: %s. "
+                  + "Use compaction maps to remap position deletes before retrying.",
+              conflicts),
+          conflicts,
+          conflictLocations);
+    }
   }
 
   /**
-   * Finds all data files that were compacted in snapshots since the transaction started.
+   * Finds all compaction maps in the snapshot history and extracts compacted file mappings.
    *
-   * @return set of source file paths that were compacted
+   * <p>This method traverses the snapshot history from the current snapshot back to the starting
+   * snapshot, collecting all compaction maps. It returns a map from source file paths (that were
+   * compacted) to the locations of their compaction maps.
+   *
+   * @return map from compacted file path to compaction map location
    */
-  private Set<String> findCompactedFiles() {
-    Set<String> compacted = Sets.newHashSet();
+  Map<String, String> findCompactionMaps() {
+    Map<String, String> compactionMaps = Maps.newHashMap();
 
     // Traverse snapshot history from current back to starting snapshot
     Snapshot snapshot = currentSnapshot;
     while (snapshot != null && snapshot.snapshotId() != startingSnapshotId) {
       // Check each manifest for compaction maps
       for (ManifestFile manifest : snapshot.dataManifests(io)) {
-        if (manifest.compactionMapLocation() != null) {
+        String mapLocation = manifest.compactionMapLocation();
+        if (mapLocation != null) {
           // Load compaction map and extract source file paths
-          CompactionMap map =
-              CompactionMaps.read(io.newInputFile(manifest.compactionMapLocation()));
+          CompactionMap map = CompactionMaps.read(io.newInputFile(mapLocation));
           for (CompactionMap.FileMapping mapping : map.fileMappings()) {
-            compacted.add(mapping.sourceFile());
+            // Map each source file to its compaction map location
+            compactionMaps.put(mapping.sourceFile(), mapLocation);
           }
         }
       }
@@ -118,7 +137,7 @@ class CompactionMapValidator {
       snapshot = parentId != null ? base.snapshot(parentId) : null;
     }
 
-    return compacted;
+    return compactionMaps;
   }
 
   /**
@@ -146,5 +165,31 @@ class CompactionMapValidator {
     }
 
     return conflicts;
+  }
+
+  /**
+   * Identifies which delete files conflict with compacted data files.
+   *
+   * <p>This method is useful for programmatically determining which delete files need to be
+   * remapped when resolving a compaction conflict.
+   *
+   * @param deleteFiles the delete files to check
+   * @return list of delete files that reference compacted data files
+   */
+  List<DeleteFile> findConflictingDeletes(List<DeleteFile> deleteFiles) {
+    Map<String, String> compactionMaps = findCompactionMaps();
+    if (compactionMaps.isEmpty()) {
+      return java.util.Collections.emptyList();
+    }
+
+    List<DeleteFile> conflicting = Lists.newArrayList();
+    for (DeleteFile deleteFile : deleteFiles) {
+      if (deleteFile.referencedDataFile() != null
+          && compactionMaps.containsKey(deleteFile.referencedDataFile())) {
+        conflicting.add(deleteFile);
+      }
+    }
+
+    return java.util.Collections.unmodifiableList(conflicting);
   }
 }
