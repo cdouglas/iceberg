@@ -90,4 +90,8 @@ public class SparkWriteOptions {
   // Uses the merge append instead of fast append for streaming appends
   public static final String USE_MERGE_APPEND_FOR_STREAMING = "use-merge-append-for-streaming";
   public static final boolean USE_MERGE_APPEND_FOR_STREAMING_DEFAULT = false;
+
+  // Enable tracking of source file and position during rewrites for compaction maps
+  public static final String TRACK_SOURCE_POSITIONS = "track-source-positions";
+  public static final boolean TRACK_SOURCE_POSITIONS_DEFAULT = false;
 }
