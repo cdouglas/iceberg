@@ -135,25 +135,54 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
    *
    * <p>This metadata tracks how rows from source files are mapped to target files, which is used to
    * generate compaction maps for remapping position deletes.
+   *
+   * <p>Supports multi-run mappings to handle gaps from deleted rows. Each run represents a
+   * contiguous range of positions mapped from source to target.
    */
   public static class FilePositionMapping {
     private final String sourceFile;
     private final String targetFile;
-    private final long sourceRowCount;
-    private final long targetRowCount;
-    private final long targetOffset;
+    private final List<Run> runs;
 
+    /**
+     * Constructor for simple single-run mapping (backward compatible).
+     *
+     * <p>This is used for simple bin-pack operations without deletes, where all rows from a source
+     * file are sequentially written to a target file.
+     *
+     * @param sourceFile source file path
+     * @param targetFile target file path
+     * @param sourceRowCount number of rows in source file
+     * @param targetRowCount number of rows written to target file (should equal sourceRowCount for
+     *     simple mapping)
+     * @param targetOffset starting position in target file where these rows are written
+     */
     public FilePositionMapping(
         String sourceFile,
         String targetFile,
         long sourceRowCount,
         long targetRowCount,
         long targetOffset) {
+      this(
+          sourceFile,
+          targetFile,
+          java.util.Collections.singletonList(new Run(0L, targetOffset, sourceRowCount)));
+    }
+
+    /**
+     * Constructor for multi-run mapping with gaps.
+     *
+     * <p>This is used for merge compactions where position deletes cause gaps in the position
+     * space. Each run represents a contiguous range of rows mapped from source to target.
+     *
+     * @param sourceFile source file path
+     * @param targetFile target file path
+     * @param runs list of position runs
+     */
+    public FilePositionMapping(String sourceFile, String targetFile, List<Run> runs) {
       this.sourceFile = sourceFile;
       this.targetFile = targetFile;
-      this.sourceRowCount = sourceRowCount;
-      this.targetRowCount = targetRowCount;
-      this.targetOffset = targetOffset;
+      this.runs = runs;
     }
 
     public String sourceFile() {
@@ -164,16 +193,36 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
       return targetFile;
     }
 
+    /**
+     * Returns source row count for backward compatibility.
+     *
+     * <p>For multi-run mappings, this is the sum of all run lengths.
+     */
     public long sourceRowCount() {
-      return sourceRowCount;
+      return runs.stream().mapToLong(Run::length).sum();
     }
 
+    /**
+     * Returns target row count for backward compatibility.
+     *
+     * <p>For multi-run mappings, this equals source row count (rows are not duplicated).
+     */
     public long targetRowCount() {
-      return targetRowCount;
+      return sourceRowCount();
     }
 
+    /**
+     * Returns target offset for backward compatibility.
+     *
+     * <p>For multi-run mappings, this is the target offset of the first run.
+     */
     public long targetOffset() {
-      return targetOffset;
+      return runs.isEmpty() ? 0L : runs.get(0).targetOffset();
+    }
+
+    /** Returns the list of position runs. */
+    public List<Run> runs() {
+      return runs;
     }
 
     @Override
@@ -181,10 +230,47 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
       return MoreObjects.toStringHelper(this)
           .add("sourceFile", sourceFile)
           .add("targetFile", targetFile)
-          .add("sourceRowCount", sourceRowCount)
-          .add("targetRowCount", targetRowCount)
-          .add("targetOffset", targetOffset)
+          .add("runs", runs)
           .toString();
+    }
+
+    /**
+     * Represents a contiguous run of rows mapped from source to target.
+     *
+     * <p>A run describes that rows at positions [sourceOffset, sourceOffset + length) in the source
+     * file are mapped to [targetOffset, targetOffset + length) in the target file.
+     */
+    public static class Run {
+      private final long sourceOffset;
+      private final long targetOffset;
+      private final long length;
+
+      public Run(long sourceOffset, long targetOffset, long length) {
+        this.sourceOffset = sourceOffset;
+        this.targetOffset = targetOffset;
+        this.length = length;
+      }
+
+      public long sourceOffset() {
+        return sourceOffset;
+      }
+
+      public long targetOffset() {
+        return targetOffset;
+      }
+
+      public long length() {
+        return length;
+      }
+
+      @Override
+      public String toString() {
+        return MoreObjects.toStringHelper(this)
+            .add("sourceOffset", sourceOffset)
+            .add("targetOffset", targetOffset)
+            .add("length", length)
+            .toString();
+      }
     }
   }
 }
