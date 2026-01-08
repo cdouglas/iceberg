@@ -134,6 +134,15 @@ public class BaseRowDelta extends MergingSnapshotProducer<RowDelta> implements R
             startingSnapshotId,
             parent.snapshotId());
       }
+
+      // Check for compaction conflicts FIRST before other validations
+      // This runs first to provide clear, actionable error messages when position deletes
+      // reference data files that were compacted. Without this check, the generic validation
+      // would fail with a less helpful error message.
+      if (startingSnapshotId != null && addsDeleteFiles()) {
+        validateNoCompactionConflicts(base, parent);
+      }
+
       if (!referencedDataFiles.isEmpty()) {
         validateDataFilesExist(
             base,
@@ -186,5 +195,42 @@ public class BaseRowDelta extends MergingSnapshotProducer<RowDelta> implements R
           "Cannot delete data files %s that are referenced by new delete files",
           deletedFileWithNewDVs);
     }
+  }
+
+  /**
+   * Validates that position deletes do not reference data files that were compacted.
+   *
+   * <p>This validation runs BEFORE other validations to provide clear, actionable error messages.
+   * When position deletes reference compacted files, we throw CompactionConflictException with the
+   * compaction map locations, enabling automatic remapping of the deletes.
+   *
+   * <p>This check must run first because generic validations would fail with less helpful error
+   * messages that don't distinguish between compaction conflicts (fixable via remapping) and other
+   * types of conflicts.
+   *
+   * @param base the table metadata
+   * @param parent the parent snapshot
+   * @throws org.apache.iceberg.exceptions.CompactionConflictException if position deletes reference
+   *     compacted files
+   */
+  private void validateNoCompactionConflicts(TableMetadata base, Snapshot parent) {
+    // Only validate compaction conflicts if compaction maps might exist
+    // Compaction maps are supported in v3+, but are typically enabled in v4
+    // Check if compaction maps are enabled
+    boolean compactionMapsEnabled =
+        Boolean.parseBoolean(
+            base.properties()
+                .getOrDefault(
+                    TableProperties.COMPACTION_MAP_ENABLED,
+                    String.valueOf(TableProperties.COMPACTION_MAP_ENABLED_DEFAULT)));
+
+    if (!compactionMapsEnabled) {
+      return;
+    }
+
+    // Create validator and check for conflicts
+    CompactionMapValidator validator =
+        new CompactionMapValidator(ops().io(), base, startingSnapshotId, parent);
+    validator.validateNoCompactedReferences(addedDeleteFiles());
   }
 }

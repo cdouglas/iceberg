@@ -225,6 +225,17 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     return !newDeleteFilesBySpec.isEmpty();
   }
 
+  /**
+   * Returns all delete files that will be added in this snapshot.
+   *
+   * @return list of delete files across all partition specs
+   */
+  protected List<DeleteFile> addedDeleteFiles() {
+    List<DeleteFile> allDeleteFiles = Lists.newArrayList();
+    newDeleteFilesBySpec.values().forEach(allDeleteFiles::addAll);
+    return allDeleteFiles;
+  }
+
   /** Add a data file to the new snapshot. */
   protected void add(DataFile file) {
     Preconditions.checkNotNull(file, "Invalid data file: null");
