@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.spark.actions;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.DataFile;
@@ -26,6 +27,7 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.actions.RewriteDataFiles.FileGroupInfo;
 import org.apache.iceberg.actions.RewriteFileGroup;
 import org.apache.iceberg.spark.FileRewriteCoordinator;
+import org.apache.iceberg.spark.PositionMappingCoordinator;
 import org.apache.iceberg.spark.ScanTaskSetManager;
 import org.apache.iceberg.spark.SparkTableCache;
 import org.apache.spark.sql.SparkSession;
@@ -51,11 +53,21 @@ abstract class SparkDataFileRewriteRunner
 
       doRewrite(groupId, group);
 
-      return coordinator.fetchNewFiles(table(), groupId);
+      Set<DataFile> newFiles = coordinator.fetchNewFiles(table(), groupId);
+
+      // Fetch and attach position mappings if tracking was enabled
+      Map<String, RewriteFileGroup.FilePositionMapping> mappings =
+          PositionMappingCoordinator.get().fetchMappings(table(), groupId);
+      if (mappings != null && !mappings.isEmpty()) {
+        group.setPositionMappings(mappings);
+      }
+
+      return newFiles;
     } finally {
       tableCache.remove(groupId);
       taskSetManager.removeTasks(table(), groupId);
       coordinator.clearRewrite(table(), groupId);
+      PositionMappingCoordinator.get().clearRewrite(table(), groupId);
     }
   }
 }
