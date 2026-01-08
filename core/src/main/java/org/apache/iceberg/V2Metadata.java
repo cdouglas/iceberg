@@ -46,7 +46,8 @@ class V2Metadata {
           ManifestFile.EXISTING_ROWS_COUNT.asRequired(),
           ManifestFile.DELETED_ROWS_COUNT.asRequired(),
           ManifestFile.PARTITION_SUMMARIES,
-          ManifestFile.KEY_METADATA);
+          ManifestFile.KEY_METADATA,
+          ManifestFile.COMPACTION_MAP_LOCATION);
 
   /**
    * A wrapper class to write any ManifestFile implementation to Avro using the v2 write schema.
@@ -140,6 +141,8 @@ class V2Metadata {
           return wrapped.partitions();
         case 14:
           return wrapped.keyMetadata();
+        case 15:
+          return wrapped.compactionMapLocation();
         default:
           throw new UnsupportedOperationException("Unknown field ordinal: " + pos);
       }
@@ -233,6 +236,11 @@ class V2Metadata {
     @Override
     public ByteBuffer keyMetadata() {
       return wrapped.keyMetadata();
+    }
+
+    @Override
+    public String compactionMapLocation() {
+      return wrapped.compactionMapLocation();
     }
 
     @Override
