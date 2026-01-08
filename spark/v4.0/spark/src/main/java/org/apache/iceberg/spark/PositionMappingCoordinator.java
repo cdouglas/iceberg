@@ -57,8 +57,7 @@ public class PositionMappingCoordinator {
   /**
    * Records a single position mapping from a source file to a target file.
    *
-   * <p>Called from Spark executors during write operations. Each row written generates one
-   * mapping.
+   * <p>Called from Spark executors during write operations. Each row written generates one mapping.
    *
    * @param table the table being rewritten
    * @param fileSetId the unique identifier for this rewrite group
@@ -89,8 +88,8 @@ public class PositionMappingCoordinator {
    * Fetches and aggregates all position mappings for a rewrite group.
    *
    * <p>Called from the driver after write completes. Groups raw position mappings by source file,
-   * sorts by position, and identifies consecutive runs. Gaps in source positions indicate rows
-   * that were filtered out by position deletes.
+   * sorts by position, and identifies consecutive runs. Gaps in source positions indicate rows that
+   * were filtered out by position deletes.
    *
    * @param table the table being rewritten
    * @param fileSetId the unique identifier for this rewrite group
@@ -211,7 +210,8 @@ public class PositionMappingCoordinator {
       // Note: This assumes all positions map to the same target file, which is true for
       // simple bin-pack. For multi-target scenarios, this would need enhancement.
       String targetFile = positions.get(0).targetFile;
-      result.put(sourceFile, new RewriteFileGroup.FilePositionMapping(sourceFile, targetFile, runs));
+      result.put(
+          sourceFile, new RewriteFileGroup.FilePositionMapping(sourceFile, targetFile, runs));
     }
 
     return result;
