@@ -125,8 +125,7 @@ public class TestCompactionConflictDetection {
     assertThat(exception.getMessage()).contains("referenced data files were compacted");
 
     // Exception provides programmatic access to conflict details
-    assertThat(exception.compactedFiles())
-        .contains(fileToDelete.path().toString());
+    assertThat(exception.compactedFiles()).contains(fileToDelete.path().toString());
 
     assertThat(exception.compactionMapLocations())
         .isNotEmpty()
