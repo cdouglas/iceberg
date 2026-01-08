@@ -34,7 +34,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
  *
  * <p>This follows the same pattern as {@link ManifestLists}.
  */
-class CompactionMaps {
+public class CompactionMaps {
   private CompactionMaps() {}
 
   /**
@@ -47,7 +47,7 @@ class CompactionMaps {
    * @param snapshotId the snapshot ID for which the compaction map is being created
    * @return an output file for the compaction map
    */
-  static OutputFile newCompactionMapFile(Table table, long snapshotId) {
+  public static OutputFile newCompactionMapFile(Table table, long snapshotId) {
     Preconditions.checkArgument(
         table instanceof HasTableOperations,
         "Table must have operations to retrieve metadata location");
@@ -71,7 +71,7 @@ class CompactionMaps {
    * @param inputFile the input file to read
    * @return the compaction map
    */
-  static CompactionMap read(InputFile inputFile) {
+  public static CompactionMap read(InputFile inputFile) {
     try (CloseableIterable<CompactionMap> maps =
         InternalData.read(FileFormat.AVRO, inputFile)
             .setRootType(GenericCompactionMap.class)
@@ -96,12 +96,25 @@ class CompactionMaps {
    * @param outputFile the output file to write to
    * @return a writer for compaction maps
    */
-  static CompactionMapWriter write(OutputFile outputFile) {
+  public static CompactionMapWriter write(OutputFile outputFile) {
     return new CompactionMapWriter(outputFile);
   }
 
+  /**
+   * Convenience method to write a compaction map to a file.
+   *
+   * @param map the compaction map to write
+   * @param outputFile the output file to write to
+   * @throws IOException if an error occurs during writing
+   */
+  public static void write(CompactionMap map, OutputFile outputFile) throws IOException {
+    try (CompactionMapWriter writer = write(outputFile)) {
+      writer.write(map);
+    }
+  }
+
   /** Writer for compaction map files. */
-  static class CompactionMapWriter implements java.io.Closeable {
+  public static class CompactionMapWriter implements java.io.Closeable {
     private final OutputFile outputFile;
     private FileAppender<CompactionMap> writer;
 
@@ -116,7 +129,7 @@ class CompactionMaps {
      *
      * @param map the compaction map to write
      */
-    void write(CompactionMap map) throws IOException {
+    public void write(CompactionMap map) throws IOException {
       if (writer == null) {
         this.writer =
             Avro.write(outputFile).schema(CompactionMap.schema()).named("compaction_map").build();

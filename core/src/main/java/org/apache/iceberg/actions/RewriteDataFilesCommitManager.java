@@ -18,10 +18,20 @@
  */
 package org.apache.iceberg.actions;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.BaseRewriteFiles;
+import org.apache.iceberg.CompactionMap;
+import org.apache.iceberg.CompactionMapBuilder;
+import org.apache.iceberg.CompactionMaps;
+import org.apache.iceberg.DataFile;
 import org.apache.iceberg.RewriteFiles;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
@@ -88,6 +98,14 @@ public class RewriteDataFilesCommitManager {
       rewrite.dataSequenceNumber(sequenceNumber);
     }
 
+    // Generate and write compaction map if enabled
+    if (shouldGenerateCompactionMap()) {
+      String compactionMapLocation = writeCompactionMap(fileGroups);
+      if (compactionMapLocation != null && rewrite instanceof BaseRewriteFiles) {
+        ((BaseRewriteFiles) rewrite).setCompactionMapLocation(compactionMapLocation);
+      }
+    }
+
     rewrittenDataFiles.forEach(rewrite::deleteFile);
     addedDataFiles.forEach(rewrite::addFile);
     danglingDVs.forEach(rewrite::deleteFile);
@@ -132,6 +150,104 @@ public class RewriteDataFilesCommitManager {
 
       throw e;
     }
+  }
+
+  /**
+   * Check if compaction maps should be generated based on table properties.
+   *
+   * @return true if compaction maps are enabled
+   */
+  private boolean shouldGenerateCompactionMap() {
+    return table
+        .properties()
+        .getOrDefault(
+            TableProperties.COMPACTION_MAP_ENABLED,
+            String.valueOf(TableProperties.COMPACTION_MAP_ENABLED_DEFAULT))
+        .equalsIgnoreCase("true");
+  }
+
+  /**
+   * Build and write a compaction map from the given file groups.
+   *
+   * @param fileGroups the file groups being rewritten
+   * @return the location of the written compaction map, or null if the map is empty
+   */
+  private String writeCompactionMap(Set<RewriteFileGroup> fileGroups) {
+    CompactionMap map = buildCompactionMap(fileGroups);
+
+    // Don't write empty maps
+    if (map.fileMappings().isEmpty()) {
+      return null;
+    }
+
+    try {
+      // Generate unique snapshot ID for target (will be assigned during commit)
+      long targetSnapshotId = startingSnapshotId + 1;
+      OutputFile mapFile = CompactionMaps.newCompactionMapFile(table, targetSnapshotId);
+
+      CompactionMaps.write(map, mapFile);
+
+      LOG.info(
+          "Wrote compaction map with {} file mappings to {}",
+          map.fileMappings().size(),
+          mapFile.location());
+
+      return mapFile.location();
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to write compaction map", e);
+    }
+  }
+
+  /**
+   * Build a compaction map from file groups by tracking position mappings from source to target
+   * files.
+   *
+   * <p>For each file group, this method creates file-level mappings assuming that row order is
+   * preserved during compaction (valid for bin-pack strategy). Each source file's rows [0, N) are
+   * mapped to a range in the target file(s) based on the file's position in the bin-pack order.
+   *
+   * @param fileGroups the file groups being rewritten
+   * @return the compaction map with file-level position mappings
+   */
+  private CompactionMap buildCompactionMap(Set<RewriteFileGroup> fileGroups) {
+    CompactionMapBuilder builder = new CompactionMapBuilder(startingSnapshotId, startingSnapshotId + 1);
+
+    for (RewriteFileGroup group : fileGroups) {
+      // Get source and target files
+      Set<DataFile> sourceFiles = group.rewrittenFiles();
+      Set<DataFile> targetFiles = group.addedFiles();
+
+      if (sourceFiles.isEmpty() || targetFiles.isEmpty()) {
+        continue;
+      }
+
+      // Simple bin-pack mapping: all sources map to target files
+      // For more complex scenarios, we'd need position tracking during the actual rewrite
+      // For now, we assume a single target file per group (common bin-pack case)
+      if (targetFiles.size() == 1) {
+        DataFile targetFile = targetFiles.iterator().next();
+        long targetOffset = 0;
+
+        // Map each source file to the target file with sequential offsets
+        for (DataFile sourceFile : sourceFiles) {
+          builder
+              .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
+              .addRun(0L, targetOffset, sourceFile.recordCount());
+
+          targetOffset += sourceFile.recordCount();
+        }
+      } else {
+        // Multiple target files - more complex mapping
+        // This would require detailed position tracking from the rewrite operation
+        // For now, log a warning and skip
+        LOG.warn(
+            "Skipping compaction map for group with multiple target files ({}). "
+                + "Multi-target compaction maps require position tracking during rewrite.",
+            targetFiles.size());
+      }
+    }
+
+    return builder.build();
   }
 
   /**
