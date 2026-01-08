@@ -40,11 +40,17 @@ import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
 import org.apache.iceberg.hadoop.HadoopTables;
-import org.apache.iceberg.io.Files;
+import org.apache.iceberg.actions.ActionsProvider;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.spark.SparkCatalog;
 import org.apache.iceberg.spark.TestBase;
+import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.data.TestHelpers;
 import org.apache.iceberg.types.Types;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SaveMode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -95,6 +101,10 @@ public class TestBinPackWithPositionTracking extends TestBase {
   @BeforeEach
   public void setupTableLocation() {
     this.tableLocation = tableDir.toURI().toString();
+  }
+
+  protected ActionsProvider actions() {
+    return SparkActions.get();
   }
 
   private Table createTable() {
@@ -167,6 +177,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testNToMCompactionScenario() {
+
     // Test N:M compaction (many sources to many targets)
     PartitionSpec spec = PartitionSpec.builderFor(SCHEMA).identity("data").build();
 
@@ -202,6 +213,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testBinPackWithSortedTable() {
+
     Table table = createTable();
 
     // Set sort order
@@ -227,6 +239,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testBinPackWithUnsortedTable() {
+
     Table table = createTable();
 
     assertThat(table.sortOrder().isUnsorted()).isTrue();
@@ -248,6 +261,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testBinPackWithParquetFormat() {
+
     assumeThat(fileFormat).isEqualTo(FileFormat.PARQUET);
 
     Table table = createTable();
@@ -276,6 +290,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testBinPackWithORCFormat() {
+
     assumeThat(fileFormat).isEqualTo(FileFormat.ORC);
 
     Table table = createTable();
@@ -304,6 +319,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testPositionTrackingDisabledByDefault() {
+
     // Create table without compaction map enabled
     PartitionSpec spec = PartitionSpec.unpartitioned();
     Map<String, String> props =
@@ -335,6 +351,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testMultipleSourcesOneTarget() {
+
     // Test N:1 compaction scenario
     Table table = createTable();
 
@@ -357,30 +374,27 @@ public class TestBinPackWithPositionTracking extends TestBase {
     assertThat(result.addedDataFilesCount()).isGreaterThanOrEqualTo(1);
   }
 
-  // Helper methods - simplified approach using Spark SQL
+  // Helper methods - using Spark DataFrames
 
   private void writeRecords(Table table, int startId, int count) {
-    // Write using appender directly
-    org.apache.iceberg.data.GenericRecord record =
-        org.apache.iceberg.data.GenericRecord.create(SCHEMA);
-    java.util.List<org.apache.iceberg.data.Record> records = new java.util.ArrayList<>();
+    // Create DataFrame with records
+    java.util.List<org.apache.spark.sql.Row> rows = new java.util.ArrayList<>();
     for (int i = 0; i < count; i++) {
-      record = org.apache.iceberg.data.GenericRecord.create(SCHEMA);
-      record.setField("id", startId + i);
-      record.setField("data", "data" + (startId + i));
-      records.add(record.copy());
+      rows.add(
+          org.apache.spark.sql.RowFactory.create(startId + i, "data" + (startId + i)));
     }
 
-    try {
-      org.apache.iceberg.DataFile file =
-          org.apache.iceberg.spark.data.TestHelpers.writeFile(
-              table,
-              Files.localOutput(temp.resolve("file-" + System.nanoTime()).toFile()),
-              records);
-      table.newAppend().appendFile(file).commit();
-    } catch (IOException e) {
-      throw new RuntimeException("Failed to write records", e);
-    }
+    org.apache.spark.sql.types.StructType sparkSchema =
+        new org.apache.spark.sql.types.StructType()
+            .add("id", org.apache.spark.sql.types.DataTypes.IntegerType, true)
+            .add("data", org.apache.spark.sql.types.DataTypes.StringType, true);
+
+    Dataset<Row> df = spark.createDataFrame(rows, sparkSchema);
+    df.coalesce(1)
+        .write()
+        .format("iceberg")
+        .mode(SaveMode.Append)
+        .save(tableLocation);
   }
 
   private void writeRecordsPartitioned(Table table, int partition, int fileId, int count) {
@@ -392,15 +406,5 @@ public class TestBinPackWithPositionTracking extends TestBase {
     // Simplified: just return empty list for now
     // Full implementation would write actual position delete files
     return java.util.Collections.emptyList();
-  }
-
-  private final java.nio.file.Path temp;
-
-  {
-    try {
-      temp = java.nio.file.Files.createTempDirectory("test-position-tracking");
-    } catch (IOException e) {
-      throw new RuntimeException(e);
-    }
   }
 }
