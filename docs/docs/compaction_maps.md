@@ -812,50 +812,149 @@ Currently, conflicts are detected and reported but not automatically resolved:
 ### Current Limitations
 
 1. **Spark Position Tracking Not Implemented**
-   - RewriteDataFilesCommitManager uses fallback logic for map generation
-   - Fallback works for simple bin-pack (multiple sources → single target)
-   - Multi-target rewrites without explicit position tracking skip map generation
-   - Sorted/filtered rewrites may produce inaccurate maps without position tracking
-   - **Workaround**: Simple bin-pack operations work correctly with fallback
+
+   The compaction map data structure fully supports complex scenarios (gaps, interleaving, multiple runs per file), but automatic generation during Spark rewrites is limited to simple bin-pack operations.
+
+   **What the Data Structure Supports:**
+   ```java
+   // Complex merge scenario with deletes and updates
+   builder.addFileMapping("base.parquet", "merged.parquet")
+       .addRun(0, 0, 1000)           // First 1000 rows
+       .addRun(1100, 1000, 28900)    // Gap: rows 1000-1099 deleted
+       .addRun(30001, 28901, 970000); // Gap: row 30000 updated
+
+   builder.addFileMapping("updates.parquet", "merged.parquet")
+       .addRun(0, 28900, 1);          // Updated row interleaved
+   ```
+
+   **What the Fallback Logic Generates:**
+   ```java
+   // Simple sequential concatenation only
+   for (DataFile sourceFile : sourceFiles) {
+     builder.addFileMapping(source, target)
+         .addRun(0, targetOffset, sourceFile.recordCount());
+     targetOffset += sourceFile.recordCount();
+   }
+   // Assumes: no filtering, no sorting, no gaps, sequential order
+   ```
+
+   **Scenarios That Work:**
+   - ✅ **Bin-pack**: Multiple small files → single larger file (sequential concatenation)
+   - ✅ **Order-preserving**: No sorting or filtering applied during rewrite
+
+   **Scenarios That Don't Work:**
+   - ❌ **Sorted rewrites**: Row order changes (e.g., `SORT BY column`)
+   - ❌ **Filtered rewrites**: Some rows excluded (e.g., applying deletes during merge)
+   - ❌ **Merge compactions**: Combining base table + deletes + updates
+   - ❌ **Split rewrites**: One source → multiple targets (logs warning, skips map)
+
+   **What's Needed:**
+   Position tracking during Spark read/write operations:
+   - Tag rows with (source_file, source_position) during read
+   - Track (target_file, target_position) during write
+   - Build accurate mappings that reflect actual position transformations
+   - Handle filtering (row not written), reordering (position changes), interleaving (multiple sources)
+
+   **Workaround:** Simple bin-pack operations (most common case) work correctly with fallback logic.
 
 2. **No Automatic Conflict Resolution**
-   - Conflicts are detected but not automatically resolved
-   - Applications must handle CompactionConflictException manually:
-     - Catch exception
-     - Load compaction maps from exception metadata
-     - Remap position deletes using PositionDeleteRemapper
-     - Retry commit with remapped deletes
-   - **Workaround**: Manual remapping workflow is well-documented and tested
 
-3. **SERIALIZABLE Isolation Doesn't Auto-Remap**
-   - SERIALIZABLE isolation detects compaction conflicts
-   - With compaction maps: conflict is avoided (structural change only)
-   - Without compaction maps: ValidationException thrown
-   - Position delete conflicts still require manual remapping
-   - **Benefit**: Clear distinction between read conflicts and position delete conflicts
+   Position delete conflicts are detected but not automatically resolved. Applications must manually remap deletes and retry.
 
-4. **Row-Level Granularity**
-   - Maps track individual row positions
-   - Can result in large maps for files with many rows
-   - Run-length encoding provides significant compression
-   - **Mitigation**: Testing shows good compression for typical workloads
+   **Two Types of Conflicts:**
+
+   a. **Read Conflicts** (SERIALIZABLE isolation - Phase 4.5):
+   ```java
+   // Transaction reads data, concurrent REPLACE occurs
+   rowDelta.validateNoConflictingDataFiles(); // SERIALIZABLE mode
+   rowDelta.commit();
+
+   // WITH compaction map: ✅ Succeeds (structural change only)
+   // WITHOUT compaction map: ❌ ValidationException (data may have changed)
+   ```
+   This is **handled automatically** - SERIALIZABLE isolation distinguishes structural vs data changes.
+
+   b. **Position Delete Conflicts** (still manual):
+   ```java
+   // Position deletes reference files that were compacted
+   DeleteFile posDelete = createPositionDelete("old_file.parquet", pos=42);
+   rowDelta.addDeletes(posDelete);
+   rowDelta.commit();
+
+   // ❌ Throws CompactionConflictException
+   // Must manually remap deletes even with compaction maps
+   ```
+
+   **Manual Resolution Workflow:**
+   ```java
+   try {
+     rowDelta.addDeletes(deleteFile);
+     rowDelta.commit();
+   } catch (CompactionConflictException e) {
+     // 1. Get compaction map locations from exception
+     Map<String, String> mapLocations = e.compactionMapLocations();
+
+     // 2. Load maps and create remapper
+     CompactionMap map = CompactionMaps.read(fileIO.newInputFile(mapLocation));
+     PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+     // 3. Remap position deletes
+     DeleteFile remappedDelete = remapDeleteFile(deleteFile, remapper);
+
+     // 4. Retry with remapped deletes
+     RowDelta retry = table.newRowDelta();
+     retry.addDeletes(remappedDelete);
+     retry.commit(); // ✅ Succeeds
+   }
+   ```
+
+   **Why Not Automatic:**
+   - Safer to make remapping explicit initially
+   - Allows users to audit what's being remapped
+   - Simpler implementation (no retry logic)
+   - Can be added later as opt-in enhancement
+
+   **Workaround:** Manual remapping workflow is well-documented and tested. Most DELETE operations in practice don't hit this case because they create new delete files rather than referencing specific old files.
 
 ### Design Considerations
 
-1. **One Source File Per FileMapping**
+1. **Row-Level Position Granularity**
+
+   Compaction maps track positions at row granularity, inherited from position delete semantics:
+
+   ```java
+   // Position deletes reference specific row positions
+   PositionDelete: (file_path: String, pos: Long)
+
+   // Compaction maps must transform at same granularity
+   Run: (sourcePosition: Long, targetPosition: Long, length: Long)
+   ```
+
+   **Why Row-Level:**
+   - Position deletes are row-level, so remapping must be row-level
+   - Coarser granularity (blocks, pages) would lose precision needed for accurate remapping
+   - Enables exact position transformation: `source[42] → target[137]`
+
+   **Size Management:**
+   - Run-length encoding automatically merges consecutive positions
+   - Example: 1000 consecutive positions → single run `(0, 0, 1000)`
+   - Testing shows maps stay reasonable size for typical workloads
+   - Most compactions (bin-pack) produce highly compressed maps
+
+2. **One Source File Per FileMapping**
    - Each source file has its own FileMapping to a target file
    - One source can map to one target
    - Multiple sources can map to same target (bin-pack)
    - One source split across multiple targets requires multiple FileMappings
    - This design supports efficient lookup and simple position transformation
 
-2. **Map Storage Per Snapshot**
+3. **Map Storage Per Snapshot**
    - Each compaction creates a new compaction map file
    - Maps are immutable once written
    - Old maps can be garbage collected when snapshots expire
    - **Benefit**: Simple lifecycle management aligned with snapshots
 
-3. **No Map Size Enforcement**
+4. **No Map Size Enforcement**
    - `write.compaction-map.target-size-bytes` property exists but not enforced
    - Currently used for documentation/monitoring only
    - Future: Could warn or split maps when threshold exceeded
