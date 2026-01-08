@@ -75,6 +75,18 @@ abstract class BaseFileRewriteCoordinator<F extends ContentFile<F>> {
         .collect(Collectors.toSet());
   }
 
+  /**
+   * Fetches position mappings for a rewrite group from the PositionMappingCoordinator.
+   *
+   * @param table table where the rewrite is occurring
+   * @param fileSetId the id used to identify the source set of files being rewritten
+   * @return map of source file path to FilePositionMapping with runs
+   */
+  public Map<String, org.apache.iceberg.actions.RewriteFileGroup.FilePositionMapping>
+      fetchPositionMappings(Table table, String fileSetId) {
+    return PositionMappingCoordinator.get().fetchMappings(table, fileSetId);
+  }
+
   private Pair<String, String> toId(Table table, String setId) {
     return Pair.of(Spark3Util.baseTableUUID(table), setId);
   }
