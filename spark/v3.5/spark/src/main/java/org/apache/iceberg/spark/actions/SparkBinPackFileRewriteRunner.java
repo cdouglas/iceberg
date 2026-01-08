@@ -40,6 +40,16 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
 
   @Override
   protected void doRewrite(String groupId, RewriteFileGroup group) {
+    // Check if position tracking is enabled (for compaction map generation)
+    boolean trackPositions =
+        Boolean.parseBoolean(
+            table()
+                .properties()
+                .getOrDefault(
+                    org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED,
+                    String.valueOf(
+                        org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT)));
+
     // read the files packing them into splits of the required size
     Dataset<Row> scanDF =
         spark()
@@ -50,6 +60,12 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
             .option(SparkReadOptions.FILE_OPEN_COST, "0")
             .load(groupId);
 
+    // If position tracking is enabled, select metadata columns _file and _pos
+    // These will be used to generate accurate compaction maps with run-based mappings
+    if (trackPositions) {
+      scanDF = scanDF.selectExpr("*", "_file", "_pos");
+    }
+
     // write the packed data into new files where each split becomes a new file
     scanDF
         .write()
@@ -58,6 +74,7 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
         .option(SparkWriteOptions.TARGET_FILE_SIZE_BYTES, group.maxOutputFileSize())
         .option(SparkWriteOptions.DISTRIBUTION_MODE, distributionMode(group).modeName())
         .option(SparkWriteOptions.OUTPUT_SPEC_ID, group.outputSpecId())
+        .option(SparkWriteOptions.TRACK_SOURCE_POSITIONS, String.valueOf(trackPositions))
         .mode("append")
         .save(groupId);
   }

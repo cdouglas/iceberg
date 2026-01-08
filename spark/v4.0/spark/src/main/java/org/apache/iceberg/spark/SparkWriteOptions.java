@@ -85,4 +85,8 @@ public class SparkWriteOptions {
 
   // Overrides the delete granularity
   public static final String DELETE_GRANULARITY = "delete-granularity";
+
+  // Enable tracking of source file and position during rewrites for compaction maps
+  public static final String TRACK_SOURCE_POSITIONS = "track-source-positions";
+  public static final boolean TRACK_SOURCE_POSITIONS_DEFAULT = false;
 }
