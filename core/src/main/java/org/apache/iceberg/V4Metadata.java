@@ -46,7 +46,8 @@ class V4Metadata {
           ManifestFile.DELETED_ROWS_COUNT.asRequired(),
           ManifestFile.PARTITION_SUMMARIES,
           ManifestFile.KEY_METADATA,
-          ManifestFile.FIRST_ROW_ID);
+          ManifestFile.FIRST_ROW_ID,
+          ManifestFile.COMPACTION_MAP_LOCATION);
 
   /**
    * A wrapper class to write any ManifestFile implementation to Avro using the v4 write schema.
@@ -158,6 +159,8 @@ class V4Metadata {
                 "Found unassigned first-row-id for file: " + wrapped.path());
             return wrapped.firstRowId();
           }
+        case 16:
+          return wrapped.compactionMapLocation();
         default:
           throw new UnsupportedOperationException("Unknown field ordinal: " + pos);
       }
@@ -256,6 +259,11 @@ class V4Metadata {
     @Override
     public Long firstRowId() {
       return wrapped.firstRowId();
+    }
+
+    @Override
+    public String compactionMapLocation() {
+      return wrapped.compactionMapLocation();
     }
 
     @Override

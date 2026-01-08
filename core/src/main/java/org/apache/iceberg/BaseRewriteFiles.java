@@ -23,8 +23,9 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.util.DataFileSet;
 
-class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> implements RewriteFiles {
+public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> implements RewriteFiles {
   private final DataFileSet replacedDataFiles = DataFileSet.create();
+  private final DataFileSet addedDataFiles = DataFileSet.create();
   private Long startingSnapshotId = null;
   private String compactionMapLocation = null;
 
@@ -60,6 +61,7 @@ class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> implements 
 
   @Override
   public RewriteFiles addFile(DataFile dataFile) {
+    addedDataFiles.add(dataFile);
     add(dataFile);
     return self();
   }
@@ -158,6 +160,103 @@ class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles> implements 
    */
   public String compactionMapLocation() {
     return compactionMapLocation;
+  }
+
+  @Override
+  protected ManifestWriter<DataFile> newManifestWriter(PartitionSpec spec) {
+    ManifestWriter<DataFile> writer = super.newManifestWriter(spec);
+
+    // Set compaction map location on each manifest writer if available
+    if (compactionMapLocation != null) {
+      writer.setCompactionMapLocation(compactionMapLocation);
+    }
+
+    return writer;
+  }
+
+  @Override
+  public java.util.List<ManifestFile> apply(TableMetadata base, Snapshot snapshot) {
+    // Generate compaction map if enabled and not already set
+    if (compactionMapLocation == null && shouldGenerateCompactionMap(base)) {
+      generateAndWriteCompactionMap(base, snapshot);
+    }
+
+    return super.apply(base, snapshot);
+  }
+
+  private boolean shouldGenerateCompactionMap(TableMetadata base) {
+    return base
+        .properties()
+        .getOrDefault(
+            org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED,
+            String.valueOf(org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT))
+        .equalsIgnoreCase("true");
+  }
+
+  private void generateAndWriteCompactionMap(TableMetadata base, Snapshot snapshot) {
+    // Build compaction map from replaced and added files
+    if (replacedDataFiles.isEmpty() || addedDataFiles.isEmpty()) {
+      return; // Nothing to map
+    }
+
+    long sourceSnapshotId = startingSnapshotId != null ? startingSnapshotId :
+        (snapshot != null ? snapshot.snapshotId() : base.lastSequenceNumber());
+    long targetSnapshotId = snapshotId();
+
+    CompactionMapBuilder builder = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
+
+    // Simple bin-pack mapping: assume all source files map to target files sequentially
+    // This is valid for bin-pack rewrites where row order is preserved
+    if (addedDataFiles.size() == 1) {
+      // Single target file case (most common)
+      DataFile targetFile = addedDataFiles.iterator().next();
+      long targetOffset = 0;
+
+      for (DataFile sourceFile : replacedDataFiles) {
+        builder
+            .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
+            .addRun(0L, targetOffset, sourceFile.recordCount());
+        targetOffset += sourceFile.recordCount();
+      }
+    } else {
+      // Multiple target files - more complex mapping would require position tracking
+      // For now, log and skip (consistent with RewriteDataFilesCommitManager approach)
+      org.slf4j.LoggerFactory.getLogger(BaseRewriteFiles.class)
+          .warn("Skipping compaction map for rewrite with multiple target files ({}). " +
+               "Multi-target compaction maps require position tracking during rewrite.",
+               addedDataFiles.size());
+      return;
+    }
+
+    CompactionMap map = builder.build();
+
+    // Don't write empty maps
+    if (map.fileMappings().isEmpty()) {
+      return;
+    }
+
+    try {
+      // Generate compaction map file location
+      String fileName =
+          String.format(
+              java.util.Locale.ROOT,
+              "compaction-map-%d-%s%s",
+              targetSnapshotId,
+              java.util.UUID.randomUUID(),
+              org.apache.iceberg.FileFormat.AVRO.addExtension(""));
+
+      org.apache.iceberg.io.OutputFile mapFile =
+          ops().io().newOutputFile(ops().metadataFileLocation(fileName));
+
+      CompactionMaps.write(map, mapFile);
+      this.compactionMapLocation = mapFile.location();
+
+      org.slf4j.LoggerFactory.getLogger(BaseRewriteFiles.class)
+          .info("Wrote compaction map with {} file mappings to {}",
+               map.fileMappings().size(), mapFile.location());
+    } catch (java.io.IOException e) {
+      throw new java.io.UncheckedIOException("Failed to write compaction map", e);
+    }
   }
 
   @Override

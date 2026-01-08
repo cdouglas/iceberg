@@ -45,12 +45,12 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
  * CompactionMap map = builder.build();
  * </pre>
  */
-class CompactionMapBuilder {
+public class CompactionMapBuilder {
   private final long sourceSnapshotId;
   private final long targetSnapshotId;
   private final Map<String, FileMappingBuilder> fileMappings;
 
-  CompactionMapBuilder(long sourceSnapshotId, long targetSnapshotId) {
+  public CompactionMapBuilder(long sourceSnapshotId, long targetSnapshotId) {
     this.sourceSnapshotId = sourceSnapshotId;
     this.targetSnapshotId = targetSnapshotId;
     this.fileMappings = new LinkedHashMap<>();
@@ -63,7 +63,7 @@ class CompactionMapBuilder {
    * @param targetFile the target file path (post-compaction)
    * @return a builder for adding position runs to this file mapping
    */
-  FileMappingBuilder addFileMapping(String sourceFile, String targetFile) {
+  public FileMappingBuilder addFileMapping(String sourceFile, String targetFile) {
     Preconditions.checkNotNull(sourceFile, "Source file cannot be null");
     Preconditions.checkNotNull(targetFile, "Target file cannot be null");
     Preconditions.checkArgument(
@@ -91,7 +91,7 @@ class CompactionMapBuilder {
    *
    * @return the constructed compaction map
    */
-  CompactionMap build() {
+  public CompactionMap build() {
     List<FileMapping> mappings = new ArrayList<>(fileMappings.size());
     for (FileMappingBuilder builder : fileMappings.values()) {
       mappings.add(builder.build());
@@ -105,7 +105,7 @@ class CompactionMapBuilder {
    * <p>This builder automatically merges consecutive runs for efficiency. For example, adding
    * Run(0, 0, 100) followed by Run(100, 100, 50) will be merged into a single Run(0, 0, 150).
    */
-  static class FileMappingBuilder {
+  public static class FileMappingBuilder {
     private final String sourceFile;
     private final String targetFile;
     private final List<RunBuilder> runs;
@@ -126,7 +126,7 @@ class CompactionMapBuilder {
      * @param length number of rows in this run
      * @return this builder for method chaining
      */
-    FileMappingBuilder addRun(long sourcePosition, long targetPosition, long length) {
+    public FileMappingBuilder addRun(long sourcePosition, long targetPosition, long length) {
       Preconditions.checkArgument(sourcePosition >= 0, "Source position must be non-negative");
       Preconditions.checkArgument(targetPosition >= 0, "Target position must be non-negative");
       Preconditions.checkArgument(length > 0, "Run length must be positive");
