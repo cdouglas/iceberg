@@ -916,6 +916,143 @@ Currently, conflicts are detected and reported but not automatically resolved:
 
    **Workaround:** Manual remapping workflow is well-documented and tested. Most DELETE operations in practice don't hit this case because they create new delete files rather than referencing specific old files.
 
+3. **Inefficient Remapping Algorithm**
+
+   The current `PositionDeleteRemapper` implementation uses a naive O(n*m) algorithm: for each position delete (n deletes), it linearly scans through all runs (m runs) to find the containing interval.
+
+   **Current Implementation:**
+   ```java
+   // In GenericFileMapping.runForPosition()
+   public Run runForPosition(long sourcePosition) {
+     for (Run run : runs) {  // O(m) for each lookup
+       if (sourcePosition >= run.sourcePosition()
+           && sourcePosition < run.sourcePosition() + run.length()) {
+         return run;
+       }
+     }
+     return null;
+   }
+   ```
+
+   **Performance Impact:**
+   For a large compaction (1000 source files → 100 target files = 10,000 runs) with a large delete file (1M position deletes):
+   - Current: O(n*m) = 1M * 10K = **10 billion operations**
+   - Optimized: O(n + m) = 1M + 10K = **~1 million operations** (10,000x speedup)
+
+   **Proposed Optimization: Interval-to-Point Join**
+
+   This is a classic **interval-to-point join** problem that can be solved efficiently with several algorithms:
+
+   **A. Two-Pointer Stream-Based Join (O(n + m))**
+   When both runs and deletes are sorted by position:
+   ```java
+   // Sort runs by sourcePosition (or ensure they're stored sorted)
+   List<Run> sortedRuns = getSortedRuns();
+
+   // Min/max filtering: only load relevant regions
+   long minDeletePos = positionDeleteIndex.min();
+   long maxDeletePos = positionDeleteIndex.max();
+   List<Run> relevantRuns = sortedRuns.stream()
+       .filter(r -> r.sourcePosition() < maxDeletePos &&
+                    r.endPosition() > minDeletePos)
+       .collect(Collectors.toList());
+
+   // Stream through both in sorted order (single pass)
+   int runIndex = 0;
+   positionDeleteIndex.forEach(deletePos -> {
+     // Advance to next potentially containing run
+     while (runIndex < relevantRuns.size() &&
+            relevantRuns.get(runIndex).endPosition() <= deletePos) {
+       runIndex++;
+     }
+
+     if (runIndex < relevantRuns.size()) {
+       Run run = relevantRuns.get(runIndex);
+       if (run.contains(deletePos)) {
+         outputRemappedDelete(run.mapPosition(deletePos));
+       } else {
+         // Unmapped delete - row was filtered during compaction
+         handleFilteredRow(deletePos);
+       }
+     }
+   });
+   ```
+
+   **B. Interval Tree Index (O(n * log m))**
+   When runs are too large to sort or deletes are sparse:
+   ```java
+   // Build interval tree from runs (one-time O(m log m) cost)
+   IntervalTree<Run> runIndex = new IntervalTree<>();
+
+   // Min/max filtering: only index relevant runs
+   long minDeletePos = positionDeleteIndex.min();
+   long maxDeletePos = positionDeleteIndex.max();
+   for (Run run : runs) {
+     if (run.sourcePosition() < maxDeletePos &&
+         run.endPosition() > minDeletePos) {
+       runIndex.add(run.sourcePosition(), run.endPosition(), run);
+     }
+   }
+
+   // Query for each delete (O(log m) per lookup)
+   positionDeleteIndex.forEach(deletePos -> {
+     List<Run> overlapping = runIndex.query(deletePos);
+
+     // Validation: detect overlapping runs (corruption)
+     if (overlapping.size() > 1) {
+       throw new CorruptedCompactionMapException(
+         "Overlapping runs detected at position " + deletePos);
+     }
+
+     if (overlapping.isEmpty()) {
+       // Unmapped delete - row filtered during compaction
+       handleFilteredRow(deletePos);
+     } else {
+       outputRemappedDelete(overlapping.get(0).mapPosition(deletePos));
+     }
+   });
+   ```
+
+   **C. Range Query on Bitmap (O(m * log n))**
+   When runs are few but deletes are many:
+   ```java
+   // Extract min/max from runs
+   long minRunPos = runs.stream().mapToLong(Run::sourcePosition).min().orElse(0);
+   long maxRunPos = runs.stream().mapToLong(r -> r.endPosition()).max().orElse(0);
+
+   // Only load relevant region of delete bitmap
+   PositionDeleteIndex relevantDeletes =
+       positionDeleteIndex.getRange(minRunPos, maxRunPos);
+
+   // Iterate runs, query bitmap for positions in each range
+   for (Run run : runs) {
+     Set<Long> deletesInRange = relevantDeletes.getRange(
+         run.sourcePosition(),
+         run.sourcePosition() + run.length());
+
+     for (long sourcePos : deletesInRange) {
+       outputRemappedDelete(run.mapPosition(sourcePos));
+     }
+   }
+   ```
+
+   **Algorithm Selection:**
+   - **n >> m** (many deletes, few runs): Use interval tree on runs → O(n * log m)
+   - **m >> n** (many runs, few deletes): Use range queries on bitmap → O(m * log n)
+   - **n ≈ m** or both large: Use two-pointer sorted scan → O(n + m)
+
+   **Built-in Validation Benefits:**
+   - **Overlapping Runs Detection**: Interval tree naturally detects overlapping runs (corrupted maps)
+   - **Unmapped Deletes Detection**: Identifies positions not covered by any run (filtered rows)
+   - **Coverage Validation**: Tracks how many deletes were remapped vs filtered
+
+   **Min/Max Filtering Benefits:**
+   - Avoids loading entire compaction map into memory if only small region needed
+   - Avoids scanning entire position delete bitmap if only small region relevant
+   - Essential for large-scale production workloads with multi-GB delete files
+
+   **Workaround:** The current O(n*m) implementation is correct and works for small to medium workloads. For large-scale production use, consider batching deletes or using smaller compaction groups to reduce m.
+
 ### Design Considerations
 
 1. **Row-Level Position Granularity**
