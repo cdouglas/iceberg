@@ -227,9 +227,13 @@ public class RewriteDataFilesCommitManager {
       if (positionMappings != null && !positionMappings.isEmpty()) {
         // Use explicit position mappings from rewrite operation
         for (RewriteFileGroup.FilePositionMapping mapping : positionMappings.values()) {
-          builder
-              .addFileMapping(mapping.sourceFile(), mapping.targetFile())
-              .addRun(0L, mapping.targetOffset(), mapping.sourceRowCount());
+          CompactionMapBuilder.FileMappingBuilder fileMappingBuilder =
+              builder.addFileMapping(mapping.sourceFile(), mapping.targetFile());
+
+          // Add all runs (supports both single-run and multi-run mappings)
+          for (RewriteFileGroup.FilePositionMapping.Run run : mapping.runs()) {
+            fileMappingBuilder.addRun(run.sourceOffset(), run.targetOffset(), run.length());
+          }
         }
       } else {
         // Fallback: Simple bin-pack mapping for backward compatibility
