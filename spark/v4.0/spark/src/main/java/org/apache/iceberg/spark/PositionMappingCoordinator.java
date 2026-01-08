@@ -218,7 +218,7 @@ public class PositionMappingCoordinator {
   }
 
   private Pair<String, String> toId(Table table, String setId) {
-    return Pair.of(Spark3Util.baseTableUUID(table), setId);
+    return Pair.of(table.uuid().toString(), setId);
   }
 
   /** Represents a single position mapping from source to target. */
