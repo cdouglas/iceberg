@@ -725,4 +725,12 @@ public class SparkWriteConf {
         .defaultValue(DeleteGranularity.FILE)
         .parse();
   }
+
+  public boolean trackSourcePositions() {
+    return confParser
+        .booleanConf()
+        .option(SparkWriteOptions.TRACK_SOURCE_POSITIONS)
+        .defaultValue(SparkWriteOptions.TRACK_SOURCE_POSITIONS_DEFAULT)
+        .parse();
+  }
 }

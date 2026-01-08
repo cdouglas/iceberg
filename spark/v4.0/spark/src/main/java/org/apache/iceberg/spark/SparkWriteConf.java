@@ -270,6 +270,14 @@ public class SparkWriteConf {
         .parseOptional();
   }
 
+  public boolean trackSourcePositions() {
+    return confParser
+        .booleanConf()
+        .option(SparkWriteOptions.TRACK_SOURCE_POSITIONS)
+        .defaultValue(SparkWriteOptions.TRACK_SOURCE_POSITIONS_DEFAULT)
+        .parse();
+  }
+
   public SparkWriteRequirements writeRequirements() {
     if (ignoreTableDistributionAndOrdering()) {
       LOG.info("Skipping distribution/ordering: disabled per job configuration");
