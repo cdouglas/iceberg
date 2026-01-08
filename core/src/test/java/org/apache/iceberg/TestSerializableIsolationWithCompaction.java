@@ -39,8 +39,8 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Tests for SERIALIZABLE isolation level with compaction-aware conflict detection.
  *
- * <p>These tests verify that SERIALIZABLE isolation correctly handles concurrent REPLACE
- * operations (compactions) by distinguishing between:
+ * <p>These tests verify that SERIALIZABLE isolation correctly handles concurrent REPLACE operations
+ * (compactions) by distinguishing between:
  *
  * <ul>
  *   <li>Structural changes (with compaction maps) - should NOT cause read conflicts
@@ -283,7 +283,8 @@ public class TestSerializableIsolationWithCompaction {
         table
             .newRowDelta()
             .validateFromSnapshot(startingSnapshot)
-            .conflictDetectionFilter(Expressions.alwaysTrue()); // Reading data but SNAPSHOT isolation
+            .conflictDetectionFilter(
+                Expressions.alwaysTrue()); // Reading data but SNAPSHOT isolation
 
     // Add a NEW delete file
     DeleteFile deleteFile =

@@ -109,7 +109,8 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     }
 
     // Record position mapping
-    coordinator.recordMapping(table, fileSetId, sourceFile, sourcePos, currentTargetFile, outputPosition);
+    coordinator.recordMapping(
+        table, fileSetId, sourceFile, sourcePos, currentTargetFile, outputPosition);
 
     outputPosition++;
   }
