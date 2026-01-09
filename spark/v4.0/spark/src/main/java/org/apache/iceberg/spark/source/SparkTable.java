@@ -205,11 +205,30 @@ public class SparkTable
   }
 
   private Schema addLineageIfRequired(Schema schema) {
-    if (TableUtil.supportsRowLineage(icebergTable) && isTableRewrite) {
-      return MetadataColumns.schemaWithRowLineage(schema);
+    Schema result = schema;
+
+    // For position-tracked rewrites, use position tracking columns instead of row lineage
+    // because normal scans don't populate row lineage columns
+    if (isTableRewrite && isCompactionMapEnabled()) {
+      result =
+          org.apache.iceberg.types.TypeUtil.join(
+              result,
+              new org.apache.iceberg.Schema(
+                  org.apache.iceberg.MetadataColumns.FILE_PATH,
+                  org.apache.iceberg.MetadataColumns.ROW_POSITION));
+    } else if (TableUtil.supportsRowLineage(icebergTable) && isTableRewrite) {
+      // For normal rewrites (staged scans), use row lineage columns
+      result = MetadataColumns.schemaWithRowLineage(result);
     }
 
-    return schema;
+    return result;
+  }
+
+  private boolean isCompactionMapEnabled() {
+    return org.apache.iceberg.util.PropertyUtil.propertyAsBoolean(
+        icebergTable.properties(),
+        org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED,
+        org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT);
   }
 
   @Override

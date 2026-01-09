@@ -128,6 +128,16 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
             && (overwriteFiles || writeConf.rewrittenFileSetId() != null);
     boolean writeAlreadyIncludesLineage =
         dsSchema.exists(field -> field.name().equals(MetadataColumns.ROW_ID.name()));
+
+    // Build sparkWriteSchema (may include row lineage columns)
+    // Note: When position tracking is enabled, dsSchema will include _file and _pos metadata
+    // columns
+    // These are passed through to allow file writers to see the full row layout, but writeSchema
+    // (the Iceberg schema) does not include them, so they won't be written to data files
+    //
+    // TODO (Spark 4.0): This approach works in Spark 3.5 but causes IndexOutOfBoundsException
+    // in Spark 4.0 due to stricter schema validation in ParquetWithSparkSchemaVisitor.
+    // See spark/v4.0/docs/position_tracking_challenges.md for details.
     StructType sparkWriteSchema = dsSchema;
     if (writeRequiresRowLineage && !writeAlreadyIncludesLineage) {
       sparkWriteSchema = sparkWriteSchema.add(MetadataColumns.ROW_ID.name(), LongType$.MODULE$);
@@ -136,36 +146,15 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
               MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name(), LongType$.MODULE$);
     }
 
-    // When position tracking is enabled for rewrites, add _file and _pos columns
-    // so Spark's analyzer accepts them (they'll be stripped by PositionTrackingDataWriter)
-    boolean writeRequiresPositionTracking =
+    // When position tracking is enabled for rewrites, dsSchema includes _file and _pos
+    // Pass this info to validateOrMergeWriteSchema so it can filter them out when creating
+    // writeSchema
+    boolean writeIncludesPositionTracking =
         writeConf.trackSourcePositions() && writeConf.rewrittenFileSetId() != null;
-    boolean writeAlreadyIncludesFilePos =
-        dsSchema.exists(field -> field.name().equals(MetadataColumns.FILE_PATH.name()));
-
-    System.err.println("[DEBUG] writeRequiresPositionTracking=" + writeRequiresPositionTracking +
-                       ", writeAlreadyIncludesFilePos=" + writeAlreadyIncludesFilePos +
-                       ", trackSourcePositions=" + writeConf.trackSourcePositions() +
-                       ", rewrittenFileSetId=" + writeConf.rewrittenFileSetId());
-    System.err.println("[DEBUG] dsSchema fields: " + java.util.Arrays.toString(dsSchema.fieldNames()));
-
-    if (writeRequiresPositionTracking) {
-      if (!writeAlreadyIncludesFilePos) {
-        sparkWriteSchema =
-            sparkWriteSchema.add(
-                MetadataColumns.FILE_PATH.name(), org.apache.spark.sql.types.DataTypes.StringType);
-        sparkWriteSchema =
-            sparkWriteSchema.add(
-                MetadataColumns.ROW_POSITION.name(), LongType$.MODULE$);
-      }
-      // Even if the columns are already in dsSchema (from selectExpr), we need to ensure
-      // position tracking is enabled in the write schema validation
-      // The writeIncludesPositionTracking flag is used in validateOrMergeWriteSchema
-    }
 
     Schema writeSchema =
         validateOrMergeWriteSchema(
-            table, sparkWriteSchema, writeConf, writeRequiresRowLineage, writeRequiresPositionTracking);
+            table, dsSchema, writeConf, writeRequiresRowLineage, writeIncludesPositionTracking);
 
     SparkUtil.validatePartitionTransforms(table.spec());
 
@@ -246,14 +235,16 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
         mergedSchema =
             TypeUtil.join(mergedSchema, MetadataColumns.schemaWithRowLineage(table.schema()));
       }
-      if (writeIncludesPositionTracking) {
-        mergedSchema =
-            TypeUtil.join(
-                mergedSchema, new Schema(MetadataColumns.FILE_PATH, MetadataColumns.ROW_POSITION));
-      }
+      // Note: Position tracking columns (_file, _pos) are NOT added to the write schema
+      // because they are read-only metadata and should not be written to data files.
+      // They are extracted by PositionTrackingDataWriter before writing.
 
       // reconvert the dsSchema without assignment to use the ids assigned by UpdateSchema
-      writeSchema = SparkSchemaUtil.convert(mergedSchema, dsSchema, caseSensitive);
+      // Filter out position tracking columns from dsSchema when creating writeSchema
+      // This ensures _file and _pos are not added to the table schema
+      StructType filteredDsSchema =
+          writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
+      writeSchema = SparkSchemaUtil.convert(mergedSchema, filteredDsSchema, caseSensitive);
 
       TypeUtil.validateWriteSchema(
           mergedSchema, writeSchema, writeConf.checkNullability(), writeConf.checkOrdering());
@@ -265,16 +256,38 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       if (writeIncludesRowLineage) {
         schema = MetadataColumns.schemaWithRowLineage(schema);
       }
-      if (writeIncludesPositionTracking) {
-        schema =
-            TypeUtil.join(
-                schema, new Schema(MetadataColumns.FILE_PATH, MetadataColumns.ROW_POSITION));
-      }
-      writeSchema = SparkSchemaUtil.convert(schema, dsSchema, caseSensitive);
+      // Note: Position tracking columns (_file, _pos) are NOT added to the write schema
+      // because they are read-only metadata and should not be written to data files.
+      // They are extracted by PositionTrackingDataWriter before writing.
+
+      // Filter out position tracking columns from dsSchema when creating writeSchema
+      StructType filteredDsSchema =
+          writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
+      writeSchema = SparkSchemaUtil.convert(schema, filteredDsSchema, caseSensitive);
       TypeUtil.validateWriteSchema(
           table.schema(), writeSchema, writeConf.checkNullability(), writeConf.checkOrdering());
     }
 
     return writeSchema;
+  }
+
+  /**
+   * Filters out position tracking metadata columns (_file and _pos) from a Spark schema.
+   *
+   * <p>These columns are used for tracking source positions during rewrites but should not be
+   * written to data files.
+   */
+  private static StructType filterPositionTrackingColumns(StructType schema) {
+    java.util.List<org.apache.spark.sql.types.StructField> filteredFields =
+        new java.util.ArrayList<>();
+    for (org.apache.spark.sql.types.StructField field : schema.fields()) {
+      String fieldName = field.name();
+      if (!fieldName.equals(MetadataColumns.FILE_PATH.name())
+          && !fieldName.equals(MetadataColumns.ROW_POSITION.name())) {
+        filteredFields.add(field);
+      }
+    }
+    return org.apache.spark.sql.types.DataTypes.createStructType(
+        filteredFields.toArray(new org.apache.spark.sql.types.StructField[0]));
   }
 }

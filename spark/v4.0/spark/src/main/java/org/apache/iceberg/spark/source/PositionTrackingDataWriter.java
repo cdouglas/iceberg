@@ -43,6 +43,11 @@ import org.slf4j.LoggerFactory;
  *   <li>Record (sourceFile, inputPos, targetFile, outputPos) to PositionMappingCoordinator
  *   <li>Project away metadata columns before delegating to wrapped writer
  * </ul>
+ *
+ * <p><b>TODO (Spark 4.0):</b> This implementation is incomplete for Spark 4.0. It mirrors the
+ * working Spark 3.5 version but hits IndexOutOfBoundsException during Parquet writer creation due
+ * to stricter schema validation in Spark 4.0. See spark/v4.0/docs/position_tracking_challenges.md
+ * for details and potential solutions.
  */
 class PositionTrackingDataWriter implements DataWriter<InternalRow> {
   private static final Logger LOG = LoggerFactory.getLogger(PositionTrackingDataWriter.class);
@@ -53,7 +58,6 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
   private final String fileSetId;
   private final int fileOrdinal;
   private final int posOrdinal;
-  private final int numDataColumns;
 
   private long outputPosition = 0;
   private String currentTargetFile = null;
@@ -77,9 +81,6 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     this.fileOrdinal = dsSchema.fieldIndex("_file");
     this.posOrdinal = dsSchema.fieldIndex("_pos");
 
-    // Calculate number of data columns (excluding metadata)
-    this.numDataColumns = dsSchema.size() - 2; // exclude _file and _pos
-
     LOG.debug(
         "Created PositionTrackingDataWriter for fileSetId={}, fileOrdinal={}, posOrdinal={}",
         fileSetId,
@@ -93,11 +94,10 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     String sourceFile = row.getUTF8String(fileOrdinal).toString();
     long sourcePos = row.getLong(posOrdinal);
 
-    // Project away metadata columns to get clean data row
-    InternalRow cleanRow = projectDataColumns(row);
-
-    // Write the clean row through delegate
-    delegate.write(cleanRow);
+    // Write the full row through delegate
+    // The delegate writer's schema determines which columns are actually written
+    // The metadata columns (_file, _pos) are not in the writer's schema so they'll be ignored
+    delegate.write(row);
 
     // Track target file (may change on file roll-over)
     // We'll get the current target file path from the delegate's context
@@ -113,27 +113,6 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
         table, fileSetId, sourceFile, sourcePos, currentTargetFile, outputPosition);
 
     outputPosition++;
-  }
-
-  /**
-   * Projects away metadata columns (_file, _pos) to extract only data columns.
-   *
-   * <p>Creates a new InternalRow with only the first numDataColumns fields.
-   */
-  private InternalRow projectDataColumns(InternalRow row) {
-    // Create a new row with only data columns (excluding _file and _pos at the end)
-    Object[] values = new Object[numDataColumns];
-    for (int i = 0; i < numDataColumns; i++) {
-      // Copy each field - need to handle different types
-      if (row.isNullAt(i)) {
-        values[i] = null;
-      } else {
-        // For simplicity, use generic get() - this works for most types
-        // In production, would need type-specific getters for performance
-        values[i] = row.get(i, null);
-      }
-    }
-    return new org.apache.spark.sql.catalyst.expressions.GenericInternalRow(values);
   }
 
   @Override

@@ -36,16 +36,13 @@ import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.actions.ActionsProvider;
 import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
 import org.apache.iceberg.hadoop.HadoopTables;
-import org.apache.iceberg.actions.ActionsProvider;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.iceberg.spark.SparkCatalog;
 import org.apache.iceberg.spark.TestBase;
-import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.data.TestHelpers;
 import org.apache.iceberg.types.Types;
 import org.apache.spark.sql.Dataset;
@@ -58,6 +55,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Integration tests for bin-pack rewrites with compaction maps enabled.
+ *
+ * <p><b>TODO (Spark 4.0):</b> These tests are currently FAILING in Spark 4.0 due to schema
+ * validation issues during Parquet writer creation. Position tracking works correctly in Spark 3.5.
+ * See spark/v4.0/docs/position_tracking_challenges.md for details.
  *
  * <p>NOTE: These tests verify that bin-pack rewrites complete successfully when compaction map
  * generation is enabled. Full end-to-end position tracking requires read-side implementation of
@@ -409,8 +410,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
     // Create DataFrame with records
     java.util.List<org.apache.spark.sql.Row> rows = new java.util.ArrayList<>();
     for (int i = 0; i < count; i++) {
-      rows.add(
-          org.apache.spark.sql.RowFactory.create(startId + i, "data" + (startId + i)));
+      rows.add(org.apache.spark.sql.RowFactory.create(startId + i, "data" + (startId + i)));
     }
 
     org.apache.spark.sql.types.StructType sparkSchema =
@@ -419,11 +419,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
             .add("data", org.apache.spark.sql.types.DataTypes.StringType, true);
 
     Dataset<Row> df = spark.createDataFrame(rows, sparkSchema);
-    df.coalesce(1)
-        .write()
-        .format("iceberg")
-        .mode(SaveMode.Append)
-        .save(tableLocation);
+    df.coalesce(1).write().format("iceberg").mode(SaveMode.Append).save(tableLocation);
   }
 
   private void writeRecordsPartitioned(Table table, int partition, int fileId, int count) {

@@ -54,6 +54,7 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
   private final int fileOrdinal;
   private final int posOrdinal;
   private final int numDataColumns;
+  private final StructType dsSchema;
 
   private long outputPosition = 0;
   private String currentTargetFile = null;
@@ -72,6 +73,7 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     this.coordinator = PositionMappingCoordinator.get();
     this.table = table;
     this.fileSetId = fileSetId;
+    this.dsSchema = dsSchema;
 
     // Find ordinals of metadata columns _file and _pos
     this.fileOrdinal = dsSchema.fieldIndex("_file");
@@ -93,11 +95,10 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     String sourceFile = row.getUTF8String(fileOrdinal).toString();
     long sourcePos = row.getLong(posOrdinal);
 
-    // Project away metadata columns to get clean data row
-    InternalRow cleanRow = projectDataColumns(row);
-
-    // Write the clean row through delegate
-    delegate.write(cleanRow);
+    // Write the full row through delegate
+    // The delegate writer's schema determines which columns are actually written
+    // The metadata columns (_file, _pos) are not in the writer's schema so they'll be ignored
+    delegate.write(row);
 
     // Track target file (may change on file roll-over)
     // We'll get the current target file path from the delegate's context
@@ -112,27 +113,6 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     coordinator.recordMapping(table, fileSetId, sourceFile, sourcePos, currentTargetFile, outputPosition);
 
     outputPosition++;
-  }
-
-  /**
-   * Projects away metadata columns (_file, _pos) to extract only data columns.
-   *
-   * <p>Creates a new InternalRow with only the first numDataColumns fields.
-   */
-  private InternalRow projectDataColumns(InternalRow row) {
-    // Create a new row with only data columns (excluding _file and _pos at the end)
-    Object[] values = new Object[numDataColumns];
-    for (int i = 0; i < numDataColumns; i++) {
-      // Copy each field - need to handle different types
-      if (row.isNullAt(i)) {
-        values[i] = null;
-      } else {
-        // For simplicity, use generic get() - this works for most types
-        // In production, would need type-specific getters for performance
-        values[i] = row.get(i, null);
-      }
-    }
-    return new org.apache.spark.sql.catalyst.expressions.GenericInternalRow(values);
   }
 
   @Override
