@@ -33,6 +33,7 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.IsolationLevel;
+import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.OverwriteFiles;
 import org.apache.iceberg.PartitionKey;
 import org.apache.iceberg.PartitionSpec;
@@ -721,11 +722,18 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
               .format(format)
               .operationId(operationId)
               .build();
+      // Filter metadata columns from dsSchema if position tracking is enabled
+      // Position tracking columns (_file, _pos) are in dsSchema for PositionTrackingDataWriter
+      // but should not be passed to file writer factory
+      StructType dsSchemaForWriter = trackSourcePositions && fileSetId != null
+          ? filterPositionTrackingColumns(dsSchema)
+          : dsSchema;
+
       SparkFileWriterFactory writerFactory =
           SparkFileWriterFactory.builderFor(table)
               .dataFileFormat(format)
               .dataSchema(writeSchema)
-              .dataSparkType(dsSchema)
+              .dataSparkType(dsSchemaForWriter)
               .writeProperties(writeProperties)
               .build();
 
@@ -757,6 +765,26 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       }
 
       return writer;
+    }
+
+    /**
+     * Filters out position tracking metadata columns (_file and _pos) from a Spark schema.
+     *
+     * <p>These columns are used for tracking source positions during rewrites but should not
+     * be written to data files.
+     */
+    private static StructType filterPositionTrackingColumns(StructType schema) {
+      java.util.List<org.apache.spark.sql.types.StructField> filteredFields =
+          new java.util.ArrayList<>();
+      for (org.apache.spark.sql.types.StructField field : schema.fields()) {
+        String fieldName = field.name();
+        if (!fieldName.equals(MetadataColumns.FILE_PATH.name())
+            && !fieldName.equals(MetadataColumns.ROW_POSITION.name())) {
+          filteredFields.add(field);
+        }
+      }
+      return org.apache.spark.sql.types.DataTypes.createStructType(
+          filteredFields.toArray(new org.apache.spark.sql.types.StructField[0]));
     }
   }
 

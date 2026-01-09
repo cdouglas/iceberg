@@ -120,33 +120,71 @@ To verify the performance impact:
 
 ### Issue
 
-Position tracking is **not implemented for Spark 4.0**. The feature works correctly in Spark 3.5 but is blocked in Spark 4.0 due to stricter schema validation.
+Position tracking is **not fully implemented for Spark 4.0**. The feature works correctly in Spark 3.5 but is only partially working in Spark 4.0 due to complex interactions between metadata columns, row lineage, and stricter schema validation.
 
 ### Impact
 
-**Functionality: Spark 4.0 users cannot use position tracking**
+**Functionality: Spark 4.0 users have limited position tracking support**
+- ✅ Format version 2 (without row lineage): Works for both Parquet and ORC
+- ❌ Format version 3 (with row lineage): Fails with IndexOutOfBoundsException
 - Compaction maps can still be read/validated/remapped (core infrastructure works)
-- Compaction maps cannot be generated during Spark 4.0 rewrites
-- Users must use Spark 3.5 or wait for Spark 4.0 support
+- Users needing v3 must use Spark 3.5 or wait for full Spark 4.0 support
 
 ### Why This Choice Was Made
 
-Spark 4.0 introduced stricter schema validation during Parquet writer creation that breaks the approach used in Spark 3.5:
+Spark 4.0 introduced stricter schema validation that interacts poorly with metadata columns and row lineage:
+
+**Spark 3.5 Fix (Simple):**
+```java
+// Filter _file and _pos before passing to SparkFileWriterFactory
+StructType dsSchemaForWriter = trackSourcePositions && fileSetId != null
+    ? filterPositionTrackingColumns(dsSchema)
+    : dsSchema;
+
+SparkFileWriterFactory writerFactory =
+    SparkFileWriterFactory.builderFor(table)
+        .dataSparkType(dsSchemaForWriter)  // Filtered schema
+        .build();
+
+// Keep original dsSchema for PositionTrackingDataWriter
+if (trackSourcePositions && fileSetId != null) {
+    writer = new PositionTrackingDataWriter(writer, table, fileSetId, dsSchema);
+}
+```
+
+**Spark 4.0 Complexity:**
+
+Format version 2 works with the same approach, but format version 3 fails:
 
 ```
-Spark 3.5 Behavior (Working):
+Format Version 2 (Working):
 DataFrame: [id, data, _file, _pos]  (4 columns)
+After filtering: [id, data]         (2 columns)
 Parquet Schema: [id, data]          (2 columns)
 Writer Creation: ✅ Succeeds
-Row Write: Writer ignores _file and _pos columns ✅
 
-Spark 4.0 Behavior (Broken):
-DataFrame: [id, data, _file, _pos]  (4 columns)
-Parquet Schema: [id, data]          (2 columns)
-Writer Creation: ❌ IndexOutOfBoundsException
-  at ParquetWithSparkSchemaVisitor.visitFields(line 196)
+Format Version 3 (Broken):
+DataFrame: [id, data, _file, _pos, _row_id, _last_updated_sequence_number]  (6 columns)
+After filtering: [id, data, _row_id, _last_updated_sequence_number]         (4 columns)
+Parquet Schema: [id, data]                                                   (2 columns)
+Writer Creation: ❌ IndexOutOfBoundsException at ParquetWithSparkSchemaVisitor.visitFields:196
   "Index 2 out of bounds for length 2"
 ```
+
+**Root Cause:**
+
+The issue is in how Spark 4.0 constructs the write schema path:
+1. SparkWriteBuilder creates `sparkWriteSchema` from dsSchema + optional row lineage columns
+2. This schema is passed to SparkWrite constructor
+3. SparkWrite filters _file/_pos when creating SparkFileWriterFactory
+4. But row lineage columns (_row_id, _last_updated_sequence_number) remain in the schema
+5. ParquetWithSparkSchemaVisitor expects Spark schema and Parquet schema to match field counts
+6. Spark schema has 4 fields, Parquet schema has 2 → IndexOutOfBoundsException
+
+**The Dilemma:**
+- SparkFileWriterFactory needs: [id, data] (data columns only)
+- PositionTrackingDataWriter needs: [id, data, _file, _pos, _row_id, _last_updated_sequence_number] (all columns)
+- Current filtering removes _file/_pos but leaves row lineage, causing mismatch
 
 The error occurs during writer creation, before any rows are written, making runtime row projection ineffective.
 
@@ -161,81 +199,133 @@ See [`spark/v4.0/docs/position_tracking_challenges.md`](../../spark/v4.0/docs/po
 
 ### What Needs to Be Done
 
-**Recommended Approach: Lenient Schema Matching**
+**Primary Challenge: Row Lineage Column Handling**
 
-Modify `ParquetWithSparkSchemaVisitor.visitFields()` to skip trailing columns in DataFrame schema that aren't in Parquet schema:
+The core issue is that row lineage columns are treated like data columns but shouldn't be written to Parquet files. Several potential solutions:
 
+**Option 1: Filter Row Lineage from dataSparkType (Most Direct)**
+
+Modify SparkWrite to filter both position tracking AND row lineage columns:
 ```java
-// Current code (strict validation)
-for (StructField sField : struct.fields()) {
-  if (sField.dataType() != DataTypes.NullType) {
-    Type field = group.getFields().get(fieldIndex);  // ❌ Throws if fieldIndex >= group size
-    ...
+private static StructType filterMetadataColumns(StructType schema) {
+  List<StructField> filteredFields = new ArrayList<>();
+  for (StructField field : schema.fields()) {
+    String fieldName = field.name();
+    // Filter position tracking columns
+    if (fieldName.equals(MetadataColumns.FILE_PATH.name()) ||
+        fieldName.equals(MetadataColumns.ROW_POSITION.name())) {
+      continue;
+    }
+    // Filter row lineage columns
+    if (fieldName.equals(MetadataColumns.ROW_ID.name()) ||
+        fieldName.equals(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name())) {
+      continue;
+    }
+    filteredFields.add(field);
   }
+  return DataTypes.createStructType(filteredFields.toArray(new StructField[0]));
 }
+```
 
-// Proposed fix (lenient for trailing metadata)
+**Challenge:** This requires understanding why row lineage columns are in dsSchema but not in writeSchema, and ensuring the filtering doesn't break other Spark 4.0 features that depend on row lineage.
+
+**Option 2: Lenient Schema Matching in ParquetWithSparkSchemaVisitor**
+
+Modify `ParquetWithSparkSchemaVisitor.visitFields()` to allow trailing metadata columns:
+```java
+// Allow Spark schema to have more fields than Parquet schema
 for (int i = 0; i < struct.fields().length; i++) {
   StructField sField = struct.fields()[i];
   if (sField.dataType() != DataTypes.NullType) {
     if (fieldIndex >= group.getFieldCount()) {
-      // Skip trailing metadata columns not in Parquet schema
-      break;  // ✅ Allow extra columns
+      break;  // Skip trailing metadata columns
     }
     Type field = group.getFields().get(fieldIndex);
-    ...
+    // ... rest of validation
   }
 }
 ```
 
-This would align Spark 4.0 behavior with Spark 3.5 while maintaining backward compatibility.
+**Risk:** This changes Parquet writer behavior system-wide, not just for position tracking. Could mask legitimate schema mismatch errors.
 
-**Alternative Approaches:**
+**Option 3: Separate Schema Paths for Position Tracking**
 
-See the detailed document for other options including:
-- Custom metadata column mechanism (high effort)
-- Two-phase writer wrapping (complex)
-- Different read strategy (unclear feasibility)
+Redesign to avoid metadata columns in write schemas entirely:
+- Position tracking uses separate communication channel (not DataFrame columns)
+- Metadata passed via Spark accumulators or broadcast variables
+- File writers remain unaware of position tracking
+
+**Complexity:** Requires significant architectural changes, affects multiple components.
 
 ### Current State
 
-**Spark 4.0 code structure:**
-- ✅ All classes implemented (mirrors Spark 3.5)
-- ✅ Comprehensive TODO comments explaining blocker
-- ✅ Tests exist (currently failing with documented error)
-- ❌ Non-functional due to schema validation blocker
+**Spark 4.0 implementation status:**
+- ✅ All classes implemented (mirrors Spark 3.5 structure)
+- ✅ Schema filtering logic implemented in SparkWrite.buildWriter()
+- ✅ Format version 2 (Parquet and ORC): **WORKING**
+- ❌ Format version 3 (Parquet and ORC): Fails due to row lineage column mismatch
+- ✅ Comprehensive TODO comments explaining row lineage blocker
+- ⚠️ Tests partially passing (v2 works, v3 fails)
 
-**Code locations with TODO comments:**
+**Attempted fixes (all unsuccessful for v3):**
+1. Filtering in SparkWriteBuilder before passing to SparkWrite
+   - **Issue:** PositionTrackingDataWriter loses access to _file/_pos columns
+2. Filtering in SparkWrite.buildWriter() before creating file writer factory
+   - **Issue:** Row lineage columns still present, causing schema mismatch
+3. Using cached dataSparkType vs. recomputing from dataSchema
+   - **Issue:** Both paths have the same schema mismatch problem
+
+**Code locations with filtering logic:**
 ```
-spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/source/PositionTrackingDataWriter.java
+spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/source/SparkWrite.java
+  Lines 725-738: Schema filtering before SparkFileWriterFactory creation
+  Lines 776-788: filterPositionTrackingColumns() helper method
+
 spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/source/SparkWriteBuilder.java
+  Lines 132-142: Comment explaining dsSchema passthrough for PositionTrackingDataWriter
+
 spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/actions/SparkBinPackFileRewriteRunner.java
+  Lines 43-54: TODO comment about format version 3 blocker
+
 spark/v4.0/spark/src/test/java/org/apache/iceberg/spark/actions/TestBinPackWithPositionTracking.java
+  All test methods: 2/4 pass (v2), 2/4 fail (v3)
 ```
 
 ### Workaround
 
-**For users needing compaction maps with Spark:**
-- Use Spark 3.5 for rewrites that generate compaction maps
-- Spark 4.0 can still read and use existing compaction maps
+**For users needing compaction maps with Spark 4.0:**
+- ✅ **Format version 2 tables**: Position tracking fully functional
+- ❌ **Format version 3 tables**: Use Spark 3.5 for rewrites that generate compaction maps
+- Spark 4.0 can read and use existing compaction maps (all versions)
 - Core infrastructure (remapping, validation) works in all versions
 
 **For developers:**
-- Test position tracking features using Spark 3.5
-- Spark 4.0 tests serve as regression suite for when blocker is fixed
+- Use Spark 3.5 for complete test coverage
+- Spark 4.0 v2 tests demonstrate partial success
+- Spark 4.0 v3 tests serve as regression suite for when blocker is fixed
 - Keep Spark 4.0 code synchronized with Spark 3.5 improvements
 
 ### Validation
 
-To verify Spark 4.0 still hits the blocker:
+To verify current Spark 4.0 status:
 ```bash
-# This test should fail with IndexOutOfBoundsException
+# Run all tests - v2 passes, v3 fails
 ./gradlew :iceberg-spark:iceberg-spark-4.0_2.13:test \
   --tests "TestBinPackWithPositionTracking.testBinPackGeneratesCompactionMapWithoutDeletes"
 
-# Expected error:
-# java.lang.IndexOutOfBoundsException: Index 2 out of bounds for length 2
+# Expected results:
+# ✅ PASSED: formatVersion = 2, format = PARQUET
+# ✅ PASSED: formatVersion = 2, format = ORC
+# ❌ FAILED: formatVersion = 3, format = PARQUET
+#   Error: java.lang.IndexOutOfBoundsException: Index 2 out of bounds for length 2
 #   at ParquetWithSparkSchemaVisitor.visitFields(ParquetWithSparkSchemaVisitor.java:196)
+# ❌ FAILED: formatVersion = 3, format = ORC
+#   Error: No such struct field `_file` in `id`, `data`, `_row_id`, `_last_updated_sequence_number`
+
+# Test format version 2 specifically (should pass)
+./gradlew :iceberg-spark:iceberg-spark-4.0_2.13:test \
+  --tests "TestBinPackWithPositionTracking" \
+  -Dtest.single=testBinPackGeneratesCompactionMapWithoutDeletes[0]  # v2 Parquet
 ```
 
 ---
@@ -406,7 +496,7 @@ See test cases demonstrating manual resolution:
 | Issue | Impact | Status | Priority |
 |-------|--------|--------|----------|
 | Normal scans vs staged scans | 10-20% performance overhead | Documented, acceptable | Medium |
-| Spark 4.0 support deferred | Feature unavailable in Spark 4.0 | Comprehensive analysis done | High |
+| Spark 4.0 format v3 blocker | Format v3 unavailable in Spark 4.0 (v2 works) | Comprehensive analysis done, row lineage issue identified | High |
 | Bin-pack only position tracking | Rewrite-time reordering unsupported (sorted/Z-ordered) | Merge compactions work | Low |
 | Manual conflict resolution | Requires application code | Well-documented pattern | Low |
 
@@ -416,7 +506,11 @@ If you'd like to help address any of these issues:
 
 1. **Normal Scans Performance:** Start with `docs/staged_scan_investigation.md` to understand why staged scans fail, then investigate fixes in Iceberg's staged scan implementation.
 
-2. **Spark 4.0 Support:** Read `spark/v4.0/docs/position_tracking_challenges.md` for detailed analysis, then prototype the recommended solution (lenient schema matching in `ParquetWithSparkSchemaVisitor`).
+2. **Spark 4.0 Format v3 Support:** The core challenge is handling row lineage columns in the schema. Potential approaches:
+   - Extend `filterPositionTrackingColumns()` to also filter row lineage columns (Option 1 above)
+   - Modify `ParquetWithSparkSchemaVisitor` for lenient trailing column handling (Option 2 above)
+   - Investigate why row lineage columns are in dsSchema but not in Parquet schema for v3
+   - Read `spark/v4.0/docs/position_tracking_challenges.md` for background context
 
 3. **Comprehensive Testing (Highest Priority):** Write Spark 3.5 test suite to verify:
    - Bin-pack rewrites with position deletes (merge compactions)
