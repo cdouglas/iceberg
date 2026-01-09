@@ -737,13 +737,23 @@ BaseRowDelta.validate()
 
 ### What Remains
 
-The core infrastructure is complete and functional. The primary remaining work is:
+The core infrastructure is complete and functional. Spark-level position tracking is **WORKING in Spark 3.5** and provides full compaction map generation with accurate run-based tracking.
+
+See [Compaction Maps Errata](compaction_maps_errata.md) for implementation shortcuts and known issues.
 
 ## Future Work
 
-### Spark-Level Position Tracking
+### Spark 4.0 Support
 
-While compaction maps can be generated with fallback logic for simple bin-pack operations, full position tracking during Spark rewrites would enable accurate maps for all scenarios:
+Position tracking is currently incomplete for Spark 4.0 due to stricter schema validation during Parquet writer creation. The implementation works correctly in Spark 3.5.
+
+**Blocker:** `ParquetWithSparkSchemaVisitor` validates that DataFrame schema and Parquet schema match exactly during writer creation. When the DataFrame includes metadata columns (`_file`, `_pos`) but the Parquet schema doesn't, it throws `IndexOutOfBoundsException`.
+
+See [`spark/v4.0/docs/position_tracking_challenges.md`](../../spark/v4.0/docs/position_tracking_challenges.md) for detailed analysis and potential solutions.
+
+### Full Position Tracking for Complex Rewrites
+
+While Spark 3.5 position tracking works for bin-pack operations, full position tracking during filtered/sorted rewrites would enable accurate maps for all scenarios:
 
 1. **Explicit Position Tracking in Spark Writers**
    - Track source file + row position during read
@@ -1099,6 +1109,20 @@ Currently, conflicts are detected and reported but not automatically resolved:
 
 ## Spark Implementation Details
 
+### Implementation Status by Version
+
+**Spark 3.5: ✅ WORKING**
+- Position tracking fully implemented and functional
+- Compaction maps generated with accurate run-based position mappings
+- All components integrated and tested
+- See implementation in `spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/`
+
+**Spark 4.0: ❌ INCOMPLETE**
+- Blocked by stricter schema validation during Parquet writer creation
+- Code structure mirrors Spark 3.5 but hits `IndexOutOfBoundsException`
+- Comprehensive documentation of blocker and potential solutions
+- See [`spark/v4.0/docs/position_tracking_challenges.md`](../../spark/v4.0/docs/position_tracking_challenges.md)
+
 ### Scan Type Selection
 
 Spark bin-pack rewrites use different scan types depending on whether position tracking is enabled:
@@ -1109,7 +1133,7 @@ Spark bin-pack rewrites use different scan types depending on whether position t
 - No manifest re-scanning required
 - Optimal performance (~10-20% faster)
 
-**Position Tracking Enabled (Compaction Maps):**
+**Position Tracking Enabled (Compaction Maps - Spark 3.5):**
 - Uses **normal scans** (`SparkScanBuilder` → `SparkBatchQueryScan`)
 - Filters to specific file paths using `_file = 'path'` predicates
 - Explicitly selects `_file` and `_pos` metadata columns
@@ -1121,11 +1145,12 @@ Staged scans don't properly expose metadata columns to Spark's physical planner.
 
 Normal scans fully support metadata columns through Spark's `SupportsMetadataColumns` interface and preserve them through the entire query planning pipeline.
 
-See [`docs/staged_scan_investigation.md`](../../docs/staged_scan_investigation.md) for detailed investigation findings.
+See [`docs/staged_scan_investigation.md`](../../docs/staged_scan_investigation.md) for detailed investigation findings and [`compaction_maps_errata.md`](compaction_maps_errata.md) for implementation tradeoffs.
 
 **Code Location:**
 ```java
-// spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/actions/SparkBinPackFileRewriteRunner.java
+// spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkBinPackFileRewriteRunner.java
+// (Spark 4.0 has similar code but is non-functional)
 
 if (trackPositions) {
   // Build file filter for rewrite group
