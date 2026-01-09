@@ -77,7 +77,21 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
               .map(path -> String.format("_file = '%s'", path.replace("'", "\\'")))
               .collect(java.util.stream.Collectors.joining(" OR "));
 
-      // Read with normal scan, explicitly selecting metadata columns
+      // Build column list: data columns + metadata columns
+      // We explicitly list data columns to avoid including row lineage columns (_row_id, etc)
+      // that normal scans don't populate
+      java.util.List<String> dataColumns =
+          table().schema().columns().stream()
+              .map(field -> field.name())
+              .collect(java.util.stream.Collectors.toList());
+
+      java.util.List<String> selectColumns = new java.util.ArrayList<>(dataColumns);
+      selectColumns.add("_file");
+      selectColumns.add("_pos");
+
+      String[] selectExprs = selectColumns.toArray(new String[0]);
+
+      // Read with normal scan, explicitly selecting data + metadata columns
       scanDF =
           spark()
               .read()
@@ -87,7 +101,7 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
               .option(SparkReadOptions.TRACK_SOURCE_POSITIONS, String.valueOf(trackPositions))
               .load(table().location())
               .where(fileFilter)
-              .selectExpr("*", "_file", "_pos");
+              .selectExpr(selectExprs);
 
     } else {
       // Use efficient staged scan path when position tracking is disabled

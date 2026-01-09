@@ -142,6 +142,13 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
         writeConf.trackSourcePositions() && writeConf.rewrittenFileSetId() != null;
     boolean writeAlreadyIncludesFilePos =
         dsSchema.exists(field -> field.name().equals(MetadataColumns.FILE_PATH.name()));
+
+    System.err.println("[DEBUG] writeRequiresPositionTracking=" + writeRequiresPositionTracking +
+                       ", writeAlreadyIncludesFilePos=" + writeAlreadyIncludesFilePos +
+                       ", trackSourcePositions=" + writeConf.trackSourcePositions() +
+                       ", rewrittenFileSetId=" + writeConf.rewrittenFileSetId());
+    System.err.println("[DEBUG] dsSchema fields: " + java.util.Arrays.toString(dsSchema.fieldNames()));
+
     if (writeRequiresPositionTracking) {
       if (!writeAlreadyIncludesFilePos) {
         sparkWriteSchema =
