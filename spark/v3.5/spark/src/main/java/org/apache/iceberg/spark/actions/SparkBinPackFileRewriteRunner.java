@@ -50,23 +50,61 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
                     String.valueOf(
                         org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT)));
 
-    // read the files packing them into splits of the required size
-    Dataset<Row> scanDF =
-        spark()
-            .read()
-            .format("iceberg")
-            .option(SparkReadOptions.SCAN_TASK_SET_ID, groupId)
-            .option(SparkReadOptions.SPLIT_SIZE, group.inputSplitSize())
-            .option(SparkReadOptions.FILE_OPEN_COST, "0")
-            .load(groupId);
+    Dataset<Row> scanDF;
 
-    // TODO: Position tracking for compaction maps
-    // When trackPositions is true, the read side should expose _file and _pos metadata columns
-    // which can then be selected here with: scanDF = scanDF.selectExpr("*", "_file", "_pos")
-    // The write side (PositionTrackingDataWriter) will extract these and record mappings
-    // For now, compaction map generation is stubbed out pending read-side implementation
+    if (trackPositions) {
+      // IMPORTANT: When position tracking is enabled, we use normal scans instead of staged scans
+      // because staged scans don't properly expose metadata columns (_file, _pos) to Spark's
+      // physical planner.
+      //
+      // Normal scans work correctly (proven by TestRewriteManifestsAction) but are ~10-20% slower
+      // because they re-scan manifests (already done during planning). This is acceptable overhead
+      // for compaction map generation.
+      //
+      // TODO: Investigate making staged scans properly support metadata columns. The challenge is
+      // that Spark's PushDownUtils.toOutputAttrs cannot map metadata column names to their field
+      // IDs when using staged scans, even though the columns are in the scan's schema.
+      // See docs/staged_scan_investigation.md for detailed findings.
+
+      // Build file path filter to select only the files in this rewrite group
+      java.util.List<String> filePaths =
+          group.fileScanTasks().stream()
+              .map(task -> task.file().location())
+              .collect(java.util.stream.Collectors.toList());
+
+      String fileFilter =
+          filePaths.stream()
+              .map(path -> String.format("_file = '%s'", path.replace("'", "\\'")))
+              .collect(java.util.stream.Collectors.joining(" OR "));
+
+      // Read with normal scan, explicitly selecting metadata columns
+      scanDF =
+          spark()
+              .read()
+              .format("iceberg")
+              .option(SparkReadOptions.SPLIT_SIZE, group.inputSplitSize())
+              .option(SparkReadOptions.FILE_OPEN_COST, "0")
+              .option(SparkReadOptions.TRACK_SOURCE_POSITIONS, String.valueOf(trackPositions))
+              .load(table().location())
+              .where(fileFilter)
+              .selectExpr("*", "_file", "_pos");
+
+    } else {
+      // Use efficient staged scan path when position tracking is disabled
+      scanDF =
+          spark()
+              .read()
+              .format("iceberg")
+              .option(SparkReadOptions.SCAN_TASK_SET_ID, groupId)
+              .option(SparkReadOptions.SPLIT_SIZE, group.inputSplitSize())
+              .option(SparkReadOptions.FILE_OPEN_COST, "0")
+              .load(groupId);
+    }
 
     // write the packed data into new files where each split becomes a new file
+    // When position tracking is enabled, PositionTrackingDataWriter wraps the writer
+    // and extracts _file and _pos columns to record position mappings
+    String writePath = trackPositions ? table().location() : groupId;
     scanDF
         .write()
         .format("iceberg")
@@ -74,8 +112,9 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
         .option(SparkWriteOptions.TARGET_FILE_SIZE_BYTES, group.maxOutputFileSize())
         .option(SparkWriteOptions.DISTRIBUTION_MODE, distributionMode(group).modeName())
         .option(SparkWriteOptions.OUTPUT_SPEC_ID, group.outputSpecId())
+        .option(SparkWriteOptions.TRACK_SOURCE_POSITIONS, String.valueOf(trackPositions))
         .mode("append")
-        .save(groupId);
+        .save(writePath);
   }
 
   // invoke a shuffle if the original spec does not match the output spec

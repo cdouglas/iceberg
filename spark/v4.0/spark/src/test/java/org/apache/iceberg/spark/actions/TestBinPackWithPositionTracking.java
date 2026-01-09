@@ -129,6 +129,9 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testBinPackGeneratesCompactionMapWithoutDeletes() {
+    // Disable adaptive query execution to prevent column pruning
+    spark.conf().set("spark.sql.adaptive.enabled", "false");
+
     Table table = createTable();
 
     // Create 4 small files

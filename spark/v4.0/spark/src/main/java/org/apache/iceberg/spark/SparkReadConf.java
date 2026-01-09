@@ -421,4 +421,12 @@ public class SparkReadConf {
         .defaultValue(SparkSQLProperties.REPORT_COLUMN_STATS_DEFAULT)
         .parse();
   }
+
+  public boolean trackSourcePositions() {
+    return confParser
+        .booleanConf()
+        .option(SparkReadOptions.TRACK_SOURCE_POSITIONS)
+        .defaultValue(SparkReadOptions.TRACK_SOURCE_POSITIONS_DEFAULT)
+        .parse();
+  }
 }

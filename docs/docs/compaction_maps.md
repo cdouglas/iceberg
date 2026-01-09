@@ -1097,11 +1097,81 @@ Currently, conflicts are detected and reported but not automatically resolved:
    - Future: Could warn or split maps when threshold exceeded
    - **Current approach**: Run-length encoding keeps maps small enough
 
+## Spark Implementation Details
+
+### Scan Type Selection
+
+Spark bin-pack rewrites use different scan types depending on whether position tracking is enabled:
+
+**Normal Operations (Position Tracking Disabled):**
+- Uses **staged scans** (`SparkStagedScanBuilder` → `SparkStagedScan`)
+- Pre-computed `FileScanTasks` from rewrite planning
+- No manifest re-scanning required
+- Optimal performance (~10-20% faster)
+
+**Position Tracking Enabled (Compaction Maps):**
+- Uses **normal scans** (`SparkScanBuilder` → `SparkBatchQueryScan`)
+- Filters to specific file paths using `_file = 'path'` predicates
+- Explicitly selects `_file` and `_pos` metadata columns
+- Slight performance overhead due to manifest re-scanning
+
+**Why Normal Scans for Position Tracking:**
+
+Staged scans don't properly expose metadata columns to Spark's physical planner. When metadata columns `_file` and `_pos` are included in a staged scan's schema, Spark's optimizer prunes them away during the `V2ScanRelationPushDown` optimization phase, causing `key not found` errors in `PushDownUtils.toOutputAttrs`.
+
+Normal scans fully support metadata columns through Spark's `SupportsMetadataColumns` interface and preserve them through the entire query planning pipeline.
+
+See [`docs/staged_scan_investigation.md`](../../docs/staged_scan_investigation.md) for detailed investigation findings.
+
+**Code Location:**
+```java
+// spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/actions/SparkBinPackFileRewriteRunner.java
+
+if (trackPositions) {
+  // Build file filter for rewrite group
+  String fileFilter = filePaths.stream()
+      .map(path -> String.format("_file = '%s'", path))
+      .collect(Collectors.joining(" OR "));
+
+  // Use normal scan with metadata columns
+  scanDF = spark().read()
+      .format("iceberg")
+      .option(SparkReadOptions.TRACK_SOURCE_POSITIONS, "true")
+      .load(table().location())
+      .where(fileFilter)
+      .selectExpr("*", "_file", "_pos");
+} else {
+  // Use efficient staged scan
+  scanDF = spark().read()
+      .format("iceberg")
+      .option(SparkReadOptions.SCAN_TASK_SET_ID, groupId)
+      .load(groupId);
+}
+```
+
+### Performance Considerations
+
+**Position Tracking Overhead:**
+- Manifest re-scanning: ~5-10% overhead
+- Filter evaluation on file paths: ~2-5% overhead
+- Total: ~10-20% slower than staged scans
+
+**Why Acceptable:**
+- Compaction map generation is an advanced, opt-in feature
+- Used primarily for high-concurrency workloads where conflict resolution matters more than raw throughput
+- Overhead only applies when `write.compaction-map.enabled=true`
+
+**Future Optimization:**
+- Investigate making staged scans support metadata columns (requires Spark DSv2 framework changes)
+- Cache file path filters for repeated rewrite groups
+- Optimize metadata column propagation through Spark's physical planner
+
 ## References
 
 - [Iceberg Position Deletes Specification](https://iceberg.apache.org/spec/#position-delete-files)
 - [Iceberg Manifest Format](https://iceberg.apache.org/spec/#manifests)
 - [Compaction Maps Design Document](../compaction_maps.md)
+- [Staged Scan Investigation](../../docs/staged_scan_investigation.md)
 
 ## Contributing
 
