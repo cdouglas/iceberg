@@ -136,8 +136,24 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
               MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name(), LongType$.MODULE$);
     }
 
+    // When position tracking is enabled for rewrites, add _file and _pos columns
+    // so Spark's analyzer accepts them (they'll be stripped by PositionTrackingDataWriter)
+    boolean writeRequiresPositionTracking =
+        writeConf.trackSourcePositions() && writeConf.rewrittenFileSetId() != null;
+    boolean writeAlreadyIncludesFilePos =
+        dsSchema.exists(field -> field.name().equals(MetadataColumns.FILE_PATH.name()));
+    if (writeRequiresPositionTracking && !writeAlreadyIncludesFilePos) {
+      sparkWriteSchema =
+          sparkWriteSchema.add(
+              MetadataColumns.FILE_PATH.name(), org.apache.spark.sql.types.DataTypes.StringType);
+      sparkWriteSchema =
+          sparkWriteSchema.add(
+              MetadataColumns.ROW_POSITION.name(), LongType$.MODULE$);
+    }
+
     Schema writeSchema =
-        validateOrMergeWriteSchema(table, sparkWriteSchema, writeConf, writeRequiresRowLineage);
+        validateOrMergeWriteSchema(
+            table, sparkWriteSchema, writeConf, writeRequiresRowLineage, writeRequiresPositionTracking);
     SparkUtil.validatePartitionTransforms(table.spec());
 
     // Get application id
@@ -190,7 +206,11 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
   }
 
   private static Schema validateOrMergeWriteSchema(
-      Table table, StructType dsSchema, SparkWriteConf writeConf, boolean writeIncludesRowLineage) {
+      Table table,
+      StructType dsSchema,
+      SparkWriteConf writeConf,
+      boolean writeIncludesRowLineage,
+      boolean writeIncludesPositionTracking) {
     Schema writeSchema;
     boolean caseSensitive = writeConf.caseSensitive();
     if (writeConf.mergeSchema()) {
@@ -206,6 +226,11 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
         mergedSchema =
             TypeUtil.join(mergedSchema, MetadataColumns.schemaWithRowLineage(table.schema()));
       }
+      if (writeIncludesPositionTracking) {
+        mergedSchema =
+            TypeUtil.join(
+                mergedSchema, new Schema(MetadataColumns.FILE_PATH, MetadataColumns.ROW_POSITION));
+      }
 
       // reconvert the dsSchema without assignment to use the ids assigned by UpdateSchema
       writeSchema = SparkSchemaUtil.convert(mergedSchema, dsSchema, caseSensitive);
@@ -216,10 +241,15 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       // if the validation passed, update the table schema
       update.commit();
     } else {
-      Schema schema =
-          writeIncludesRowLineage
-              ? MetadataColumns.schemaWithRowLineage(table.schema())
-              : table.schema();
+      Schema schema = table.schema();
+      if (writeIncludesRowLineage) {
+        schema = MetadataColumns.schemaWithRowLineage(schema);
+      }
+      if (writeIncludesPositionTracking) {
+        schema =
+            TypeUtil.join(
+                schema, new Schema(MetadataColumns.FILE_PATH, MetadataColumns.ROW_POSITION));
+      }
       writeSchema = SparkSchemaUtil.convert(schema, dsSchema, caseSensitive);
       TypeUtil.validateWriteSchema(
           table.schema(), writeSchema, writeConf.checkNullability(), writeConf.checkOrdering());

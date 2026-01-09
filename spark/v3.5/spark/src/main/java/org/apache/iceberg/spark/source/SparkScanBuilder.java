@@ -344,8 +344,20 @@ public class SparkScanBuilder
 
   private Schema schemaWithMetadataColumns() {
     // metadata columns
+    List<String> columnsToAdd = Lists.newArrayList(metaColumns);
+
+    // Add _file and _pos metadata columns when position tracking is enabled
+    if (readConf.trackSourcePositions()) {
+      if (!columnsToAdd.contains("_file")) {
+        columnsToAdd.add("_file");
+      }
+      if (!columnsToAdd.contains("_pos")) {
+        columnsToAdd.add("_pos");
+      }
+    }
+
     List<Types.NestedField> metadataFields =
-        metaColumns.stream()
+        columnsToAdd.stream()
             .distinct()
             .map(name -> MetadataColumns.metadataColumn(table, name))
             .collect(Collectors.toList());

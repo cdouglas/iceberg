@@ -375,4 +375,12 @@ public class SparkReadConf {
         .defaultValue(SparkSQLProperties.PARQUET_READER_TYPE_DEFAULT)
         .parse();
   }
+
+  public boolean trackSourcePositions() {
+    return confParser
+        .booleanConf()
+        .option(SparkReadOptions.TRACK_SOURCE_POSITIONS)
+        .defaultValue(SparkReadOptions.TRACK_SOURCE_POSITIONS_DEFAULT)
+        .parse();
+  }
 }
