@@ -130,14 +130,9 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
         dsSchema.exists(field -> field.name().equals(MetadataColumns.ROW_ID.name()));
 
     // Build sparkWriteSchema (may include row lineage columns)
-    // Note: When position tracking is enabled, dsSchema will include _file and _pos metadata
-    // columns
-    // These are passed through to allow file writers to see the full row layout, but writeSchema
-    // (the Iceberg schema) does not include them, so they won't be written to data files
-    //
-    // TODO (Spark 4.0): This approach works in Spark 3.5 but causes IndexOutOfBoundsException
-    // in Spark 4.0 due to stricter schema validation in ParquetWithSparkSchemaVisitor.
-    // See spark/v4.0/docs/position_tracking_challenges.md for details.
+    // Note: When position tracking is enabled, dsSchema includes _file and _pos metadata columns.
+    // We pass these through to SparkWrite so PositionTrackingDataWriter can extract them.
+    // SparkWrite will filter them out when creating the file writer factory.
     StructType sparkWriteSchema = dsSchema;
     if (writeRequiresRowLineage && !writeAlreadyIncludesLineage) {
       sparkWriteSchema = sparkWriteSchema.add(MetadataColumns.ROW_ID.name(), LongType$.MODULE$);
@@ -146,9 +141,8 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
               MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name(), LongType$.MODULE$);
     }
 
-    // When position tracking is enabled for rewrites, dsSchema includes _file and _pos
-    // Pass this info to validateOrMergeWriteSchema so it can filter them out when creating
-    // writeSchema
+    // Pass position tracking flag to validateOrMergeWriteSchema so it can filter metadata columns
+    // when creating writeSchema
     boolean writeIncludesPositionTracking =
         writeConf.trackSourcePositions() && writeConf.rewrittenFileSetId() != null;
 
