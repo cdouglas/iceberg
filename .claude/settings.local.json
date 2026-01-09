@@ -11,7 +11,11 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(xargs cat:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(jar tf:*)",
+      "Bash(javap:*)",
+      "Bash(tee:*)",
+      "Bash(echo:*)"
     ]
   }
 }

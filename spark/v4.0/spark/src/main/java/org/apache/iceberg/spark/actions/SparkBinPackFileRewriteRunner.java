@@ -41,6 +41,9 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
   @Override
   protected void doRewrite(String groupId, RewriteFileGroup group) {
     // Check if position tracking is enabled (for compaction map generation)
+    // TODO (Spark 4.0): Position tracking is incomplete in Spark 4.0 due to schema validation
+    // issues. This code is present but non-functional. See
+    // spark/v4.0/docs/position_tracking_challenges.md
     boolean trackPositions =
         Boolean.parseBoolean(
             table()
