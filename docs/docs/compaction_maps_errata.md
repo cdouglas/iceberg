@@ -244,78 +244,70 @@ To verify Spark 4.0 still hits the blocker:
 
 ### Issue
 
-Position tracking is only implemented for **bin-pack rewrites** (multiple sources → single target). Other rewrite types are not supported.
+Position tracking is only implemented for **bin-pack rewrites** (combining multiple data files without reordering). Rewrite operations that reorder rows are not supported.
 
 ### Impact
 
-**Functionality: Other rewrite types don't generate compaction maps**
-- ❌ Sorted rewrites (row order changes)
-- ❌ Filtered rewrites (rows excluded)
-- ❌ Z-ordered rewrites (data organization changes)
-- ✅ Bin-pack rewrites (simple concatenation)
+**Functionality: Rewrite-time reordering not supported**
+- ✅ **Bin-pack rewrites**: Multiple files → single/multiple files (simple concatenation)
+- ✅ **Merge compactions**: Combining data files with position deletes (deletes applied during scan)
+- ❌ **Sorted rewrites**: Row order changes during rewrite operation (e.g., SORT BY column)
+- ❌ **Z-ordered rewrites**: Data reorganization changes positions
 
 ### Why This Choice Was Made
 
 Bin-pack is the most common compaction pattern and has simple position semantics:
 - Source rows map sequentially to target: `source[0..N] → target[offset..offset+N]`
-- No filtering, no reordering, no gaps
-- Straightforward to track without complex instrumentation
+- When position deletes exist, they're applied during scan (standard Iceberg behavior)
+- Only surviving rows appear in DataFrame with `_file` and `_pos` metadata
+- Gaps in runs automatically represent deleted positions
 
-Other rewrite types require tracking position transformations through complex operations:
-- **Sorting**: Track position changes as rows are reordered
-- **Filtering**: Detect gaps where rows are excluded
-- **Merging**: Interleave positions from multiple sources
+### How Merge Compactions Work
+
+The implementation **DOES support merge compactions** (bin-pack with position deletes):
+
+**Example:**
+```
+Source file A: positions 0, 1, 2, 3, 4
+Position delete: delete row 2 from file A
+Scan phase: Iceberg applies deletes, returns rows with _pos = 0, 1, 3, 4
+Write phase: PositionTrackingDataWriter records mappings for _pos = 0, 1, 3, 4
+Target file: positions 0, 1, 2, 3
+Compaction map: Run(0, 0, 2), Run(3, 2, 2)  // Gap at source position 2
+```
+
+**Why It Works:**
+1. Position deletes applied during scan (before position tracking sees the data)
+2. Only surviving rows get position mappings
+3. Gap at source position 2 automatically represented by non-consecutive runs
+4. No special instrumentation needed for delete handling
 
 ### What Needs to Be Done
 
 **For Sorted Rewrites:**
-- Track position mappings through Spark's sort operation
+- Track position transformations as rows are reordered during sort operation
 - Record which source position maps to which target position after sorting
-- Handle partition boundary splits
+- Instrument Spark's sort operator to capture position changes
 
-**For Filtered Rewrites:**
-- Detect which source positions are filtered out
-- Generate runs with gaps representing filtered rows
-- Coordinate with delete file application
+**For Z-Ordered Rewrites:**
+- Track position changes as data is reorganized
+- Handle complex reordering patterns
+- Coordinate with Z-order implementation
 
-**For Complex Rewrites:**
-- Design general position tracking framework
-- Instrument Spark physical operators to track position transformations
-- Handle arbitrary data flow patterns (filtering + sorting + merging)
-
-### Current Workaround
-
-The implementation uses **fallback logic** for simple bin-pack:
-```java
-// RewriteDataFilesCommitManager.buildCompactionMap()
-if (positionMappings == null || positionMappings.isEmpty()) {
-  // Fallback for simple bin-pack without explicit tracking
-  if (group.rewrittenFiles().size() == 1) {
-    DataFile targetFile = group.rewrittenFiles().get(0);
-    long targetOffset = 0;
-
-    for (FileScanTask sourceTask : group.fileScanTasks()) {
-      builder.addFileMapping(sourceFile, targetFile)
-          .addRun(0, targetOffset, sourceTask.file().recordCount());
-      targetOffset += sourceTask.file().recordCount();
-    }
-  } else {
-    LOG.warn("Cannot generate compaction map: multiple targets without position tracking");
-  }
-}
-```
-
-This fallback works for the common case (bin-pack) but logs a warning for unsupported scenarios.
+**Current Status:**
+- Rewrite-time sorting not supported (would require tracking through Spark's sort operator)
+- Scan-time filtering fully supported (position deletes applied during scan)
 
 ### Validation
 
-To verify only bin-pack generates maps:
+Comprehensive tests needed to verify merge compactions:
 ```bash
-# Bin-pack should succeed
+# Test bin-pack with position deletes
 ./gradlew :iceberg-spark:iceberg-spark-3.5_2.13:test \
-  --tests "TestBinPackWithPositionTracking.testBinPackGeneratesCompactionMapWithoutDeletes"
+  --tests "TestBinPackWithPositionTracking.testBinPackWithPositionDeletes"
 
-# TODO: Add tests for sorted/filtered rewrites to verify graceful degradation
+# Verify compaction maps have correct gaps
+# Verify position delete remapping works end-to-end
 ```
 
 ---
@@ -415,7 +407,7 @@ See test cases demonstrating manual resolution:
 |-------|--------|--------|----------|
 | Normal scans vs staged scans | 10-20% performance overhead | Documented, acceptable | Medium |
 | Spark 4.0 support deferred | Feature unavailable in Spark 4.0 | Comprehensive analysis done | High |
-| Bin-pack only position tracking | Other rewrite types unsupported | Fallback logic works | Low |
+| Bin-pack only position tracking | Rewrite-time reordering unsupported (sorted/Z-ordered) | Merge compactions work | Low |
 | Manual conflict resolution | Requires application code | Well-documented pattern | Low |
 
 ## How to Contribute
@@ -426,9 +418,15 @@ If you'd like to help address any of these issues:
 
 2. **Spark 4.0 Support:** Read `spark/v4.0/docs/position_tracking_challenges.md` for detailed analysis, then prototype the recommended solution (lenient schema matching in `ParquetWithSparkSchemaVisitor`).
 
-3. **Complex Rewrite Position Tracking:** Design a general position tracking framework that can instrument Spark's physical operators to track position transformations through arbitrary data flows.
+3. **Comprehensive Testing (Highest Priority):** Write Spark 3.5 test suite to verify:
+   - Bin-pack rewrites with position deletes (merge compactions)
+   - Compaction maps have correct runs with gaps
+   - Position delete remapping works end-to-end
+   - Use `writePosDeletesToFile()` helper from TestRewriteDataFilesAction.java:2428-2469
 
-4. **Automatic Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` with proper validation and error handling.
+4. **Sorted Rewrite Position Tracking:** Design position tracking framework that instruments Spark's sort operator to track position transformations through reordering operations.
+
+5. **Automatic Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` with proper validation and error handling.
 
 ## References
 
