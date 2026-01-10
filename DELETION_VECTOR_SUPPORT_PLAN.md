@@ -53,6 +53,41 @@
 8. `testInvalidDVThrows()` - Non-PUFFIN format throws IllegalArgumentException
 9. `testPositionsInAscendingOrder()` - Positions returned in sorted order
 
+### ✅ Phase 2: Extend PositionDeleteRemapper for DVs (COMPLETED)
+
+**Completed:** January 10, 2026
+
+**Summary:**
+- ✅ Extended `PositionDeleteRemapper` to support deletion vector remapping
+- ✅ Added `remapDV(DeleteFile, FileIO)` method for bitmap position remapping
+- ✅ Created 10 comprehensive unit tests covering all DV remapping scenarios
+- ✅ All tests passing successfully
+
+**Files Modified:**
+- `core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java`
+
+**Files Added:**
+- `core/src/test/java/org/apache/iceberg/TestPositionDeleteRemapperDV.java`
+
+**Key Implementation Details:**
+- `remapDV()` returns `Map<String, Set<Long>>` to support N:M compaction scenarios
+- Handles gaps automatically - positions in gaps (deleted in source) are dropped
+- Uses existing `fileMappingIndex` and `runForPosition()` logic for consistency
+- Validates DV format and referencedDataFile presence
+- Falls back to passthrough for non-compacted files
+
+**Test Coverage:**
+1. `testNeedsRemappingTrue()` - DV references compacted file
+2. `testNeedsRemappingFalse()` - DV references non-compacted file
+3. `testNeedsRemappingThrowsForNonDV()` - Works with regular position delete files too
+4. `testRemapDVSimple()` - Simple sequential mapping (no gaps)
+5. `testRemapDVWithGaps()` - Positions with gaps, some dropped
+6. `testRemapDVAllPositionsDeleted()` - All positions in gaps (empty result)
+7. `testRemapDVSomePositionsDeleted()` - Mix of valid and gap positions
+8. `testRemapDVMultipleSourceFiles()` - Multiple sources compacted to same target
+9. `testRemapDVLargePositions()` - Positions > Integer.MAX_VALUE
+10. `testRemapDVNonCompactedFile()` - Passthrough for non-compacted files
+
 ---
 
 ## Phase 1: Core DV Reading and Position Extraction

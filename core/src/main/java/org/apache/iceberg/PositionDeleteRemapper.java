@@ -20,16 +20,22 @@ package org.apache.iceberg;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.CompactionMap.FileMapping;
+import org.apache.iceberg.deletes.DVPositionReader;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.util.ContentFileUtil;
 
 /**
  * Utility for remapping position deletes when data files have been compacted.
@@ -169,6 +175,74 @@ public class PositionDeleteRemapper {
   }
 
   /**
+   * Remaps positions in a deletion vector using the compaction map.
+   *
+   * <p>Returns a map from target file path to set of deleted positions in that file. Multiple
+   * target files are possible if the source file was split during compaction.
+   *
+   * <p>If the DV references a file that was not compacted, returns a single-entry map with the
+   * original file and all positions.
+   *
+   * @param dvFile the deletion vector file to remap
+   * @param fileIO the file IO for reading the DV
+   * @return map from target file path to set of deleted positions in that file
+   * @throws IllegalArgumentException if dvFile is not a deletion vector
+   * @throws IllegalStateException if DV is missing referencedDataFile
+   */
+  public Map<String, Set<Long>> remapDV(DeleteFile dvFile, FileIO fileIO) {
+    Preconditions.checkNotNull(dvFile, "dvFile is null");
+    Preconditions.checkNotNull(fileIO, "fileIO is null");
+
+    if (!ContentFileUtil.isDV(dvFile)) {
+      throw new IllegalArgumentException("Not a deletion vector: " + dvFile.location());
+    }
+
+    String sourceFile = dvFile.referencedDataFile();
+    if (sourceFile == null) {
+      throw new IllegalStateException("DV missing referencedDataFile: " + dvFile.location());
+    }
+
+    FileMapping mapping = fileMappingIndex.get(sourceFile);
+
+    if (mapping == null) {
+      // DV references non-compacted file, return original mapping
+      try {
+        return Collections.singletonMap(sourceFile, readAllPositions(dvFile, fileIO));
+      } catch (IOException e) {
+        throw new UncheckedIOException("Failed to read DV: " + dvFile.location(), e);
+      }
+    }
+
+    // Read deleted positions from DV and remap them
+    DVPositionReader reader = new DVPositionReader(fileIO);
+    Map<String, Set<Long>> remappedPositions = new HashMap<>();
+
+    try (CloseableIterable<Long> positions = reader.readDeletedPositions(dvFile)) {
+      for (Long sourcePos : positions) {
+        // Find run containing this position
+        CompactionMap.Run run = mapping.runForPosition(sourcePos);
+
+        if (run == null) {
+          // Position not in any run - it was already deleted in source
+          continue;
+        }
+
+        // Map to target position
+        long targetPos = run.mapPosition(sourcePos);
+
+        // Add to result set for target file
+        remappedPositions
+            .computeIfAbsent(mapping.targetFile(), k -> new HashSet<>())
+            .add(targetPos);
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to read DV: " + dvFile.location(), e);
+    }
+
+    return remappedPositions;
+  }
+
+  /**
    * Returns the compaction map used by this remapper.
    *
    * @return the compaction map
@@ -183,6 +257,15 @@ public class PositionDeleteRemapper {
       builder.put(mapping.sourceFile(), mapping);
     }
     return builder.build();
+  }
+
+  private Set<Long> readAllPositions(DeleteFile dvFile, FileIO fileIO) throws IOException {
+    DVPositionReader reader = new DVPositionReader(fileIO);
+    Set<Long> positions = new HashSet<>();
+    try (CloseableIterable<Long> iter = reader.readDeletedPositions(dvFile)) {
+      iter.forEach(positions::add);
+    }
+    return positions;
   }
 
   @SuppressWarnings("UnusedVariable")
