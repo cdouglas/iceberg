@@ -54,6 +54,14 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 - SERIALIZABLE isolation enhancements with compaction awareness
 - 50+ unit and integration tests covering all components
 
+✅ **Deletion Vector (DV) Support**
+- DVPositionWriter utility for writing DVs from position collections
+- RemappedDVWriter helper for N:M remapping scenarios (multiple target files)
+- PositionDeleteRemapper supports both position delete files and deletion vectors
+- DVPositionReader for reading positions from DV files
+- Comprehensive end-to-end integration tests (6 scenarios)
+- 36+ tests passing across all phases including DV remapping
+
 ✅ **Spark 3.5 Position Tracking**
 - Position tracking fully implemented for bin-pack rewrites
 - PositionTrackingDataWriter extracts source metadata during write
@@ -71,26 +79,36 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 
 ⚠️ **Spark 3.5 Test Suite**
 
-The implementation is complete but **lacks comprehensive tests**. Test infrastructure exists but requires:
+The core implementation and DV support are complete, but **Spark-level integration tests are incomplete**:
 
-1. **Bin-Pack with Position Deletes**
+**✅ Completed Test Coverage:**
+- ✅ Core compaction map infrastructure (serialization, builder, storage)
+- ✅ Position delete remapping logic (unit and integration tests)
+- ✅ Deletion vector remapping (6 end-to-end integration scenarios)
+- ✅ Conflict detection and validation workflows
+- ✅ SERIALIZABLE isolation with compaction awareness
+- ✅ 36+ tests passing across all phases
+
+**⚠️ Remaining Test Gaps:**
+
+1. **Spark Bin-Pack with Position Deletes**
    - Create table with multiple data files
    - Add position deletes to various files creating gaps
-   - Run bin-pack rewrite with compaction maps enabled
+   - Run bin-pack rewrite with compaction maps enabled via Spark action
    - Verify compaction map has correct runs with gaps
-   - Verify position delete remapping works end-to-end
+   - Verify position delete remapping works end-to-end in Spark context
 
-2. **Multiple Scenarios**
-   - N:1 compaction (many sources → single target)
+2. **Spark Multiple Scenarios**
+   - N:1 compaction (many sources → single target) in Spark
    - Multiple files with varying delete patterns
    - Sorted vs unsorted tables
    - Parquet and ORC formats
 
-3. **Conflict Resolution**
-   - Create concurrent transaction with position deletes
+3. **Spark Conflict Resolution**
+   - Create concurrent transaction with position deletes via Spark
    - Trigger CompactionConflictException
    - Verify exception provides compaction map locations
-   - Test manual remapping workflow
+   - Test manual remapping workflow in Spark context
    - Verify remapped deletes apply correctly
 
 **Test Helper Available:** `writePosDeletesToFile()` helper exists in TestRewriteDataFilesAction.java:2428-2469 for creating position delete files.
