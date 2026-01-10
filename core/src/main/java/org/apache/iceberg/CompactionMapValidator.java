@@ -30,9 +30,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 /**
  * Validator for detecting conflicts between position deletes and compacted data files.
  *
- * <p>When a transaction adds position deletes that reference data files, and those data files have
- * been compacted by another concurrent transaction, a conflict exists. This validator detects such
- * conflicts by:
+ * <p>When a transaction adds position deletes (either traditional position delete files or deletion
+ * vectors) that reference data files, and those data files have been compacted by another
+ * concurrent transaction, a conflict exists. This validator detects such conflicts by:
  *
  * <ol>
  *   <li>Identifying manifests with compaction maps in the snapshot history
@@ -42,6 +42,10 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  *
  * <p>This validator is intended to be used in the transaction validation phase, typically in a
  * {@link SnapshotProducer#validate} override.
+ *
+ * <p>Both position delete files and deletion vectors (DVs) are supported. DVs always have a {@code
+ * referencedDataFile} that points to the data file they apply to, making conflict detection
+ * straightforward.
  */
 class CompactionMapValidator {
   private final FileIO io;
@@ -95,8 +99,8 @@ class CompactionMapValidator {
 
       throw new CompactionConflictException(
           String.format(
-              "Cannot commit position deletes: referenced data files were compacted: %s. "
-                  + "Use compaction maps to remap position deletes before retrying.",
+              "Cannot commit deletes: referenced data files were compacted: %s. "
+                  + "Use compaction maps to remap deletes before retrying.",
               conflicts),
           conflicts,
           conflictLocations);
@@ -142,6 +146,10 @@ class CompactionMapValidator {
   /**
    * Finds conflicts between delete files and compacted files.
    *
+   * <p>This method handles both position delete files and deletion vectors (DVs). DVs always have a
+   * {@code referencedDataFile} set, so they are detected via the same code path as file-scoped
+   * position delete files.
+   *
    * @param deleteFiles the delete files to check
    * @param compactedFiles the set of compacted file paths
    * @return set of file paths that are both referenced in deletes and were compacted
@@ -150,14 +158,17 @@ class CompactionMapValidator {
     Set<String> conflicts = Sets.newHashSet();
 
     for (DeleteFile deleteFile : deleteFiles) {
-      // Check if this delete file has a single referenced data file
+      // Check if this delete file has a referenced data file
+      // This handles both:
+      // - Position delete files with referencedDataFile set (file-scoped)
+      // - Deletion vectors (DVs), which always have referencedDataFile set
       if (deleteFile.referencedDataFile() != null) {
         String referencedFile = deleteFile.referencedDataFile();
         if (compactedFiles.contains(referencedFile)) {
           conflicts.add(referencedFile);
         }
       }
-      // For delete files that may reference multiple files,
+      // For delete files that may reference multiple files (not file-scoped),
       // we would need to read the file content to check.
       // This is a trade-off: we detect obvious conflicts efficiently,
       // but may miss some conflicts that require reading delete file content.

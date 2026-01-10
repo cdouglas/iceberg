@@ -88,6 +88,37 @@
 9. `testRemapDVLargePositions()` - Positions > Integer.MAX_VALUE
 10. `testRemapDVNonCompactedFile()` - Passthrough for non-compacted files
 
+### ✅ Phase 3: Add DV Conflict Detection (COMPLETED)
+
+**Completed:** January 10, 2026
+
+**Summary:**
+- ✅ Enhanced CompactionMapValidator to explicitly document DV support
+- ✅ Updated error messages to be generic ("deletes" instead of "position deletes")
+- ✅ Added clarifying comments in findConflicts() method
+- ✅ Created integration test demonstrating DV conflict detection workflow
+
+**Files Modified:**
+- `core/src/main/java/org/apache/iceberg/CompactionMapValidator.java`
+
+**Files Added:**
+- `core/src/test/java/org/apache/iceberg/TestCompactionConflictDetectionDV.java`
+
+**Key Implementation Details:**
+- CompactionMapValidator already handled DVs correctly (DVs have referencedDataFile set)
+- Enhanced class and method documentation to explicitly mention DV support
+- Made error message generic to cover both position delete files and DVs
+- Added comments clarifying that findConflicts() handles both delete file types
+- Created integration test following same pattern as position delete conflict tests
+
+**Implementation Note:**
+The existing CompactionMapValidator logic already correctly handled deletion vectors because:
+1. DVs always have `referencedDataFile()` set (required by the format)
+2. The `findConflicts()` method checks `referencedDataFile()` for all delete files
+3. No code changes were needed - only documentation enhancements
+
+This phase focused on making DV support explicit and well-documented rather than adding new logic.
+
 ---
 
 ## Phase 1: Core DV Reading and Position Extraction
