@@ -19,6 +19,42 @@
 
 ---
 
+## Implementation Status
+
+### ✅ Phase 1: Core DV Reading and Position Extraction (COMPLETED)
+
+**Completed:** January 10, 2026
+
+**Summary:**
+- ✅ Implemented `DVPositionReader` utility class for reading deletion vectors
+- ✅ Created 9 comprehensive unit tests covering all core functionality
+- ✅ Tests validate reading single/multiple positions, sparse/dense patterns, large positions (>Integer.MAX_VALUE), sorting, and error handling
+- ✅ All tests passing successfully
+
+**Files Added:**
+- `core/src/main/java/org/apache/iceberg/deletes/DVPositionReader.java`
+- `core/src/test/java/org/apache/iceberg/deletes/TestDVPositionReader.java`
+
+**Key Implementation Details:**
+- Leverages existing `PositionDeleteIndex.deserialize()` infrastructure
+- Validates DV format (PUFFIN) and required fields (contentOffset, contentSizeInBytes)
+- Supports both range-readable and seekable input streams for efficient reading
+- Returns positions as `CloseableIterable<Long>` with positions in ascending order
+- Properly handles resource cleanup through CloseableIterator pattern
+
+**Test Coverage:**
+1. `testReadEmptyDV()` - Reading DV with single position (writer optimizes out truly empty DVs)
+2. `testReadSinglePosition()` - Single deleted position
+3. `testReadMultiplePositions()` - Multiple positions in sequence
+4. `testReadSparsePositions()` - Positions with large gaps (0, 5, 100, 1000)
+5. `testReadDensePositions()` - Consecutive positions (0-99)
+6. `testReadLargePositions()` - Positions > Integer.MAX_VALUE
+7. `testReferencedDataFile()` - Extract referenced data file path
+8. `testInvalidDVThrows()` - Non-PUFFIN format throws IllegalArgumentException
+9. `testPositionsInAscendingOrder()` - Positions returned in sorted order
+
+---
+
 ## Phase 1: Core DV Reading and Position Extraction
 
 **Goal:** Add infrastructure to read DVs and extract deleted positions as a stream of (file, position) pairs.
