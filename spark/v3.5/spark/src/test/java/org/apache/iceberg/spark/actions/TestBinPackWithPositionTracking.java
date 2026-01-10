@@ -36,6 +36,7 @@ import org.apache.iceberg.Parameter;
 import org.apache.iceberg.ParameterizedTestExtension;
 import org.apache.iceberg.Parameters;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.PositionDeleteRemapper;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
@@ -377,6 +378,85 @@ public class TestBinPackWithPositionTracking extends TestBase {
     boolean hasCompactionMap =
         manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
     assertThat(hasCompactionMap).isFalse();
+  }
+
+  @TestTemplate
+  public void testConflictResolutionWithPositionDeleteRemapping() throws IOException {
+    // Disable adaptive query execution (same as testMultipleSourcesOneTarget)
+    spark.conf().set("spark.sql.adaptive.enabled", "false");
+
+    Table table = createTable();
+
+    // Step 1: Create initial data files (5 tiny files that will compact into 1)
+    for (int i = 0; i < 5; i++) {
+      writeRecords(table, i, 1);
+    }
+
+    table.refresh();
+    List<DataFile> originalDataFiles = TestHelpers.dataFiles(table);
+    assertThat(originalDataFiles).hasSize(5);
+
+    // Capture the original file paths for later verification
+    List<String> originalFilePaths =
+        originalDataFiles.stream().map(DataFile::location).collect(java.util.stream.Collectors.toList());
+
+    // Step 2: Run compaction that rewrites those files (generating compaction map)
+    RewriteDataFiles.Result result =
+        actions()
+            .rewriteDataFiles(table)
+            .option(BinPackRewriteFilePlanner.MIN_INPUT_FILES, "1")
+            .option(RewriteDataFiles.TARGET_FILE_SIZE_BYTES, Long.toString(Long.MAX_VALUE - 1))
+            .execute();
+
+    assertThat(result.rewrittenDataFilesCount()).isEqualTo(5);
+    assertThat(result.addedDataFilesCount()).isEqualTo(1);
+
+    // Step 3: Verify compaction map was generated
+    table.refresh();
+    Snapshot snapshotAfterCompaction = table.currentSnapshot();
+    List<ManifestFile> manifests = snapshotAfterCompaction.dataManifests(table.io());
+
+    ManifestFile manifestWithMap =
+        manifests.stream()
+            .filter(m -> m.compactionMapLocation() != null)
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("Expected compaction map in manifest"));
+
+    String compactionMapLocation = manifestWithMap.compactionMapLocation();
+    assertThat(compactionMapLocation).isNotNull();
+
+    // Step 4: Load compaction map and verify remapper can be created
+    InputFile mapFile = table.io().newInputFile(compactionMapLocation);
+    CompactionMap map = CompactionMaps.read(mapFile);
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Step 5: Verify remapper identifies all the compacted files
+    assertThat(remapper.compactedFiles())
+        .as("Remapper should identify all compacted source files")
+        .hasSize(5)
+        .containsAll(originalFilePaths);
+
+    // Step 6: Verify remapper can check if files were compacted
+    for (String originalFile : originalFilePaths) {
+      assertThat(remapper.isCompacted(originalFile))
+          .as("Remapper should indicate file %s was compacted", originalFile)
+          .isTrue();
+    }
+
+    // Step 7: Verify compaction map structure
+    assertThat(map.fileMappings())
+        .as("Compaction map should have file mappings")
+        .hasSize(5);
+
+    // Each file mapping should have at least one run
+    for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+      assertThat(mapping.runs())
+          .as("File mapping for %s should have at least one run", mapping.sourceFile())
+          .isNotEmpty();
+      assertThat(mapping.sourceFile())
+          .as("Source file should be one of the original files")
+          .isIn(originalFilePaths);
+    }
   }
 
   // Helper methods
