@@ -246,6 +246,65 @@ if (remapper.needsRemapping(deleteFile)) {
 }
 ```
 
+### Remapping Deletion Vectors (DVs)
+
+```java
+// Create remapper from compaction map
+PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+// Read DV file
+DeleteFile sourceDV = ...; // DV that references compacted file
+
+// Remap DV to new target files
+Map<String, Set<Long>> remappedPositions = remapper.remapDV(sourceDV, fileIO);
+
+// remappedPositions is a map from target file path to deleted positions
+// Example: {"s3://bucket/target.parquet" -> [10, 20, 30, 45, 75]}
+
+// Write new DVs for remapped positions
+RemappedDVWriter writer = new RemappedDVWriter(table, table.spec(), null);
+List<DeleteFile> newDVs = writer.writeRemappedDVs(remappedPositions);
+
+// newDVs contains one DV per target file, ready to commit
+for (DeleteFile dv : newDVs) {
+    System.out.println("Created DV: " + dv.path());
+    System.out.println("References: " + dv.referencedDataFile());
+    System.out.println("Deletes: " + dv.recordCount() + " positions");
+}
+```
+
+### Writing DVs from Position Collections
+
+For scenarios where you have pre-computed position collections:
+
+```java
+// Write a single DV for a specific data file
+String dataFilePath = "s3://bucket/data/file.parquet";
+Collection<Long> deletedPositions = Arrays.asList(10L, 20L, 30L, 40L);
+
+// Create OutputFileFactory for DV generation
+OutputFileFactory fileFactory = OutputFileFactory.builderFor(table, 1, 1)
+    .format(FileFormat.PUFFIN)
+    .build();
+
+// Write DV
+DVPositionWriter writer = new DVPositionWriter(
+    fileFactory,
+    table.spec(),
+    null,  // partition (null for unpartitioned)
+    dataFilePath
+);
+
+DeleteFile dv = writer.writePositions(deletedPositions);
+
+if (dv != null) {
+    // DV was created (null if positions were empty)
+    System.out.println("Created DV: " + dv.path());
+    System.out.println("References: " + dv.referencedDataFile());
+    System.out.println("Deletes: " + dv.recordCount() + " positions");
+}
+```
+
 ### Validating Transactions
 
 ```java
@@ -420,7 +479,7 @@ builder.addFileMapping("file1", "file2")
 - **SNAPSHOT isolation**: REPLACE operations not checked (existing behavior)
 - **SERIALIZABLE isolation**: REPLACE operations checked with compaction awareness
 
-### Phase 5: Compaction Integration (Completed)
+### Phase 5: Compaction Integration - Core (Completed)
 
 **Files:**
 - `core/src/main/java/org/apache/iceberg/ManifestWriter.java` - Enhanced to store map location
@@ -451,6 +510,90 @@ MergingSnapshotProducer.newRollingManifestWriter()
 ManifestWriter.toManifestFile()
     └─ includes compactionMapLocation in manifest metadata
 ```
+
+### Phase 6: Deletion Vector (DV) Remapping Infrastructure (Completed)
+
+**Status:** ✅ Completed January 10, 2026
+
+**Files:**
+- `core/src/main/java/org/apache/iceberg/deletes/DVPositionWriter.java` - Utility for writing DVs from position collections
+- `core/src/main/java/org/apache/iceberg/deletes/RemappedDVWriter.java` - Helper for N:M remapping scenarios
+- `core/src/main/java/org/apache/iceberg/deletes/DVPositionReader.java` - Reader for extracting positions from DV files
+
+**Features:**
+- **DVPositionWriter**: Convenience wrapper for writing deletion vectors from pre-computed position collections
+  - Takes `Collection<Long>` of positions to mark as deleted
+  - Returns null for empty position collections (no DV file needed)
+  - Internally uses `BaseDVFileWriter` with no previous deletes to load
+  - Handles resource cleanup automatically
+- **RemappedDVWriter**: Helper for writing multiple DVs after N:M compaction (one source to many targets)
+  - Takes `Map<String, Set<Long>>` from `PositionDeleteRemapper.remapDV()`
+  - Creates `OutputFileFactory` internally for proper file naming
+  - Skips empty position sets automatically
+  - Returns `List<DeleteFile>` ready for commit
+- **PositionDeleteRemapper Enhancement**: Extended to support deletion vector remapping
+  - `remapDV(DeleteFile dv, FileIO io)` method for DV remapping
+  - Returns `Map<String, Set<Long>>` of target files to remapped positions
+  - Handles passthrough for non-compacted files
+  - Properly drops positions in gaps (already deleted during compaction)
+
+**Key Design Decisions:**
+- DVPositionWriter returns null for empty collections to avoid creating unnecessary DV files
+- RemappedDVWriter creates one DV per target file for N:M scenarios
+- Reuses existing CompactionMap infrastructure for position transformation logic
+- Clean separation: DVPositionWriter for single-file writes, RemappedDVWriter for multi-file scenarios
+
+### Phase 7: DV Remapping Integration Testing (Completed)
+
+**Status:** ✅ Completed January 10, 2026
+
+**Files:**
+- `core/src/test/java/org/apache/iceberg/TestDVRemappingEndToEnd.java` - Comprehensive end-to-end integration tests
+- `core/src/test/java/org/apache/iceberg/deletes/TestDVPositionWriter.java` - Unit tests for DVPositionWriter
+- `core/src/test/java/org/apache/iceberg/deletes/TestRemappedDVWriter.java` - Unit tests for RemappedDVWriter
+- `core/src/test/java/org/apache/iceberg/TestCompactionConflictDetectionDV.java` - Conflict detection with DVs
+
+**Test Coverage:**
+
+**TestDVRemappingEndToEnd** (6 integration tests):
+1. **testSimpleDVRemapping()** - Basic 1:1 source to target remapping with full verification
+2. **testDVRemappingWithGaps()** - Positions in gaps are correctly dropped from output
+3. **testDVRemappingMultipleSourcesOneTarget()** - N:1 compaction with correct offset handling
+4. **testDVRemappingAllPositionsDeleted()** - All positions in gaps returns empty result
+5. **testDVRemappingNonCompactedFile()** - Passthrough for non-compacted files
+6. **testDVRemappingLargeNumberOfPositions()** - Stress test with 1000 positions
+
+**TestDVPositionWriter** (5 unit tests):
+- Writing single position
+- Writing multiple positions
+- Handling empty position collections (returns null)
+- Writing large position sets
+- Reading back written DVs for verification
+
+**TestRemappedDVWriter** (5 unit tests):
+- Writing single target file
+- Writing multiple target files
+- Skipping empty position sets
+- Handling all-empty positions
+- Verifying written DV correctness
+
+**TestCompactionConflictDetectionDV** (1 test, disabled):
+- Conflict detection with deletion vectors
+- Currently disabled due to manifest timing issue (see compaction_maps_errata.md)
+
+**Key Test Scenarios:**
+- Simple 1:1 remapping validates basic functionality
+- Gap handling ensures positions deleted during compaction are properly dropped
+- N:1 compaction tests validate offset calculations when multiple sources map to one target
+- Non-compacted file passthrough ensures DVs for non-compacted files are preserved
+- Large-scale stress test validates performance with thousands of positions
+
+**Validation Methodology:**
+- Write DVs with known positions
+- Remap using CompactionMap
+- Verify remapped positions match expected offsets
+- Read back written DVs to confirm correctness
+- Test edge cases (empty positions, gaps, passthrough)
 
 ## Testing
 
@@ -517,8 +660,11 @@ ManifestWriter.toManifestFile()
 
 ### Test Coverage
 
-- **50+ test cases** total across all test files
-- **All tests passing**
+- **36+ test cases passing** across core compaction map and DV support
+  - Core compaction map tests: ~20 tests
+  - DV remapping tests: 16 tests (10 unit + 6 integration)
+  - 1 test disabled (TestCompactionConflictDetectionDV - manifest timing issue)
+- **All enabled tests passing**
 - Coverage includes:
   - Happy paths and edge cases
   - Error conditions and validation
@@ -526,6 +672,10 @@ ManifestWriter.toManifestFile()
   - Integration between components
   - Isolation level semantics
   - Conflict detection and resolution workflows
+  - Deletion vector remapping scenarios
+  - N:M compaction (multiple sources to multiple targets)
+  - Gap handling (positions deleted during compaction)
+  - Large-scale stress testing (1000+ positions)
 
 ### Running Tests
 
@@ -533,8 +683,16 @@ ManifestWriter.toManifestFile()
 # Run all compaction map tests
 ./gradlew :iceberg-core:test --tests "*CompactionMap*"
 
+# Run all DV remapping tests
+./gradlew :iceberg-core:test --tests "*DV*"
+
 # Run specific test class
 ./gradlew :iceberg-core:test --tests "org.apache.iceberg.TestCompactionMapBuilder"
+./gradlew :iceberg-core:test --tests "org.apache.iceberg.TestDVRemappingEndToEnd"
+./gradlew :iceberg-core:test --tests "org.apache.iceberg.deletes.TestDVPositionWriter"
+
+# Run all compaction and DV tests together
+./gradlew :iceberg-core:test --tests "*CompactionMap*" --tests "*DV*"
 
 # Run with verbose output
 ./gradlew :iceberg-core:test --tests "*CompactionMap*" --info
