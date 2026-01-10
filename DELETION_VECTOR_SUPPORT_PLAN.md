@@ -119,6 +119,48 @@ The existing CompactionMapValidator logic already correctly handled deletion vec
 
 This phase focused on making DV support explicit and well-documented rather than adding new logic.
 
+### ✅ Phase 4: Add DV Writing Infrastructure (COMPLETED)
+
+**Completed:** January 10, 2026
+
+**Summary:**
+- ✅ Created DVPositionWriter utility for writing DVs from position collections
+- ✅ Created RemappedDVWriter helper for N:M remapping scenarios
+- ✅ Added 10 comprehensive unit tests (5 for DVPositionWriter, 5 for RemappedDVWriter)
+- ✅ All tests passing successfully
+
+**Files Added:**
+- `core/src/main/java/org/apache/iceberg/deletes/DVPositionWriter.java`
+- `core/src/main/java/org/apache/iceberg/deletes/RemappedDVWriter.java`
+- `core/src/test/java/org/apache/iceberg/deletes/TestDVPositionWriter.java`
+- `core/src/test/java/org/apache/iceberg/deletes/TestRemappedDVWriter.java`
+
+**Key Implementation Details:**
+- **DVPositionWriter**: Convenience wrapper around BaseDVFileWriter for remapping scenarios
+  - Takes pre-computed Collection<Long> of positions to write
+  - Returns null for empty position collections (no DV needed)
+  - Internally uses BaseDVFileWriter with no previous deletes to load
+- **RemappedDVWriter**: Helper for writing multiple DVs after N:M compaction
+  - Takes Table reference and creates OutputFileFactory internally
+  - Handles Map<String, Set<Long>> from PositionDeleteRemapper.remapDV()
+  - Skips empty position sets automatically
+  - Returns List<DeleteFile> ready for commit
+
+**Test Coverage:**
+1. **TestDVPositionWriter** (5 tests):
+   - testWriteSinglePosition() - Single deleted position
+   - testWriteMultiplePositions() - Multiple positions
+   - testWriteEmptyPositions() - Empty collection returns null
+   - testWriteLargePositions() - Positions > Integer.MAX_VALUE
+   - testReadWrittenDV() - Round-trip verification
+
+2. **TestRemappedDVWriter** (5 tests):
+   - testWriteSingleTargetFile() - Single target file
+   - testWriteMultipleTargetFiles() - Three target files
+   - testSkipEmptyPositions() - Skip empty position sets
+   - testAllEmptyPositions() - All empty returns empty list
+   - testVerifyWrittenDVs() - Round-trip verification for multiple DVs
+
 ---
 
 ## Phase 1: Core DV Reading and Position Extraction
