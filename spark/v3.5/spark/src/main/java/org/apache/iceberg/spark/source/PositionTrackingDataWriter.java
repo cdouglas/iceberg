@@ -19,6 +19,9 @@
 package org.apache.iceberg.spark.source;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import org.apache.iceberg.DataFile;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.spark.PositionMappingCoordinator;
 import org.apache.spark.sql.catalyst.InternalRow;
@@ -57,7 +60,22 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
   private final StructType dsSchema;
 
   private long outputPosition = 0;
-  private String currentTargetFile = null;
+
+  // Buffer position mappings until commit when we know the actual target file paths
+  private final List<BufferedMapping> bufferedMappings = new ArrayList<>();
+
+  /** Represents a position mapping waiting for the actual target file path. */
+  private static class BufferedMapping {
+    final String sourceFile;
+    final long sourcePos;
+    final long targetPos;
+
+    BufferedMapping(String sourceFile, long sourcePos, long targetPos) {
+      this.sourceFile = sourceFile;
+      this.sourcePos = sourcePos;
+      this.targetPos = targetPos;
+    }
+  }
 
   /**
    * Creates a position tracking wrapper around a delegate writer.
@@ -100,17 +118,9 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     // The metadata columns (_file, _pos) are not in the writer's schema so they'll be ignored
     delegate.write(row);
 
-    // Track target file (may change on file roll-over)
-    // We'll get the current target file path from the delegate's context
-    // For now, use a placeholder approach - the actual file path will be determined
-    // by examining the WriterCommitMessage after commit
-    if (currentTargetFile == null) {
-      // Initialize on first write - we'll determine actual path from commit message
-      currentTargetFile = "target-pending";
-    }
-
-    // Record position mapping
-    coordinator.recordMapping(table, fileSetId, sourceFile, sourcePos, currentTargetFile, outputPosition);
+    // Buffer the position mapping - we'll record it to the coordinator after commit
+    // when we know the actual target file path from the WriterCommitMessage
+    bufferedMappings.add(new BufferedMapping(sourceFile, sourcePos, outputPosition));
 
     outputPosition++;
   }
@@ -119,13 +129,13 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
   public WriterCommitMessage commit() throws IOException {
     WriterCommitMessage message = delegate.commit();
 
-    // Extract actual target file paths from commit message
-    // This is needed because file paths are only known after commit
-    updateTargetFilePaths(message);
+    // Extract actual target file paths from commit message and record buffered mappings
+    // File paths are only known after commit completes
+    recordBufferedMappingsWithActualPaths(message);
 
     // Reset for next file (if writer is reused)
     outputPosition = 0;
-    currentTargetFile = null;
+    bufferedMappings.clear();
 
     return message;
   }
@@ -142,24 +152,61 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
   }
 
   /**
-   * Updates position mappings with actual target file paths from commit message.
+   * Records buffered position mappings with actual target file paths from commit message.
    *
-   * <p>The WriterCommitMessage contains the actual file paths written. We need to update our
-   * placeholder "target-pending" entries with real paths.
+   * <p>The WriterCommitMessage (TaskCommit) contains the DataFile objects with actual file paths
+   * that were written. We extract these paths and record all buffered mappings to the coordinator.
    *
-   * <p>TODO: This is a simplified implementation. In production, would need to: 1. Extract actual
-   * file paths from WriterCommitMessage 2. Update coordinator mappings with real paths 3. Handle
-   * multiple target files if writer rolled over
+   * <p>Note: This implementation assumes a single target file per writer task. If the writer
+   * rolled over to multiple files, we would need to determine which buffered mappings belong to
+   * which target file based on position ranges. For now, bin-pack rewrites typically produce one
+   * file per task.
+   *
+   * @param message the commit message from the delegate writer
    */
-  private void updateTargetFilePaths(WriterCommitMessage message) {
-    // Implementation note: This requires accessing internals of WriterCommitMessage
-    // which may vary by Iceberg version. For now, we'll rely on the file path
-    // being deterministic based on the write operation.
-    //
-    // In practice, the coordinator aggregation happens after all writes complete,
-    // so we can defer this to Phase 4.2 where we have access to the full
-    // commit context.
+  private void recordBufferedMappingsWithActualPaths(WriterCommitMessage message) {
+    if (bufferedMappings.isEmpty()) {
+      LOG.debug("No buffered position mappings to record for fileSetId={}", fileSetId);
+      return;
+    }
+
+    // Extract actual target file paths from TaskCommit
+    if (!(message instanceof SparkWrite.TaskCommit)) {
+      LOG.warn(
+          "WriterCommitMessage is not a TaskCommit (got {}), cannot extract target file paths. "
+              + "Position mappings will not be recorded.",
+          message.getClass().getName());
+      return;
+    }
+
+    SparkWrite.TaskCommit taskCommit = (SparkWrite.TaskCommit) message;
+    DataFile[] files = taskCommit.files();
+
+    if (files.length == 0) {
+      LOG.warn("TaskCommit has no files, cannot record position mappings for fileSetId={}", fileSetId);
+      return;
+    }
+
+    // Use the first file as the target (typical for bin-pack single file per task)
+    // TODO: Handle multiple target files if writer rolled over
+    String targetFile = files[0].location();
+
     LOG.debug(
-        "Position tracking recorded {} positions for fileSetId={}", outputPosition, fileSetId);
+        "Recording {} buffered position mappings with target file {} for fileSetId={}",
+        bufferedMappings.size(),
+        targetFile,
+        fileSetId);
+
+    // Record all buffered mappings with the actual target file path
+    for (BufferedMapping mapping : bufferedMappings) {
+      coordinator.recordMapping(
+          table, fileSetId, mapping.sourceFile, mapping.sourcePos, targetFile, mapping.targetPos);
+    }
+
+    LOG.info(
+        "Successfully recorded {} position mappings for fileSetId={}, target={}",
+        bufferedMappings.size(),
+        fileSetId,
+        targetFile);
   }
 }

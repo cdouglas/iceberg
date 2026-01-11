@@ -658,11 +658,40 @@ ManifestWriter.toManifestFile()
 - Filtered conflict detection respects partition boundaries
 - Validation of isolation semantics
 
+### Spark Integration Tests
+
+**TestSparkCompactionConflictResolution** - End-to-end Spark integration
+- **Test 8: Conflict Detection** (2 parameterized test cases)
+  - Triggers `CompactionConflictException` when files are compacted
+  - Verifies exception provides compaction map locations
+  - Tests across v2 Parquet and v2 ORC formats
+
+- **Test 9: Manual Conflict Resolution Workflow** (4 parameterized test cases)
+  - Verifies compaction maps contain **real target file paths** (not "target-pending" placeholders)
+  - **Critical bug fix validation:** Ensures buffer-and-record pattern correctly resolves file paths
+  - Validates target file paths have proper format (contain '/', end with .parquet or .orc)
+  - Confirms `PositionDeleteRemapper` can be created successfully
+  - Verifies basic remapping operation succeeds
+  - Tests across v2 Parquet, v2 ORC, v3 Parquet, v3 ORC
+
+- **Test 10: Multiple Compaction Rounds** (4 parameterized test cases)
+  - Verifies compaction map provided after snapshot advancement
+  - Tests conflict detection with previously compacted files
+  - Validates compaction map has correct source→target mappings with real file paths
+  - Confirms resolution workflow can proceed with provided maps
+  - Tests across all format combinations (v2/v3, Parquet/ORC)
+
+**TestBinPackWithPositionTracking** - Position tracking integration
+- Position tracking during bin-pack rewrites
+- Compaction map generation with position deletes
+- Verification of correct run structures with gaps
+
 ### Test Coverage
 
-- **36+ test cases passing** across core compaction map and DV support
+- **46+ test cases passing** across core compaction maps, DV support, and Spark integration
   - Core compaction map tests: ~20 tests
   - DV remapping tests: 16 tests (10 unit + 6 integration)
+  - **Spark integration tests: 10 parameterized tests** (across format versions and file formats)
   - 1 test disabled (TestCompactionConflictDetectionDV - manifest timing issue)
 - **All enabled tests passing**
 - Coverage includes:
@@ -675,10 +704,13 @@ ManifestWriter.toManifestFile()
   - Deletion vector remapping scenarios
   - N:M compaction (multiple sources to multiple targets)
   - Gap handling (positions deleted during compaction)
+  - **End-to-end Spark workflows** (bin-pack with position deletes, conflict resolution)
+  - **Target-pending bug fix verification** (critical fix ensuring real file paths in compaction maps)
   - Large-scale stress testing (1000+ positions)
 
 ### Running Tests
 
+**Core Tests:**
 ```bash
 # Run all compaction map tests
 ./gradlew :iceberg-core:test --tests "*CompactionMap*"
@@ -697,6 +729,28 @@ ManifestWriter.toManifestFile()
 # Run with verbose output
 ./gradlew :iceberg-core:test --tests "*CompactionMap*" --info
 ```
+
+**Spark Integration Tests (Spark 3.5):**
+```bash
+# Run all conflict resolution tests (Tests 8, 9, 10)
+./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests TestSparkCompactionConflictResolution
+
+# Run specific test
+./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests TestSparkCompactionConflictResolution.testConflictDetectionWithSparkAction
+./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests TestSparkCompactionConflictResolution.testManualConflictResolutionWorkflow
+./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests TestSparkCompactionConflictResolution.testMultipleCompactionRounds
+
+# Run position tracking integration tests
+./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests TestBinPackWithPositionTracking
+
+# Run all Spark compaction tests
+./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests "*Compaction*"
+```
+
+**Expected Output:**
+- All core tests: 36+ passing
+- Spark integration tests: 10 parameterized test cases passing (Tests 8-10)
+- Total: 46+ tests passing
 
 ## Spark Implementation Details
 
