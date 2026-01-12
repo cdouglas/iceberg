@@ -77,50 +77,17 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 
 ### Test Coverage
 
-✅ **Comprehensive Test Suite Complete**
+✅ **Comprehensive Test Suite Complete (46+ tests passing)**
 
-**Core Infrastructure (36+ tests):**
-- ✅ Core compaction map infrastructure (serialization, builder, storage)
-- ✅ Position delete remapping logic (unit and integration tests)
-- ✅ Deletion vector remapping (6 end-to-end integration scenarios)
-- ✅ Conflict detection and validation workflows
-- ✅ SERIALIZABLE isolation with compaction awareness
+The compaction maps feature has comprehensive test coverage across all components:
+- Core infrastructure (serialization, builder, storage, remapping)
+- Position delete remapping with both position delete files and deletion vectors
+- Conflict detection and resolution workflows
+- SERIALIZABLE isolation with compaction awareness
+- End-to-end Spark integration tests for conflict detection and resolution
+- Format version compatibility (v2, v3) and file format support (Parquet, ORC)
 
-**Spark 3.5 Integration Tests (10 parameterized test cases):**
-
-**Test 8: Conflict Detection** (2/2 passing)
-- ✅ Triggers `CompactionConflictException` when files are compacted
-- ✅ Exception provides compaction map locations
-- ✅ Tests across v2 Parquet and v2 ORC
-
-**Test 9: Manual Conflict Resolution Workflow** (4/4 passing)
-- ✅ Verifies compaction maps contain **real target file paths** (not "target-pending" placeholders)
-- ✅ Validates target file paths have proper format (contain '/', end with .parquet or .orc)
-- ✅ Confirms `PositionDeleteRemapper` can be created successfully
-- ✅ Verifies basic remapping operation succeeds
-- ✅ Tests across v2 Parquet, v2 ORC, v3 Parquet, v3 ORC
-
-**Test 10: Multiple Compaction Rounds** (4/4 passing)
-- ✅ Verifies compaction map provided after snapshot advancement
-- ✅ Tests conflict detection with previously compacted files
-- ✅ Validates compaction map has correct source→target mappings with real file paths
-- ✅ Tests across all format combinations (v2/v3, Parquet/ORC)
-
-**Total: 46+ tests passing** (36 core + 10 Spark integration)
-
-**Key Functionality Verified:**
-- ✅ Conflict detection works correctly
-- ✅ **Target-pending bug FIXED** (critical bug where placeholder strings appeared instead of real file paths)
-- ✅ Position delete remapping operational
-- ✅ Manual conflict resolution workflow functional
-- ✅ Multiple compaction scenarios handled
-- ✅ Data correctness maintained throughout
-- ✅ Works across format versions (v2, v3) and file formats (Parquet, ORC)
-
-**Test Files:**
-- `TestSparkCompactionConflictResolution.java` - Tests 8, 9, 10 (Spark 3.5)
-- `TestBinPackWithPositionTracking.java` - Position tracking integration tests
-- Core test files in `api/` and `core/` modules for infrastructure testing
+See [Implementation Details](compaction_maps_impl.md#test-coverage) for detailed test descriptions and execution commands
 
 ### What's Incomplete
 
@@ -281,9 +248,9 @@ Current implementation uses O(n*m) naive algorithm (n position deletes × m runs
 
 ## Future Work
 
-1. **Spark 4.0 Support** - Fix schema validation in ParquetWithSparkSchemaVisitor (highest priority)
-2. **Comprehensive Testing** - Write Spark 3.5 test suite verifying merge compactions and conflict resolution
-3. **Automatic Conflict Resolution** - Opt-in automatic remapping in BaseRowDelta
-4. **Performance Optimizations** - Interval tree or stream-based join for efficient remapping
-5. **Sorted/Z-Ordered Rewrite Support** - Track position transformations through sort operations
-6. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
+1. **Spark 4.0 Support** - Fix schema validation issues for format v3 tables (see [errata](compaction_maps_errata.md#2-spark-40-support-deferred))
+2. **Automatic Conflict Resolution** - Opt-in automatic remapping in BaseRowDelta
+3. **Performance Optimizations** - Interval tree or stream-based join for efficient remapping (current O(n*m) algorithm)
+4. **Sorted/Z-Ordered Rewrite Support** - Track position transformations through sort operations
+5. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
+6. **Manifest Timing Fix** - Generate compaction maps before manifests to enable DV conflict detection (see [errata](compaction_maps_errata.md#5-compaction-map-location-not-propagating-to-manifests-in-rewritefiles))
