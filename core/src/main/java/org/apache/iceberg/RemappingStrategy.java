@@ -19,7 +19,9 @@
 package org.apache.iceberg;
 
 import java.util.List;
+import java.util.Map;
 import org.apache.iceberg.CompactionMap.Run;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 /**
  * Strategy for finding which run contains a given source position.
@@ -32,9 +34,11 @@ import org.apache.iceberg.CompactionMap.Run;
  *   <li>{@link BinarySearchStrategy}: O(log m) lookup, no setup cost. Best for 10 &lt;= m &lt;
  *       100.
  *   <li>{@link IntervalTreeStrategy}: O(log m) lookup, O(m) setup. Best for m &gt;= 100.
+ *   <li>{@link StreamJoinStrategy}: O(n + m) bulk lookup for sorted positions. Best for bulk
+ *       remapping.
  * </ul>
  *
- * <p>where m = number of runs in the compaction map.
+ * <p>where m = number of runs, n = number of positions to look up.
  */
 interface RemappingStrategy {
 
@@ -47,9 +51,36 @@ interface RemappingStrategy {
   Run runForPosition(long sourcePosition);
 
   /**
+   * Finds runs for multiple source positions (bulk lookup).
+   *
+   * <p>Default implementation calls {@link #runForPosition(long)} for each position. Strategies
+   * can override this for better performance.
+   *
+   * <p><strong>Performance:</strong>
+   *
+   * <ul>
+   *   <li>Default: O(n * complexity of single lookup)
+   *   <li>Optimized: O(n + m) if positions are sorted (stream join)
+   * </ul>
+   *
+   * @param sourcePositions positions to look up (sorted for best performance)
+   * @return map from position to containing run (missing entries = gaps)
+   */
+  default Map<Long, Run> runForPositions(List<Long> sourcePositions) {
+    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sourcePositions.size());
+    for (Long position : sourcePositions) {
+      Run run = runForPosition(position);
+      if (run != null) {
+        results.put(position, run);
+      }
+    }
+    return results;
+  }
+
+  /**
    * Returns the name of this strategy for diagnostic purposes.
    *
-   * @return strategy name (e.g., "linear-search", "binary-search")
+   * @return strategy name (e.g., "linear-search", "binary-search", "stream-join")
    */
   String name();
 

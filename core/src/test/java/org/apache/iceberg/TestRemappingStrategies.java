@@ -24,6 +24,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import org.apache.iceberg.CompactionMap.Run;
 import org.apache.iceberg.GenericCompactionMap.GenericRun;
@@ -360,6 +361,215 @@ public class TestRemappingStrategies {
     List<Run> manyRuns = generateSortedRuns(150);
     RemappingStrategy strategy3 = RemappingStrategy.Factory.create(manyRuns);
     assertThat(strategy3.name()).isEqualTo("interval-tree");
+  }
+
+  /** Test stream join bulk lookup with sorted positions. */
+  @Test
+  public void testStreamJoinBulkSorted() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), // [0, 100)
+            new GenericRun(150, 100, 50), // [150, 200) - gap at [100, 150)
+            new GenericRun(300, 150, 100)); // [300, 400) - gap at [200, 300)
+
+    StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
+
+    // Sorted positions including positions in runs, gaps, and out of bounds
+    List<Long> positions = Arrays.asList(5L, 50L, 99L, 125L, 150L, 175L, 250L, 300L, 350L, 500L);
+
+    Map<Long, Run> results = strategy.runForPositions(positions);
+
+    // Positions in runs should be mapped
+    assertThat(results.get(5L)).isEqualTo(runs.get(0));
+    assertThat(results.get(50L)).isEqualTo(runs.get(0));
+    assertThat(results.get(99L)).isEqualTo(runs.get(0));
+    assertThat(results.get(150L)).isEqualTo(runs.get(1));
+    assertThat(results.get(175L)).isEqualTo(runs.get(1));
+    assertThat(results.get(300L)).isEqualTo(runs.get(2));
+    assertThat(results.get(350L)).isEqualTo(runs.get(2));
+
+    // Positions in gaps or out of bounds should not be in results
+    assertThat(results.containsKey(125L)).isFalse();
+    assertThat(results.containsKey(250L)).isFalse();
+    assertThat(results.containsKey(500L)).isFalse();
+  }
+
+  /** Test stream join bulk lookup with unsorted positions (should fall back to binary search). */
+  @Test
+  public void testStreamJoinBulkUnsorted() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100),
+            new GenericRun(150, 100, 50),
+            new GenericRun(300, 150, 100));
+
+    StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
+
+    // Unsorted positions
+    List<Long> positions = Arrays.asList(350L, 50L, 175L, 125L, 5L);
+
+    Map<Long, Run> results = strategy.runForPositions(positions);
+
+    // All positions in runs should still be mapped (via fallback)
+    assertThat(results.get(5L)).isEqualTo(runs.get(0));
+    assertThat(results.get(50L)).isEqualTo(runs.get(0));
+    assertThat(results.get(175L)).isEqualTo(runs.get(1));
+    assertThat(results.get(350L)).isEqualTo(runs.get(2));
+
+    // Position in gap should not be in results
+    assertThat(results.containsKey(125L)).isFalse();
+  }
+
+  /** Test stream join single-position lookup (compatibility). */
+  @Test
+  public void testStreamJoinSinglePosition() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100),
+            new GenericRun(150, 100, 50),
+            new GenericRun(300, 150, 100));
+
+    StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
+
+    // Single-position lookup should work
+    assertThat(strategy.runForPosition(50)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(175)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(350)).isEqualTo(runs.get(2));
+
+    // Gaps and out of bounds
+    assertThat(strategy.runForPosition(125)).isNull();
+    assertThat(strategy.runForPosition(500)).isNull();
+  }
+
+  /** Test stream join with empty positions list. */
+  @Test
+  public void testStreamJoinEmptyPositions() {
+    List<Run> runs = Arrays.asList(new GenericRun(0, 0, 100));
+    StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
+
+    List<Long> empty = new ArrayList<>();
+    Map<Long, Run> results = strategy.runForPositions(empty);
+
+    assertThat(results).isEmpty();
+  }
+
+  /** Test stream join with empty runs list. */
+  @Test
+  public void testStreamJoinEmptyRuns() {
+    List<Run> empty = new ArrayList<>();
+    StreamJoinStrategy strategy = new StreamJoinStrategy(empty);
+
+    List<Long> positions = Arrays.asList(0L, 50L, 100L);
+    Map<Long, Run> results = strategy.runForPositions(positions);
+
+    assertThat(results).isEmpty();
+  }
+
+  /** Test stream join with positions all in gaps. */
+  @Test
+  public void testStreamJoinAllGaps() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), // [0, 100)
+            new GenericRun(200, 100, 100)); // [200, 300) - gap at [100, 200)
+
+    StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
+
+    // All positions in the gap
+    List<Long> positions = Arrays.asList(100L, 125L, 150L, 175L, 199L);
+    Map<Long, Run> results = strategy.runForPositions(positions);
+
+    assertThat(results).isEmpty();
+  }
+
+  /** Test stream join with positions all before first run. */
+  @Test
+  public void testStreamJoinAllBefore() {
+    List<Run> runs = Arrays.asList(new GenericRun(100, 0, 100)); // [100, 200)
+
+    StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
+
+    // All positions before first run
+    List<Long> positions = Arrays.asList(0L, 25L, 50L, 75L, 99L);
+    Map<Long, Run> results = strategy.runForPositions(positions);
+
+    assertThat(results).isEmpty();
+  }
+
+  /** Test stream join with positions all after last run. */
+  @Test
+  public void testStreamJoinAllAfter() {
+    List<Run> runs = Arrays.asList(new GenericRun(0, 0, 100)); // [0, 100)
+
+    StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
+
+    // All positions after last run
+    List<Long> positions = Arrays.asList(100L, 200L, 300L, 400L, 500L);
+    Map<Long, Run> results = strategy.runForPositions(positions);
+
+    assertThat(results).isEmpty();
+  }
+
+  /** Test stream join matches other strategies for random data. */
+  @Test
+  public void testStreamJoinMatchesOtherStrategies() {
+    Random rand = new Random(456);
+
+    // Test 50 different configurations
+    for (int config = 0; config < 50; config++) {
+      int numRuns = 1 + rand.nextInt(50); // 1-50 runs
+      List<Run> runs = generateSortedRunsWithGaps(numRuns, rand);
+
+      // Create all strategies
+      RemappingStrategy linear = new LinearSearchStrategy(runs);
+      RemappingStrategy binary = new BinarySearchStrategy(runs);
+      RemappingStrategy intervalTree = new IntervalTreeStrategy(runs);
+      RemappingStrategy streamJoin = new StreamJoinStrategy(runs);
+
+      // Generate sorted positions
+      long maxPos =
+          runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
+      List<Long> sortedPositions = new ArrayList<>();
+      for (int i = 0; i < 50; i++) {
+        sortedPositions.add(nextLong(rand, maxPos + 1000));
+      }
+      sortedPositions.sort(Long::compareTo);
+
+      // Test bulk lookup
+      Map<Long, Run> linearResults = linear.runForPositions(sortedPositions);
+      Map<Long, Run> binaryResults = binary.runForPositions(sortedPositions);
+      Map<Long, Run> intervalTreeResults = intervalTree.runForPositions(sortedPositions);
+      Map<Long, Run> streamJoinResults = streamJoin.runForPositions(sortedPositions);
+
+      // All strategies should match
+      assertThat(binaryResults).isEqualTo(linearResults);
+      assertThat(intervalTreeResults).isEqualTo(linearResults);
+      assertThat(streamJoinResults)
+          .as("Stream join should match linear search for config %s", config)
+          .isEqualTo(linearResults);
+
+      // Also test single-position lookups
+      for (Long pos : sortedPositions) {
+        Run linearResult = linear.runForPosition(pos);
+        Run streamJoinResult = streamJoin.runForPosition(pos);
+        assertThat(streamJoinResult)
+            .as("Stream join single lookup should match for config %s, position %s", config, pos)
+            .isEqualTo(linearResult);
+      }
+    }
+  }
+
+  /** Test that stream join rejects unsorted runs. */
+  @Test
+  public void testStreamJoinRequiresSorted() {
+    List<Run> unsorted =
+        Arrays.asList(
+            new GenericRun(150, 100, 50), // Wrong order
+            new GenericRun(0, 0, 100));
+
+    assertThatThrownBy(() -> new StreamJoinStrategy(unsorted))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be sorted");
   }
 
   // Helper methods
