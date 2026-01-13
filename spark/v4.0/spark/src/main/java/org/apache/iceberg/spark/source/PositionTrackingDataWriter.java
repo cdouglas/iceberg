@@ -157,10 +157,10 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
    * <p>The WriterCommitMessage (TaskCommit) contains the DataFile objects with actual file paths
    * that were written. We extract these paths and record all buffered mappings to the coordinator.
    *
-   * <p>Note: This implementation assumes a single target file per writer task. If the writer
-   * rolled over to multiple files, we would need to determine which buffered mappings belong to
-   * which target file based on position ranges. For now, bin-pack rewrites typically produce one
-   * file per task.
+   * <p>Note: This implementation assumes a single target file per writer task. If the writer rolled
+   * over to multiple files, we would need to determine which buffered mappings belong to which
+   * target file based on position ranges. For now, bin-pack rewrites typically produce one file per
+   * task.
    *
    * @param message the commit message from the delegate writer
    */
@@ -183,7 +183,8 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     DataFile[] files = taskCommit.files();
 
     if (files.length == 0) {
-      LOG.warn("TaskCommit has no files, cannot record position mappings for fileSetId={}", fileSetId);
+      LOG.warn(
+          "TaskCommit has no files, cannot record position mappings for fileSetId={}", fileSetId);
       return;
     }
 
