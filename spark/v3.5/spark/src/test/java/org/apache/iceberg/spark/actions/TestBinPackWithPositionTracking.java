@@ -19,6 +19,7 @@
 package org.apache.iceberg.spark.actions;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.File;
 import java.io.IOException;
@@ -107,6 +108,8 @@ public class TestBinPackWithPositionTracking extends TestBase {
     return new Object[][] {
       {2, FileFormat.PARQUET},
       {2, FileFormat.ORC},
+      {3, FileFormat.PARQUET},
+      {3, FileFormat.ORC},
     };
   }
 
@@ -174,6 +177,9 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testBinPackGeneratesCompactionMapWithPositionDeletes() throws IOException {
+    // V3 tables require deletion vectors instead of position delete files
+    assumeTrue(formatVersion == 2, "Position delete files only work with V2");
+
     Table table = createTable();
 
     // Create 3 data files
