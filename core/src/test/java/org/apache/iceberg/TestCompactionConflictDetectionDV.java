@@ -64,7 +64,6 @@ public class TestCompactionConflictDetectionDV {
   }
 
   @Test
-  @Disabled("Compaction map location not propagating to manifests in RewriteFiles - issue tracked")
   public void testCompactionConflictDetectedWithDV() throws IOException {
     // 1. Create table with compaction maps enabled (V3 supports DVs)
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table_dv");

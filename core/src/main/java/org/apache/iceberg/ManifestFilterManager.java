@@ -510,6 +510,12 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
 
     try {
       ManifestWriter<F> writer = newManifestWriter(reader.spec());
+
+      // Preserve compaction map location from source manifest
+      if (manifest.compactionMapLocation() != null) {
+        writer.setCompactionMapLocation(manifest.compactionMapLocation());
+      }
+
       try (CloseableIterable<ManifestEntry<F>> liveEntries = reader.liveEntries()) {
         liveEntries.forEach(
             entry -> {
