@@ -168,7 +168,23 @@ abstract class ManifestMergeManager<F extends ContentFile<F>> {
       return mergedManifests.get(bin);
     }
 
+    // Find compaction map location from source manifests to preserve it
+    // If any source manifest has a compaction map location, preserve it in the merged manifest
+    String compactionMapLocation = null;
+    for (ManifestFile manifest : bin) {
+      if (manifest.compactionMapLocation() != null) {
+        compactionMapLocation = manifest.compactionMapLocation();
+        break; // Use first non-null location found
+      }
+    }
+
     ManifestWriter<F> writer = newManifestWriter(spec(specId));
+
+    // Set compaction map location on writer if found
+    if (compactionMapLocation != null) {
+      writer.setCompactionMapLocation(compactionMapLocation);
+    }
+
     boolean threw = true;
     try {
       for (ManifestFile manifest : bin) {
