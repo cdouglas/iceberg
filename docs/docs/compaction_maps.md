@@ -52,15 +52,14 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 - PositionDeleteRemapper for remapping position deletes to new file locations
 - CompactionMapValidator for detecting conflicts during transaction commit
 - SERIALIZABLE isolation enhancements with compaction awareness
-- 50+ unit and integration tests covering all components
+- 61+ unit and integration tests covering all components (full V2/V3 parity)
 
 ✅ **Deletion Vector (DV) Support**
 - DVPositionWriter utility for writing DVs from position collections
 - RemappedDVWriter helper for N:M remapping scenarios (multiple target files)
 - PositionDeleteRemapper supports both position delete files and deletion vectors
 - DVPositionReader for reading positions from DV files
-- Comprehensive end-to-end integration tests (6 scenarios)
-- 36+ tests passing across all phases including DV remapping
+- Comprehensive end-to-end integration tests across V2 (position deletes) and V3 (deletion vectors)
 
 ✅ **Spark 3.5 Position Tracking**
 - Position tracking fully implemented for bin-pack rewrites
@@ -77,15 +76,16 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 
 ### Test Coverage
 
-✅ **Comprehensive Test Suite Complete (46+ tests passing)**
+✅ **Comprehensive Test Suite Complete (61+ tests passing)**
 
 The compaction maps feature has comprehensive test coverage across all components:
 - Core infrastructure (serialization, builder, storage, remapping)
 - Position delete remapping with both position delete files and deletion vectors
-- Conflict detection and resolution workflows
-- SERIALIZABLE isolation with compaction awareness
+- Conflict detection and resolution workflows (full V2/V3 parity)
+- SERIALIZABLE isolation with compaction awareness (full V2/V3 parity)
 - End-to-end Spark integration tests for conflict detection and resolution
-- Format version compatibility (v2, v3) and file format support (Parquet, ORC)
+- Format version compatibility (v2 position deletes, v3 deletion vectors)
+- File format support (Parquet, ORC, Puffin for DVs)
 
 See [Implementation Details](compaction_maps_impl.md#test-coverage) for detailed test descriptions and execution commands
 
