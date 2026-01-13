@@ -197,6 +197,7 @@ public class GenericCompactionMap extends SupportsIndexProjection
     private String sourceFile;
     private String targetFile;
     private Run[] runs;
+    private transient volatile RemappingStrategy strategy; // lazy initialization
 
     public GenericFileMapping(Schema avroSchema) {
       this.avroSchema = avroSchema;
@@ -235,15 +236,15 @@ public class GenericCompactionMap extends SupportsIndexProjection
 
     @Override
     public Run runForPosition(long sourcePosition) {
-      if (runs != null) {
-        for (Run run : runs) {
-          if (sourcePosition >= run.sourcePosition()
-              && sourcePosition < run.sourcePosition() + run.length()) {
-            return run;
+      // Lazy initialization of remapping strategy
+      if (strategy == null) {
+        synchronized (this) {
+          if (strategy == null) {
+            strategy = RemappingStrategy.Factory.create(runs());
           }
         }
       }
-      return null;
+      return strategy.runForPosition(sourcePosition);
     }
 
     @Override
