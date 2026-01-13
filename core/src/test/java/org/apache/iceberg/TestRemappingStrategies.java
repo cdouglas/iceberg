@@ -1,0 +1,331 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.iceberg;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
+import org.apache.iceberg.CompactionMap.Run;
+import org.apache.iceberg.GenericCompactionMap.GenericRun;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+public class TestRemappingStrategies {
+
+  /** Test basic functionality with a simple run set. */
+  @Test
+  public void testLinearSearchBasic() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), // [0, 100)
+            new GenericRun(150, 100, 50), // [150, 200) - gap at [100, 150)
+            new GenericRun(300, 150, 100)); // [300, 400) - gap at [200, 300)
+
+    RemappingStrategy strategy = new LinearSearchStrategy(runs);
+
+    // Test positions in runs
+    assertThat(strategy.runForPosition(0)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(50)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(99)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(150)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(175)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(199)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(300)).isEqualTo(runs.get(2));
+    assertThat(strategy.runForPosition(350)).isEqualTo(runs.get(2));
+    assertThat(strategy.runForPosition(399)).isEqualTo(runs.get(2));
+
+    // Test positions in gaps
+    assertThat(strategy.runForPosition(100)).isNull();
+    assertThat(strategy.runForPosition(125)).isNull();
+    assertThat(strategy.runForPosition(149)).isNull();
+    assertThat(strategy.runForPosition(200)).isNull();
+    assertThat(strategy.runForPosition(250)).isNull();
+    assertThat(strategy.runForPosition(299)).isNull();
+
+    // Test out of bounds
+    assertThat(strategy.runForPosition(-1)).isNull();
+    assertThat(strategy.runForPosition(400)).isNull();
+    assertThat(strategy.runForPosition(1000)).isNull();
+  }
+
+  /** Test binary search with the same data as linear search. */
+  @Test
+  public void testBinarySearchBasic() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100),
+            new GenericRun(150, 100, 50),
+            new GenericRun(300, 150, 100));
+
+    RemappingStrategy strategy = new BinarySearchStrategy(runs);
+
+    // Test positions in runs
+    assertThat(strategy.runForPosition(0)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(50)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(99)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(150)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(175)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(199)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(300)).isEqualTo(runs.get(2));
+    assertThat(strategy.runForPosition(350)).isEqualTo(runs.get(2));
+    assertThat(strategy.runForPosition(399)).isEqualTo(runs.get(2));
+
+    // Test positions in gaps (should match linear search)
+    assertThat(strategy.runForPosition(100)).isNull();
+    assertThat(strategy.runForPosition(125)).isNull();
+    assertThat(strategy.runForPosition(149)).isNull();
+    assertThat(strategy.runForPosition(200)).isNull();
+    assertThat(strategy.runForPosition(250)).isNull();
+    assertThat(strategy.runForPosition(299)).isNull();
+
+    // Test out of bounds (should match linear search)
+    assertThat(strategy.runForPosition(-1)).isNull();
+    assertThat(strategy.runForPosition(400)).isNull();
+    assertThat(strategy.runForPosition(1000)).isNull();
+  }
+
+  /** Test empty run lists. */
+  @Test
+  public void testEmptyRuns() {
+    List<Run> empty = new ArrayList<>();
+
+    RemappingStrategy linear = new LinearSearchStrategy(empty);
+    RemappingStrategy binary = new BinarySearchStrategy(empty);
+
+    assertThat(linear.runForPosition(0)).isNull();
+    assertThat(linear.runForPosition(100)).isNull();
+
+    assertThat(binary.runForPosition(0)).isNull();
+    assertThat(binary.runForPosition(100)).isNull();
+  }
+
+  /** Test single run. */
+  @Test
+  public void testSingleRun() {
+    List<Run> runs = Arrays.asList(new GenericRun(0, 0, 1000));
+
+    RemappingStrategy linear = new LinearSearchStrategy(runs);
+    RemappingStrategy binary = new BinarySearchStrategy(runs);
+
+    // Inside run
+    assertThat(linear.runForPosition(0)).isEqualTo(runs.get(0));
+    assertThat(linear.runForPosition(500)).isEqualTo(runs.get(0));
+    assertThat(linear.runForPosition(999)).isEqualTo(runs.get(0));
+
+    assertThat(binary.runForPosition(0)).isEqualTo(runs.get(0));
+    assertThat(binary.runForPosition(500)).isEqualTo(runs.get(0));
+    assertThat(binary.runForPosition(999)).isEqualTo(runs.get(0));
+
+    // Outside run
+    assertThat(linear.runForPosition(-1)).isNull();
+    assertThat(linear.runForPosition(1000)).isNull();
+
+    assertThat(binary.runForPosition(-1)).isNull();
+    assertThat(binary.runForPosition(1000)).isNull();
+  }
+
+  /** Test that binary search rejects unsorted runs. */
+  @Test
+  public void testBinarySearchRequiresSorted() {
+    List<Run> unsorted =
+        Arrays.asList(
+            new GenericRun(150, 100, 50), // Wrong order
+            new GenericRun(0, 0, 100));
+
+    assertThatThrownBy(() -> new BinarySearchStrategy(unsorted))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be sorted");
+  }
+
+  /** Test that binary search rejects overlapping runs. */
+  @Test
+  public void testBinarySearchRejectsOverlaps() {
+    List<Run> overlapping =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), // [0, 100)
+            new GenericRun(50, 100, 50)); // [50, 100) - overlaps!
+
+    assertThatThrownBy(() -> new BinarySearchStrategy(overlapping))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be sorted");
+  }
+
+  /** Test with large number of runs to verify binary search efficiency. */
+  @ParameterizedTest
+  @ValueSource(ints = {10, 100, 1000})
+  public void testLargeRunCount(int numRuns) {
+    List<Run> runs = generateSortedRuns(numRuns);
+
+    RemappingStrategy linear = new LinearSearchStrategy(runs);
+    RemappingStrategy binary = new BinarySearchStrategy(runs);
+
+    // Test random positions
+    Random rand = new Random(42);
+    for (int i = 0; i < 1000; i++) {
+      long pos = nextLong(rand, numRuns * 1000L);
+
+      Run linearResult = linear.runForPosition(pos);
+      Run binaryResult = binary.runForPosition(pos);
+
+      // Results should match
+      assertThat(binaryResult)
+          .as("Binary search should match linear search for position %s", pos)
+          .isEqualTo(linearResult);
+    }
+  }
+
+  /**
+   * Property-based test: binary search should always match linear search.
+   *
+   * <p>This test generates many random run configurations and verifies that binary search produces
+   * identical results to linear search for all positions.
+   */
+  @Test
+  public void testBinarySearchMatchesLinearSearch() {
+    Random rand = new Random(123);
+
+    // Test 100 different run configurations
+    for (int config = 0; config < 100; config++) {
+      int numRuns = 1 + rand.nextInt(100); // 1-100 runs
+      List<Run> runs = generateSortedRunsWithGaps(numRuns, rand);
+
+      RemappingStrategy linear = new LinearSearchStrategy(runs);
+      RemappingStrategy binary = new BinarySearchStrategy(runs);
+
+      // Test 100 random positions for each configuration
+      long maxPos = runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
+
+      for (int i = 0; i < 100; i++) {
+        long pos = nextLong(rand, maxPos + 1000); // Include out-of-bounds
+
+        Run linearResult = linear.runForPosition(pos);
+        Run binaryResult = binary.runForPosition(pos);
+
+        assertThat(binaryResult)
+            .as(
+                "Binary search should match linear search for config %s, position %s",
+                config, pos)
+            .isEqualTo(linearResult);
+      }
+    }
+  }
+
+  /** Test edge cases at run boundaries. */
+  @Test
+  public void testRunBoundaries() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), // [0, 100)
+            new GenericRun(100, 100, 100)); // [100, 200) - no gap
+
+    RemappingStrategy linear = new LinearSearchStrategy(runs);
+    RemappingStrategy binary = new BinarySearchStrategy(runs);
+
+    // Test boundary between runs
+    assertThat(linear.runForPosition(99)).isEqualTo(runs.get(0));
+    assertThat(linear.runForPosition(100)).isEqualTo(runs.get(1));
+    assertThat(linear.runForPosition(101)).isEqualTo(runs.get(1));
+
+    assertThat(binary.runForPosition(99)).isEqualTo(runs.get(0));
+    assertThat(binary.runForPosition(100)).isEqualTo(runs.get(1));
+    assertThat(binary.runForPosition(101)).isEqualTo(runs.get(1));
+  }
+
+  /** Test strategy factory selection. */
+  @Test
+  public void testStrategyFactorySelection() {
+    // Few runs: should use linear search
+    List<Run> fewRuns = generateSortedRuns(5);
+    RemappingStrategy strategy1 = RemappingStrategy.Factory.create(fewRuns);
+    assertThat(strategy1.name()).isEqualTo("linear-search");
+
+    // Many runs: should use binary search
+    List<Run> manyRuns = generateSortedRuns(20);
+    RemappingStrategy strategy2 = RemappingStrategy.Factory.create(manyRuns);
+    assertThat(strategy2.name()).isEqualTo("binary-search");
+  }
+
+  // Helper methods
+
+  /**
+   * Generates sorted runs without gaps.
+   *
+   * @param numRuns number of runs to generate
+   * @return list of sorted, contiguous runs
+   */
+  private List<Run> generateSortedRuns(int numRuns) {
+    List<Run> runs = new ArrayList<>(numRuns);
+    long pos = 0;
+    long targetPos = 0;
+
+    for (int i = 0; i < numRuns; i++) {
+      long length = 1000; // Fixed length for simplicity
+      runs.add(new GenericRun(pos, targetPos, length));
+      pos += length;
+      targetPos += length;
+    }
+
+    return runs;
+  }
+
+  /**
+   * Generates sorted runs with random gaps.
+   *
+   * @param numRuns number of runs to generate
+   * @param rand random number generator
+   * @return list of sorted runs with gaps
+   */
+  private List<Run> generateSortedRunsWithGaps(int numRuns, Random rand) {
+    List<Run> runs = new ArrayList<>(numRuns);
+    long pos = rand.nextInt(1000); // Random starting position
+    long targetPos = 0;
+
+    for (int i = 0; i < numRuns; i++) {
+      long length = 100 + rand.nextInt(900); // Random length 100-999
+      runs.add(new GenericRun(pos, targetPos, length));
+
+      pos += length;
+      targetPos += length;
+
+      // Add random gap (30% chance)
+      if (rand.nextDouble() < 0.3) {
+        pos += rand.nextInt(500);
+      }
+    }
+
+    return runs;
+  }
+
+  /**
+   * Helper to generate random long within bounds (Java 11 compatible).
+   *
+   * @param rand random number generator
+   * @param bound upper bound (exclusive)
+   * @return random long in range [0, bound)
+   */
+  private long nextLong(Random rand, long bound) {
+    // Generate random long and map to range [0, bound)
+    return Math.abs(rand.nextLong()) % bound;
+  }
+}
