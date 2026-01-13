@@ -35,7 +35,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  *       100.
  *   <li>{@link IntervalTreeStrategy}: O(log m) lookup, O(m) setup. Best for m &gt;= 100.
  *   <li>{@link StreamJoinStrategy}: O(n + m) bulk lookup for sorted positions. Best for bulk
- *       remapping.
+ *       remapping when m ≈ n.
+ *   <li>{@link RangeQueryStrategy}: O(m log n) bulk lookup for sorted positions. Best when n
+ *       &gt;&gt; m (high fan-in).
  * </ul>
  *
  * <p>where m = number of runs, n = number of positions to look up.
