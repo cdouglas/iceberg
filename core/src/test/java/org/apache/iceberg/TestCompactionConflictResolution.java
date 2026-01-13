@@ -24,15 +24,25 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.Parameter;
+import org.apache.iceberg.ParameterizedTestExtension;
+import org.apache.iceberg.Parameters;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.deletes.BaseDVFileWriter;
+import org.apache.iceberg.deletes.DVFileWriter;
 import org.apache.iceberg.deletes.PositionDelete;
+import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.io.DeleteWriteResult;
+import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
@@ -49,12 +59,21 @@ import org.junit.jupiter.api.io.TempDir;
  *   <li>Retry transaction with remapped deletes
  * </ol>
  */
+@ExtendWith(ParameterizedTestExtension.class)
 public class TestCompactionConflictResolution {
 
   private static final Schema SCHEMA =
       new Schema(
           Types.NestedField.required(1, "id", Types.IntegerType.get()),
           Types.NestedField.optional(2, "data", Types.StringType.get()));
+
+  @Parameters(name = "formatVersion = {0}")
+  public static Object[][] parameters() {
+    return new Object[][] {{2}, {3}};
+  }
+
+  @Parameter(index = 0)
+  private int formatVersion;
 
   @TempDir public File temp;
 
@@ -67,18 +86,19 @@ public class TestCompactionConflictResolution {
     catalog.createNamespace(org.apache.iceberg.catalog.Namespace.of("db"));
   }
 
-  @Test
-  public void testConflictResolutionWorkflowV2() throws IOException {
-    // Demonstrate the conflict resolution workflow with V2 tables
+  @TestTemplate
+  public void testConflictResolutionWorkflow() throws IOException {
+    // Demonstrate the conflict resolution workflow
     // This test shows the API pattern even though full remapping requires actual delete files
 
     // 1. Create table with compaction maps enabled
-    TableIdentifier tableIdent = TableIdentifier.of("db", "test_resolution_v2");
+    TableIdentifier tableIdent =
+        TableIdentifier.of("db", "test_resolution_v" + formatVersion);
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
         .updateProperties()
-        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
@@ -104,14 +124,21 @@ public class TestCompactionConflictResolution {
     RowDelta rowDelta = table.newRowDelta().validateFromSnapshot(startingSnapshot);
 
     DataFile fileToDelete = sourceFiles.get(0);
-    DeleteFile deleteFile =
-        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-            .ofPositionDeletes()
-            .withPath("/path/to/deletes.parquet")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .withReferencedDataFile(fileToDelete.path().toString())
-            .build();
+    DeleteFile deleteFile;
+    if (formatVersion == 3) {
+      // V3: Use DV
+      deleteFile = writeDV(table, fileToDelete.path().toString(), 10L, 20L, 30L);
+    } else {
+      // V2: Position delete file
+      deleteFile =
+          FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+              .ofPositionDeletes()
+              .withPath("/path/to/deletes.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .withReferencedDataFile(fileToDelete.path().toString())
+              .build();
+    }
 
     rowDelta.addDeletes(deleteFile);
 
@@ -178,15 +205,15 @@ public class TestCompactionConflictResolution {
     // The exact position depends on the compaction map runs
   }
 
-  @Test
+  @TestTemplate
   public void testMultipleCompactionMaps() throws IOException {
     // Test handling multiple compaction maps when multiple files are compacted
-    TableIdentifier tableIdent = TableIdentifier.of("db", "test_multiple_maps");
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_multiple_maps_v" + formatVersion);
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
         .updateProperties()
-        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
@@ -227,23 +254,32 @@ public class TestCompactionConflictResolution {
     // Start transaction with deletes on both original files
     RowDelta rowDelta = table.newRowDelta().validateFromSnapshot(snap1);
 
-    DeleteFile delete1 =
-        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-            .ofPositionDeletes()
-            .withPath("/path/to/delete1.parquet")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .withReferencedDataFile(file1.path().toString())
-            .build();
+    DeleteFile delete1;
+    DeleteFile delete2;
+    if (formatVersion == 3) {
+      // V3: Use DVs
+      delete1 = writeDV(table, file1.path().toString(), 10L, 20L);
+      delete2 = writeDV(table, file2.path().toString(), 30L, 40L);
+    } else {
+      // V2: Position delete files
+      delete1 =
+          FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+              .ofPositionDeletes()
+              .withPath("/path/to/delete1.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .withReferencedDataFile(file1.path().toString())
+              .build();
 
-    DeleteFile delete2 =
-        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-            .ofPositionDeletes()
-            .withPath("/path/to/delete2.parquet")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .withReferencedDataFile(file2.path().toString())
-            .build();
+      delete2 =
+          FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+              .ofPositionDeletes()
+              .withPath("/path/to/delete2.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .withReferencedDataFile(file2.path().toString())
+              .build();
+    }
 
     rowDelta.addDeletes(delete1);
     rowDelta.addDeletes(delete2);
@@ -285,15 +321,15 @@ public class TestCompactionConflictResolution {
     // 4. Retry with all remapped deletes
   }
 
-  @Test
+  @TestTemplate
   public void testPartialConflictResolution() throws IOException {
     // Test where only some delete files conflict with compaction
-    TableIdentifier tableIdent = TableIdentifier.of("db", "test_partial_conflict");
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_partial_conflict_v" + formatVersion);
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
         .updateProperties()
-        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
@@ -318,23 +354,32 @@ public class TestCompactionConflictResolution {
     // Start transaction with deletes on both files
     RowDelta rowDelta = table.newRowDelta().validateFromSnapshot(startingSnapshot);
 
-    DeleteFile delete1 =
-        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-            .ofPositionDeletes()
-            .withPath("/path/to/delete1.parquet")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .withReferencedDataFile(file1.path().toString())
-            .build();
+    DeleteFile delete1;
+    DeleteFile delete2;
+    if (formatVersion == 3) {
+      // V3: Use DVs
+      delete1 = writeDV(table, file1.path().toString(), 10L, 20L);
+      delete2 = writeDV(table, file2.path().toString(), 30L, 40L);
+    } else {
+      // V2: Position delete files
+      delete1 =
+          FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+              .ofPositionDeletes()
+              .withPath("/path/to/delete1.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .withReferencedDataFile(file1.path().toString())
+              .build();
 
-    DeleteFile delete2 =
-        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-            .ofPositionDeletes()
-            .withPath("/path/to/delete2.parquet")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .withReferencedDataFile(file2.path().toString())
-            .build();
+      delete2 =
+          FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+              .ofPositionDeletes()
+              .withPath("/path/to/delete2.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .withReferencedDataFile(file2.path().toString())
+              .build();
+    }
 
     rowDelta.addDeletes(delete1);
     rowDelta.addDeletes(delete2);
@@ -372,34 +417,28 @@ public class TestCompactionConflictResolution {
     // 4. Retry with remapped delete1 + original delete2
   }
 
-  // ===== V4 Tests with Deletion Vectors (Placeholders for future implementation) =====
+  /** Helper method to write a deletion vector file (for V3 tests). */
+  private DeleteFile writeDV(Table table, String dataFilePath, Long... positions)
+      throws IOException {
+    OutputFileFactory fileFactory =
+        OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PUFFIN).build();
 
-  @Test
-  @Disabled(
-      "V4 with DVs: Requires Deletion Vector infrastructure. This test is a placeholder for "
-          + "future implementation when DV support is added to compaction maps.")
-  public void testConflictResolutionWorkflowV4WithDVs() throws IOException {
-    // Placeholder for V4 conflict resolution with Deletion Vectors
-    // Future implementation will demonstrate:
-    // 1. Detecting conflict with DVs
-    // 2. Loading compaction maps
-    // 3. Remapping DV references (different from position deletes)
-    // 4. Retrying transaction with remapped DVs
-  }
+    java.util.function.Function<String, PositionDeleteIndex> noPreviousDeletes =
+        path -> PositionDeleteIndex.empty();
 
-  @Test
-  @Disabled(
-      "V4 with DVs: Requires Deletion Vector infrastructure. This test is a placeholder for "
-          + "future implementation when DV support is added to compaction maps.")
-  public void testMultipleCompactionMapsV4WithDVs() throws IOException {
-    // Placeholder for handling multiple compaction maps with DVs
-  }
+    DVFileWriter writer = new BaseDVFileWriter(fileFactory, noPreviousDeletes);
 
-  @Test
-  @Disabled(
-      "V4 with DVs: Requires Deletion Vector infrastructure. This test is a placeholder for "
-          + "future implementation when DV support is added to compaction maps.")
-  public void testPartialConflictResolutionV4WithDVs() throws IOException {
-    // Placeholder for partial conflict resolution with DVs
+    for (Long pos : positions) {
+      writer.delete(dataFilePath, pos, table.spec(), null);
+    }
+
+    writer.close();
+    DeleteWriteResult result = writer.result();
+
+    if (result.deleteFiles().isEmpty()) {
+      throw new IllegalStateException("DV writer produced no delete files");
+    }
+
+    return result.deleteFiles().get(0);
   }
 }

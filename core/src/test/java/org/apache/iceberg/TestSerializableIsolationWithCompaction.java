@@ -25,15 +25,24 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
+import org.apache.iceberg.Parameter;
+import org.apache.iceberg.ParameterizedTestExtension;
+import org.apache.iceberg.Parameters;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.deletes.BaseDVFileWriter;
+import org.apache.iceberg.deletes.DVFileWriter;
+import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.io.DeleteWriteResult;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
@@ -51,12 +60,21 @@ import org.junit.jupiter.api.io.TempDir;
  * Tests for position delete conflicts (when deletes reference compacted files) are in
  * TestCompactionConflictDetection.
  */
+@ExtendWith(ParameterizedTestExtension.class)
 public class TestSerializableIsolationWithCompaction {
 
   private static final Schema SCHEMA =
       new Schema(
           Types.NestedField.required(1, "id", Types.IntegerType.get()),
           Types.NestedField.optional(2, "data", Types.StringType.get()));
+
+  @Parameters(name = "formatVersion = {0}")
+  public static Object[][] parameters() {
+    return new Object[][] {{2}, {3}};
+  }
+
+  @Parameter(index = 0)
+  private int formatVersion;
 
   @TempDir public File temp;
 
@@ -69,7 +87,7 @@ public class TestSerializableIsolationWithCompaction {
     catalog.createNamespace(org.apache.iceberg.catalog.Namespace.of("db"));
   }
 
-  @Test
+  @TestTemplate
   public void testSerializableIsolationWithCompactionMap() throws IOException {
     // This test verifies that a SERIALIZABLE DELETE operation SUCCEEDS when concurrent
     // REPLACE has a compaction map (structure-only change, no logical data change)
@@ -80,7 +98,7 @@ public class TestSerializableIsolationWithCompaction {
 
     table
         .updateProperties()
-        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
@@ -98,6 +116,20 @@ public class TestSerializableIsolationWithCompaction {
 
     AppendFiles append = table.newAppend();
     sourceFiles.forEach(append::appendFile);
+
+    // For V3 tests, add an additional file that won't be compacted
+    // This allows us to create DVs that reference a non-compacted file
+    DataFile nonCompactedFile = null;
+    if (formatVersion == 3) {
+      nonCompactedFile =
+          DataFiles.builder(PartitionSpec.unpartitioned())
+              .withPath("/path/to/non_compacted.parquet")
+              .withFileSizeInBytes(512)
+              .withRecordCount(50)
+              .build();
+      append.appendFile(nonCompactedFile);
+    }
+
     append.commit();
 
     long startingSnapshot = table.currentSnapshot().snapshotId();
@@ -111,15 +143,23 @@ public class TestSerializableIsolationWithCompaction {
             .conflictDetectionFilter(Expressions.alwaysTrue()) // Reading all data
             .validateNoConflictingDataFiles(); // Enable SERIALIZABLE isolation
 
-    // Add a NEW delete file (not referencing any of the source files)
-    // This simulates a DELETE WHERE id > 500 operation that doesn't reference specific files
-    DeleteFile deleteFile =
-        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-            .ofPositionDeletes()
-            .withPath("/path/to/new_deletes.parquet")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .build();
+    // Add a delete file
+    // V2: Use position delete file (can be unattached to specific data file)
+    // V3: Use DV referencing the non-compacted file (V3 requires DVs for position deletes)
+    DeleteFile deleteFile;
+    if (formatVersion == 3) {
+      // Create DV referencing the non-compacted file
+      deleteFile = writeDV(table, nonCompactedFile.path().toString(), 10L, 20L, 30L);
+    } else {
+      // V2: Position delete file
+      deleteFile =
+          FileMetadata.deleteFileBuilder(table.spec())
+              .ofPositionDeletes()
+              .withPath("/path/to/new_deletes.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .build();
+    }
     rowDelta.addDeletes(deleteFile);
 
     // 4. Meanwhile, compact the source data files (with compaction map)
@@ -168,7 +208,7 @@ public class TestSerializableIsolationWithCompaction {
     assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
   }
 
-  @Test
+  @TestTemplate
   public void testSerializableIsolationWithoutCompactionMap() throws IOException {
     // This test verifies that a SERIALIZABLE DELETE operation FAILS when concurrent
     // REPLACE does NOT have a compaction map (actual data change)
@@ -179,7 +219,7 @@ public class TestSerializableIsolationWithCompaction {
 
     table
         .updateProperties()
-        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
         .set(TableProperties.COMPACTION_MAP_ENABLED, "false") // Explicitly disable
         .commit();
 
@@ -197,6 +237,19 @@ public class TestSerializableIsolationWithCompaction {
 
     AppendFiles append = table.newAppend();
     sourceFiles.forEach(append::appendFile);
+
+    // For V3 tests, add an additional file that won't be compacted
+    DataFile nonCompactedFile = null;
+    if (formatVersion == 3) {
+      nonCompactedFile =
+          DataFiles.builder(PartitionSpec.unpartitioned())
+              .withPath("/path/to/non_compacted.parquet")
+              .withFileSizeInBytes(512)
+              .withRecordCount(50)
+              .build();
+      append.appendFile(nonCompactedFile);
+    }
+
     append.commit();
 
     long startingSnapshot = table.currentSnapshot().snapshotId();
@@ -209,14 +262,19 @@ public class TestSerializableIsolationWithCompaction {
             .conflictDetectionFilter(Expressions.alwaysTrue()) // Reading all data
             .validateNoConflictingDataFiles(); // Enable SERIALIZABLE isolation
 
-    // Add a NEW delete file
-    DeleteFile deleteFile =
-        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-            .ofPositionDeletes()
-            .withPath("/path/to/new_deletes.parquet")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .build();
+    // Add a delete file (V2: position delete file, V3: DV)
+    DeleteFile deleteFile;
+    if (formatVersion == 3) {
+      deleteFile = writeDV(table, nonCompactedFile.path().toString(), 10L, 20L, 30L);
+    } else {
+      deleteFile =
+          FileMetadata.deleteFileBuilder(table.spec())
+              .ofPositionDeletes()
+              .withPath("/path/to/new_deletes.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .build();
+    }
     rowDelta.addDeletes(deleteFile);
 
     // 4. Meanwhile, compact the data files (WITHOUT compaction map)
@@ -244,7 +302,7 @@ public class TestSerializableIsolationWithCompaction {
         .contains("Found conflicting files from REPLACE operation without compaction map");
   }
 
-  @Test
+  @TestTemplate
   public void testSnapshotIsolationIgnoresREPLACE() throws IOException {
     // This test verifies that SNAPSHOT isolation level does NOT check for
     // REPLACE conflicts at all (compaction map or not)
@@ -255,7 +313,7 @@ public class TestSerializableIsolationWithCompaction {
 
     table
         .updateProperties()
-        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
         .set(TableProperties.COMPACTION_MAP_ENABLED, "false")
         .commit();
 
@@ -273,6 +331,19 @@ public class TestSerializableIsolationWithCompaction {
 
     AppendFiles append = table.newAppend();
     sourceFiles.forEach(append::appendFile);
+
+    // For V3 tests, add an additional file that won't be compacted
+    DataFile nonCompactedFile = null;
+    if (formatVersion == 3) {
+      nonCompactedFile =
+          DataFiles.builder(PartitionSpec.unpartitioned())
+              .withPath("/path/to/non_compacted.parquet")
+              .withFileSizeInBytes(512)
+              .withRecordCount(50)
+              .build();
+      append.appendFile(nonCompactedFile);
+    }
+
     append.commit();
 
     long startingSnapshot = table.currentSnapshot().snapshotId();
@@ -286,14 +357,19 @@ public class TestSerializableIsolationWithCompaction {
             .conflictDetectionFilter(
                 Expressions.alwaysTrue()); // Reading data but SNAPSHOT isolation
 
-    // Add a NEW delete file
-    DeleteFile deleteFile =
-        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
-            .ofPositionDeletes()
-            .withPath("/path/to/new_deletes.parquet")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .build();
+    // Add a delete file (V2: position delete file, V3: DV)
+    DeleteFile deleteFile;
+    if (formatVersion == 3) {
+      deleteFile = writeDV(table, nonCompactedFile.path().toString(), 10L, 20L, 30L);
+    } else {
+      deleteFile =
+          FileMetadata.deleteFileBuilder(table.spec())
+              .ofPositionDeletes()
+              .withPath("/path/to/new_deletes.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .build();
+    }
     rowDelta.addDeletes(deleteFile);
 
     // 4. Compact WITHOUT compaction map
@@ -317,7 +393,7 @@ public class TestSerializableIsolationWithCompaction {
     assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
   }
 
-  @Test
+  @TestTemplate
   public void testFilteredConflictDetection() throws IOException {
     // This test verifies that compaction-aware validation respects conflict detection filters
     // Only REPLACE operations affecting filtered data should cause conflicts
@@ -329,7 +405,7 @@ public class TestSerializableIsolationWithCompaction {
 
     table
         .updateProperties()
-        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
         .set(TableProperties.COMPACTION_MAP_ENABLED, "false")
         .commit();
 
@@ -367,15 +443,25 @@ public class TestSerializableIsolationWithCompaction {
             .conflictDetectionFilter(Expressions.equal("id", 1)) // Only partition 1
             .validateNoConflictingDataFiles();
 
-    DeleteFile deleteFile =
-        FileMetadata.deleteFileBuilder(spec)
-            .ofPositionDeletes()
-            .withPath("/path/to/deletes.parquet")
-            .withPartitionPath("id=1")
-            .withFileSizeInBytes(100)
-            .withRecordCount(10)
-            .withPartition(TestHelpers.Row.of(1))
-            .build();
+    // Add delete file (V2: position delete file, V3: DV referencing partition1File)
+    DeleteFile deleteFile;
+    if (formatVersion == 3) {
+      // DV referencing partition 1 file (which is NOT being compacted)
+      deleteFile =
+          writeDV(
+              table, partition1File.path().toString(), partition1File.partition(), 10L, 20L, 30L);
+    } else {
+      // V2: position delete file
+      deleteFile =
+          FileMetadata.deleteFileBuilder(spec)
+              .ofPositionDeletes()
+              .withPath("/path/to/deletes.parquet")
+              .withPartitionPath("id=1")
+              .withFileSizeInBytes(100)
+              .withRecordCount(10)
+              .withPartition(TestHelpers.Row.of(1))
+              .build();
+    }
     rowDelta.addDeletes(deleteFile);
 
     // 4. Compact partition 2 (WITHOUT compaction map)
@@ -396,5 +482,37 @@ public class TestSerializableIsolationWithCompaction {
     // 5. Commit should SUCCEED because compaction was in partition 2, not partition 1
     // Even though there's no compaction map, it doesn't affect filtered data
     assertDoesNotThrow(() -> rowDelta.commit());
+  }
+
+  /** Helper method to write a deletion vector file (for V3 tests). */
+  private DeleteFile writeDV(Table table, String dataFilePath, Long... positions)
+      throws IOException {
+    return writeDV(table, dataFilePath, null, positions);
+  }
+
+  /** Helper method to write a deletion vector file with partition data (for V3 tests). */
+  private DeleteFile writeDV(
+      Table table, String dataFilePath, StructLike partitionData, Long... positions)
+      throws IOException {
+    OutputFileFactory fileFactory =
+        OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PUFFIN).build();
+
+    java.util.function.Function<String, PositionDeleteIndex> noPreviousDeletes =
+        path -> PositionDeleteIndex.empty();
+
+    DVFileWriter writer = new BaseDVFileWriter(fileFactory, noPreviousDeletes);
+
+    for (Long pos : positions) {
+      writer.delete(dataFilePath, pos, table.spec(), partitionData);
+    }
+
+    writer.close();
+    DeleteWriteResult result = writer.result();
+
+    if (result.deleteFiles().isEmpty()) {
+      throw new IllegalStateException("DV writer produced no delete files");
+    }
+
+    return result.deleteFiles().get(0);
   }
 }

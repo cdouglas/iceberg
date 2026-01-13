@@ -491,13 +491,13 @@ See test cases demonstrating manual resolution:
 
 ---
 
-## 5. Compaction Map Location Not Propagating to Manifests in RewriteFiles
+## 5. Compaction Map Location Not Propagating to Manifests in RewriteFiles ✅ **FIXED**
 
 ### Issue
 
-In `BaseRewriteFiles`, compaction maps are generated **after** manifest files are written, causing the `compactionMapLocation` field in manifests to remain null even when a compaction map is successfully generated.
+In format version 3 tables, compaction maps were generated but the `compactionMapLocation` field was never serialized to manifest files, causing conflict detection to fail.
 
-### Impact
+### Impact (Before Fix)
 
 **Functionality: Deletion vector conflict detection test disabled**
 
@@ -505,6 +505,23 @@ In `BaseRewriteFiles`, compaction maps are generated **after** manifest files ar
 - ✅ Compaction map generation works (files are created)
 - ❌ Map location not attached to manifest metadata
 - ❌ TestCompactionConflictDetectionDV test disabled with @Disabled annotation
+
+### Resolution ✅
+
+**Root Cause Identified:** V3Metadata.MANIFEST_LIST_SCHEMA was missing the `COMPACTION_MAP_LOCATION` field (ID 521).
+
+**Fix Applied:** (Commit 41324b697)
+1. Added `ManifestFile.COMPACTION_MAP_LOCATION` to V3Metadata.MANIFEST_LIST_SCHEMA
+2. Updated ManifestFileWrapper.get() to handle field ordinal 16
+3. Added manifest merge/filter preservation logic (defensive fix)
+
+**Test Results:**
+- ✅ TestCompactionConflictDetectionDV re-enabled and passing
+- ✅ All 3 V3 DV tests in TestCompactionConflictDetection implemented and passing
+- ✅ V2 tests still passing (no regression)
+- ✅ Total: 7/7 conflict detection tests passing
+
+### Original Investigation (Kept for Historical Context)
 
 ### Why This Happens
 
@@ -1128,7 +1145,7 @@ To verify the fix works:
 | Spark 4.0 format v3 blocker | Format v3 unavailable in Spark 4.0 (v2 works) | Comprehensive analysis done, row lineage issue identified | High |
 | Bin-pack only position tracking | Rewrite-time reordering unsupported (sorted/Z-ordered) | Merge compactions work | Low |
 | Manual conflict resolution | Requires application code | Well-documented pattern | Low |
-| Compaction map location not in manifests | DV conflict detection test disabled | Architectural timing issue identified, solutions proposed | Medium |
+| **Compaction map location not in manifests** | **DV conflict detection test disabled** | **✅ FIXED: V3 schema updated to include field, all tests passing (Commit 41324b697)** | **Resolved** |
 | Spark 3.5 format v3 + position tracking | Format v3 unavailable with position tracking (v2 works) | Root cause identified: row lineage schema mismatch, solutions proposed | High |
 | Spark 3.5 partitioned table position tracking | Partitioned tables unsupported (unpartitioned works) | Root cause identified: metadata column validation in PartitionedDataWriter | High |
 | **Target-pending placeholder bug** | **Manual resolution now working** | **✅ FIXED: Buffer-and-record pattern implemented in both Spark 3.5 and 4.0, Test 9 passing (4/4)** | **Resolved** |
@@ -1145,11 +1162,7 @@ If you'd like to help address any of these issues:
    - Investigate why row lineage columns are in dsSchema but not in Parquet schema for v3
    - Read `spark/v4.0/docs/position_tracking_challenges.md` for background context
 
-3. **Compaction Map Manifest Timing:** Fix the architectural issue where compaction maps are generated after manifests are written:
-   - Investigate Option 1 (pre-generate before manifests) in BaseRewriteFiles.apply()
-   - Ensure replacedDataFiles and addedDataFiles are fully populated before generation
-   - Test with TestCompactionConflictDetectionDV (currently disabled)
-   - Verify manifest files have non-null compactionMapLocation after fix
+3. **Compaction Map Manifest Timing:** ✅ **FIXED** - V3 schema now includes COMPACTION_MAP_LOCATION field (Commit 41324b697)
 
 4. **Target-Pending Bug:** ✅ **FIXED** - Buffer-and-record pattern now implemented in both Spark 3.5 and 4.0
 
