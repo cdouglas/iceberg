@@ -32,8 +32,8 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.IsolationLevel;
-import org.apache.iceberg.OverwriteFiles;
 import org.apache.iceberg.MetadataColumns;
+import org.apache.iceberg.OverwriteFiles;
 import org.apache.iceberg.PartitionKey;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.ReplacePartitions;
@@ -722,9 +722,10 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       // Filter metadata columns from dsSchema if position tracking is enabled
       // Position tracking columns (_file, _pos) are in dsSchema for PositionTrackingDataWriter
       // but should not be passed to file writer factory
-      StructType dsSchemaForWriter = trackSourcePositions && fileSetId != null
-          ? filterPositionTrackingColumns(dsSchema)
-          : dsSchema;
+      StructType dsSchemaForWriter =
+          trackSourcePositions && fileSetId != null
+              ? filterPositionTrackingColumns(dsSchema)
+              : dsSchema;
 
       SparkFileWriterFactory writerFactory =
           SparkFileWriterFactory.builderFor(table)
@@ -762,8 +763,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     /**
      * Filters out position tracking metadata columns (_file and _pos) from a Spark schema.
      *
-     * <p>These columns are used for tracking source positions during rewrites but should not
-     * be written to data files.
+     * <p>These columns are used for tracking source positions during rewrites but should not be
+     * written to data files.
      */
     private static StructType filterPositionTrackingColumns(StructType schema) {
       java.util.List<org.apache.spark.sql.types.StructField> filteredFields =

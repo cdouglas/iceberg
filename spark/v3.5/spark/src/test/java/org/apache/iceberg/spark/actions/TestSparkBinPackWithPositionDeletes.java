@@ -31,8 +31,6 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.ManifestFile;
-import org.apache.iceberg.ManifestFiles;
-import org.apache.iceberg.ManifestReader;
 import org.apache.iceberg.Parameter;
 import org.apache.iceberg.ParameterizedTestExtension;
 import org.apache.iceberg.Parameters;
@@ -48,7 +46,6 @@ import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
 import org.apache.iceberg.data.GenericAppenderFactory;
-import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
 import org.apache.iceberg.deletes.DVFileWriter;
@@ -174,8 +171,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
         actions()
             .rewriteDataFiles(table)
             .option(BinPackRewriteFilePlanner.MIN_INPUT_FILES, "1")
-            .option(
-                RewriteDataFiles.TARGET_FILE_SIZE_BYTES, String.valueOf(Long.MAX_VALUE - 1))
+            .option(RewriteDataFiles.TARGET_FILE_SIZE_BYTES, String.valueOf(Long.MAX_VALUE - 1))
             .execute();
 
     // Verify result
@@ -311,25 +307,19 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
       long lastEnd = -1;
       for (CompactionMap.Run run : mapping.runs()) {
         assertThat(run.length()).as("Run should have positive length").isGreaterThan(0L);
-        assertThat(run.sourcePosition())
-            .as("Runs should be in order")
-            .isGreaterThan(lastEnd);
+        assertThat(run.sourcePosition()).as("Runs should be in order").isGreaterThan(lastEnd);
         lastEnd = run.sourcePosition() + run.length() - 1;
       }
     }
 
     // Verify target files created (1 or more)
-    assertThat(targetFiles)
-        .as("Should have at least one target file")
-        .isNotEmpty();
+    assertThat(targetFiles).as("Should have at least one target file").isNotEmpty();
 
     // Group mappings by target file and verify no overlapping position ranges
     java.util.Map<String, java.util.List<CompactionMap.FileMapping>> byTarget =
         new java.util.HashMap<>();
     for (CompactionMap.FileMapping mapping : map.fileMappings()) {
-      byTarget
-          .computeIfAbsent(mapping.targetFile(), k -> new java.util.ArrayList<>())
-          .add(mapping);
+      byTarget.computeIfAbsent(mapping.targetFile(), k -> new java.util.ArrayList<>()).add(mapping);
     }
 
     // For each target file, verify target positions don't overlap
@@ -433,8 +423,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
         actions()
             .rewriteDataFiles(table)
             .option(BinPackRewriteFilePlanner.MIN_INPUT_FILES, "1")
-            .option(
-                RewriteDataFiles.TARGET_FILE_SIZE_BYTES, String.valueOf(Long.MAX_VALUE - 1))
+            .option(RewriteDataFiles.TARGET_FILE_SIZE_BYTES, String.valueOf(Long.MAX_VALUE - 1))
             .execute();
 
     // Verify result
@@ -474,9 +463,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
       assertThat(run.sourcePosition())
           .as("Run should start at position 80 (first non-deleted position)")
           .isEqualTo(80L);
-      assertThat(run.length())
-          .as("Run should cover 20 positions (80-99)")
-          .isEqualTo(20L);
+      assertThat(run.length()).as("Run should cover 20 positions (80-99)").isEqualTo(20L);
 
       // Verify target position is reasonable (should be offset correctly)
       assertThat(run.targetPosition())
@@ -513,9 +500,9 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
   /**
    * Test 4: Verify sparse deletes - many small gaps scattered throughout files.
    *
-   * <p>Creates 3 data files with 1000 records each, then deletes every 10th position (creating
-   * many small gaps). Verifies that compaction map correctly generates many small runs with gaps
-   * between them.
+   * <p>Creates 3 data files with 1000 records each, then deletes every 10th position (creating many
+   * small gaps). Verifies that compaction map correctly generates many small runs with gaps between
+   * them.
    */
   @TestTemplate
   public void testBinPackWithSparseDeletes() throws IOException {
@@ -556,8 +543,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
         actions()
             .rewriteDataFiles(table)
             .option(BinPackRewriteFilePlanner.MIN_INPUT_FILES, "1")
-            .option(
-                RewriteDataFiles.TARGET_FILE_SIZE_BYTES, String.valueOf(Long.MAX_VALUE - 1))
+            .option(RewriteDataFiles.TARGET_FILE_SIZE_BYTES, String.valueOf(Long.MAX_VALUE - 1))
             .execute();
 
     // Verify result
@@ -608,9 +594,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
       }
 
       // Most runs should have exactly 9 positions
-      assertThat(runsWithLength9)
-          .as("Most runs should have length 9")
-          .isGreaterThan(80);
+      assertThat(runsWithLength9).as("Most runs should have length 9").isGreaterThan(80);
 
       // Verify runs are in order and don't overlap
       long lastSourceEnd = -1;
@@ -655,9 +639,9 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
    * </ul>
    *
    * <p>DISABLED: Position tracking currently fails for partitioned tables with schema mismatch
-   * error during rewrite. The DataFrame includes `_file` and `_pos` metadata columns (5 total)
-   * but PartitionedDataWriter expects only the data columns (3 total). This is a separate
-   * limitation from the v3 issue documented in compaction_maps_errata.md Section 6.
+   * error during rewrite. The DataFrame includes `_file` and `_pos` metadata columns (5 total) but
+   * PartitionedDataWriter expects only the data columns (3 total). This is a separate limitation
+   * from the v3 issue documented in compaction_maps_errata.md Section 6.
    */
   @org.junit.jupiter.api.Disabled(
       "Position tracking fails for partitioned tables - schema mismatch in PartitionedDataWriter")
@@ -691,7 +675,8 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
         java.util.List<org.apache.spark.sql.Row> rows = new java.util.ArrayList<>();
         int startId = (region.hashCode() & 0x7FFFFFFF) % 1000 + (batch * recordsPerBatch);
         for (int i = 0; i < recordsPerBatch; i++) {
-          rows.add(org.apache.spark.sql.RowFactory.create(startId + i, "data-" + (startId + i), region));
+          rows.add(
+              org.apache.spark.sql.RowFactory.create(startId + i, "data-" + (startId + i), region));
         }
 
         org.apache.spark.sql.types.StructType sparkSchema =
@@ -715,24 +700,23 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
     // Capture expected data before compaction
     int totalRecords = regions.length * batchesPerPartition * recordsPerBatch;
     List<Row> expectedData =
-        spark
-            .read()
-            .format("iceberg")
-            .load(tableLocation + "_partitioned")
-            .collectAsList();
+        spark.read().format("iceberg").load(tableLocation + "_partitioned").collectAsList();
     assertThat(expectedData).hasSize(totalRecords);
 
     // Add position deletes to files in each partition
     // Delete positions 10, 30, 50 from one file in each partition
     // Get all data files from all manifests (not just the last snapshot)
     List<DataFile> dataFiles = Lists.newArrayList();
-    for (ManifestFile manifest : partitionedTable.currentSnapshot().dataManifests(partitionedTable.io())) {
+    for (ManifestFile manifest :
+        partitionedTable.currentSnapshot().dataManifests(partitionedTable.io())) {
       try (org.apache.iceberg.ManifestReader<DataFile> reader =
           org.apache.iceberg.ManifestFiles.read(manifest, partitionedTable.io())) {
         reader.forEach(dataFiles::add);
       }
     }
-    assertThat(dataFiles).as("Should have multiple files").hasSizeGreaterThanOrEqualTo(regions.length);
+    assertThat(dataFiles)
+        .as("Should have multiple files")
+        .hasSizeGreaterThanOrEqualTo(regions.length);
 
     List<DeleteFile> allDeletes = Lists.newArrayList();
     for (String region : regions) {
@@ -743,7 +727,8 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
               .findFirst()
               .orElseThrow();
 
-      List<DeleteFile> deletes = writePositionDeletes(partitionedTable, fileToDelete, 10L, 30L, 50L);
+      List<DeleteFile> deletes =
+          writePositionDeletes(partitionedTable, fileToDelete, 10L, 30L, 50L);
       allDeletes.addAll(deletes);
     }
 
@@ -754,11 +739,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
 
     // Update expected data to exclude deleted rows
     expectedData =
-        spark
-            .read()
-            .format("iceberg")
-            .load(tableLocation + "_partitioned")
-            .collectAsList();
+        spark.read().format("iceberg").load(tableLocation + "_partitioned").collectAsList();
 
     // Run bin-pack rewrite
     int initialFileCount = dataFiles.size();
@@ -766,7 +747,8 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
         SparkActions.get()
             .rewriteDataFiles(partitionedTable)
             .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "1")
-            .option(SizeBasedFileRewritePlanner.TARGET_FILE_SIZE_BYTES, Long.toString(10 * 1024 * 1024))
+            .option(
+                SizeBasedFileRewritePlanner.TARGET_FILE_SIZE_BYTES, Long.toString(10 * 1024 * 1024))
             .execute();
 
     assertThat(result.rewrittenDataFilesCount()).isEqualTo(initialFileCount);
@@ -781,7 +763,8 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
     for (ManifestFile manifest : manifests) {
       if (manifest.compactionMapLocation() != null) {
         CompactionMap map =
-            CompactionMaps.read(partitionedTable.io().newInputFile(manifest.compactionMapLocation()));
+            CompactionMaps.read(
+                partitionedTable.io().newInputFile(manifest.compactionMapLocation()));
         compactionMaps.put(manifest.compactionMapLocation(), map);
       }
     }
@@ -821,9 +804,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
           mappingsWithGaps++;
         } else {
           // Files without deletes should have single run of 100 positions
-          assertThat(mapping.runs())
-              .as("File without deletes should have 1 run")
-              .hasSize(1);
+          assertThat(mapping.runs()).as("File without deletes should have 1 run").hasSize(1);
           assertThat(mapping.runs().get(0).length()).isEqualTo(100L);
         }
 
@@ -858,8 +839,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
         .containsExactlyInAnyOrderElementsOf(expectedData);
 
     // Verify total count (should be original count minus deletes)
-    long totalCount =
-        spark.read().format("iceberg").load(tableLocation + "_partitioned").count();
+    long totalCount = spark.read().format("iceberg").load(tableLocation + "_partitioned").count();
     assertThat(totalCount)
         .as("Should have original records minus 3 deletes per partition")
         .isEqualTo(totalRecords - (regions.length * 3));
@@ -885,7 +865,11 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
             .add("data", org.apache.spark.sql.types.DataTypes.StringType, true);
 
     Dataset<Row> df = spark.createDataFrame(rows, sparkSchema);
-    df.coalesce(1).write().format("iceberg").mode(org.apache.spark.sql.SaveMode.Append).save(tableLocation);
+    df.coalesce(1)
+        .write()
+        .format("iceberg")
+        .mode(org.apache.spark.sql.SaveMode.Append)
+        .save(tableLocation);
   }
 
   /**
@@ -902,9 +886,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
     for (int i = 0; i < count; i++) {
       // Distribute records across partitions
       String region = regions[i % regions.length];
-      rows.add(
-          org.apache.spark.sql.RowFactory.create(
-              i, "data-" + i, region));
+      rows.add(org.apache.spark.sql.RowFactory.create(i, "data-" + i, region));
     }
 
     org.apache.spark.sql.types.StructType sparkSchema =
@@ -949,8 +931,8 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
    * @param positions the positions to delete
    * @return list of delete files
    */
-  private List<DeleteFile> writeDV(Table table, StructLike partition, String path, Long... positions)
-      throws IOException {
+  private List<DeleteFile> writeDV(
+      Table table, StructLike partition, String path, Long... positions) throws IOException {
     OutputFileFactory fileFactory =
         OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PUFFIN).build();
 
@@ -982,8 +964,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
                 table
                     .locationProvider()
                     .newDataLocation(
-                        FileFormat.PARQUET.addExtension(
-                            java.util.UUID.randomUUID().toString())));
+                        FileFormat.PARQUET.addExtension(java.util.UUID.randomUUID().toString())));
 
     org.apache.iceberg.encryption.EncryptedOutputFile encryptedOutputFile =
         EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY);

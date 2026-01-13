@@ -24,9 +24,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import org.apache.iceberg.Parameter;
-import org.apache.iceberg.ParameterizedTestExtension;
-import org.apache.iceberg.Parameters;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
 import org.apache.iceberg.deletes.DVFileWriter;
@@ -39,8 +36,6 @@ import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -92,8 +87,7 @@ public class TestCompactionConflictResolution {
     // This test shows the API pattern even though full remapping requires actual delete files
 
     // 1. Create table with compaction maps enabled
-    TableIdentifier tableIdent =
-        TableIdentifier.of("db", "test_resolution_v" + formatVersion);
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_resolution_v" + formatVersion);
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
@@ -324,7 +318,8 @@ public class TestCompactionConflictResolution {
   @TestTemplate
   public void testPartialConflictResolution() throws IOException {
     // Test where only some delete files conflict with compaction
-    TableIdentifier tableIdent = TableIdentifier.of("db", "test_partial_conflict_v" + formatVersion);
+    TableIdentifier tableIdent =
+        TableIdentifier.of("db", "test_partial_conflict_v" + formatVersion);
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table

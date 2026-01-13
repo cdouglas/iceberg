@@ -44,22 +44,20 @@ import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.actions.ActionsProvider;
+import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
+import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
 import org.apache.iceberg.encryption.EncryptedFiles;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.encryption.EncryptionKeyMetadata;
+import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
-import org.apache.iceberg.actions.ActionsProvider;
-import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
-import org.apache.iceberg.actions.RewriteDataFiles;
-import org.apache.iceberg.data.GenericRecord;
-import org.apache.iceberg.data.Record;
-import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.spark.data.TestHelpers;
@@ -168,8 +166,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
     assertThat(manifests).isNotEmpty();
 
     // At least one manifest should have a compaction map location
-    boolean hasCompactionMap =
-        manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
+    boolean hasCompactionMap = manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
     assertThat(hasCompactionMap)
         .as("Compaction map should be generated for bin-pack rewrite")
         .isTrue();
@@ -232,12 +229,9 @@ public class TestBinPackWithPositionTracking extends TestBase {
     // Verify that at least one file mapping has multiple runs (indicating gaps)
     // When rows are deleted during scan, the position mappings have gaps
     boolean hasGaps =
-        map.fileMappings().stream()
-            .anyMatch(fileMapping -> fileMapping.runs().size() > 1);
+        map.fileMappings().stream().anyMatch(fileMapping -> fileMapping.runs().size() > 1);
 
-    assertThat(hasGaps)
-        .as("Compaction map should have gaps representing deleted rows")
-        .isTrue();
+    assertThat(hasGaps).as("Compaction map should have gaps representing deleted rows").isTrue();
   }
 
   @TestTemplate
@@ -271,8 +265,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
     Snapshot snapshot = table.currentSnapshot();
     List<ManifestFile> manifests = snapshot.dataManifests(table.io());
 
-    boolean hasCompactionMap =
-        manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
+    boolean hasCompactionMap = manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
     assertThat(hasCompactionMap).isTrue();
   }
 
@@ -308,8 +301,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
     // Verify compaction map generated
     table.refresh();
     List<ManifestFile> manifests = table.currentSnapshot().dataManifests(table.io());
-    boolean hasCompactionMap =
-        manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
+    boolean hasCompactionMap = manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
     assertThat(hasCompactionMap).isTrue();
   }
 
@@ -341,8 +333,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
     // Verify compaction map generated
     table.refresh();
     List<ManifestFile> manifests = table.currentSnapshot().dataManifests(table.io());
-    boolean hasCompactionMap =
-        manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
+    boolean hasCompactionMap = manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
     assertThat(hasCompactionMap).isTrue();
   }
 
@@ -381,8 +372,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
     // Verify NO compaction map generated
     table.refresh();
     List<ManifestFile> manifests = table.currentSnapshot().dataManifests(table.io());
-    boolean hasCompactionMap =
-        manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
+    boolean hasCompactionMap = manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
     assertThat(hasCompactionMap).isFalse();
   }
 
@@ -404,7 +394,9 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
     // Capture the original file paths for later verification
     List<String> originalFilePaths =
-        originalDataFiles.stream().map(DataFile::location).collect(java.util.stream.Collectors.toList());
+        originalDataFiles.stream()
+            .map(DataFile::location)
+            .collect(java.util.stream.Collectors.toList());
 
     // Step 2: Run compaction that rewrites those files (generating compaction map)
     RewriteDataFiles.Result result =
@@ -450,9 +442,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
     }
 
     // Step 7: Verify compaction map structure
-    assertThat(map.fileMappings())
-        .as("Compaction map should have file mappings")
-        .hasSize(5);
+    assertThat(map.fileMappings()).as("Compaction map should have file mappings").hasSize(5);
 
     // Each file mapping should have at least one run
     for (CompactionMap.FileMapping mapping : map.fileMappings()) {
@@ -521,8 +511,7 @@ public class TestBinPackWithPositionTracking extends TestBase {
       throws IOException {
     List<DeleteFile> results = Lists.newArrayList();
 
-    int positionsPerFile =
-        (int) Math.ceil((double) totalPositionsToDelete / outputDeleteFiles);
+    int positionsPerFile = (int) Math.ceil((double) totalPositionsToDelete / outputDeleteFiles);
 
     long currentPosition = startPosition;
     for (int file = 0; file < outputDeleteFiles; file++) {

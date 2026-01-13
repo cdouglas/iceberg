@@ -31,15 +31,11 @@ import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
-import org.apache.iceberg.FileMetadata;
 import org.apache.iceberg.ManifestFile;
-import org.apache.iceberg.ManifestFiles;
-import org.apache.iceberg.ManifestReader;
 import org.apache.iceberg.Parameter;
 import org.apache.iceberg.ParameterizedTestExtension;
 import org.apache.iceberg.Parameters;
 import org.apache.iceberg.PartitionSpec;
-import org.apache.iceberg.PositionDeleteRemapper;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
@@ -47,7 +43,6 @@ import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
 import org.apache.iceberg.data.GenericAppenderFactory;
-import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
 import org.apache.iceberg.deletes.DVFileWriter;
@@ -57,15 +52,11 @@ import org.apache.iceberg.encryption.EncryptedFiles;
 import org.apache.iceberg.encryption.EncryptionKeyMetadata;
 import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.hadoop.HadoopTables;
-import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.OutputFileFactory;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.TestBase;
-import org.apache.iceberg.spark.data.TestHelpers;
 import org.apache.iceberg.types.Types;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -169,7 +160,8 @@ public class TestSparkCompactionConflictResolution extends TestBase {
         SparkActions.get()
             .rewriteDataFiles(table)
             .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "1")
-            .option(SizeBasedFileRewritePlanner.TARGET_FILE_SIZE_BYTES, Long.toString(10 * 1024 * 1024))
+            .option(
+                SizeBasedFileRewritePlanner.TARGET_FILE_SIZE_BYTES, Long.toString(10 * 1024 * 1024))
             .execute();
 
     assertThat(result.rewrittenDataFilesCount()).isEqualTo(5);
@@ -201,10 +193,9 @@ public class TestSparkCompactionConflictResolution extends TestBase {
                   .isNotEmpty()
                   .containsKey(fileToDelete.path().toString());
 
-              String mapLocation = conflictEx.compactionMapLocations().get(fileToDelete.path().toString());
-              assertThat(mapLocation)
-                  .as("Compaction map location should be non-null")
-                  .isNotNull();
+              String mapLocation =
+                  conflictEx.compactionMapLocations().get(fileToDelete.path().toString());
+              assertThat(mapLocation).as("Compaction map location should be non-null").isNotNull();
             });
 
     // Verify table is in consistent state
@@ -263,8 +254,7 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
     // Start transaction T1 with position deletes (targeting positions 10, 20, 30)
     RowDelta rowDelta = table.newRowDelta().validateFromSnapshot(startingSnapshot);
-    List<DeleteFile> originalDeleteFiles =
-        writePositionDeletes(table, fileToDelete, 10L, 20L, 30L);
+    List<DeleteFile> originalDeleteFiles = writePositionDeletes(table, fileToDelete, 10L, 20L, 30L);
     originalDeleteFiles.forEach(rowDelta::addDeletes);
 
     // Meanwhile, run bin-pack compaction via Spark action
@@ -273,8 +263,7 @@ public class TestSparkCompactionConflictResolution extends TestBase {
             .rewriteDataFiles(table)
             .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "1")
             .option(
-                SizeBasedFileRewritePlanner.TARGET_FILE_SIZE_BYTES,
-                Long.toString(10 * 1024 * 1024))
+                SizeBasedFileRewritePlanner.TARGET_FILE_SIZE_BYTES, Long.toString(10 * 1024 * 1024))
             .execute();
 
     assertThat(result.rewrittenDataFilesCount()).isEqualTo(5);
@@ -315,17 +304,13 @@ public class TestSparkCompactionConflictResolution extends TestBase {
           .isNotEqualTo("target-pending");
 
       // Target file should be a valid file path (contains '/' and ends with file extension)
-      assertThat(targetFile)
-          .as("Target file should be a valid path")
-          .contains("/");
+      assertThat(targetFile).as("Target file should be a valid path").contains("/");
       assertThat(targetFile)
           .as("Target file should have .parquet or .orc extension")
           .matches(".*\\.(parquet|orc)$");
 
       // Verify mapping has runs
-      assertThat(mapping.runs())
-          .as("Mapping should have at least one run")
-          .isNotEmpty();
+      assertThat(mapping.runs()).as("Mapping should have at least one run").isNotEmpty();
     }
 
     // Step 4: Verify PositionDeleteRemapper can be created successfully
@@ -344,9 +329,7 @@ public class TestSparkCompactionConflictResolution extends TestBase {
         break;
       }
     }
-    assertThat(mapping)
-        .as("Should find mapping for source file")
-        .isNotNull();
+    assertThat(mapping).as("Should find mapping for source file").isNotNull();
 
     String targetFile = mapping.targetFile();
 
@@ -417,8 +400,7 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
     // Step 2: Create transaction T1 with position deletes on ORIGINAL file (before compaction)
     RowDelta rowDelta = table.newRowDelta().validateFromSnapshot(initialSnapshot);
-    List<DeleteFile> originalDeleteFiles =
-        writePositionDeletes(table, originalFile, 10L, 20L, 30L);
+    List<DeleteFile> originalDeleteFiles = writePositionDeletes(table, originalFile, 10L, 20L, 30L);
     originalDeleteFiles.forEach(rowDelta::addDeletes);
 
     // Step 3: Meanwhile, run compaction (which will compact originalFile)
@@ -458,9 +440,7 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
     table.refresh();
     CompactionMap compactionMap = CompactionMaps.read(table.io().newInputFile(mapLocation));
-    assertThat(compactionMap.fileMappings())
-        .as("Compaction map should have mappings")
-        .isNotEmpty();
+    assertThat(compactionMap.fileMappings()).as("Compaction map should have mappings").isNotEmpty();
 
     // Verify the compaction map has valid target paths (not "target-pending")
     for (CompactionMap.FileMapping mapping : compactionMap.fileMappings()) {
@@ -496,7 +476,11 @@ public class TestSparkCompactionConflictResolution extends TestBase {
             .add("data", org.apache.spark.sql.types.DataTypes.StringType, true);
 
     Dataset<Row> df = spark.createDataFrame(rows, sparkSchema);
-    df.coalesce(1).write().format("iceberg").mode(org.apache.spark.sql.SaveMode.Append).save(tableLocation);
+    df.coalesce(1)
+        .write()
+        .format("iceberg")
+        .mode(org.apache.spark.sql.SaveMode.Append)
+        .save(tableLocation);
   }
 
   /**
@@ -562,8 +546,7 @@ public class TestSparkCompactionConflictResolution extends TestBase {
                 table
                     .locationProvider()
                     .newDataLocation(
-                        FileFormat.PARQUET.addExtension(
-                            java.util.UUID.randomUUID().toString())));
+                        FileFormat.PARQUET.addExtension(java.util.UUID.randomUUID().toString())));
 
     org.apache.iceberg.encryption.EncryptedOutputFile encryptedOutputFile =
         EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY);

@@ -154,13 +154,16 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
           sparkWriteSchema.add(
               MetadataColumns.FILE_PATH.name(), org.apache.spark.sql.types.DataTypes.StringType);
       sparkWriteSchema =
-          sparkWriteSchema.add(
-              MetadataColumns.ROW_POSITION.name(), LongType$.MODULE$);
+          sparkWriteSchema.add(MetadataColumns.ROW_POSITION.name(), LongType$.MODULE$);
     }
 
     Schema writeSchema =
         validateOrMergeWriteSchema(
-            table, sparkWriteSchema, writeConf, writeRequiresRowLineage, writeRequiresPositionTracking);
+            table,
+            sparkWriteSchema,
+            writeConf,
+            writeRequiresRowLineage,
+            writeRequiresPositionTracking);
     SparkUtil.validatePartitionTransforms(table.spec());
 
     // Get application id
@@ -239,9 +242,8 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
 
       // reconvert the dsSchema without assignment to use the ids assigned by UpdateSchema
       // Filter out position tracking columns from dsSchema when creating writeSchema
-      StructType filteredDsSchema = writeIncludesPositionTracking
-          ? filterPositionTrackingColumns(dsSchema)
-          : dsSchema;
+      StructType filteredDsSchema =
+          writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
       writeSchema = SparkSchemaUtil.convert(mergedSchema, filteredDsSchema, caseSensitive);
 
       TypeUtil.validateWriteSchema(
@@ -259,9 +261,8 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       // They are extracted by PositionTrackingDataWriter before writing.
 
       // Filter out position tracking columns from dsSchema when creating writeSchema
-      StructType filteredDsSchema = writeIncludesPositionTracking
-          ? filterPositionTrackingColumns(dsSchema)
-          : dsSchema;
+      StructType filteredDsSchema =
+          writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
       writeSchema = SparkSchemaUtil.convert(schema, filteredDsSchema, caseSensitive);
       TypeUtil.validateWriteSchema(
           table.schema(), writeSchema, writeConf.checkNullability(), writeConf.checkOrdering());
@@ -273,8 +274,8 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
   /**
    * Filters out position tracking metadata columns (_file and _pos) from a Spark schema.
    *
-   * <p>These columns are used for tracking source positions during rewrites but should not
-   * be written to data files.
+   * <p>These columns are used for tracking source positions during rewrites but should not be
+   * written to data files.
    */
   private static StructType filterPositionTrackingColumns(StructType schema) {
     java.util.List<org.apache.spark.sql.types.StructField> filteredFields =
