@@ -29,8 +29,9 @@ import org.apache.iceberg.CompactionMap.Run;
  *
  * <ul>
  *   <li>{@link LinearSearchStrategy}: O(m) lookup, no setup cost. Best for m &lt; 10.
- *   <li>{@link BinarySearchStrategy}: O(log m) lookup, no setup cost. Best for m &lt; 100.
- *   <li>IntervalTreeStrategy: O(log m) lookup, O(m log m) setup. Best for m &gt; 100.
+ *   <li>{@link BinarySearchStrategy}: O(log m) lookup, no setup cost. Best for 10 &lt;= m &lt;
+ *       100.
+ *   <li>{@link IntervalTreeStrategy}: O(log m) lookup, O(m) setup. Best for m &gt;= 100.
  * </ul>
  *
  * <p>where m = number of runs in the compaction map.
@@ -56,11 +57,20 @@ interface RemappingStrategy {
    * Factory for creating appropriate strategy based on run characteristics.
    */
   class Factory {
-    // Threshold for switching from linear to binary search
+    // Thresholds for algorithm selection
     private static final int BINARY_SEARCH_THRESHOLD = 10;
+    private static final int INTERVAL_TREE_THRESHOLD = 100;
 
     /**
      * Creates the optimal strategy for the given runs.
+     *
+     * <p>Algorithm selection:
+     *
+     * <ul>
+     *   <li>m &lt; 10: Linear search (simple, no overhead)
+     *   <li>10 &lt;= m &lt; 100: Binary search (fast, minimal overhead)
+     *   <li>m &gt;= 100: Interval tree (optimal for large m, better cache locality)
+     * </ul>
      *
      * @param runs list of runs to search (must be sorted by sourcePosition)
      * @return optimal remapping strategy
@@ -74,9 +84,11 @@ interface RemappingStrategy {
         return new LinearSearchStrategy(runs);
       }
 
-      // For now, use binary search for larger run counts
-      // Future: add interval tree for m > 100
-      return new BinarySearchStrategy(runs);
+      if (runs.size() < INTERVAL_TREE_THRESHOLD) {
+        return new BinarySearchStrategy(runs);
+      }
+
+      return new IntervalTreeStrategy(runs);
     }
   }
 }

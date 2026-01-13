@@ -69,6 +69,42 @@ public class TestRemappingStrategies {
     assertThat(strategy.runForPosition(1000)).isNull();
   }
 
+  /** Test interval tree with the same data as linear search. */
+  @Test
+  public void testIntervalTreeBasic() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100),
+            new GenericRun(150, 100, 50),
+            new GenericRun(300, 150, 100));
+
+    RemappingStrategy strategy = new IntervalTreeStrategy(runs);
+
+    // Test positions in runs
+    assertThat(strategy.runForPosition(0)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(50)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(99)).isEqualTo(runs.get(0));
+    assertThat(strategy.runForPosition(150)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(175)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(199)).isEqualTo(runs.get(1));
+    assertThat(strategy.runForPosition(300)).isEqualTo(runs.get(2));
+    assertThat(strategy.runForPosition(350)).isEqualTo(runs.get(2));
+    assertThat(strategy.runForPosition(399)).isEqualTo(runs.get(2));
+
+    // Test positions in gaps (should match linear/binary search)
+    assertThat(strategy.runForPosition(100)).isNull();
+    assertThat(strategy.runForPosition(125)).isNull();
+    assertThat(strategy.runForPosition(149)).isNull();
+    assertThat(strategy.runForPosition(200)).isNull();
+    assertThat(strategy.runForPosition(250)).isNull();
+    assertThat(strategy.runForPosition(299)).isNull();
+
+    // Test out of bounds (should match linear/binary search)
+    assertThat(strategy.runForPosition(-1)).isNull();
+    assertThat(strategy.runForPosition(400)).isNull();
+    assertThat(strategy.runForPosition(1000)).isNull();
+  }
+
   /** Test binary search with the same data as linear search. */
   @Test
   public void testBinarySearchBasic() {
@@ -112,12 +148,16 @@ public class TestRemappingStrategies {
 
     RemappingStrategy linear = new LinearSearchStrategy(empty);
     RemappingStrategy binary = new BinarySearchStrategy(empty);
+    RemappingStrategy intervalTree = new IntervalTreeStrategy(empty);
 
     assertThat(linear.runForPosition(0)).isNull();
     assertThat(linear.runForPosition(100)).isNull();
 
     assertThat(binary.runForPosition(0)).isNull();
     assertThat(binary.runForPosition(100)).isNull();
+
+    assertThat(intervalTree.runForPosition(0)).isNull();
+    assertThat(intervalTree.runForPosition(100)).isNull();
   }
 
   /** Test single run. */
@@ -127,6 +167,7 @@ public class TestRemappingStrategies {
 
     RemappingStrategy linear = new LinearSearchStrategy(runs);
     RemappingStrategy binary = new BinarySearchStrategy(runs);
+    RemappingStrategy intervalTree = new IntervalTreeStrategy(runs);
 
     // Inside run
     assertThat(linear.runForPosition(0)).isEqualTo(runs.get(0));
@@ -137,12 +178,19 @@ public class TestRemappingStrategies {
     assertThat(binary.runForPosition(500)).isEqualTo(runs.get(0));
     assertThat(binary.runForPosition(999)).isEqualTo(runs.get(0));
 
+    assertThat(intervalTree.runForPosition(0)).isEqualTo(runs.get(0));
+    assertThat(intervalTree.runForPosition(500)).isEqualTo(runs.get(0));
+    assertThat(intervalTree.runForPosition(999)).isEqualTo(runs.get(0));
+
     // Outside run
     assertThat(linear.runForPosition(-1)).isNull();
     assertThat(linear.runForPosition(1000)).isNull();
 
     assertThat(binary.runForPosition(-1)).isNull();
     assertThat(binary.runForPosition(1000)).isNull();
+
+    assertThat(intervalTree.runForPosition(-1)).isNull();
+    assertThat(intervalTree.runForPosition(1000)).isNull();
   }
 
   /** Test that binary search rejects unsorted runs. */
@@ -171,7 +219,33 @@ public class TestRemappingStrategies {
         .hasMessageContaining("must be sorted");
   }
 
-  /** Test with large number of runs to verify binary search efficiency. */
+  /** Test that interval tree rejects unsorted runs. */
+  @Test
+  public void testIntervalTreeRequiresSorted() {
+    List<Run> unsorted =
+        Arrays.asList(
+            new GenericRun(150, 100, 50), // Wrong order
+            new GenericRun(0, 0, 100));
+
+    assertThatThrownBy(() -> new IntervalTreeStrategy(unsorted))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be sorted");
+  }
+
+  /** Test that interval tree rejects overlapping runs. */
+  @Test
+  public void testIntervalTreeRejectsOverlaps() {
+    List<Run> overlapping =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), // [0, 100)
+            new GenericRun(50, 100, 50)); // [50, 100) - overlaps!
+
+    assertThatThrownBy(() -> new IntervalTreeStrategy(overlapping))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be sorted");
+  }
+
+  /** Test with large number of runs to verify all strategies match. */
   @ParameterizedTest
   @ValueSource(ints = {10, 100, 1000})
   public void testLargeRunCount(int numRuns) {
@@ -179,6 +253,7 @@ public class TestRemappingStrategies {
 
     RemappingStrategy linear = new LinearSearchStrategy(runs);
     RemappingStrategy binary = new BinarySearchStrategy(runs);
+    RemappingStrategy intervalTree = new IntervalTreeStrategy(runs);
 
     // Test random positions
     Random rand = new Random(42);
@@ -187,22 +262,26 @@ public class TestRemappingStrategies {
 
       Run linearResult = linear.runForPosition(pos);
       Run binaryResult = binary.runForPosition(pos);
+      Run intervalTreeResult = intervalTree.runForPosition(pos);
 
       // Results should match
       assertThat(binaryResult)
           .as("Binary search should match linear search for position %s", pos)
           .isEqualTo(linearResult);
+      assertThat(intervalTreeResult)
+          .as("Interval tree should match linear search for position %s", pos)
+          .isEqualTo(linearResult);
     }
   }
 
   /**
-   * Property-based test: binary search should always match linear search.
+   * Property-based test: all strategies should produce identical results.
    *
-   * <p>This test generates many random run configurations and verifies that binary search produces
-   * identical results to linear search for all positions.
+   * <p>This test generates many random run configurations and verifies that binary search and
+   * interval tree produce identical results to linear search for all positions.
    */
   @Test
-  public void testBinarySearchMatchesLinearSearch() {
+  public void testAllStrategiesMatch() {
     Random rand = new Random(123);
 
     // Test 100 different run configurations
@@ -212,6 +291,7 @@ public class TestRemappingStrategies {
 
       RemappingStrategy linear = new LinearSearchStrategy(runs);
       RemappingStrategy binary = new BinarySearchStrategy(runs);
+      RemappingStrategy intervalTree = new IntervalTreeStrategy(runs);
 
       // Test 100 random positions for each configuration
       long maxPos = runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
@@ -221,10 +301,16 @@ public class TestRemappingStrategies {
 
         Run linearResult = linear.runForPosition(pos);
         Run binaryResult = binary.runForPosition(pos);
+        Run intervalTreeResult = intervalTree.runForPosition(pos);
 
         assertThat(binaryResult)
             .as(
                 "Binary search should match linear search for config %s, position %s",
+                config, pos)
+            .isEqualTo(linearResult);
+        assertThat(intervalTreeResult)
+            .as(
+                "Interval tree should match linear search for config %s, position %s",
                 config, pos)
             .isEqualTo(linearResult);
       }
@@ -241,6 +327,7 @@ public class TestRemappingStrategies {
 
     RemappingStrategy linear = new LinearSearchStrategy(runs);
     RemappingStrategy binary = new BinarySearchStrategy(runs);
+    RemappingStrategy intervalTree = new IntervalTreeStrategy(runs);
 
     // Test boundary between runs
     assertThat(linear.runForPosition(99)).isEqualTo(runs.get(0));
@@ -250,20 +337,29 @@ public class TestRemappingStrategies {
     assertThat(binary.runForPosition(99)).isEqualTo(runs.get(0));
     assertThat(binary.runForPosition(100)).isEqualTo(runs.get(1));
     assertThat(binary.runForPosition(101)).isEqualTo(runs.get(1));
+
+    assertThat(intervalTree.runForPosition(99)).isEqualTo(runs.get(0));
+    assertThat(intervalTree.runForPosition(100)).isEqualTo(runs.get(1));
+    assertThat(intervalTree.runForPosition(101)).isEqualTo(runs.get(1));
   }
 
   /** Test strategy factory selection. */
   @Test
   public void testStrategyFactorySelection() {
-    // Few runs: should use linear search
+    // Few runs (m < 10): should use linear search
     List<Run> fewRuns = generateSortedRuns(5);
     RemappingStrategy strategy1 = RemappingStrategy.Factory.create(fewRuns);
     assertThat(strategy1.name()).isEqualTo("linear-search");
 
-    // Many runs: should use binary search
-    List<Run> manyRuns = generateSortedRuns(20);
-    RemappingStrategy strategy2 = RemappingStrategy.Factory.create(manyRuns);
+    // Medium runs (10 <= m < 100): should use binary search
+    List<Run> mediumRuns = generateSortedRuns(50);
+    RemappingStrategy strategy2 = RemappingStrategy.Factory.create(mediumRuns);
     assertThat(strategy2.name()).isEqualTo("binary-search");
+
+    // Many runs (m >= 100): should use interval tree
+    List<Run> manyRuns = generateSortedRuns(150);
+    RemappingStrategy strategy3 = RemappingStrategy.Factory.create(manyRuns);
+    assertThat(strategy3.name()).isEqualTo("interval-tree");
   }
 
   // Helper methods
