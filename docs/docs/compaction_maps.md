@@ -293,4 +293,3 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios. See
 2. **Automatic Conflict Resolution** - Opt-in automatic remapping in BaseRowDelta
 3. **Sorted/Z-Ordered Rewrite Support** - Track position transformations through sort operations
 4. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
-5. **Manifest Timing Fix** - Generate compaction maps before manifests to enable DV conflict detection (see [errata](compaction_maps_errata.md#5-compaction-map-location-not-propagating-to-manifests-in-rewritefiles))
