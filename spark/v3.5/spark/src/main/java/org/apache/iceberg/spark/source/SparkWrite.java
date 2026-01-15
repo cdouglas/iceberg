@@ -747,7 +747,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
                 io,
                 spec,
                 writeSchema,
-                dsSchema,
+                dsSchemaForWriter,
                 targetFileSize,
                 useFanoutWriter);
       }

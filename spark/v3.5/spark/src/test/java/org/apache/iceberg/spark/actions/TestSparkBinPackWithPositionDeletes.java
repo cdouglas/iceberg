@@ -105,6 +105,8 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
     return new Object[][] {
       {2, FileFormat.PARQUET},
       {2, FileFormat.ORC},
+      {3, FileFormat.PARQUET},
+      {3, FileFormat.ORC},
     };
   }
 
@@ -637,14 +639,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
    *   <li>Gaps are correct in each partition
    *   <li>Data correctness is maintained across partitions
    * </ul>
-   *
-   * <p>DISABLED: Position tracking currently fails for partitioned tables with schema mismatch
-   * error during rewrite. The DataFrame includes `_file` and `_pos` metadata columns (5 total) but
-   * PartitionedDataWriter expects only the data columns (3 total). This is a separate limitation
-   * from the v3 issue documented in compaction_maps_errata.md Section 6.
    */
-  @org.junit.jupiter.api.Disabled(
-      "Position tracking fails for partitioned tables - schema mismatch in PartitionedDataWriter")
   @TestTemplate
   public void testBinPackPartitionedTableWithDeletes() throws IOException {
     // Create partitioned table with region column
@@ -719,6 +714,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
         .hasSizeGreaterThanOrEqualTo(regions.length);
 
     List<DeleteFile> allDeletes = Lists.newArrayList();
+    java.util.Set<String> filesWithDeletes = new java.util.HashSet<>();
     for (String region : regions) {
       // Find first file for this partition
       DataFile fileToDelete =
@@ -730,6 +726,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
       List<DeleteFile> deletes =
           writePositionDeletes(partitionedTable, fileToDelete, 10L, 30L, 50L);
       allDeletes.addAll(deletes);
+      filesWithDeletes.add(fileToDelete.location());
     }
 
     // Commit deletes
@@ -781,16 +778,7 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
 
         // Check if this file had deletes (should have gaps)
         String sourcePath = mapping.sourceFile();
-        boolean hadDeletes =
-            dataFiles.stream()
-                .filter(f -> f.location().equals(sourcePath))
-                .anyMatch(
-                    f ->
-                        allDeletes.stream()
-                            .anyMatch(
-                                d ->
-                                    d.referencedDataFile() != null
-                                        && d.referencedDataFile().equals(f.location())));
+        boolean hadDeletes = filesWithDeletes.contains(sourcePath);
 
         if (hadDeletes) {
           // Files with deletes at positions 10, 30, 50 should have 4 runs
