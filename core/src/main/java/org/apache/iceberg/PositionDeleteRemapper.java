@@ -234,9 +234,10 @@ public class PositionDeleteRemapper {
       return Collections.emptyMap();
     }
 
-    // Use bulk API for remapping - delegates to optimal strategy
-    // Note: Positions from DV are typically sorted by the writer
-    RemappingStrategy strategy = RemappingStrategy.Factory.create(mapping.runs());
+    // Use smart selector to choose optimal strategy based on data characteristics
+    // Selector considers: run count, position count, sortedness, gap ratio
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+    RemappingStrategy strategy = selector.selectOptimal(mapping, positions);
     Map<Long, CompactionMap.Run> mappedRuns = strategy.runForPositions(positions);
 
     // Group mapped positions by target file
