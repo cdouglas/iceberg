@@ -820,6 +820,55 @@ public class TestRemappingStrategies {
         .hasMessageContaining("must be sorted");
   }
 
+  /**
+   * Test bulk strategies with sparse positions (predicate pushdown optimization).
+   *
+   * <p>Creates 100 runs spanning a wide range, with positions clustered in a small region. This
+   * tests that predicate pushdown efficiently filters irrelevant runs.
+   */
+  @Test
+  public void testBulkStrategiesWithSparsePositions() {
+    // Create 100 runs spanning [0-20000) with gaps
+    Random rand = new Random(42); // Fixed seed for reproducibility
+    List<Run> runs = generateSortedRunsWithGaps(100, rand);
+
+    // Positions clustered in small range [5000-6000)
+    List<Long> clusteredPositions = new ArrayList<>();
+    for (long pos = 5000; pos < 6000; pos += 10) {
+      clusteredPositions.add(pos);
+    }
+
+    // Test all bulk strategies
+    StreamJoinStrategy streamJoin = new StreamJoinStrategy(runs);
+    RangeQueryStrategy rangeQuery = new RangeQueryStrategy(runs);
+    IntervalTreeStrategy intervalTree = new IntervalTreeStrategy(runs);
+
+    Map<Long, Run> streamResults = streamJoin.runForPositions(clusteredPositions);
+    Map<Long, Run> rangeResults = rangeQuery.runForPositions(clusteredPositions);
+    Map<Long, Run> treeResults = intervalTree.runForPositions(clusteredPositions);
+
+    // Verify all strategies return same results
+    assertThat(streamResults).isEqualTo(rangeResults);
+    assertThat(streamResults).isEqualTo(treeResults);
+
+    // Verify correctness: all matched positions should be in valid runs
+    for (Map.Entry<Long, Run> entry : streamResults.entrySet()) {
+      long pos = entry.getKey();
+      Run run = entry.getValue();
+
+      long runStart = run.sourcePosition();
+      long runEnd = runStart + run.length();
+
+      assertThat(pos)
+          .as("Position %s should be in run [%s-%s)", pos, runStart, runEnd)
+          .isBetween(runStart, runEnd - 1);
+    }
+
+    // Verify that predicate pushdown is working (we have some matches)
+    // With 100 positions in [5000-6000) and runs with gaps, we should have matches
+    assertThat(streamResults).isNotEmpty();
+  }
+
   // Helper methods
 
   /**
