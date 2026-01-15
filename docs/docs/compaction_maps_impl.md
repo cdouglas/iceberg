@@ -686,12 +686,25 @@ ManifestWriter.toManifestFile()
 - Compaction map generation with position deletes
 - Verification of correct run structures with gaps
 
+**TestSparkBinPackWithPositionDeletes** - Comprehensive position tracking (Spark 3.5)
+- **Test 1: Single File Compaction** - Multiple sources to single target with deletes (4 test cases: v2/v3 × Parquet/ORC)
+- **Test 2: Multiple Target Files** - N:M compaction with offset validation (4 test cases)
+- **Test 3: High Delete Ratio** - 80% deletion with large gap handling (4 test cases)
+- **Test 4: Sparse Deletes** - Many small gaps throughout files (4 test cases)
+- **Test 5: Partitioned Tables** - Position tracking on partitioned tables (4 test cases)
+  - **Enabled in commit 8b811d951:** Fixed schema mismatch bug in PartitionedDataWriter
+  - Verifies compaction maps generated correctly for partitioned tables
+  - Tests partition boundary handling and gap correctness per partition
+  - Validates data correctness across partitions
+
 ### Test Coverage
 
-- **46+ test cases passing** across core compaction maps, DV support, and Spark integration
+- **66+ test cases passing** across core compaction maps, DV support, and Spark integration
   - Core compaction map tests: ~20 tests
   - DV remapping tests: 16 tests (10 unit + 6 integration)
-  - **Spark integration tests: 10 parameterized tests** (across format versions and file formats)
+  - **Spark integration tests: 30 parameterized tests** (across format versions and file formats)
+    - TestSparkCompactionConflictResolution: 10 tests
+    - TestSparkBinPackWithPositionDeletes: 20 tests (5 test methods × 4 parameter combinations)
   - 1 test disabled (TestCompactionConflictDetectionDV - manifest timing issue)
 - **All enabled tests passing**
 - Coverage includes:
@@ -705,6 +718,7 @@ ManifestWriter.toManifestFile()
   - N:M compaction (multiple sources to multiple targets)
   - Gap handling (positions deleted during compaction)
   - **End-to-end Spark workflows** (bin-pack with position deletes, conflict resolution)
+  - **Partitioned table support** (v2/v3 × Parquet/ORC)
   - **Target-pending bug fix verification** (critical fix ensuring real file paths in compaction maps)
   - Large-scale stress testing (1000+ positions)
 
@@ -743,14 +757,19 @@ ManifestWriter.toManifestFile()
 # Run position tracking integration tests
 ./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests TestBinPackWithPositionTracking
 
+# Run comprehensive position delete tests (Tests 1-5) - includes partitioned tables
+./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests TestSparkBinPackWithPositionDeletes
+
 # Run all Spark compaction tests
 ./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests "*Compaction*"
 ```
 
 **Expected Output:**
 - All core tests: 36+ passing
-- Spark integration tests: 10 parameterized test cases passing (Tests 8-10)
-- Total: 46+ tests passing
+- Spark integration tests: 30 parameterized test cases passing
+  - TestSparkCompactionConflictResolution: 10 tests (Tests 8-10)
+  - TestSparkBinPackWithPositionDeletes: 20 tests (Tests 1-5)
+- Total: 66+ tests passing
 
 ## Spark Implementation Details
 
@@ -766,6 +785,7 @@ ManifestWriter.toManifestFile()
 - Extracts `_file` and `_pos` from each row
 - Records position mappings to PositionMappingCoordinator
 - Filters metadata columns before writing to data files
+- **Schema Filtering (Fixed in 8b811d951):** SparkWrite.WriterFactory filters metadata columns for both UnpartitionedDataWriter and PartitionedDataWriter to prevent schema mismatch errors
 
 **Coordination:**
 - PositionMappingCoordinator aggregates mappings from distributed executors

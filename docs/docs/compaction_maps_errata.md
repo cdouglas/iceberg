@@ -491,76 +491,6 @@ See test cases demonstrating manual resolution:
 
 ---
 
-## 5. Partitioned Table Position Tracking (Spark 3.5)
-
-**Impact**: Position tracking fails for partitioned tables in Spark 3.5, even for format v2.
-
-### The Problem
-
-When running bin-pack rewrites on partitioned tables with `write.compaction-map.enabled=true`:
-
-```
-java.lang.IllegalArgumentException: Invalid length: Spark struct type (5) != Iceberg struct type (3)
-    at org.apache.iceberg.spark.source.InternalRowWrapper.<init>(InternalRowWrapper.java:49)
-    at org.apache.iceberg.spark.source.SparkWrite$PartitionedDataWriter.<init>(SparkWrite.java:851)
-```
-
-### Root Cause
-
-Position tracking adds `_file` and `_pos` metadata columns to the DataFrame during scan:
-- DataFrame schema: `[id, data, region, _file, _pos]` (5 columns)
-- `PartitionedDataWriter` expects: `[id, data, region]` (3 columns only)
-
-The `PartitionedDataWriter` performs strict schema validation in its constructor and fails when metadata columns are present.
-
-### Why Unpartitioned Tables Work
-
-Unpartitioned tables use a different writer path that handles metadata columns:
-- Uses `UnpartitionedDataWriter` instead of `PartitionedDataWriter`
-- `UnpartitionedDataWriter` doesn't perform the same strict column count validation
-
-### Evidence
-
-Test 5 in `TestSparkBinPackWithPositionDeletes.java` demonstrates this:
-- Tests 1-4 pass with unpartitioned tables
-- Test 5 fails with partitioned tables, same schema mismatch error
-- Failure occurs during bin-pack rewrite, not initial writes
-
-### Current Workaround
-
-Use unpartitioned tables for compaction map generation:
-```java
-// Works - unpartitioned table
-PartitionSpec spec = PartitionSpec.unpartitioned();
-table.updateProperties()
-    .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
-    .commit();
-```
-
-### Potential Solutions
-
-1. **Update PartitionedDataWriter Validation**
-   - Modify schema validation to allow metadata columns
-   - Filter metadata columns before passing to InternalRowWrapper
-   - Similar to how UnpartitionedDataWriter handles this
-
-2. **Projection in Position Tracking**
-   - Project only data columns after metadata extraction
-   - Remove `_file` and `_pos` before write phase
-   - Preserve metadata only during position tracking
-
-3. **Separate Writer Path**
-   - Create dedicated writer for position-tracked data
-   - Handle metadata columns explicitly
-   - Avoid reusing generic PartitionedDataWriter
-
-### Related Issues
-
-- Schema mismatch occurs with metadata columns (_file, _pos) in PartitionedDataWriter
-- Different from the row lineage issue that was resolved for V3 tables
-
----
-
 ## Summary
 
 | # | Issue | Impact | Status | Priority |
@@ -569,12 +499,12 @@ table.updateProperties()
 | 2 | Spark 4.0 format v3 blocker | Format v3 unavailable in Spark 4.0 (v2 works) | Comprehensive analysis done, row lineage issue identified | High |
 | 3 | Bin-pack only position tracking | Rewrite-time reordering unsupported (sorted/Z-ordered) | Merge compactions work | Low |
 | 4 | Manual conflict resolution | Requires application code | Well-documented pattern | Low |
-| 5 | Spark 3.5 partitioned table position tracking | Partitioned tables unsupported (unpartitioned works) | Root cause identified: metadata column validation in PartitionedDataWriter | High |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Compaction map location not in manifests~~ - ✅ FIXED in commit 41324b697
 - ~~Target-pending placeholder bug~~ - ✅ FIXED in commit e8287a752
-- ~~Spark 3.5 format v3 + position tracking~~ - ✅ FIXED in commit [current]
+- ~~Spark 3.5 format v3 + position tracking~~ - ✅ FIXED in commit e8287a752
+- ~~Spark 3.5/4.0 partitioned table position tracking~~ - ✅ FIXED in commit 8b811d951
 
 ## How to Contribute
 
@@ -588,15 +518,9 @@ If you'd like to help address any of these issues:
    - Investigate why row lineage columns are in dsSchema but not in Parquet schema for v3
    - Read `spark/v4.0/docs/position_tracking_challenges.md` for background context
 
-3. **Comprehensive Testing (High Priority):** Write additional Spark 3.5 test suite to verify:
-   - Bin-pack rewrites with position deletes (merge compactions)
-   - Compaction maps have correct runs with gaps
-   - Position delete remapping works end-to-end
-   - Use `writePosDeletesToFile()` helper from TestRewriteDataFilesAction.java:2428-2469
+3. **Sorted Rewrite Position Tracking:** Design position tracking framework that instruments Spark's sort operator to track position transformations through reordering operations.
 
-4. **Sorted Rewrite Position Tracking:** Design position tracking framework that instruments Spark's sort operator to track position transformations through reordering operations.
-
-5. **Automatic Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` with proper validation and error handling.
+4. **Automatic Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` with proper validation and error handling.
 
 ## References
 
