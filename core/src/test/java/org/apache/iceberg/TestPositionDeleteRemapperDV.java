@@ -331,6 +331,99 @@ public class TestPositionDeleteRemapperDV {
     assertThat(positions).containsExactlyInAnyOrder(5L, 10L, 20L);
   }
 
+  @Test
+  public void testRemapDVBulkWithSortedPositions() throws IOException {
+    // Create map with 100 runs
+    List<Run> runs = new java.util.ArrayList<>();
+    for (int i = 0; i < 100; i++) {
+      long sourcePos = i * 100L;
+      long targetPos = i * 100L;
+      runs.add(new GenericRun(sourcePos, targetPos, 100));
+    }
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    // Create DV with 1000 sorted positions (spanning multiple runs)
+    Long[] positions = new Long[1000];
+    for (int i = 0; i < 1000; i++) {
+      positions[i] = (long) (i * 5); // Every 5th position
+    }
+    DeleteFile dv = writeDV("s3://bucket/file1.parquet", positions);
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Test bulk API
+    Map<String, Set<Long>> bulkResults = remapper.remapDVBulk(dv, table.io());
+
+    // Test old API for comparison
+    Map<String, Set<Long>> oldResults = remapper.remapDV(dv, table.io());
+
+    // Results should be identical
+    assertThat(bulkResults).isEqualTo(oldResults);
+    assertThat(bulkResults).hasSize(1);
+    assertThat(bulkResults.get("s3://bucket/file2.parquet")).hasSize(1000);
+  }
+
+  @Test
+  public void testRemapDVBulkCorrectness() throws IOException {
+    // Create map with 100 runs
+    List<Run> runs = new java.util.ArrayList<>();
+    for (int i = 0; i < 100; i++) {
+      long sourcePos = i * 100L;
+      long targetPos = i * 100L;
+      runs.add(new GenericRun(sourcePos, targetPos, 100));
+    }
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    // Create DV with 10,000 consecutive positions within run range [0-10000)
+    Long[] positions = new Long[10000];
+    for (int i = 0; i < 10000; i++) {
+      positions[i] = (long) i; // Consecutive positions 0-9999
+    }
+    DeleteFile dv = writeDV("s3://bucket/file1.parquet", positions);
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Test bulk API correctness
+    Map<String, Set<Long>> bulkResults = remapper.remapDVBulk(dv, table.io());
+
+    // Test old API correctness
+    Map<String, Set<Long>> oldResults = remapper.remapDV(dv, table.io());
+
+    // Results should be identical
+    assertThat(bulkResults).isEqualTo(oldResults);
+
+    // Verify all positions were remapped correctly
+    assertThat(bulkResults).hasSize(1);
+    assertThat(bulkResults.get("s3://bucket/file2.parquet")).hasSize(10000);
+  }
+
+  @Test
+  public void testRemapDVBulkWithNonCompactedFile() throws IOException {
+    // Create map that doesn't include file3
+    Run run = new GenericRun(0L, 0L, 100L);
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/file1.parquet", "s3://bucket/file2.parquet", ImmutableList.of(run));
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Create DV that references file3 (not in compaction map)
+    DeleteFile dv = writeDV("s3://bucket/file3.parquet", 5L, 10L, 20L);
+
+    // Should return passthrough mapping
+    Map<String, Set<Long>> remapped = remapper.remapDVBulk(dv, table.io());
+
+    assertThat(remapped).hasSize(1);
+    assertThat(remapped).containsKey("s3://bucket/file3.parquet");
+    Set<Long> positions = remapped.get("s3://bucket/file3.parquet");
+    assertThat(positions).containsExactlyInAnyOrder(5L, 10L, 20L);
+  }
+
   /**
    * Helper method to write a deletion vector file with the given positions.
    *
