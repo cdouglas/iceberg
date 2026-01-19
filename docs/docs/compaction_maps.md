@@ -209,19 +209,21 @@ rowDelta.commit();
 - **Spark 4.0:** ✅ Position tracking fully implemented and functional
 - **Other engines:** Compaction map infrastructure works (read/validate/remap), but generation requires Spark-specific position tracking
 
-### 2. Rewrite Type Support
+### 2. Design Scope: Order-Preserving Compactions
 
-Position tracking currently supports **bin-pack rewrites only** (combining multiple data files without reordering or filtering at the rewrite level). However, **merge compactions work** because position deletes are applied during the scan phase:
+Compaction maps support **order-preserving** compaction operations:
 
-**What Works:**
 - ✅ **Bin-pack rewrites**: Multiple small files → larger files (simple concatenation)
 - ✅ **Merge compactions**: Combining data files with position deletes applied during scan
-- ✅ **Filtered rewrites (via deletes)**: Position deletes filter rows during scan, gaps tracked automatically
 
-**What Doesn't Work:**
-- ❌ **Sorted rewrites**: Row order changes during rewrite (requires tracking position transformations through sort)
-- ❌ **Z-ordered rewrites**: Data reorganization changes positions
-- ❌ **Rewrite-time filtering**: Filtering applied by rewrite operation itself (not via position deletes)
+**Out of scope by design:**
+- **Sorted compactions**: Rewriting data sorted by column(s)
+- **Z-ordered compactions**: Reorganizing data along a space-filling curve
+
+Order-changing operations are **not appropriate** for compaction maps because:
+1. Reordering produces degenerate maps (runs of length 1), defeating run-length encoding
+2. Position deletes identify rows by position—after reordering, position N refers to a different logical row
+3. For sorted/Z-ordered compactions, use equality deletes or accept that position deletes are invalidated
 
 **How Merge Compactions Work:**
 
@@ -380,5 +382,4 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios. See
 1. **Spark 4.0 Conflict Resolution Parity** - Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0
 2. **Application Transaction Conflict Resolution** - Automatic remapping in BaseRowDelta for application-level position delete conflicts
 3. **V3 Deletion Vector Conflict Resolution** - Extend compaction conflict resolution to support V3 format with Deletion Vectors
-4. **Sorted/Z-Ordered Rewrite Support** - Track position transformations through sort operations
-5. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
+4. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.

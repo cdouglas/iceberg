@@ -224,5 +224,5 @@ Added `addRowLineageColumnsIfMissing()` helper method in `SparkWriteBuilder.java
 ---
 
 *Last Updated*: 2026-01-19
-*Session*: Transaction API improvements complete
-*Status*: All phases complete (1-6)
+*Session*: Documentation cleanup - reframed sorted/Z-ordered as design scope
+*Status*: All phases complete (1-7)
