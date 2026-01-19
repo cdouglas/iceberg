@@ -291,7 +291,7 @@ public class RewriteDataFilesCommitManager {
 
   public class CommitService extends BaseCommitService<RewriteFileGroup> {
 
-    CommitService(int rewritesPerCommit) {
+    protected CommitService(int rewritesPerCommit) {
       super(table, rewritesPerCommit);
     }
 
