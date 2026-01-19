@@ -43,17 +43,53 @@ import org.apache.iceberg.util.ContentFileUtil;
  * need to be remapped to reference the new compacted files with updated row positions. This class
  * provides methods to check if remapping is needed and perform the remapping operation.
  *
- * <p>Example usage:
+ * <p><b>Handling Unmapped Positions:</b>
+ *
+ * <p>When a position delete references a position that doesn't exist in the compaction map, this
+ * typically means one of:
+ *
+ * <ul>
+ *   <li><b>Merge compaction:</b> The row was deleted during compaction (position deletes were
+ *       applied during scan). The position no longer exists in the target file - this is normal and
+ *       the delete can be safely dropped (it's a no-op).
+ *   <li><b>Corrupted map:</b> The compaction map is incomplete or corrupted. This indicates an
+ *       error condition.
+ * </ul>
+ *
+ * <p>The remapping methods handle unmapped positions differently:
+ *
+ * <ul>
+ *   <li>{@link #remapDelete(PositionDelete)} - throws {@link IllegalStateException} for unmapped
+ *       positions (strict mode)
+ *   <li>{@link #remapDeleteOrNull(PositionDelete)} - returns {@code null} for unmapped positions
+ *       (lenient mode, recommended for merge compactions)
+ *   <li>{@link #remapDVBulk(DeleteFile, FileIO)} - silently skips unmapped positions (lenient mode)
+ * </ul>
+ *
+ * <p><b>Example usage:</b>
  *
  * <pre>
- * CompactionMap map = readCompactionMap(manifestFile);
+ * // Load compaction map from exception
+ * CompactionMap map = CompactionMaps.read(fileIO.newInputFile(mapLocation));
  * PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
  *
+ * // Check if remapping is needed
  * if (remapper.needsRemapping(deleteFile)) {
- *   List&lt;PositionDelete&lt;?&gt;&gt; remapped = remapper.remapDeletes(deleteFile, io);
+ *   // Read and remap position deletes
+ *   List&lt;PositionDelete&lt;?&gt;&gt; remapped = new ArrayList&lt;&gt;();
+ *   for (PositionDelete&lt;?&gt; delete : readDeletes(deleteFile)) {
+ *     PositionDelete&lt;?&gt; result = remapper.remapDeleteOrNull(delete);
+ *     if (result != null) {
+ *       remapped.add(result);
+ *     }
+ *     // null means position was filtered during compaction - can safely skip
+ *   }
  *   // Write remapped deletes to new delete file
  * }
  * </pre>
+ *
+ * @see CompactionConflictException for how to get compaction map locations when a conflict occurs
+ * @see CompactionMaps#read(InputFile) for loading compaction maps
  */
 public class PositionDeleteRemapper {
   private final CompactionMap compactionMap;
@@ -70,10 +106,83 @@ public class PositionDeleteRemapper {
   }
 
   /**
+   * Creates remappers from compaction map locations in a conflict exception.
+   *
+   * <p>This is a convenience method for the common pattern of loading compaction maps after
+   * catching a {@link org.apache.iceberg.exceptions.CompactionConflictException}.
+   *
+   * <p><b>Example usage:</b>
+   *
+   * <pre>
+   * try {
+   *   rowDelta.commit();
+   * } catch (CompactionConflictException e) {
+   *   Map&lt;String, PositionDeleteRemapper&gt; remappers =
+   *       PositionDeleteRemapper.fromConflict(e, table.io());
+   *
+   *   for (PositionDelete&lt;?&gt; delete : readDeletes(deleteFile)) {
+   *     PositionDeleteRemapper remapper = remappers.get(delete.path().toString());
+   *     if (remapper != null) {
+   *       PositionDelete&lt;?&gt; remapped = remapper.remapDeleteOrNull(delete);
+   *       if (remapped != null) {
+   *         // Add to remapped deletes
+   *       }
+   *     } else {
+   *       // File was not compacted, keep original delete
+   *     }
+   *   }
+   *   // Retry with remapped deletes
+   * }
+   * </pre>
+   *
+   * @param conflict the conflict exception containing compaction map locations
+   * @param io the file IO for reading compaction maps
+   * @return map from source file path to its remapper (may share remappers for files in same
+   *     compaction)
+   */
+  public static Map<String, PositionDeleteRemapper> fromConflict(
+      org.apache.iceberg.exceptions.CompactionConflictException conflict, FileIO io) {
+    Map<String, String> mapLocations = conflict.compactionMapLocations();
+    Map<String, PositionDeleteRemapper> remappers = new HashMap<>();
+    Map<String, PositionDeleteRemapper> mapLocationToRemapper = new HashMap<>();
+
+    for (Map.Entry<String, String> entry : mapLocations.entrySet()) {
+      String sourceFile = entry.getKey();
+      String mapLocation = entry.getValue();
+
+      // Reuse remapper if we've already loaded this map
+      PositionDeleteRemapper remapper = mapLocationToRemapper.get(mapLocation);
+      if (remapper == null) {
+        CompactionMap map = CompactionMaps.read(io.newInputFile(mapLocation));
+        remapper = new PositionDeleteRemapper(map);
+        mapLocationToRemapper.put(mapLocation, remapper);
+      }
+
+      remappers.put(sourceFile, remapper);
+    }
+
+    return remappers;
+  }
+
+  /**
    * Checks if a delete file contains position deletes that reference compacted files.
    *
+   * <p>For file-scoped position deletes (with {@code referencedDataFile} set), this method can
+   * definitively determine if remapping is needed. For multi-file position deletes (without {@code
+   * referencedDataFile}), this method returns {@code false} because the referenced files cannot be
+   * determined without reading the delete file content.
+   *
+   * <p><b>Note:</b> If this returns {@code false} for a multi-file position delete file, you should
+   * either:
+   *
+   * <ul>
+   *   <li>Use {@link #mayNeedRemapping(DeleteFile)} which returns {@code true} for uncertain cases
+   *   <li>Read the delete file content and use {@link #isCompacted(String)} to check each file path
+   * </ul>
+   *
    * @param deleteFile the delete file to check
-   * @return true if any position deletes in this file need remapping
+   * @return true if position deletes definitely need remapping; false if they definitely don't OR
+   *     if it cannot be determined without reading the file
    */
   public boolean needsRemapping(DeleteFile deleteFile) {
     // If delete file specifies a single referenced data file, check that
@@ -84,6 +193,39 @@ public class PositionDeleteRemapper {
     // For delete files that may reference multiple data files,
     // we can't determine without reading the file
     return false;
+  }
+
+  /**
+   * Checks if a delete file may contain position deletes that reference compacted files.
+   *
+   * <p>This method is more conservative than {@link #needsRemapping(DeleteFile)}:
+   *
+   * <ul>
+   *   <li>For file-scoped position deletes: returns true if the referenced file was compacted
+   *   <li>For multi-file position deletes: returns true (may reference compacted files)
+   *   <li>For equality deletes: returns false (not file-scoped)
+   * </ul>
+   *
+   * <p>Use this method when you want to identify all delete files that might need processing, then
+   * read their content to determine actual overlap.
+   *
+   * @param deleteFile the delete file to check
+   * @return true if position deletes may need remapping (conservative)
+   */
+  public boolean mayNeedRemapping(DeleteFile deleteFile) {
+    // Equality deletes don't reference specific files
+    if (deleteFile.content() == FileContent.EQUALITY_DELETES) {
+      return false;
+    }
+
+    // File-scoped position deletes - check the referenced file
+    if (deleteFile.referencedDataFile() != null) {
+      return fileMappingIndex.containsKey(deleteFile.referencedDataFile());
+    }
+
+    // Multi-file position deletes - may reference compacted files
+    // Must read content to determine
+    return deleteFile.content() == FileContent.POSITION_DELETES;
   }
 
   /**
@@ -106,17 +248,58 @@ public class PositionDeleteRemapper {
   }
 
   /**
-   * Remaps a single position delete using the compaction map.
+   * Remaps a single position delete using the compaction map (strict mode).
    *
    * <p>If the referenced file was not compacted, returns the original delete. If the position maps
    * to a new file, returns a remapped delete with the new file path and position.
    *
+   * <p><b>Note:</b> This method throws an exception if the position is not found in the compaction
+   * map. Use {@link #remapDeleteOrNull(PositionDelete)} if you expect positions to be missing
+   * (e.g., after merge compaction where rows were filtered).
+   *
    * @param delete the position delete to remap
    * @return the remapped position delete, or the original if no remapping needed
    * @throws IllegalStateException if the file was compacted but the position is not found in any
-   *     run
+   *     run (the row may have been filtered during merge compaction)
    */
   public PositionDelete<?> remapDelete(PositionDelete<?> delete) {
+    PositionDelete<?> result = remapDeleteOrNull(delete);
+    if (result == null) {
+      throw new IllegalStateException(
+          String.format(
+              Locale.ROOT,
+              "Position %d not found in compaction map for file %s. "
+                  + "This may indicate the row was filtered during merge compaction, "
+                  + "or the compaction map is incomplete. Use remapDeleteOrNull() to handle "
+                  + "filtered rows gracefully.",
+              delete.pos(),
+              delete.path()));
+    }
+    return result;
+  }
+
+  /**
+   * Remaps a single position delete using the compaction map (lenient mode).
+   *
+   * <p>If the referenced file was not compacted, returns the original delete. If the position maps
+   * to a new file, returns a remapped delete with the new file path and position.
+   *
+   * <p>If the position is not found in the compaction map, returns {@code null}. This typically
+   * happens when:
+   *
+   * <ul>
+   *   <li>The row was deleted during merge compaction (position deletes were applied during scan)
+   *   <li>The compaction map is incomplete or corrupted
+   * </ul>
+   *
+   * <p><b>Recommendation:</b> Use this method when resolving conflicts after merge compaction, and
+   * skip null results (they represent rows that no longer exist).
+   *
+   * @param delete the position delete to remap
+   * @return the remapped position delete, the original if no remapping needed, or {@code null} if
+   *     the position was not found in the compaction map
+   */
+  public PositionDelete<?> remapDeleteOrNull(PositionDelete<?> delete) {
     String path = delete.path().toString();
     FileMapping mapping = fileMappingIndex.get(path);
 
@@ -128,14 +311,8 @@ public class PositionDeleteRemapper {
     // Find the run containing this position
     CompactionMap.Run run = mapping.runForPosition(delete.pos());
     if (run == null) {
-      // Position not found in any run - this indicates a problem with the compaction map
-      throw new IllegalStateException(
-          String.format(
-              Locale.ROOT,
-              "Position %d not found in compaction map for file %s. "
-                  + "This indicates an incomplete or corrupted compaction map.",
-              delete.pos(),
-              path));
+      // Position not found in any run - row was likely filtered during merge compaction
+      return null;
     }
 
     // Map the position using the run

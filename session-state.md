@@ -122,6 +122,34 @@ Reviewed implementation for soundness issues and addressed critical gaps:
 - `DeleteConflictInfo.hasMultiFilePositionDeletes()` - Checks if any exist
 - `DeleteConflictInfo.hasOnlyFileScopedConflicts()` - Checks for simple conflict case
 
+### Phase 6: Transaction API Improvements (COMPLETED)
+
+Improved the transaction-side API for resolving compaction conflicts:
+
+**Issues Identified and Fixed**:
+1. **Inconsistent error handling for unmapped positions**
+   - `remapDelete()` threw exception, `remapDV*()` silently skipped
+   - Added `remapDeleteOrNull()` for lenient handling (recommended for merge compactions)
+   - Updated Javadoc to explain behavior differences
+
+2. **Missing helper for loading compaction maps from exception**
+   - Added `PositionDeleteRemapper.fromConflict(exception, io)` static helper
+   - Handles multiple compaction maps, reuses remappers for same map location
+
+3. **Multi-file position deletes not handled by needsRemapping()**
+   - Added `mayNeedRemapping()` for conservative checking
+   - Updated `needsRemapping()` Javadoc to explain limitations
+
+4. **Documentation incomplete**
+   - Updated `compaction_maps.md` with complete conflict resolution workflow
+   - Added key API methods summary
+   - Documented handling of unmapped positions
+
+**New API Methods in PositionDeleteRemapper**:
+- `fromConflict(exception, io)` - Loads remappers from CompactionConflictException
+- `remapDeleteOrNull(delete)` - Lenient remapping (returns null if position not found)
+- `mayNeedRemapping(deleteFile)` - Conservative check for uncertain cases
+
 ---
 
 ## Implementation Complete
@@ -132,6 +160,7 @@ All phases of Compaction Delete Recovery are now complete:
 - **Phase 3**: Testing and Validation ✅
 - **Phase 4**: Documentation ✅
 - **Phase 5**: Soundness Review ✅
+- **Phase 6**: Transaction API Improvements ✅
 
 ---
 
@@ -156,5 +185,5 @@ All phases of Compaction Delete Recovery are now complete:
 ---
 
 *Last Updated*: 2026-01-19
-*Session*: Soundness review complete
-*Status*: All phases complete (1-5)
+*Session*: Transaction API improvements complete
+*Status*: All phases complete (1-6)

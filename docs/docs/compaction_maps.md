@@ -264,29 +264,61 @@ Automatic conflict resolution is available via `write.compaction.resolve-delete-
 
 **For Application Transactions:**
 
-Position delete conflicts from application transactions (e.g., RowDelta) still require manual handling:
+Position delete conflicts from application transactions (e.g., RowDelta) require handling with `PositionDeleteRemapper`. The complete workflow is:
 
 ```java
 try {
     rowDelta.addDeletes(deleteFile);
     rowDelta.commit();
 } catch (CompactionConflictException e) {
-    // 1. Get compaction map locations from exception
-    Map<String, String> mapLocations = e.compactionMapLocations();
+    // 1. Load remappers from exception (handles multiple compaction maps)
+    Map<String, PositionDeleteRemapper> remappers =
+        PositionDeleteRemapper.fromConflict(e, table.io());
 
-    // 2. Load map and create remapper
-    CompactionMap map = CompactionMaps.read(fileIO.newInputFile(mapLocation));
-    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+    // 2. Read original position deletes and remap
+    List<PositionDelete<?>> remappedDeletes = new ArrayList<>();
+    int skippedCount = 0;
 
-    // 3. Remap position deletes
-    DeleteFile remappedDelete = remapDeleteFile(deleteFile, remapper);
+    for (PositionDelete<?> delete : readPositionDeletes(deleteFile)) {
+        String path = delete.path().toString();
+        PositionDeleteRemapper remapper = remappers.get(path);
+
+        if (remapper == null) {
+            // File was not compacted, keep original
+            remappedDeletes.add(delete);
+        } else {
+            // Remap using lenient mode (returns null if row was filtered)
+            PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);
+            if (remapped != null) {
+                remappedDeletes.add(remapped);
+            } else {
+                // Row was filtered during merge compaction - skip (it's a no-op)
+                skippedCount++;
+            }
+        }
+    }
+
+    // 3. Write remapped deletes to new file
+    DeleteFile remappedDeleteFile = writePositionDeletes(remappedDeletes, table);
 
     // 4. Retry with remapped deletes
     RowDelta retry = table.newRowDelta();
-    retry.addDeletes(remappedDelete);
+    retry.addDeletes(remappedDeleteFile);
     retry.commit();
+
+    LOG.info("Remapped {} deletes, skipped {} filtered positions",
+        remappedDeletes.size(), skippedCount);
 }
 ```
+
+**Key API Methods:**
+- `PositionDeleteRemapper.fromConflict(exception, io)` - Loads remappers from exception
+- `remapper.remapDeleteOrNull(delete)` - Remaps delete, returns null if position was filtered (lenient mode)
+- `remapper.remapDelete(delete)` - Remaps delete, throws exception if position not found (strict mode)
+- `remapper.mayNeedRemapping(deleteFile)` - Conservative check for multi-file position deletes
+
+**Handling Unmapped Positions:**
+When a position is not found in the compaction map, it typically means the row was filtered during merge compaction (position deletes were applied during the scan). Using `remapDeleteOrNull()` handles this gracefully by returning `null`, allowing you to safely skip these positions.
 
 **Note:** SERIALIZABLE isolation provides automatic handling for read conflicts (distinguishes structural vs data changes), but position delete conflicts from application transactions still require manual remapping.
 
