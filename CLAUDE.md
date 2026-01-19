@@ -218,7 +218,7 @@ return IntervalTree;  // Always optimal for m >= 100
 
 **Known Issue**: Selector doesn't check sortedness for m < 10, causing 3500%+ overhead for unsorted data (RangeQuery requires O(n log n) sorting). Fix pending.
 
-**Details**: See `REMAPPING_OPTIMIZATION.md` for full phase-by-phase implementation history.
+**Details**: See `REMAPPING_BENCHMARKS.md` for benchmark methodology. Implementation history available via `git log --grep="remapping" cmpmap`.
 
 ## Configuration
 
@@ -458,14 +458,13 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 **Primary Documentation**:
 - `docs/docs/compaction_maps.md` - User-facing documentation
-- `REMAPPING_OPTIMIZATION.md` - Phase-by-phase implementation history (Phases 1-7)
-- `REMAPPING_BENCHMARKS.md` - JMH benchmark documentation and results
-- `benchmark/remapping-optimization/ANALYSIS_20260116.md` - Detailed benchmark analysis
-- `benchmark/remapping-optimization/README.md` - Benchmark execution and analysis tools
+- `docs/docs/compaction_maps_errata.md` - Known limitations and design scope
+- `docs/docs/compaction_maps_impl.md` - Implementation details
+- `REMAPPING_BENCHMARKS.md` - JMH benchmark documentation and methodology
+- `benchmark/remapping-optimization/` - Benchmark execution and analysis tools
 
 **Implementation Context**:
 - `CLAUDE.md` - This file (practical guidance for working with compaction maps)
-- `COMPACTION_MAPS_IMPLEMENTATION_PLAN_REVISED.md` - Original implementation plan (historical)
 
 ## Branch and Status
 
