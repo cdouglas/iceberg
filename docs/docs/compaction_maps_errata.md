@@ -303,7 +303,7 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 - ~~Target-pending placeholder bug~~ - ✅ FIXED in commit e8287a752
 - ~~Spark 3.5 format v3 + position tracking~~ - ✅ FIXED in commit e8287a752
 - ~~Spark 3.5/4.0 partitioned table position tracking~~ - ✅ FIXED in commit 8b811d951
-- ~~Spark 4.0 format v3 + position tracking~~ - ✅ FIXED in commit ce907531b
+- ~~Spark 4.0 format v3 + position tracking~~ - ✅ FIXED in commit 65dedde35
 
 ## How to Contribute
 
