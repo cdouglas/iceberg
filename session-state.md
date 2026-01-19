@@ -65,7 +65,43 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 - Preserves partition and row data
 - Groups deletes by target file for efficient writing
 
-**Test Status**: All 12 tests passing, full core test suite passing (BUILD SUCCESSFUL in 13m 39s)
+**Test Status**: All 12 tests passing, full core test suite passing
+
+---
+
+### ✅ Phase 3: Remapped Delete Writing (COMPLETED)
+**Status**: Implementation complete, tests passing
+
+**Components Created**:
+1. `RemappedDeleteWriter.java` - Delete file writer (195 lines)
+   - Input: Map<TargetFile, List<PositionDeleteRecord>>
+   - Output: List<DeleteFile> (new delete files)
+   - Uses OutputFileFactory for unique file paths
+   - Writes position deletes in Avro format
+   - Computes metrics (record count, file size)
+   - Groups deletes by partition
+   - Sorts deletes by (file_path, position) for efficient reads
+   - Supports partition-aware writing
+
+2. `TestRemappedDeleteWriter.java` - 8 comprehensive unit tests
+   - Write simple position deletes
+   - Verify deletes sorted by position
+   - Write deletes for multiple target files
+   - Handle empty delete list (no files written)
+   - Handle empty deletes for a target
+   - Verify delete file metrics
+   - Integration test: write → read back → verify content
+   - Test writtenDeleteFiles() tracking method
+
+**Key Features**:
+- Writes remapped deletes to Avro delete files
+- Groups deletes by partition (separate files per partition)
+- Sorts deletes by (file_path, position) for efficient lookups
+- Computes proper delete file metrics
+- Thread-safe with OutputFileFactory for unique paths
+- Closeable resource pattern
+
+**Test Status**: All 8 tests passing ✅
 
 ---
 
@@ -82,6 +118,10 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 - `core/src/main/java/org/apache/iceberg/DeleteManifestRemapper.java` (147 lines)
 - `core/src/test/java/org/apache/iceberg/TestDeleteManifestRemapper.java` (335 lines)
 
+**Phase 3**:
+- `core/src/main/java/org/apache/iceberg/io/RemappedDeleteWriter.java` (195 lines)
+- `core/src/test/java/org/apache/iceberg/io/TestRemappedDeleteWriter.java` (260 lines)
+
 ### Modified Files:
 
 **Phase 1**:
@@ -95,38 +135,32 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 
 ## Next Steps
 
-### ✅ Phase 2 - COMPLETED
-1. ✅ Wait for full test suite to complete
-2. ✅ Verify all tests pass
-3. ✅ Commit Phase 2 with descriptive message
-4. ⏳ Push to remote if needed
-
-### 🎯 Phase 3: Remapped Delete Writing (NEXT)
-**Objective**: Write remapped position deletes to new delete manifests
+### 🎯 Phase 4: Conflict Detection Enhancement (NEXT)
+**Objective**: Detect when compaction conflicts with position delete transactions
 
 **Tasks**:
-1. Create `RemappedDeleteWriter` class
-   - Input: Map<TargetFile, List<PositionDeleteRecord>>
-   - Output: List<DeleteFile> (new delete manifests)
-   - Use OutputFileFactory for file paths
-   - Write position delete format (Parquet)
-   - Compute metrics (record count, file size)
+1. Create `CompactionConflictDetector` class
+   - Input: base snapshot, current snapshot, files being compacted
+   - Output: List of conflicting delete manifests
+   - Scan snapshots between base and current
+   - Find delete manifests referencing compacted files
 
-2. Handle partitioning
-   - Group deletes by partition
-   - Write separate delete files per partition
+2. Integrate with MergingSnapshotProducer
+   - Add method: `detectDeleteConflicts(Set<String> compactedFiles)`
+   - Return conflicting delete manifests
+   - Provide conflict summary
 
-3. Optimize delete file layout
-   - Bin-pack deletes to target ~10MB files
-   - Sort deletes by position
+3. Conflict metadata
+   - Which files have deletes
+   - How many deletes per file
+   - Source snapshots of deletes
 
-**Tests**: 7+ tests including write, read-back verification, partitioning, metrics
+**Tests**: 7+ tests for detection scenarios
 
-### Future Phases (Phases 4-9):
-- Phase 4: Conflict Detection Integration
-- Phase 5: Transaction Abort/Retry Logic
-- Phase 6: End-to-End Integration
-- Phase 7: Spark Integration
+### Future Phases (Phases 5-9):
+- Phase 5: Conflict Resolution Integration
+- Phase 6: Configuration and Opt-In
+- Phase 7: Edge Case Handling
 - Phase 8: Performance Optimization
 - Phase 9: Documentation
 
@@ -157,6 +191,7 @@ When compaction C conflicts with transaction T (both starting from same snapshot
 2. **Partition/Row Preservation**: All metadata preserved during remapping
 3. **Bulk Operations**: Group deletes by target file for efficient writing
 4. **Smart Algorithm Selection**: Reuse existing remapping optimization (Phases 1-7 from previous work)
+5. **Sorted Output**: Deletes sorted by (file_path, position) for efficient reads
 
 ### Related Previous Work
 
@@ -171,11 +206,11 @@ When compaction C conflicts with transaction T (both starting from same snapshot
 **Current Branch**: `cmpmap`
 
 **Recent Commits**:
-- `da7414735` - feat(compaction): Implement delete remapping core logic (Phase 2) ⭐ **NEW**
+- `da7414735` - feat(compaction): Implement delete remapping core logic (Phase 2)
 - `f059e2e43` - style: Apply code formatting (spotless)
 - `6d86a637f` - feat(compaction): Add delete manifest reading infrastructure (Phase 1)
 
-**Uncommitted Changes**: None - all work committed ✅
+**Uncommitted Changes**: Phase 3 implementation ready to commit
 
 ---
 
@@ -183,16 +218,18 @@ When compaction C conflicts with transaction T (both starting from same snapshot
 
 **Phase 1**: 7 tests, all passing ✅
 **Phase 2**: 12 tests, all passing ✅
-**Full Suite**: BUILD SUCCESSFUL in 13m 39s ✅
+**Phase 3**: 8 tests, all passing ✅
+**Total Tests**: 27 tests, all passing ✅
 
 **Total Lines Added**:
 - Phase 1: 545 lines (code) + 270 lines (tests) = 815 lines
 - Phase 2: 147 lines (code) + 335 lines (tests) = 482 lines
-- **Combined**: ~1,297 lines (code + tests)
+- Phase 3: 195 lines (code) + 260 lines (tests) = 455 lines
+- **Combined**: ~1,752 lines (code + tests)
 
 ---
 
-*Last Updated*: Phase 2 COMPLETED and committed (da7414735)
+*Last Updated*: Phase 3 COMPLETED (pending commit)
 *Session Date*: 2026-01-18/19
-*Model*: Claude Sonnet 4.5
-*Status*: Ready for Phase 3 🚀
+*Model*: Claude Opus 4.5
+*Status*: Ready to commit Phase 3 🚀
