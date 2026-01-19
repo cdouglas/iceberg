@@ -53,7 +53,7 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 ---
 
 ### ✅ Phase 5: Conflict Resolution Integration (COMPLETED)
-**Status**: Implementation complete, tests passing
+**Committed**: `a8686fe83`
 
 **Components Created**:
 1. `CompactionConflictResolver.java` - Main orchestrator class (220 lines)
@@ -70,22 +70,44 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
    - Builder pattern with private constructor
 
 3. `TestCompactionConflictResolver.java` - 7 comprehensive unit tests
-   - Resolve with no conflicts
-   - Resolve simple conflict (1 file, 3 deletes)
-   - Resolve multiple delete files (2 files, 5 deletes)
-   - DeleteManifestChanges builder test
-   - DeleteManifestChanges empty test
-   - DeleteManifestChanges add multiple test
-   - resolveForCompaction convenience method test
-
-**Key Features**:
-- End-to-end conflict resolution (detect → read → filter → remap → write)
-- Integrates Phase 1-4 components into unified flow
-- Proper error handling with logging
-- Metrics tracking for observability
-- Convenience method for common use case
 
 **Test Status**: All 7 tests passing ✅
+
+---
+
+### ✅ Phase 6: Configuration and Opt-In (COMPLETED)
+**Status**: Implementation complete, tests passing
+
+**Components Modified/Created**:
+1. `TableProperties.java` - Added new properties:
+   - `write.compaction.remap-conflicting-deletes` (boolean, default: false)
+   - `write.compaction.remap-conflicting-deletes.max-manifests` (int, default: 100)
+
+2. `RewriteDataFilesCommitManager.java` - Integrated conflict resolution:
+   - Added `shouldResolveConflictingDeletes()` - checks property
+   - Added `maxRemapManifests()` - returns configured limit
+   - Added `resolveConflictingDeletes()` - orchestrates resolution
+   - Modified `commitFileGroups()` - integrates resolution before commit
+   - Max manifests safety valve with ValidationException
+
+3. `TestCompactionConflictResolutionConfig.java` - 8 comprehensive unit tests:
+   - Default properties disabled
+   - Enable compaction map only
+   - Enable both features
+   - Custom max manifests limit
+   - Conflict detection and resolution integration
+   - Max manifests limit validation
+   - No conflicts no resolution
+   - Property names correct
+
+**Key Features**:
+- Opt-in via table properties
+- Requires `write.compaction-map.enabled` for resolution to work
+- Safety valve: max manifests limit prevents runaway processing
+- Comprehensive logging for observability
+- Graceful handling when no conflicts exist
+
+**Test Status**: All 8 tests passing ✅
 
 ---
 
@@ -116,34 +138,23 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 - `core/src/main/java/org/apache/iceberg/DeleteManifestChanges.java`
 - `core/src/test/java/org/apache/iceberg/TestCompactionConflictResolver.java`
 
+**Phase 6**:
+- `core/src/test/java/org/apache/iceberg/TestCompactionConflictResolutionConfig.java`
+
+### Files Modified:
+
+**Phase 6**:
+- `core/src/main/java/org/apache/iceberg/TableProperties.java` - Added new properties
+- `core/src/main/java/org/apache/iceberg/actions/RewriteDataFilesCommitManager.java` - Integrated resolution
+
 ---
 
 ## Next Steps
 
-### 🎯 Phase 6: Configuration and Opt-In (NEXT)
-**Objective**: Add configuration properties and make feature opt-in
-
-**Tasks**:
-1. Add table properties
-   - `write.compaction.remap-conflicting-deletes` (boolean, default: false)
-   - `write.compaction.remap-conflicting-deletes.max-manifests` (int, default: 100)
-
-2. Modify RewriteDataFilesCommitManager
-   - Check property before resolving conflicts
-   - If disabled: throw ValidationException (existing behavior)
-   - If enabled: attempt resolution
-   - Enforce max-manifests limit (safety valve)
-
-3. Add metrics and logging
-   - Log when resolution is attempted
-   - Log when resolution succeeds/fails
-
-**Tests**: Configuration, enabling/disabling, limits
-
 ### Future Phases (Phases 7-9):
-- Phase 7: Edge Case Handling
-- Phase 8: Performance Optimization
-- Phase 9: Documentation
+- Phase 7: Edge Case Handling (schema evolution, partition changes)
+- Phase 8: Performance Optimization (parallel processing, caching)
+- Phase 9: Documentation (user guide, examples)
 
 ---
 
@@ -157,26 +168,33 @@ When compaction C conflicts with transaction T (both starting from same snapshot
 - **Solution**: Use C's compaction map to remap T's deletes onto C's compacted files
 - C can then complete without redoing work
 
-### Resolution Flow (Phase 5)
+### Resolution Flow (Phase 5-6)
 
 ```
-CompactionConflictResolver.resolve(compactionMap, conflicts)
-├── 1. Extract source files from compaction map
-├── 2. Read position deletes from conflicting delete files (Phase 1)
-├── 3. Filter deletes to only those referencing compacted files
-├── 4. Remap deletes using compaction map (Phase 2)
-├── 5. Write new delete files (Phase 3)
-└── 6. Return DeleteManifestChanges (added files, metrics)
+RewriteDataFilesCommitManager.commitFileGroups()
+├── Build compaction map (if enabled)
+├── resolveConflictingDeletes() (if remap-conflicting-deletes enabled)
+│   ├── CompactionConflictDetector.detectConflicts()
+│   ├── Check max manifests limit (safety valve)
+│   └── CompactionConflictResolver.resolve()
+│       ├── Read position deletes (Phase 1)
+│       ├── Filter deletes to compacted files
+│       ├── Remap deletes using compaction map (Phase 2)
+│       └── Write new delete files (Phase 3)
+├── Add remapped deletes to rewrite operation
+└── Commit
 ```
 
 ### Key Design Decisions
 
-1. **Idempotent Delete Handling**: Deletes on filtered rows are dropped silently
-2. **Partition/Row Preservation**: All metadata preserved during remapping
-3. **Bulk Operations**: Group deletes by target file for efficient writing
-4. **Sorted Output**: Deletes sorted by (file_path, position) for efficient reads
-5. **Bidirectional Detection**: Both delete and compaction perspectives
-6. **Logging**: All major operations logged for observability
+1. **Opt-In by Default**: Feature disabled by default for safety
+2. **Requires Compaction Maps**: Resolution only works when maps are enabled
+3. **Safety Valve**: Max manifests limit prevents runaway processing
+4. **Idempotent Delete Handling**: Deletes on filtered rows are dropped silently
+5. **Partition/Row Preservation**: All metadata preserved during remapping
+6. **Bulk Operations**: Group deletes by target file for efficient writing
+7. **Sorted Output**: Deletes sorted by (file_path, position) for efficient reads
+8. **Comprehensive Logging**: All major operations logged for observability
 
 ---
 
@@ -185,12 +203,13 @@ CompactionConflictResolver.resolve(compactionMap, conflicts)
 **Current Branch**: `cmpmap`
 
 **Recent Commits**:
+- `a8686fe83` - feat(compaction): Add conflict resolution integration (Phase 5)
 - `97057c79e` - feat(compaction): Add conflict detection (Phase 4)
 - `8d9de4fd0` - feat(compaction): Add remapped delete manifest writer (Phase 3)
 - `da7414735` - feat(compaction): Implement delete remapping core logic (Phase 2)
 - `6d86a637f` - feat(compaction): Add delete manifest reading infrastructure (Phase 1)
 
-**Uncommitted Changes**: Phase 5 implementation ready to commit
+**Uncommitted Changes**: Phase 6 implementation ready to commit
 
 ---
 
@@ -201,7 +220,8 @@ CompactionConflictResolver.resolve(compactionMap, conflicts)
 **Phase 3**: 8 tests, all passing ✅
 **Phase 4**: 10 tests, all passing ✅
 **Phase 5**: 7 tests, all passing ✅
-**Total Tests**: 44 tests, all passing ✅
+**Phase 6**: 8 tests, all passing ✅
+**Total Tests**: 52 tests, all passing ✅
 
 **Total Lines Added** (approximate):
 - Phase 1: ~815 lines
@@ -209,11 +229,12 @@ CompactionConflictResolver.resolve(compactionMap, conflicts)
 - Phase 3: ~455 lines
 - Phase 4: ~905 lines
 - Phase 5: ~750 lines
-- **Combined**: ~3,407 lines (code + tests)
+- Phase 6: ~550 lines
+- **Combined**: ~3,957 lines (code + tests)
 
 ---
 
-*Last Updated*: Phase 5 COMPLETED (pending commit)
-*Session Date*: 2026-01-18/19
+*Last Updated*: Phase 6 COMPLETED (pending commit)
+*Session Date*: 2026-01-19
 *Model*: Claude Opus 4.5
-*Status*: Ready to commit Phase 5 🚀
+*Status*: Ready to commit Phase 6 🚀
