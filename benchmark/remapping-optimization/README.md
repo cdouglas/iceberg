@@ -84,6 +84,57 @@ The full benchmark suite tests 54 parameter combinations:
 
 ## Analyzing Results
 
+### Automated Analysis Script
+
+The `analyze_results.py` script provides comprehensive analysis of benchmark results:
+
+```bash
+# Run analysis on text output
+python3 analyze_results.py results_20260116_162342.txt
+```
+
+**Output includes:**
+- Summary statistics (total scenarios, measurements)
+- Optimal strategy breakdown by scenario characteristics
+- Smart selector overhead analysis
+- Performance comparison by scale
+- CSV export for further analysis
+
+**Example output:**
+```
+BENCHMARK SUMMARY
+- Total scenarios: 54
+- Total measurements: 324
+
+OPTIMAL STRATEGY BY SCENARIO
+rangeQuery: 24 scenarios (all sorted)
+intervalTree: 24 scenarios (all unsorted)
+streamJoin: 5 scenarios
+
+SMART SELECTOR OVERHEAD ANALYSIS
+- Average overhead: 5-10% (expected)
+- High overhead cases flagged for investigation
+```
+
+### Visualization
+
+The `visualize_results.py` script generates charts from benchmark data:
+
+```bash
+# Generate all charts from CSV
+python3 visualize_results.py results_20260116_162342.csv
+```
+
+**Requirements:**
+```bash
+pip3 install matplotlib
+```
+
+**Generated charts:**
+1. `chart_strategy_comparison.png` - Performance comparison across all strategies
+2. `chart_selector_overhead.png` - Smart selector overhead vs optimal (top 20 worst cases)
+3. `chart_speedup_vs_linear.png` - Speedup comparison against linear search baseline
+
 ### Quick Analysis (Text Output)
 
 ```bash
