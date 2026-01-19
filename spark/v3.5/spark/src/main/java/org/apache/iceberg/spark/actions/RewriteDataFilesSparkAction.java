@@ -229,8 +229,8 @@ public class RewriteDataFilesSparkAction
 
   @VisibleForTesting
   RewriteDataFilesCommitManager commitManager(long startingSnapshotId) {
-    return new RewriteDataFilesCommitManager(
-        table, startingSnapshotId, useStartingSequenceNumber, commitSummary());
+    return new SparkRewriteDataFilesCommitManager(
+        spark(), table, startingSnapshotId, useStartingSequenceNumber, commitSummary());
   }
 
   private Builder doExecute(

@@ -315,6 +315,14 @@ public class TableProperties {
       "write.compaction-map.target-size-bytes";
   public static final long COMPACTION_MAP_TARGET_SIZE_BYTES_DEFAULT = 8 * 1024 * 1024; // 8 MB
 
+  public static final String COMPACTION_RESOLVE_DELETE_CONFLICTS =
+      "write.compaction.resolve-delete-conflicts";
+  public static final boolean COMPACTION_RESOLVE_DELETE_CONFLICTS_DEFAULT = false;
+
+  public static final String COMPACTION_RESOLVE_DELETE_CONFLICTS_MAX_FILES =
+      "write.compaction.resolve-delete-conflicts.max-files";
+  public static final int COMPACTION_RESOLVE_DELETE_CONFLICTS_MAX_FILES_DEFAULT = 100;
+
   public static final String DEFAULT_NAME_MAPPING = "schema.name-mapping.default";
 
   public static final String WRITE_AUDIT_PUBLISH_ENABLED = "write.wap.enabled";
