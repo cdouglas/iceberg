@@ -49,8 +49,8 @@ public class TestRemappingAlgorithmSelector {
 
   @Test
   public void testSelectsStreamJoinForSortedPositions() {
-    // m = 100, n = 10000, sorted
-    FileMapping mapping = createMapping(100);
+    // m = 50, n = 10000, sorted (m < 100, so StreamJoin is selected)
+    FileMapping mapping = createMapping(50);
     List<Long> sortedPositions = createSortedPositions(10000);
 
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
