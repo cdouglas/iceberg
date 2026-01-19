@@ -363,4 +363,24 @@ public class PositionDeleteRemapper {
     throw new UnsupportedOperationException(
         "Position delete reading not yet implemented - will be added in integration phase");
   }
+
+  /**
+   * Remaps position delete records using a compaction map (static utility method).
+   *
+   * <p>This is a convenience method that creates a DeleteManifestRemapper and performs the
+   * remapping operation. Use this when you have already read position deletes into
+   * PositionDeleteRecord objects.
+   *
+   * <p>The method groups remapped deletes by target file for efficient writing. Deletes on rows
+   * that were filtered during compaction are dropped silently.
+   *
+   * @param deletes list of position delete records to remap
+   * @param compactionMap the compaction map describing file transformations
+   * @return map from target file path to list of remapped position delete records
+   */
+  public static Map<String, List<PositionDeleteRecord>> remapDeleteManifests(
+      List<PositionDeleteRecord> deletes, CompactionMap compactionMap) {
+    DeleteManifestRemapper remapper = new DeleteManifestRemapper(compactionMap);
+    return remapper.remapDeletes(deletes);
+  }
 }
