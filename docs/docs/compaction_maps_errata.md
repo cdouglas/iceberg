@@ -402,17 +402,36 @@ Comprehensive tests needed to verify merge compactions:
 
 ---
 
-## 4. No Automatic Conflict Resolution
+## 4. Automatic Conflict Resolution (Partial)
 
 ### Issue
 
-When position deletes conflict with compacted files, the conflict is **detected but not automatically resolved**. Applications must manually remap and retry.
+Automatic conflict resolution is **now available for compaction operations** (Spark 3.5), but **application transactions still require manual resolution**.
 
-### Impact
+### Current Status
 
-**Usability: Manual intervention required for conflicts**
+**✅ Compaction Operations (Spark 3.5):**
 
-Applications must implement conflict resolution:
+Automatic conflict resolution is implemented via `SparkRewriteDataFilesCommitManager`:
+```java
+// Enable compaction maps AND conflict resolution
+table.updateProperties()
+    .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+    .set(TableProperties.COMPACTION_RESOLVE_DELETE_CONFLICTS, "true")
+    .commit();
+
+// Compaction automatically resolves conflicts with concurrent position deletes
+SparkActions.get(spark).rewriteDataFiles(table).execute();
+```
+
+**Limitations:**
+- Only V2 format tables (position delete files)
+- V3+ uses Deletion Vectors with different semantics
+- Subject to `max-files` limit (default: 100)
+
+**❌ Application Transactions:**
+
+Position delete conflicts from application transactions (e.g., RowDelta) still require manual handling:
 ```java
 try {
   rowDelta.addDeletes(deleteFile);
@@ -426,22 +445,9 @@ try {
 }
 ```
 
-### Why This Choice Was Made
+### What's Remaining
 
-**Safety First:**
-- Remapping is a complex operation that transforms file references
-- Explicit control allows users to audit what's being remapped
-- Automatic retry could hide issues or create unexpected behavior
-- Easier to add automatic resolution later than to remove it
-
-**Simpler Implementation:**
-- No need for complex retry logic
-- No risk of infinite retry loops
-- Clear separation between detection and resolution
-
-### What Needs to Be Done
-
-**Automatic Resolution Enhancement:**
+**Application Transaction Conflict Resolution:**
 
 Add opt-in automatic remapping to `BaseRowDelta`:
 ```java
@@ -455,22 +461,25 @@ rowDelta.commit();
 //   3. Retry commit transparently
 ```
 
-**Implementation considerations:**
-- Make it opt-in via configuration or API call
-- Add validation to ensure remapping is safe (no overlapping runs, etc.)
-- Provide callback/logging for transparency
-- Handle edge cases (multiple conflicts, partial remapping)
+**V3 Deletion Vector Support:**
 
-### Current Workaround
-
-Manual resolution is well-documented and tested:
-- Clear error messages with remediation guidance
-- Exception provides compaction map locations
-- PositionDeleteRemapper API is simple to use
-- Most DELETE operations don't hit this case (they create new delete files)
+Extend compaction conflict resolution to V3 format tables with Deletion Vectors.
 
 ### Code Location
 
+**Compaction Resolution (Implemented):**
+```
+spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkRewriteDataFilesCommitManager.java
+  detectAndResolveConflicts() - Detects and resolves conflicts during commit
+
+spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkCompactionConflictResolver.java
+  resolve() - Reads, remaps, and writes conflicting position deletes
+
+core/src/main/java/org/apache/iceberg/CompactionConflictDetector.java
+  detectConflicts() - Scans manifests to find conflicting delete files
+```
+
+**Application Resolution (Manual):**
 ```
 core/src/main/java/org/apache/iceberg/BaseRowDelta.java
   validateNoCompactionConflicts() - Throws CompactionConflictException
@@ -484,8 +493,12 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 ### Validation
 
-See test cases demonstrating manual resolution:
 ```bash
+# Test compaction conflict resolution
+./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test \
+  --tests "TestSparkCompactionConflictResolution"
+
+# Test manual resolution (application transactions)
 ./gradlew :iceberg-core:test --tests "TestCompactionConflictResolution"
 ```
 
@@ -498,7 +511,7 @@ See test cases demonstrating manual resolution:
 | 1 | Normal scans vs staged scans | 10-20% performance overhead | Documented, acceptable | Medium |
 | 2 | Spark 4.0 format v3 blocker | Format v3 unavailable in Spark 4.0 (v2 works) | Comprehensive analysis done, row lineage issue identified | High |
 | 3 | Bin-pack only position tracking | Rewrite-time reordering unsupported (sorted/Z-ordered) | Merge compactions work | Low |
-| 4 | Manual conflict resolution | Requires application code | Well-documented pattern | Low |
+| 4 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Compaction map location not in manifests~~ - ✅ FIXED in commit 41324b697
@@ -520,7 +533,9 @@ If you'd like to help address any of these issues:
 
 3. **Sorted Rewrite Position Tracking:** Design position tracking framework that instruments Spark's sort operator to track position transformations through reordering operations.
 
-4. **Automatic Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` with proper validation and error handling.
+4. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete.
+
+5. **V3 Deletion Vector Conflict Resolution:** Extend `SparkCompactionConflictResolver` to support V3 format tables with Deletion Vectors.
 
 ## References
 

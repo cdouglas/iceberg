@@ -68,6 +68,13 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 - Automatic compaction map generation during commit
 - Accurate run-based tracking with gaps for deleted rows
 
+✅ **Compaction Conflict Resolution (Phase 3)**
+- SparkRewriteDataFilesCommitManager detects conflicts with concurrent position delete transactions
+- SparkCompactionConflictResolver remaps conflicting deletes using Spark infrastructure
+- Opt-in via `write.compaction.resolve-delete-conflicts` table property
+- Configurable max-files limit for safety
+- 6 integration tests covering all conflict resolution scenarios
+
 ✅ **Merge Compaction Support**
 - Position deletes applied during scan (standard Iceberg behavior)
 - Only surviving rows tracked in position mappings
@@ -76,7 +83,7 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 
 ### Test Coverage
 
-✅ **Comprehensive Test Suite Complete (140+ tests passing)**
+✅ **Comprehensive Test Suite Complete (150+ tests passing)**
 
 The compaction maps feature has comprehensive test coverage across all components:
 - Core infrastructure (serialization, builder, storage, remapping)
@@ -85,6 +92,7 @@ The compaction maps feature has comprehensive test coverage across all component
 - Conflict detection and resolution workflows (full V2/V3 parity)
 - SERIALIZABLE isolation with compaction awareness (full V2/V3 parity)
 - End-to-end Spark integration tests for conflict detection and resolution
+- **Compaction conflict resolution (6 tests)** - TestSparkCompactionConflictResolution
 - Format version compatibility (v2 position deletes, v3 deletion vectors)
 - File format support (Parquet, ORC, Puffin for DVs)
 - **JMH performance benchmarks (324 configurations)** - Empirical validation across 54 workload scenarios
@@ -126,6 +134,16 @@ See [Compaction Maps Errata](compaction_maps_errata.md) for documented implement
 - `"serializable"`: Validates concurrent data changes with compaction awareness
 - `"snapshot"`: No validation of concurrent operations
 
+**`write.compaction.resolve-delete-conflicts`** (default: `false`)
+- Enables automatic resolution of conflicts with concurrent position delete transactions during compaction
+- When enabled, compaction operations can detect and remap conflicting position deletes
+- Only applies to V2 format tables with position delete files (not DVs)
+
+**`write.compaction.resolve-delete-conflicts.max-files`** (default: `100`)
+- Maximum number of conflicting delete files to resolve automatically
+- Safety limit to prevent excessive overhead from large conflict sets
+- If exceeded, compaction throws `ValidationException` requiring manual intervention
+
 ### Example Configuration
 
 ```java
@@ -141,6 +159,33 @@ sourceFiles.forEach(rewrite::deleteFile);
 targetFiles.forEach(rewrite::addFile);
 rewrite.commit();
 ```
+
+### Compaction with Automatic Conflict Resolution
+
+```java
+// Enable compaction maps AND conflict resolution
+table.updateProperties()
+    .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+    .set(TableProperties.COMPACTION_RESOLVE_DELETE_CONFLICTS, "true")
+    .set(TableProperties.COMPACTION_RESOLVE_DELETE_CONFLICTS_MAX_FILES, "50")
+    .commit();
+
+// Run compaction via Spark action
+// If concurrent deletes occurred, they are automatically remapped
+SparkActions.get(spark)
+    .rewriteDataFiles(table)
+    .execute();
+```
+
+**What Happens During Conflict Resolution:**
+
+1. Compaction starts at snapshot S1 and rewrites files
+2. Concurrent transaction adds position deletes, creating S2
+3. Compaction detects conflicts with S2's deletes during commit
+4. SparkCompactionConflictResolver reads the conflicting delete files
+5. Uses PositionDeleteRemapper to remap positions from source → target files
+6. Writes new delete files referencing the compacted files
+7. Commits compaction with remapped deletes included
 
 ### SERIALIZABLE Isolation with Compaction Awareness
 
@@ -200,9 +245,20 @@ Target positions: 0, 1, 2, 3
 Compaction map: Run(0, 0, 2), Run(3, 2, 2)  // Gap at source position 2
 ```
 
-### 3. Manual Conflict Resolution Required
+### 3. Conflict Resolution Options
 
-Position delete conflicts are detected but not automatically resolved. Applications must:
+**For Compaction Operations (Spark 3.5):**
+
+Automatic conflict resolution is available via `write.compaction.resolve-delete-conflicts=true`. When enabled, compactions automatically detect and remap conflicting position deletes from concurrent transactions. This is the recommended approach for high-concurrency workloads.
+
+**Limitations:**
+- Only available for V2 format tables (position delete files)
+- V3+ uses Deletion Vectors which have different semantics
+- Subject to `max-files` limit for safety
+
+**For Application Transactions:**
+
+Position delete conflicts from application transactions (e.g., RowDelta) still require manual handling:
 
 ```java
 try {
@@ -226,7 +282,7 @@ try {
 }
 ```
 
-**Note:** SERIALIZABLE isolation provides automatic handling for read conflicts (distinguishes structural vs data changes), but position delete conflicts still require manual remapping.
+**Note:** SERIALIZABLE isolation provides automatic handling for read conflicts (distinguishes structural vs data changes), but position delete conflicts from application transactions still require manual remapping.
 
 ### 4. Performance Overhead
 
@@ -290,6 +346,7 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios. See
 ## Future Work
 
 1. **Spark 4.0 Support** - Fix schema validation issues for format v3 tables (see [errata](compaction_maps_errata.md#2-spark-40-support-deferred))
-2. **Automatic Conflict Resolution** - Opt-in automatic remapping in BaseRowDelta
-3. **Sorted/Z-Ordered Rewrite Support** - Track position transformations through sort operations
-4. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
+2. **Application Transaction Conflict Resolution** - Automatic remapping in BaseRowDelta for application-level position delete conflicts
+3. **V3 Deletion Vector Conflict Resolution** - Extend compaction conflict resolution to support V3 format with Deletion Vectors
+4. **Sorted/Z-Ordered Rewrite Support** - Track position transformations through sort operations
+5. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
