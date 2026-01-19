@@ -98,6 +98,30 @@ Updated documentation with conflict resolution feature:
 - Updated Future Work to reflect partial completion
 - Updated errata to reflect compaction-level resolution is complete
 
+### Phase 5: Soundness Review (COMPLETED)
+
+Reviewed implementation for soundness issues and addressed critical gaps:
+
+**Issues Identified and Fixed**:
+1. **Multi-file position deletes** - Position delete files created with `DeleteGranularity.PARTITION` span multiple data files and couldn't be statically analyzed
+   - Added `multiFilePositionDeletes()` to `DeleteConflictInfo` to track these separately
+   - Updated `CompactionConflictDetector` to detect and flag these
+   - Updated `SparkCompactionConflictResolver` to include them in scan tasks (content-based resolution)
+
+2. **Equality delete handling** - Documented that equality deletes are intentionally ignored (not file-scoped)
+   - Added explicit comments in `CompactionConflictDetector`
+   - Added Javadoc explaining the behavior
+
+**New Tests Added**:
+- `testMultiFilePositionDeletesDetected` - Verifies multi-file position deletes are detected
+- `testEqualityDeletesNotDetectedAsConflicts` - Verifies equality deletes are properly ignored
+- `testMixedDeleteTypes` - Verifies both types are handled correctly together
+
+**New API Methods**:
+- `DeleteConflictInfo.multiFilePositionDeletes()` - Returns multi-file position deletes
+- `DeleteConflictInfo.hasMultiFilePositionDeletes()` - Checks if any exist
+- `DeleteConflictInfo.hasOnlyFileScopedConflicts()` - Checks for simple conflict case
+
 ---
 
 ## Implementation Complete
@@ -107,6 +131,7 @@ All phases of Compaction Delete Recovery are now complete:
 - **Phase 2**: Spark-Layer Resolution ✅
 - **Phase 3**: Testing and Validation ✅
 - **Phase 4**: Documentation ✅
+- **Phase 5**: Soundness Review ✅
 
 ---
 
@@ -126,10 +151,10 @@ All phases of Compaction Delete Recovery are now complete:
 - `spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/RewriteDataFilesSparkAction.java`
 - `COMPACTION_DELETE_RECOVERY_PLAN.md`
 
-**Test Status**: All tests passing (150+ tests)
+**Test Status**: All tests passing (153+ tests)
 
 ---
 
 *Last Updated*: 2026-01-19
-*Session*: Documentation phase complete
-*Status*: All phases complete (1-4)
+*Session*: Soundness review complete
+*Status*: All phases complete (1-5)

@@ -251,10 +251,16 @@ Compaction map: Run(0, 0, 2), Run(3, 2, 2)  // Gap at source position 2
 
 Automatic conflict resolution is available via `write.compaction.resolve-delete-conflicts=true`. When enabled, compactions automatically detect and remap conflicting position deletes from concurrent transactions. This is the recommended approach for high-concurrency workloads.
 
+**Supported Delete Types:**
+- ✅ **File-scoped position deletes**: Deletes with `referencedDataFile` set (created with `DeleteGranularity.FILE`)
+- ✅ **Multi-file position deletes**: Deletes spanning multiple data files (created with `DeleteGranularity.PARTITION`) - these are detected as potential conflicts and resolved by reading delete content
+- ❌ **Equality deletes**: Not file-scoped, handled by standard Iceberg semantics (not conflicts)
+
 **Limitations:**
 - Only available for V2 format tables (position delete files)
 - V3+ uses Deletion Vectors which have different semantics
 - Subject to `max-files` limit for safety
+- Multi-file position deletes require reading delete file content for resolution (additional I/O)
 
 **For Application Transactions:**
 

@@ -89,6 +89,13 @@ public class SparkCompactionConflictResolver implements Serializable {
   /**
    * Resolves conflicts by remapping position deletes to reference compacted files.
    *
+   * <p>This method handles two types of position deletes:
+   *
+   * <ul>
+   *   <li>File-scoped position deletes that definitely conflict (known data file references)
+   *   <li>Multi-file position deletes that may conflict (need content-based filtering)
+   * </ul>
+   *
    * @param compactionMap the compaction map describing file transformations
    * @param conflicts the detected conflicts to resolve
    * @return list of new delete files with remapped positions
@@ -99,9 +106,12 @@ public class SparkCompactionConflictResolver implements Serializable {
       return Lists.newArrayList();
     }
 
+    int fileScopedCount = conflicts.deleteFileCount();
+    int multiFileCount = conflicts.multiFilePositionDeletes().size();
     LOG.info(
-        "Resolving {} conflicting delete files affecting {} data files",
-        conflicts.deleteFileCount(),
+        "Resolving conflicts: {} file-scoped delete files, {} multi-file position deletes, {} known affected data files",
+        fileScopedCount,
+        multiFileCount,
         conflicts.affectedDataFileCount());
 
     String groupId = UUID.randomUUID().toString();
@@ -111,8 +121,12 @@ public class SparkCompactionConflictResolver implements Serializable {
     try {
       tableCache.add(groupId, deletesTable);
 
-      // Stage the conflicting delete files for reading
+      // Stage the conflicting delete files for reading (both file-scoped and multi-file)
       List<PositionDeletesScanTask> tasks = createScanTasks(conflicts);
+      if (tasks.isEmpty()) {
+        LOG.debug("No scan tasks to process");
+        return Lists.newArrayList();
+      }
       taskSetManager.stageTasks(deletesTable, groupId, tasks);
 
       // Read, remap, and write deletes
@@ -128,13 +142,31 @@ public class SparkCompactionConflictResolver implements Serializable {
   }
 
   /**
-   * Creates scan tasks for the conflicting delete files.
+   * Creates scan tasks for all position delete files that may need resolution.
+   *
+   * <p>This includes:
+   *
+   * <ul>
+   *   <li>File-scoped position deletes with known conflicts
+   *   <li>Multi-file position deletes that may contain positions for compacted files
+   * </ul>
+   *
+   * <p>The actual filtering to positions referencing compacted files happens during the read phase.
    *
    * @param conflicts the detected conflicts
    * @return list of scan tasks for reading the delete files
    */
   private List<PositionDeletesScanTask> createScanTasks(DeleteConflictInfo conflicts) {
-    return PositionDeletesScanTasks.create(conflicts.conflictingDeleteFiles(), table);
+    // Combine file-scoped conflicts and multi-file position deletes
+    List<DeleteFile> allDeleteFiles = Lists.newArrayList();
+    allDeleteFiles.addAll(conflicts.conflictingDeleteFiles());
+    allDeleteFiles.addAll(conflicts.multiFilePositionDeletes());
+
+    if (allDeleteFiles.isEmpty()) {
+      return Lists.newArrayList();
+    }
+
+    return PositionDeletesScanTasks.create(allDeleteFiles, table);
   }
 
   /**

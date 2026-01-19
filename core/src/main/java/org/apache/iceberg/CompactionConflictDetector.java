@@ -89,6 +89,13 @@ public class CompactionConflictDetector {
    * <p>This method scans all snapshots between the starting snapshot and the current snapshot,
    * looking for delete files that reference any of the files being compacted.
    *
+   * <p>The result includes:
+   *
+   * <ul>
+   *   <li>File-scoped position deletes that definitely conflict (reference compacted files)
+   *   <li>Multi-file position deletes that may conflict (need content-based resolution)
+   * </ul>
+   *
    * @param filesToCompact the set of data file paths being compacted
    * @return conflict information including all conflicting delete files and affected data files
    */
@@ -112,16 +119,23 @@ public class CompactionConflictDetector {
             currentSnapshot.snapshotId(), startingSnapshotId, base::snapshot);
 
     for (Snapshot snapshot : snapshots) {
-      List<DeleteFileWithReference> snapshotConflicts =
+      SnapshotConflicts snapshotConflicts =
           findConflictingDeletesInSnapshot(snapshot, filesToCompact);
-      if (!snapshotConflicts.isEmpty()) {
+
+      // Process file-scoped conflicts
+      if (!snapshotConflicts.fileScopedConflicts.isEmpty()) {
         List<DeleteFile> deleteFiles = Lists.newArrayList();
-        for (DeleteFileWithReference conflict : snapshotConflicts) {
+        for (DeleteFileWithReference conflict : snapshotConflicts.fileScopedConflicts) {
           builder.addConflict(
               conflict.deleteFile, snapshot.snapshotId(), conflict.referencedDataFile);
           deleteFiles.add(conflict.deleteFile);
         }
         builder.addSnapshotDeletes(snapshot.snapshotId(), deleteFiles);
+      }
+
+      // Process multi-file position deletes (need content-based resolution)
+      for (DeleteFile multiFileDelete : snapshotConflicts.multiFilePositionDeletes) {
+        builder.addMultiFilePositionDelete(multiFileDelete);
       }
     }
 
@@ -139,16 +153,30 @@ public class CompactionConflictDetector {
     }
   }
 
+  /** Internal class to track snapshot-level conflicts. */
+  private static class SnapshotConflicts {
+    final List<DeleteFileWithReference> fileScopedConflicts;
+    final List<DeleteFile> multiFilePositionDeletes;
+
+    SnapshotConflicts(
+        List<DeleteFileWithReference> fileScopedConflicts,
+        List<DeleteFile> multiFilePositionDeletes) {
+      this.fileScopedConflicts = fileScopedConflicts;
+      this.multiFilePositionDeletes = multiFilePositionDeletes;
+    }
+  }
+
   /**
    * Finds delete files in a snapshot that reference any of the files being compacted.
    *
    * @param snapshot the snapshot to check
    * @param filesToCompact the set of data file paths being compacted
-   * @return list of conflicting delete files with their referenced data files
+   * @return conflicts found in the snapshot (both file-scoped and multi-file)
    */
-  private List<DeleteFileWithReference> findConflictingDeletesInSnapshot(
+  private SnapshotConflicts findConflictingDeletesInSnapshot(
       Snapshot snapshot, Set<String> filesToCompact) {
-    List<DeleteFileWithReference> conflicts = Lists.newArrayList();
+    List<DeleteFileWithReference> fileScopedConflicts = Lists.newArrayList();
+    List<DeleteFile> multiFileDeletes = Lists.newArrayList();
 
     // Get delete manifests added in this snapshot
     List<ManifestFile> deleteManifests = snapshot.deleteManifests(io);
@@ -156,23 +184,47 @@ public class CompactionConflictDetector {
     for (ManifestFile manifestFile : deleteManifests) {
       // Only check manifests added by this snapshot
       if (manifestFile.snapshotId() != null && manifestFile.snapshotId() == snapshot.snapshotId()) {
-        conflicts.addAll(findConflictsInManifest(manifestFile, filesToCompact));
+        ManifestConflicts manifestConflicts = findConflictsInManifest(manifestFile, filesToCompact);
+        fileScopedConflicts.addAll(manifestConflicts.fileScopedConflicts);
+        multiFileDeletes.addAll(manifestConflicts.multiFilePositionDeletes);
       }
     }
 
-    return conflicts;
+    return new SnapshotConflicts(fileScopedConflicts, multiFileDeletes);
+  }
+
+  /** Internal class to track delete file with multi-file flag. */
+  private static class ManifestConflicts {
+    final List<DeleteFileWithReference> fileScopedConflicts;
+    final List<DeleteFile> multiFilePositionDeletes;
+
+    ManifestConflicts(
+        List<DeleteFileWithReference> fileScopedConflicts,
+        List<DeleteFile> multiFilePositionDeletes) {
+      this.fileScopedConflicts = fileScopedConflicts;
+      this.multiFilePositionDeletes = multiFilePositionDeletes;
+    }
   }
 
   /**
    * Finds delete files in a manifest that reference any of the files being compacted.
    *
+   * <p>This method identifies two types of potential conflicts:
+   *
+   * <ul>
+   *   <li>File-scoped position deletes that definitely reference compacted files
+   *   <li>Multi-file position deletes that may reference compacted files (need content-based
+   *       resolution)
+   * </ul>
+   *
    * @param manifestFile the manifest to check
    * @param filesToCompact the set of data file paths being compacted
-   * @return list of conflicting delete files with their referenced data files
+   * @return conflicts found in the manifest (both file-scoped and multi-file)
    */
-  private List<DeleteFileWithReference> findConflictsInManifest(
+  private ManifestConflicts findConflictsInManifest(
       ManifestFile manifestFile, Set<String> filesToCompact) {
-    List<DeleteFileWithReference> conflicts = Lists.newArrayList();
+    List<DeleteFileWithReference> fileScopedConflicts = Lists.newArrayList();
+    List<DeleteFile> multiFileDeletes = Lists.newArrayList();
 
     try (ManifestReader<DeleteFile> reader =
         ManifestFiles.readDeleteManifest(manifestFile, io, null)) {
@@ -183,28 +235,47 @@ public class CompactionConflictDetector {
           DeleteFile deleteFile = entry.file();
           String referencedFile = getReferencedDataFile(deleteFile);
 
-          if (referencedFile != null && filesToCompact.contains(referencedFile)) {
-            conflicts.add(new DeleteFileWithReference(deleteFile, referencedFile));
+          if (referencedFile != null) {
+            // File-scoped position delete - check if it references a compacted file
+            if (filesToCompact.contains(referencedFile)) {
+              fileScopedConflicts.add(new DeleteFileWithReference(deleteFile, referencedFile));
+            }
+          } else if (isMultiFilePositionDelete(deleteFile)) {
+            // Multi-file position delete - may reference compacted files
+            // Must be resolved by reading content
+            multiFileDeletes.add(deleteFile);
           }
+          // Equality deletes (content == EQUALITY_DELETES) are intentionally ignored
+          // They are not file-scoped and don't conflict with compaction in the same way
         }
       }
     } catch (Exception e) {
       throw new RuntimeException("Failed to read delete manifest: " + manifestFile.path(), e);
     }
 
-    return conflicts;
+    return new ManifestConflicts(fileScopedConflicts, multiFileDeletes);
   }
 
   /**
    * Gets the data file path referenced by a delete file.
    *
-   * <p>This handles both:
+   * <p>This handles:
    *
    * <ul>
    *   <li>Position delete files with explicit referencedDataFile set
    *   <li>Deletion vectors (DVs), which always have referencedDataFile set
-   *   <li>Position delete files with bounds on the file_path column
+   *   <li>Position delete files with bounds on the file_path column (single file)
    * </ul>
+   *
+   * <p>Returns null for:
+   *
+   * <ul>
+   *   <li>Equality delete files (not file-scoped by definition)
+   *   <li>Multi-file position deletes (bounds differ, cannot determine statically)
+   * </ul>
+   *
+   * <p>Callers should use {@link #isMultiFilePositionDelete(DeleteFile)} to distinguish between
+   * these two null cases.
    *
    * @param deleteFile the delete file to check
    * @return the referenced data file path, or null if not file-scoped
@@ -215,13 +286,36 @@ public class CompactionConflictDetector {
   }
 
   /**
+   * Checks if a delete file is a multi-file position delete.
+   *
+   * <p>Multi-file position deletes are position delete files created with {@link
+   * org.apache.iceberg.deletes.DeleteGranularity#PARTITION} that contain deletes for multiple data
+   * files. These cannot be statically analyzed to determine which data files they reference.
+   *
+   * @param deleteFile the delete file to check
+   * @return true if this is a multi-file position delete
+   */
+  private boolean isMultiFilePositionDelete(DeleteFile deleteFile) {
+    // Multi-file position delete: content is POSITION_DELETES but no single referenced file
+    return deleteFile.content() == FileContent.POSITION_DELETES
+        && ContentFileUtil.referencedDataFileLocation(deleteFile) == null;
+  }
+
+  /**
    * Checks if any deletes exist that reference the files being compacted.
    *
    * <p>This is a quick check that returns true as soon as any conflict is found, without collecting
    * all the conflict details.
    *
+   * <p>This includes both:
+   *
+   * <ul>
+   *   <li>File-scoped position deletes that definitely reference compacted files
+   *   <li>Multi-file position deletes that may reference compacted files
+   * </ul>
+   *
    * @param filesToCompact the set of data file paths being compacted
-   * @return true if any conflicts exist
+   * @return true if any conflicts exist or may exist
    */
   public boolean hasConflicts(Set<String> filesToCompact) {
     Preconditions.checkNotNull(filesToCompact, "filesToCompact is null");
@@ -272,9 +366,16 @@ public class CompactionConflictDetector {
   /**
    * Quick check for conflicts in a single manifest.
    *
+   * <p>Returns true if the manifest contains:
+   *
+   * <ul>
+   *   <li>File-scoped position deletes that reference compacted files, OR
+   *   <li>Multi-file position deletes (may reference compacted files, need content check)
+   * </ul>
+   *
    * @param manifestFile the manifest to check
    * @param filesToCompact the set of data file paths being compacted
-   * @return true if any conflicts found
+   * @return true if any conflicts found or potential conflicts exist
    */
   private boolean hasConflictsInManifest(ManifestFile manifestFile, Set<String> filesToCompact) {
     try (ManifestReader<DeleteFile> reader =
@@ -282,10 +383,19 @@ public class CompactionConflictDetector {
 
       for (ManifestEntry<DeleteFile> entry : reader.entries()) {
         if (entry.status() == ManifestEntry.Status.ADDED) {
-          String referencedFile = getReferencedDataFile(entry.file());
-          if (referencedFile != null && filesToCompact.contains(referencedFile)) {
+          DeleteFile deleteFile = entry.file();
+          String referencedFile = getReferencedDataFile(deleteFile);
+
+          if (referencedFile != null) {
+            // File-scoped position delete - check if it references a compacted file
+            if (filesToCompact.contains(referencedFile)) {
+              return true;
+            }
+          } else if (isMultiFilePositionDelete(deleteFile)) {
+            // Multi-file position delete - may reference compacted files
             return true;
           }
+          // Equality deletes are intentionally ignored
         }
       }
     } catch (Exception e) {
