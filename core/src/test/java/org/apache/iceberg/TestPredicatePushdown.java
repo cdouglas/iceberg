@@ -74,8 +74,7 @@ public class TestPredicatePushdown {
   @Test
   public void testPredicatePushdownWithNoOverlap() {
     // Positions [50-100), runs [200-300), [400-500)
-    List<Run> runs =
-        Arrays.asList(new GenericRun(200, 0, 100), new GenericRun(400, 100, 100));
+    List<Run> runs = Arrays.asList(new GenericRun(200, 0, 100), new GenericRun(400, 100, 100));
 
     // Positions in range [50-100) don't overlap any runs
     List<Long> positions = Arrays.asList(50L, 60L, 70L, 80L, 90L);

@@ -21,7 +21,6 @@ package org.apache.iceberg;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.CompactionMap.Run;
-import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 /**
@@ -49,8 +48,8 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  * </ul>
  *
  * <p><strong>Requirements:</strong> Runs must be sorted by sourcePosition (ascending). Positions
- * should be sorted for optimal O(n + m) performance, but unsorted positions are supported with
- * O(n log m) fallback.
+ * should be sorted for optimal O(n + m) performance, but unsorted positions are supported with O(n
+ * log m) fallback.
  *
  * <p><strong>Performance:</strong> For n=10,000 positions, m=100 runs:
  *

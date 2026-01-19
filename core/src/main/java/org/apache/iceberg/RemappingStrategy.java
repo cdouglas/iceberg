@@ -31,8 +31,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  *
  * <ul>
  *   <li>{@link LinearSearchStrategy}: O(m) lookup, no setup cost. Best for m &lt; 10.
- *   <li>{@link BinarySearchStrategy}: O(log m) lookup, no setup cost. Best for 10 &lt;= m &lt;
- *       100.
+ *   <li>{@link BinarySearchStrategy}: O(log m) lookup, no setup cost. Best for 10 &lt;= m &lt; 100.
  *   <li>{@link IntervalTreeStrategy}: O(log m) lookup, O(m) setup. Best for m &gt;= 100.
  *   <li>{@link StreamJoinStrategy}: O(n + m) bulk lookup for sorted positions. Best for bulk
  *       remapping when m ≈ n.
@@ -55,8 +54,8 @@ interface RemappingStrategy {
   /**
    * Finds runs for multiple source positions (bulk lookup).
    *
-   * <p>Default implementation calls {@link #runForPosition(long)} for each position. Strategies
-   * can override this for better performance.
+   * <p>Default implementation calls {@link #runForPosition(long)} for each position. Strategies can
+   * override this for better performance.
    *
    * <p><strong>Performance:</strong>
    *
@@ -86,9 +85,7 @@ interface RemappingStrategy {
    */
   String name();
 
-  /**
-   * Factory for creating appropriate strategy based on run characteristics.
-   */
+  /** Factory for creating appropriate strategy based on run characteristics. */
   class Factory {
     // Thresholds for algorithm selection
     private static final int BINARY_SEARCH_THRESHOLD = 10;

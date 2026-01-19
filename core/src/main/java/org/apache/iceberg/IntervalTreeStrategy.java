@@ -37,8 +37,8 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
  * </ul>
  *
  * <p><strong>Best for:</strong> Large run counts (m &gt;= 100) where the setup cost is amortized
- * across many lookups. Provides better cache locality than array-based binary search for very
- * large m.
+ * across many lookups. Provides better cache locality than array-based binary search for very large
+ * m.
  *
  * <p><strong>Requirements:</strong> Runs must be sorted by sourcePosition (ascending) and
  * non-overlapping. This is validated during construction.
@@ -111,8 +111,8 @@ class IntervalTreeStrategy implements RemappingStrategy {
   /**
    * Builds a balanced binary search tree from sorted runs.
    *
-   * <p>Uses the middle element as root to ensure O(log m) height. Recursively builds left and
-   * right subtrees.
+   * <p>Uses the middle element as root to ensure O(log m) height. Recursively builds left and right
+   * subtrees.
    *
    * @param runs sorted list of runs
    * @param start start index (inclusive)
@@ -184,8 +184,8 @@ class IntervalTreeStrategy implements RemappingStrategy {
   /**
    * Node in the interval tree.
    *
-   * <p>Stores a run (interval) and maintains the maximum end position in the subtree rooted at
-   * this node. This enables efficient pruning during search.
+   * <p>Stores a run (interval) and maintains the maximum end position in the subtree rooted at this
+   * node. This enables efficient pruning during search.
    */
   private static class Node {
     final Run run;

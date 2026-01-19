@@ -251,9 +251,7 @@ public class PositionDeleteRemapper {
       long targetPos = run.mapPosition(sourcePos);
 
       // Add to result set for target file
-      remappedPositions
-          .computeIfAbsent(mapping.targetFile(), k -> new HashSet<>())
-          .add(targetPos);
+      remappedPositions.computeIfAbsent(mapping.targetFile(), k -> new HashSet<>()).add(targetPos);
     }
 
     return remappedPositions;
