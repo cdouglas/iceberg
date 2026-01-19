@@ -315,6 +315,26 @@ public class TableProperties {
       "write.compaction-map.target-size-bytes";
   public static final long COMPACTION_MAP_TARGET_SIZE_BYTES_DEFAULT = 8 * 1024 * 1024; // 8 MB
 
+  /**
+   * When enabled, compaction operations will automatically remap conflicting position deletes that
+   * were added concurrently. This allows compaction to complete without losing delete information.
+   *
+   * <p>Requires {@link #COMPACTION_MAP_ENABLED} to also be enabled.
+   */
+  public static final String COMPACTION_REMAP_CONFLICTING_DELETES =
+      "write.compaction.remap-conflicting-deletes";
+
+  public static final boolean COMPACTION_REMAP_CONFLICTING_DELETES_DEFAULT = false;
+
+  /**
+   * Maximum number of delete manifests to process when remapping conflicting deletes. This is a
+   * safety valve to prevent excessive processing in tables with many concurrent delete operations.
+   */
+  public static final String COMPACTION_REMAP_MAX_MANIFESTS =
+      "write.compaction.remap-conflicting-deletes.max-manifests";
+
+  public static final int COMPACTION_REMAP_MAX_MANIFESTS_DEFAULT = 100;
+
   public static final String DEFAULT_NAME_MAPPING = "schema.name-mapping.default";
 
   public static final String WRITE_AUDIT_PUBLISH_ENABLED = "write.wap.enabled";
