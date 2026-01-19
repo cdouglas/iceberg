@@ -228,8 +228,72 @@ Reduce position count or run with more heap:
 - `core/src/jmh/java/org/apache/iceberg/RemappingBenchmarkUtils.java` - Helper utilities
 - `REMAPPING_BENCHMARKS.md` - This documentation
 
+## Benchmark Results
+
+### January 16, 2026 Run (324 Configurations)
+
+**Run ID**: `results_20260116_162342`
+**Location**: `benchmark/remapping-optimization/`
+**Duration**: ~2.5 hours
+**VM**: OpenJDK 17.0.17, 32GB heap
+
+**Key Findings**:
+
+1. **Actual Speedups** (vs LinearSearch baseline):
+   - Few runs (m=10, sorted): 5-6x speedup
+   - Medium runs (m=100, sorted): 4-22x speedup
+   - Many runs (m=1000, sorted): 23-142x speedup
+   - Large scale (m=1000, n=100K, unsorted): 161x speedup
+
+2. **Optimal Strategy by Scenario**:
+   - RangeQuery: 24 scenarios (all sorted with low m)
+   - IntervalTree: 24 scenarios (all unsorted, or high m)
+   - StreamJoin: 5 scenarios (sorted with medium m)
+   - BinarySearch: 1 scenario (unsorted, medium-high m)
+
+3. **Smart Selector Performance**:
+   - **Issue Found**: Initial implementation had 194% average overhead
+   - **Root Cause**: Selection logic flaws (see CLAUDE.md Phase 7.3)
+   - **Worst Cases**: 3500%+ overhead for unsorted data with m < 10
+   - **Best Cases**: <5% overhead for sorted data with correct selection
+   - **Status**: Partial fix committed, full fix pending
+
+4. **IntervalTree vs StreamJoin** (key insight):
+   - For m ≥ 100, sorted data: IntervalTree 4-6x faster than StreamJoin
+   - Reason: Better cache locality at high m
+   - Updated selector to prefer IntervalTree for m ≥ 100
+
+### Analysis Tools
+
+Use the provided Python scripts to analyze benchmark results:
+
+```bash
+cd benchmark/remapping-optimization
+
+# Parse and analyze JMH output
+python3 analyze_results.py results_20260116_162342.txt
+
+# Generate visualization charts (requires matplotlib)
+python3 visualize_results.py results_20260116_162342.csv
+```
+
+**Output**:
+- Console summary: optimal strategies, selector overhead, performance tables
+- CSV file: `results_20260116_162342.csv` (for spreadsheets)
+- Charts (if matplotlib installed):
+  - `chart_strategy_comparison.png` - Performance across all strategies
+  - `chart_selector_overhead.png` - Selector overhead vs optimal
+  - `chart_speedup_vs_linear.png` - Speedup comparison
+
+See `benchmark/remapping-optimization/ANALYSIS_20260116.md` for detailed analysis including:
+- Scenario-by-scenario breakdown
+- Performance validation against claims
+- Insights and recommendations
+- Selector logic improvements
+
 ## References
 
 - JMH Documentation: https://github.com/openjdk/jmh
 - Iceberg Benchmarks: `site/docs/benchmarks.md`
 - Remapping Optimization Plan: `REMAPPING_OPTIMIZATION_IMPLEMENTATION_PLAN.md`
+- Benchmark Analysis: `benchmark/remapping-optimization/ANALYSIS_20260116.md`
