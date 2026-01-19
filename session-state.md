@@ -21,12 +21,7 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 - Handle empty manifests
 - Support bulk read-and-filter operations
 
-**Known Limitations** (Phase 1):
-- Row data not preserved (to be added in future)
-- Only Avro format supported (Parquet/ORC later)
-- Partition data not captured
-
-**Test Status**: All 7 tests passing, full core test suite passing
+**Test Status**: All 7 tests passing ✅
 
 ---
 
@@ -35,28 +30,8 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 
 **Components Created**:
 1. `DeleteManifestRemapper.java` - Core remapping logic
-   - Input: List<PositionDeleteRecord>, CompactionMap
-   - Output: Map<TargetFile, List<PositionDeleteRecord>>
-   - Handles gaps (filtered rows) by dropping deletes
-   - Handles multi-target compactions
-   - Preserves partition and row data
-
 2. `PositionDeleteRemapper.java` - Added static utility method
-   - `remapDeleteManifests(List<PositionDeleteRecord>, CompactionMap)`
-   - Delegates to DeleteManifestRemapper
-
 3. `TestDeleteManifestRemapper.java` - 12 comprehensive unit tests
-   - Basic remapping (single source → single target)
-   - Merge compaction (multiple sources → one target)
-   - Filtered rows (gaps in compaction map)
-   - Partition preservation
-   - Row data preservation
-   - Empty delete list
-   - All deletes filtered out
-   - Property test: remapped deletes reference correct files
-   - Non-compacted files ignored
-   - isCompacted() method
-   - Static utility method test
 
 **Key Features**:
 - Remaps position deletes using compaction maps
@@ -65,43 +40,64 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 - Preserves partition and row data
 - Groups deletes by target file for efficient writing
 
-**Test Status**: All 12 tests passing, full core test suite passing
+**Test Status**: All 12 tests passing ✅
 
 ---
 
 ### ✅ Phase 3: Remapped Delete Writing (COMPLETED)
-**Status**: Implementation complete, tests passing
+**Committed**: `8d9de4fd0`
 
 **Components Created**:
 1. `RemappedDeleteWriter.java` - Delete file writer (195 lines)
-   - Input: Map<TargetFile, List<PositionDeleteRecord>>
-   - Output: List<DeleteFile> (new delete files)
-   - Uses OutputFileFactory for unique file paths
-   - Writes position deletes in Avro format
-   - Computes metrics (record count, file size)
-   - Groups deletes by partition
-   - Sorts deletes by (file_path, position) for efficient reads
-   - Supports partition-aware writing
-
 2. `TestRemappedDeleteWriter.java` - 8 comprehensive unit tests
-   - Write simple position deletes
-   - Verify deletes sorted by position
-   - Write deletes for multiple target files
-   - Handle empty delete list (no files written)
-   - Handle empty deletes for a target
-   - Verify delete file metrics
-   - Integration test: write → read back → verify content
-   - Test writtenDeleteFiles() tracking method
 
 **Key Features**:
 - Writes remapped deletes to Avro delete files
 - Groups deletes by partition (separate files per partition)
 - Sorts deletes by (file_path, position) for efficient lookups
 - Computes proper delete file metrics
-- Thread-safe with OutputFileFactory for unique paths
-- Closeable resource pattern
 
 **Test Status**: All 8 tests passing ✅
+
+---
+
+### ✅ Phase 4: Conflict Detection Enhancement (COMPLETED)
+**Status**: Implementation complete, tests passing
+
+**Components Created**:
+1. `CompactionConflictDetector.java` - Conflict detector class (315 lines)
+   - Input: FileIO, TableMetadata, startingSnapshotId, currentSnapshot
+   - Scans snapshots between starting and current
+   - Finds delete files that reference files being compacted
+   - Returns DeleteConflictInfo with all conflict details
+   - Supports both full detection and quick hasConflicts() check
+
+2. `DeleteConflictInfo.java` - Conflict metadata class (170 lines)
+   - Tracks affected data files
+   - Tracks conflicting delete files
+   - Groups delete files by snapshot
+   - Groups delete files by data file
+   - Provides convenience methods (hasConflicts, counts, etc.)
+
+3. `TestCompactionConflictDetector.java` - 10 comprehensive unit tests
+   - Simple conflict detection
+   - No conflicts when no deletes
+   - Multiple deletes on same file
+   - Partial conflicts
+   - Deletes on non-compacted files (no conflict)
+   - Empty files to compact
+   - hasConflicts() method
+   - DeleteConflictInfo methods
+   - getAffectedFiles() method
+
+**Key Features**:
+- Detects conflicts from compaction's perspective (reverse of CompactionMapValidator)
+- Scans snapshot history using SnapshotUtil.ancestorsBetween()
+- Reads delete manifests to find referenced data files
+- Uses ContentFileUtil.referencedDataFileLocation() for robust file reference extraction
+- Provides both detailed conflict info and quick boolean check
+
+**Test Status**: All 10 tests passing ✅
 
 ---
 
@@ -122,11 +118,15 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 - `core/src/main/java/org/apache/iceberg/io/RemappedDeleteWriter.java` (195 lines)
 - `core/src/test/java/org/apache/iceberg/io/TestRemappedDeleteWriter.java` (260 lines)
 
+**Phase 4**:
+- `core/src/main/java/org/apache/iceberg/CompactionConflictDetector.java` (315 lines)
+- `core/src/main/java/org/apache/iceberg/DeleteConflictInfo.java` (170 lines)
+- `core/src/test/java/org/apache/iceberg/TestCompactionConflictDetector.java` (420 lines)
+
 ### Modified Files:
 
 **Phase 1**:
 - `core/src/main/java/org/apache/iceberg/ManifestFiles.java` - Added 3 helper methods
-- `core/src/test/java/org/apache/iceberg/TestRemappingAlgorithmSelector.java` - Fixed test for Phase 7.3 selector fix
 
 **Phase 2**:
 - `core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java` - Added remapDeleteManifests() static method
@@ -135,30 +135,28 @@ Implementing **Compaction Delete Recovery** feature - a system that allows compa
 
 ## Next Steps
 
-### 🎯 Phase 4: Conflict Detection Enhancement (NEXT)
-**Objective**: Detect when compaction conflicts with position delete transactions
+### 🎯 Phase 5: Conflict Resolution Integration (NEXT)
+**Objective**: Integrate conflict resolution into compaction commit flow
 
 **Tasks**:
-1. Create `CompactionConflictDetector` class
-   - Input: base snapshot, current snapshot, files being compacted
-   - Output: List of conflicting delete manifests
-   - Scan snapshots between base and current
-   - Find delete manifests referencing compacted files
+1. Create `CompactionConflictResolver` class
+   - Orchestrates: read deletes → remap → write → track changes
+   - Input: CompactionMap, conflicting delete manifests
+   - Output: DeleteManifestChanges (added, deleted)
 
-2. Integrate with MergingSnapshotProducer
-   - Add method: `detectDeleteConflicts(Set<String> compactedFiles)`
-   - Return conflicting delete manifests
-   - Provide conflict summary
+2. Define `DeleteManifestChanges` class
+   - List of new delete manifests (added)
+   - List of old delete manifests (deleted/replaced)
+   - Metrics: total deletes remapped, files affected
 
-3. Conflict metadata
-   - Which files have deletes
-   - How many deletes per file
-   - Source snapshots of deletes
+3. Integrate with RewriteDataFilesCommitManager
+   - After building compaction map
+   - Before committing
+   - Detect conflicts → resolve if enabled → commit with changes
 
-**Tests**: 7+ tests for detection scenarios
+**Tests**: End-to-end resolution tests
 
-### Future Phases (Phases 5-9):
-- Phase 5: Conflict Resolution Integration
+### Future Phases (Phases 6-9):
 - Phase 6: Configuration and Opt-In
 - Phase 7: Edge Case Handling
 - Phase 8: Performance Optimization
@@ -190,8 +188,9 @@ When compaction C conflicts with transaction T (both starting from same snapshot
 1. **Idempotent Delete Handling**: Deletes on filtered rows are dropped silently
 2. **Partition/Row Preservation**: All metadata preserved during remapping
 3. **Bulk Operations**: Group deletes by target file for efficient writing
-4. **Smart Algorithm Selection**: Reuse existing remapping optimization (Phases 1-7 from previous work)
+4. **Smart Algorithm Selection**: Reuse existing remapping optimization
 5. **Sorted Output**: Deletes sorted by (file_path, position) for efficient reads
+6. **Bidirectional Detection**: CompactionMapValidator (delete perspective) + CompactionConflictDetector (compaction perspective)
 
 ### Related Previous Work
 
@@ -206,11 +205,12 @@ When compaction C conflicts with transaction T (both starting from same snapshot
 **Current Branch**: `cmpmap`
 
 **Recent Commits**:
+- `8d9de4fd0` - feat(compaction): Add remapped delete manifest writer (Phase 3)
 - `da7414735` - feat(compaction): Implement delete remapping core logic (Phase 2)
 - `f059e2e43` - style: Apply code formatting (spotless)
 - `6d86a637f` - feat(compaction): Add delete manifest reading infrastructure (Phase 1)
 
-**Uncommitted Changes**: Phase 3 implementation ready to commit
+**Uncommitted Changes**: Phase 4 implementation ready to commit
 
 ---
 
@@ -219,17 +219,19 @@ When compaction C conflicts with transaction T (both starting from same snapshot
 **Phase 1**: 7 tests, all passing ✅
 **Phase 2**: 12 tests, all passing ✅
 **Phase 3**: 8 tests, all passing ✅
-**Total Tests**: 27 tests, all passing ✅
+**Phase 4**: 10 tests, all passing ✅
+**Total Tests**: 37 tests, all passing ✅
 
 **Total Lines Added**:
 - Phase 1: 545 lines (code) + 270 lines (tests) = 815 lines
 - Phase 2: 147 lines (code) + 335 lines (tests) = 482 lines
 - Phase 3: 195 lines (code) + 260 lines (tests) = 455 lines
-- **Combined**: ~1,752 lines (code + tests)
+- Phase 4: 485 lines (code) + 420 lines (tests) = 905 lines
+- **Combined**: ~2,657 lines (code + tests)
 
 ---
 
-*Last Updated*: Phase 3 COMPLETED (pending commit)
+*Last Updated*: Phase 4 COMPLETED (pending commit)
 *Session Date*: 2026-01-18/19
 *Model*: Claude Opus 4.5
-*Status*: Ready to commit Phase 3 🚀
+*Status*: Ready to commit Phase 4 🚀
