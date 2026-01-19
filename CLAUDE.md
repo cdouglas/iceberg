@@ -10,6 +10,7 @@
 - Comprehensive test coverage (150+ tests) and empirical validation (324 JMH benchmarks)
 - SERIALIZABLE isolation enhancements
 - **Compaction conflict resolution** - Automatic remapping of concurrent position deletes during compaction
+- **Staged scan optimization** - Position tracking now uses efficient staged scans with explicit metadata column selection
 
 **Implementation Status**: Complete on `cmpmap` branch
 **Last Updated**: January 19, 2026
@@ -463,6 +464,10 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 - `REMAPPING_BENCHMARKS.md` - JMH benchmark documentation and methodology
 - `benchmark/remapping-optimization/` - Benchmark execution and analysis tools
 
+**Implementation Plans**:
+- `docs/STAGED_SCAN_METADATA_FIX_PLAN.md` - Plan to fix staged scans for position tracking (10-20% perf gain)
+- `docs/staged_scan_investigation.md` - Investigation of staged scan metadata column issues
+
 **Implementation Context**:
 - `CLAUDE.md` - This file (practical guidance for working with compaction maps)
 
@@ -481,10 +486,11 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 - Documentation: Reframed sorted/Z-ordered as "out of scope by design" (not limitations)
 
 **Pending Work**:
-1. Fix smart selector for m < 10 unsorted cases (Phase 7.4)
-2. Application transaction conflict resolution (BaseRowDelta auto-remapping)
-3. V3 Deletion Vector conflict resolution support
-4. Spark 4.0 conflict resolution parity (port SparkCompactionConflictResolver from Spark 3.5)
+1. Staged scan metadata column support - Fix staged scans to support `_file`/`_pos` for 10-20% perf gain (see `docs/STAGED_SCAN_METADATA_FIX_PLAN.md`)
+2. Fix smart selector for m < 10 unsorted cases (Phase 7.4)
+3. Application transaction conflict resolution (BaseRowDelta auto-remapping)
+4. V3 Deletion Vector conflict resolution support
+5. Spark 4.0 conflict resolution parity (port SparkCompactionConflictResolver from Spark 3.5)
 
 ---
 

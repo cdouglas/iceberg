@@ -106,7 +106,6 @@ Position tracking is fully functional in Spark 4.0 for both V2 and V3 format tab
 ### Implementation Shortcuts
 
 See [Compaction Maps Errata](compaction_maps_errata.md) for documented implementation shortcuts including:
-- Normal scans vs staged scans (~10-20% performance overhead)
 - Position tracking limited to bin-pack rewrites
 - Automatic conflict resolution: compactions ✅, application transactions ❌
 
@@ -117,7 +116,7 @@ See [Compaction Maps Errata](compaction_maps_errata.md) for documented implement
 **`write.compaction-map.enabled`** (default: `false`)
 - Controls whether compaction maps are generated during compaction operations
 - Set to `true` to enable compaction map generation for bin-pack rewrites
-- **Note:** Position tracking currently only supports Spark 3.5
+- **Note:** Position tracking is supported in Spark 3.5 and Spark 4.0
 
 **`write.compaction-map.target-size-bytes`** (default: `8388608` / 8 MB)
 - Target size for compaction map files (currently not enforced)
@@ -142,7 +141,7 @@ See [Compaction Maps Errata](compaction_maps_errata.md) for documented implement
 ### Example Configuration
 
 ```java
-// Enable compaction maps for a table (Spark 3.5 only)
+// Enable compaction maps for a table (Spark 3.5 and 4.0)
 table.updateProperties()
     .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
     .set(TableProperties.DELETE_ISOLATION_LEVEL, "serializable")
@@ -321,10 +320,10 @@ When a position is not found in the compaction map, it typically means the row w
 
 ### 4. Performance Overhead
 
-When position tracking is enabled (Spark 3.5):
-- Uses normal scans instead of staged scans (~10-20% overhead due to manifest re-scanning)
-- Overhead only applies when `write.compaction-map.enabled=true`
-- Acceptable for high-concurrency workloads where conflict resolution matters
+When position tracking is enabled:
+- Uses efficient staged scans with explicit metadata column selection
+- Minimal overhead compared to standard bin-pack rewrites
+- Available in Spark 3.5 and Spark 4.0
 
 ### 5. Remapping Algorithm Efficiency
 
@@ -373,7 +372,7 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios. See
 
 - **[Implementation Details](compaction_maps_impl.md)** - Architecture, API usage, testing, and Spark implementation
 - **[Implementation Errata](compaction_maps_errata.md)** - Known shortcuts and technical debt
-- **[Staged Scan Investigation](../../docs/staged_scan_investigation.md)** - Why normal scans are used for position tracking
+- **[Staged Scan Investigation](../../docs/staged_scan_investigation.md)** - Historical investigation of staged scan metadata columns (now resolved)
 - [Iceberg Position Deletes Specification](https://iceberg.apache.org/spec/#position-delete-files)
 - [Iceberg Manifest Format](https://iceberg.apache.org/spec/#manifests)
 
