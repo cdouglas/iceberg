@@ -219,7 +219,9 @@ public class TestRemappingStrategiesIntegration {
 
       // Position must be within the run
       assertThat(pos)
-          .as("Position %d should be in run [%d, %d)", pos, run.sourcePosition(), run.sourcePosition() + run.length())
+          .as(
+              "Position %d should be in run [%d, %d)",
+              pos, run.sourcePosition(), run.sourcePosition() + run.length())
           .isGreaterThanOrEqualTo(run.sourcePosition())
           .isLessThan(run.sourcePosition() + run.length());
     }

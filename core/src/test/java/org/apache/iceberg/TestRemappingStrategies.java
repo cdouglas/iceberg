@@ -75,9 +75,7 @@ public class TestRemappingStrategies {
   public void testIntervalTreeBasic() {
     List<Run> runs =
         Arrays.asList(
-            new GenericRun(0, 0, 100),
-            new GenericRun(150, 100, 50),
-            new GenericRun(300, 150, 100));
+            new GenericRun(0, 0, 100), new GenericRun(150, 100, 50), new GenericRun(300, 150, 100));
 
     RemappingStrategy strategy = new IntervalTreeStrategy(runs);
 
@@ -111,9 +109,7 @@ public class TestRemappingStrategies {
   public void testBinarySearchBasic() {
     List<Run> runs =
         Arrays.asList(
-            new GenericRun(0, 0, 100),
-            new GenericRun(150, 100, 50),
-            new GenericRun(300, 150, 100));
+            new GenericRun(0, 0, 100), new GenericRun(150, 100, 50), new GenericRun(300, 150, 100));
 
     RemappingStrategy strategy = new BinarySearchStrategy(runs);
 
@@ -305,14 +301,10 @@ public class TestRemappingStrategies {
         Run intervalTreeResult = intervalTree.runForPosition(pos);
 
         assertThat(binaryResult)
-            .as(
-                "Binary search should match linear search for config %s, position %s",
-                config, pos)
+            .as("Binary search should match linear search for config %s, position %s", config, pos)
             .isEqualTo(linearResult);
         assertThat(intervalTreeResult)
-            .as(
-                "Interval tree should match linear search for config %s, position %s",
-                config, pos)
+            .as("Interval tree should match linear search for config %s, position %s", config, pos)
             .isEqualTo(linearResult);
       }
     }
@@ -399,9 +391,7 @@ public class TestRemappingStrategies {
   public void testStreamJoinBulkUnsorted() {
     List<Run> runs =
         Arrays.asList(
-            new GenericRun(0, 0, 100),
-            new GenericRun(150, 100, 50),
-            new GenericRun(300, 150, 100));
+            new GenericRun(0, 0, 100), new GenericRun(150, 100, 50), new GenericRun(300, 150, 100));
 
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
@@ -425,9 +415,7 @@ public class TestRemappingStrategies {
   public void testStreamJoinSinglePosition() {
     List<Run> runs =
         Arrays.asList(
-            new GenericRun(0, 0, 100),
-            new GenericRun(150, 100, 50),
-            new GenericRun(300, 150, 100));
+            new GenericRun(0, 0, 100), new GenericRun(150, 100, 50), new GenericRun(300, 150, 100));
 
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
@@ -527,8 +515,7 @@ public class TestRemappingStrategies {
       RemappingStrategy streamJoin = new StreamJoinStrategy(runs);
 
       // Generate sorted positions
-      long maxPos =
-          runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
+      long maxPos = runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
       List<Long> sortedPositions = new ArrayList<>();
       for (int i = 0; i < 50; i++) {
         sortedPositions.add(nextLong(rand, maxPos + 1000));
@@ -608,9 +595,7 @@ public class TestRemappingStrategies {
   public void testRangeQueryBulkUnsorted() {
     List<Run> runs =
         Arrays.asList(
-            new GenericRun(0, 0, 100),
-            new GenericRun(150, 100, 50),
-            new GenericRun(300, 150, 100));
+            new GenericRun(0, 0, 100), new GenericRun(150, 100, 50), new GenericRun(300, 150, 100));
 
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
@@ -634,9 +619,7 @@ public class TestRemappingStrategies {
   public void testRangeQuerySinglePosition() {
     List<Run> runs =
         Arrays.asList(
-            new GenericRun(0, 0, 100),
-            new GenericRun(150, 100, 50),
-            new GenericRun(300, 150, 100));
+            new GenericRun(0, 0, 100), new GenericRun(150, 100, 50), new GenericRun(300, 150, 100));
 
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
@@ -773,8 +756,7 @@ public class TestRemappingStrategies {
       RemappingStrategy rangeQuery = new RangeQueryStrategy(runs);
 
       // Generate positions (both sorted and unsorted)
-      long maxPos =
-          runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
+      long maxPos = runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
       List<Long> sortedPositions = new ArrayList<>();
       for (int i = 0; i < 50; i++) {
         sortedPositions.add(nextLong(rand, maxPos + 1000));
