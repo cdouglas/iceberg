@@ -99,21 +99,16 @@ The compaction maps feature has comprehensive test coverage across all component
 
 See [Implementation Details](compaction_maps_impl.md#test-coverage) for detailed test descriptions and execution commands
 
-### What's Incomplete
+✅ **Spark 4.0 Position Tracking**
 
-❌ **Spark 4.0 Position Tracking**
-
-Position tracking is blocked in Spark 4.0 due to stricter schema validation during Parquet writer creation. The code structure mirrors Spark 3.5 but hits `IndexOutOfBoundsException` when DataFrame schema includes metadata columns (`_file`, `_pos`) not present in Parquet schema.
-
-See [`spark/v4.0/docs/position_tracking_challenges.md`](../../spark/v4.0/docs/position_tracking_challenges.md) for detailed technical analysis and recommended solutions.
+Position tracking is fully functional in Spark 4.0 for both V2 and V3 format tables with Parquet and ORC file formats.
 
 ### Implementation Shortcuts
 
 See [Compaction Maps Errata](compaction_maps_errata.md) for documented implementation shortcuts including:
 - Normal scans vs staged scans (~10-20% performance overhead)
-- Spark 4.0 support deferred
 - Position tracking limited to bin-pack rewrites
-- No automatic conflict resolution
+- Automatic conflict resolution: compactions ✅, application transactions ❌
 
 ## Configuration
 
@@ -211,7 +206,7 @@ rowDelta.commit();
 ### 1. Spark Version Support
 
 - **Spark 3.5:** ✅ Position tracking fully implemented and functional
-- **Spark 4.0:** ❌ Blocked by schema validation issues (documented in detail)
+- **Spark 4.0:** ✅ Position tracking fully implemented and functional
 - **Other engines:** Compaction map infrastructure works (read/validate/remap), but generation requires Spark-specific position tracking
 
 ### 2. Rewrite Type Support
@@ -376,14 +371,13 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios. See
 
 - **[Implementation Details](compaction_maps_impl.md)** - Architecture, API usage, testing, and Spark implementation
 - **[Implementation Errata](compaction_maps_errata.md)** - Known shortcuts and technical debt
-- **[Spark 4.0 Challenges](../../spark/v4.0/docs/position_tracking_challenges.md)** - Detailed analysis of Spark 4.0 blocker
 - **[Staged Scan Investigation](../../docs/staged_scan_investigation.md)** - Why normal scans are used for position tracking
 - [Iceberg Position Deletes Specification](https://iceberg.apache.org/spec/#position-delete-files)
 - [Iceberg Manifest Format](https://iceberg.apache.org/spec/#manifests)
 
 ## Future Work
 
-1. **Spark 4.0 Support** - Fix schema validation issues for format v3 tables (see [errata](compaction_maps_errata.md#2-spark-40-support-deferred))
+1. **Spark 4.0 Conflict Resolution Parity** - Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0
 2. **Application Transaction Conflict Resolution** - Automatic remapping in BaseRowDelta for application-level position delete conflicts
 3. **V3 Deletion Vector Conflict Resolution** - Extend compaction conflict resolution to support V3 format with Deletion Vectors
 4. **Sorted/Z-Ordered Rewrite Support** - Track position transformations through sort operations

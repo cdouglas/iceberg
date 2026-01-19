@@ -161,6 +161,45 @@ All phases of Compaction Delete Recovery are now complete:
 - **Phase 4**: Documentation ✅
 - **Phase 5**: Soundness Review ✅
 - **Phase 6**: Transaction API Improvements ✅
+- **Phase 7**: Spark 4.0 Parity ✅
+
+---
+
+## Phase 7: Spark 4.0 Parity (COMPLETED)
+
+### Problem Identified and Fixed
+
+Position tracking was failing in Spark 4.0 for **V3 format with Parquet**:
+- Error: `IndexOutOfBoundsException: Index 2 out of bounds for length 2` at `ParquetWithSparkSchemaVisitor.visitFields`
+- Root cause: Schema mismatch between Spark schema (with row lineage cols) and Parquet schema (data cols only)
+
+### Fix Applied
+
+Added `addRowLineageColumnsIfMissing()` helper method in `SparkWriteBuilder.java`:
+- After filtering position tracking columns from `filteredDsSchema`
+- If `writeIncludesRowLineage=true`, add row lineage columns to ensure `SparkSchemaUtil.convert()` produces correct writeSchema
+- Applied to both merge schema and non-merge schema code paths
+
+### Test Results (All Pass)
+
+| Format | File Type | Position Tracking | Row Lineage | Result |
+|--------|-----------|------------------|-------------|--------|
+| V2 | Parquet | Yes | No | **PASS** |
+| V2 | ORC | Yes | No | **PASS** |
+| V3 | ORC | Yes | Yes | **PASS** |
+| V3 | Parquet | Yes | Yes | **PASS** |
+
+### Files Modified
+
+- `spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/source/SparkWriteBuilder.java`
+  - Added `addRowLineageColumnsIfMissing()` helper method (lines 278-306)
+  - Updated `validateOrMergeWriteSchema()` to add row lineage columns after filtering (lines 241-245, 265-269)
+
+### Documentation Updated
+
+- `docs/docs/compaction_maps_errata.md` - Marked Spark 4.0 as fixed
+- `docs/docs/compaction_maps.md` - Updated Spark version support
+- `SPARK4_POSITION_TRACKING_PLAN.md` - Created during investigation
 
 ---
 

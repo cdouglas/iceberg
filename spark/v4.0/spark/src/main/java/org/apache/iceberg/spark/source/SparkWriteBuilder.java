@@ -238,6 +238,12 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       // This ensures _file and _pos are not added to the table schema
       StructType filteredDsSchema =
           writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
+      // If row lineage is required but not in filteredDsSchema (e.g., position tracking filtered
+      // it),
+      // add row lineage columns so SparkSchemaUtil.convert produces a schema with row lineage
+      if (writeIncludesRowLineage) {
+        filteredDsSchema = addRowLineageColumnsIfMissing(filteredDsSchema);
+      }
       writeSchema = SparkSchemaUtil.convert(mergedSchema, filteredDsSchema, caseSensitive);
 
       TypeUtil.validateWriteSchema(
@@ -257,12 +263,48 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       // Filter out position tracking columns from dsSchema when creating writeSchema
       StructType filteredDsSchema =
           writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
+      // If row lineage is required but not in filteredDsSchema (e.g., position tracking filtered
+      // it),
+      // add row lineage columns so SparkSchemaUtil.convert produces a schema with row lineage
+      if (writeIncludesRowLineage) {
+        filteredDsSchema = addRowLineageColumnsIfMissing(filteredDsSchema);
+      }
       writeSchema = SparkSchemaUtil.convert(schema, filteredDsSchema, caseSensitive);
       TypeUtil.validateWriteSchema(
           table.schema(), writeSchema, writeConf.checkNullability(), writeConf.checkOrdering());
     }
 
     return writeSchema;
+  }
+
+  /**
+   * Adds row lineage columns (_row_id, _last_updated_sequence_number) to a Spark schema if they are
+   * not already present.
+   *
+   * <p>This is needed when position tracking is enabled (which filters dsSchema) but row lineage is
+   * also required (V3 format). The filtered schema needs row lineage columns added so that
+   * SparkSchemaUtil.convert produces a writeSchema that includes them.
+   */
+  private static StructType addRowLineageColumnsIfMissing(StructType schema) {
+    boolean hasRowId = false;
+    boolean hasSeqNum = false;
+    for (org.apache.spark.sql.types.StructField field : schema.fields()) {
+      if (field.name().equals(MetadataColumns.ROW_ID.name())) {
+        hasRowId = true;
+      }
+      if (field.name().equals(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name())) {
+        hasSeqNum = true;
+      }
+    }
+
+    StructType result = schema;
+    if (!hasRowId) {
+      result = result.add(MetadataColumns.ROW_ID.name(), LongType$.MODULE$);
+    }
+    if (!hasSeqNum) {
+      result = result.add(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name(), LongType$.MODULE$);
+    }
+    return result;
   }
 
   /**
