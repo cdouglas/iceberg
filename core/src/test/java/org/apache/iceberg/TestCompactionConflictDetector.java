@@ -22,10 +22,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
+import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -520,5 +524,193 @@ public class TestCompactionConflictDetector {
     assertThat(affected).hasSize(1);
     assertThat(affected).contains(dataFile1.path().toString());
     assertThat(affected).doesNotContain(dataFile2.path().toString());
+  }
+
+  @Test
+  public void testMultiFilePositionDeletesDetected() throws IOException {
+    // Setup: Create table with multi-file position deletes (partition-scoped)
+    // Multi-file position deletes have different lower/upper bounds on file_path column
+    TableIdentifier tableIdent = TableIdentifier.of("db", "multi_file_deletes");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+    table.updateProperties().set(TableProperties.FORMAT_VERSION, "2").commit();
+
+    // Add data files
+    DataFile dataFile1 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/data1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+    DataFile dataFile2 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/data2.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+    table.newAppend().appendFile(dataFile1).appendFile(dataFile2).commit();
+
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Create multi-file position delete (different lower/upper bounds on file_path)
+    // This simulates a delete file created with DeleteGranularity.PARTITION
+    int pathFieldId = MetadataColumns.DELETE_FILE_PATH.fieldId();
+    ByteBuffer lowerBound =
+        Conversions.toByteBuffer(Types.StringType.get(), "/path/to/data1.parquet");
+    ByteBuffer upperBound =
+        Conversions.toByteBuffer(Types.StringType.get(), "/path/to/data2.parquet");
+
+    Map<Integer, ByteBuffer> lowerBounds = ImmutableMap.of(pathFieldId, lowerBound);
+    Map<Integer, ByteBuffer> upperBounds = ImmutableMap.of(pathFieldId, upperBound);
+
+    // Create Metrics with different lower/upper bounds for file_path
+    Metrics metrics = new Metrics(20L, null, null, null, null, lowerBounds, upperBounds);
+
+    // Create position delete without referencedDataFile (multi-file)
+    DeleteFile multiFileDelete =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofPositionDeletes()
+            .withPath("/path/to/multi_deletes.parquet")
+            .withFileSizeInBytes(100)
+            .withMetrics(metrics)
+            .build();
+    table.newRowDelta().addDeletes(multiFileDelete).commit();
+
+    // Create detector
+    TableMetadata metadata = ((HasTableOperations) table).operations().current();
+    CompactionConflictDetector detector =
+        new CompactionConflictDetector(
+            table.io(), metadata, startingSnapshot, table.currentSnapshot());
+
+    Set<String> filesToCompact =
+        ImmutableSet.of(dataFile1.path().toString(), dataFile2.path().toString());
+    DeleteConflictInfo conflicts = detector.detectConflicts(filesToCompact);
+
+    // Verify multi-file position delete is detected
+    assertThat(conflicts.hasConflicts()).isTrue();
+    assertThat(conflicts.hasMultiFilePositionDeletes()).isTrue();
+    assertThat(conflicts.multiFilePositionDeletes()).hasSize(1);
+    // File-scoped conflicts should be empty (no single-file position deletes)
+    assertThat(conflicts.conflictingDeleteFiles()).isEmpty();
+    assertThat(conflicts.deleteFileCount()).isEqualTo(0);
+  }
+
+  @Test
+  public void testEqualityDeletesNotDetectedAsConflicts() throws IOException {
+    // Setup: Create table with equality deletes
+    // Equality deletes should NOT be detected as conflicts
+    TableIdentifier tableIdent = TableIdentifier.of("db", "equality_deletes");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+    table.updateProperties().set(TableProperties.FORMAT_VERSION, "2").commit();
+
+    // Add data file
+    DataFile dataFile =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/data.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+    table.newAppend().appendFile(dataFile).commit();
+
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Add equality delete (not file-scoped)
+    DeleteFile equalityDelete =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofEqualityDeletes(1) // Equality delete on column 1 (id)
+            .withPath("/path/to/eq_deletes.parquet")
+            .withFileSizeInBytes(100)
+            .withRecordCount(10)
+            .build();
+    table.newRowDelta().addDeletes(equalityDelete).commit();
+
+    // Create detector
+    TableMetadata metadata = ((HasTableOperations) table).operations().current();
+    CompactionConflictDetector detector =
+        new CompactionConflictDetector(
+            table.io(), metadata, startingSnapshot, table.currentSnapshot());
+
+    Set<String> filesToCompact = ImmutableSet.of(dataFile.path().toString());
+    DeleteConflictInfo conflicts = detector.detectConflicts(filesToCompact);
+
+    // Verify equality delete is NOT detected as conflict
+    assertThat(conflicts.hasConflicts()).isFalse();
+    assertThat(conflicts.deleteFileCount()).isEqualTo(0);
+    assertThat(conflicts.multiFilePositionDeletes()).isEmpty();
+  }
+
+  @Test
+  public void testMixedDeleteTypes() throws IOException {
+    // Setup: Create table with both file-scoped and multi-file position deletes
+    TableIdentifier tableIdent = TableIdentifier.of("db", "mixed_deletes");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+    table.updateProperties().set(TableProperties.FORMAT_VERSION, "2").commit();
+
+    // Add data files
+    DataFile dataFile1 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/data1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+    DataFile dataFile2 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/data2.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+    table.newAppend().appendFile(dataFile1).appendFile(dataFile2).commit();
+
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Add file-scoped position delete
+    DeleteFile fileScopedDelete =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofPositionDeletes()
+            .withPath("/path/to/file_deletes.parquet")
+            .withFileSizeInBytes(100)
+            .withRecordCount(5)
+            .withReferencedDataFile(dataFile1.path().toString())
+            .build();
+    table.newRowDelta().addDeletes(fileScopedDelete).commit();
+
+    // Add multi-file position delete
+    int pathFieldId = MetadataColumns.DELETE_FILE_PATH.fieldId();
+    ByteBuffer lowerBound =
+        Conversions.toByteBuffer(Types.StringType.get(), "/path/to/data1.parquet");
+    ByteBuffer upperBound =
+        Conversions.toByteBuffer(Types.StringType.get(), "/path/to/data2.parquet");
+    Map<Integer, ByteBuffer> lowerBounds = ImmutableMap.of(pathFieldId, lowerBound);
+    Map<Integer, ByteBuffer> upperBounds = ImmutableMap.of(pathFieldId, upperBound);
+    Metrics metrics = new Metrics(10L, null, null, null, null, lowerBounds, upperBounds);
+
+    DeleteFile multiFileDelete =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofPositionDeletes()
+            .withPath("/path/to/multi_deletes.parquet")
+            .withFileSizeInBytes(100)
+            .withMetrics(metrics)
+            .build();
+    table.newRowDelta().addDeletes(multiFileDelete).commit();
+
+    // Create detector
+    TableMetadata metadata = ((HasTableOperations) table).operations().current();
+    CompactionConflictDetector detector =
+        new CompactionConflictDetector(
+            table.io(), metadata, startingSnapshot, table.currentSnapshot());
+
+    Set<String> filesToCompact =
+        ImmutableSet.of(dataFile1.path().toString(), dataFile2.path().toString());
+    DeleteConflictInfo conflicts = detector.detectConflicts(filesToCompact);
+
+    // Verify both types are detected
+    assertThat(conflicts.hasConflicts()).isTrue();
+    // File-scoped delete
+    assertThat(conflicts.deleteFileCount()).isEqualTo(1);
+    assertThat(conflicts.affectedDataFiles()).contains(dataFile1.path().toString());
+    // Multi-file position delete
+    assertThat(conflicts.hasMultiFilePositionDeletes()).isTrue();
+    assertThat(conflicts.multiFilePositionDeletes()).hasSize(1);
+    // Verify hasOnlyFileScopedConflicts returns false when multi-file deletes exist
+    assertThat(conflicts.hasOnlyFileScopedConflicts()).isFalse();
   }
 }
