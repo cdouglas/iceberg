@@ -159,7 +159,26 @@ builder.addFileMapping("file1.parquet", "file2.parquet")
 **Why**: 1000 individual positions → 1 run. Efficient storage and faster lookups.
 **Location**: `CompactionMapBuilder.java:89-118`
 
-### 3. Two Types of Conflicts
+### 3. Design Scope: Order-Preserving Compactions
+
+Compaction maps support **order-preserving** operations only:
+
+- ✅ **Bin-pack rewrites**: Multiple files → larger files (simple concatenation)
+- ✅ **Merge compactions**: Bin-pack with position deletes applied during scan
+- ❌ **Sorted compactions**: Out of scope by design
+- ❌ **Z-ordered compactions**: Out of scope by design
+
+**Why order-changing operations are inappropriate** (not just unsupported):
+
+1. **Degenerate mappings**: Reordering produces runs of length 1 (every row maps individually), defeating run-length encoding and creating maps as large as the data itself.
+
+2. **Semantic mismatch**: Position deletes identify rows by `(file_path, position)`. After reordering, position N refers to a different logical row. Remapping would delete wrong rows.
+
+3. **Better alternatives exist**: For sorted/Z-ordered compactions, use equality deletes or accept that position deletes are invalidated.
+
+**Note**: Tables with sorted base data and unsorted changes are fine—unsorted changes can be compacted with position tracking, then merged into sorted runs (merge applies deletes during scan, no tracking needed).
+
+### 4. Two Types of Conflicts
 
 **A. Position Delete Conflicts** (detected by CompactionMapValidator):
 - Position deletes reference files that were compacted
@@ -459,14 +478,17 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 - Compaction conflict resolution (SparkRewriteDataFilesCommitManager, SparkCompactionConflictResolver)
 - TestSparkCompactionConflictResolution (6 integration tests)
 - Configuration properties for opt-in conflict resolution
+- Spark 4.0 position tracking fix for V3 format + Parquet (commit 65dedde35)
+- Documentation: Reframed sorted/Z-ordered as "out of scope by design" (not limitations)
 
 **Pending Work**:
 1. Fix smart selector for m < 10 unsorted cases (Phase 7.4)
 2. Application transaction conflict resolution (BaseRowDelta auto-remapping)
 3. V3 Deletion Vector conflict resolution support
+4. Spark 4.0 conflict resolution parity (port SparkCompactionConflictResolver from Spark 3.5)
 
 ---
 
 *Generated during Claude Code sessions, 2026-01-07 to 2026-01-19*
-*Model: Claude Sonnet 4.5*
+*Models: Claude Sonnet 4.5, Claude Opus 4.5*
 *Total Implementation: ~18.2k lines across core, tests, and documentation*
