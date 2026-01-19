@@ -95,20 +95,21 @@ public class RemappingAlgorithmSelector {
       }
     }
 
-    // Check if sorted for StreamJoin
-    boolean sorted = isSorted(positions);
-
-    if (sorted && n > m) {
-      // Both sorted and significant size: StreamJoin optimal
-      return new StreamJoinStrategy(runs);
-    }
-
-    // Medium number of runs: BinarySearch sufficient
+    // Medium number of runs: choose based on sortedness
     if (m < BINARY_SEARCH_THRESHOLD) {
+      boolean sorted = isSorted(positions);
+
+      if (sorted && n > m) {
+        // Sorted bulk remapping: StreamJoin optimal for m < 100
+        return new StreamJoinStrategy(runs);
+      }
+
+      // Unsorted or small n: BinarySearch sufficient
       return new BinarySearchStrategy(runs);
     }
 
-    // Default: IntervalTree (good for all scenarios)
+    // Large number of runs (m >= 100): IntervalTree always optimal
+    // IntervalTree outperforms StreamJoin at high m due to better cache locality
     return new IntervalTreeStrategy(runs);
   }
 
