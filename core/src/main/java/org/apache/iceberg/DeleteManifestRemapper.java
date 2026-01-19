@@ -20,10 +20,14 @@ package org.apache.iceberg;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.apache.iceberg.CompactionMap.FileMapping;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Utility for remapping position delete records using compaction maps.
@@ -32,6 +36,15 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  * source files to target files using the compaction map. Deletes are grouped by target file for
  * efficient writing.
  *
+ * <p>Edge cases handled:
+ *
+ * <ul>
+ *   <li>File not compacted: delete is skipped (tracked in metrics)
+ *   <li>Position filtered during compaction: delete is skipped (idempotent)
+ *   <li>Invalid (negative) positions: delete is skipped with warning
+ *   <li>Duplicate deletes: deduplicated (same file/position)
+ * </ul>
+ *
  * <p>Example usage:
  *
  * <pre>
@@ -39,13 +52,18 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  * CompactionMap map = readCompactionMap(compactionMapLocation);
  *
  * DeleteManifestRemapper remapper = new DeleteManifestRemapper(map);
- * Map&lt;String, List&lt;PositionDeleteRecord&gt;&gt; remapped = remapper.remapDeletes(deletes);
+ * RemappingResult result = remapper.remapDeletesWithMetrics(deletes);
  *
- * // remapped contains deletes grouped by target file path
- * // Write each group to a new delete file
+ * // Check metrics
+ * LOG.info("Remapped: {}, Skipped: {}", result.totalRemapped(), result.totalSkipped());
+ *
+ * // Write remapped deletes
+ * Map&lt;String, List&lt;PositionDeleteRecord&gt;&gt; remapped = result.remappedDeletes();
  * </pre>
  */
 public class DeleteManifestRemapper {
+  private static final Logger LOG = LoggerFactory.getLogger(DeleteManifestRemapper.class);
+
   private final CompactionMap compactionMap;
   private final Map<String, FileMapping> fileMappingIndex;
 
@@ -79,32 +97,76 @@ public class DeleteManifestRemapper {
    * @return map from target file path to list of remapped position delete records
    */
   public Map<String, List<PositionDeleteRecord>> remapDeletes(List<PositionDeleteRecord> deletes) {
+    return remapDeletesWithMetrics(deletes).remappedDeletes();
+  }
+
+  /**
+   * Remaps position delete records with detailed metrics about the remapping process.
+   *
+   * <p>This method provides the same functionality as {@link #remapDeletes(List)} but also returns
+   * metrics about skipped deletes, which is useful for logging and debugging.
+   *
+   * @param deletes list of position delete records to remap
+   * @return result containing remapped deletes and metrics
+   */
+  public RemappingResult remapDeletesWithMetrics(List<PositionDeleteRecord> deletes) {
     Preconditions.checkNotNull(deletes, "deletes is null");
 
+    if (deletes.isEmpty()) {
+      return RemappingResult.empty();
+    }
+
     Map<String, List<PositionDeleteRecord>> remappedByTarget = Maps.newHashMap();
+    Set<String> seenDeletes = Sets.newHashSet(); // For deduplication
+
+    int skippedNotCompacted = 0;
+    int skippedFilteredRows = 0;
+    int skippedInvalidPositions = 0;
+    int duplicatesRemoved = 0;
 
     for (PositionDeleteRecord delete : deletes) {
       String sourceFile = delete.dataFilePath();
+      long position = delete.position();
+
+      // Validate position
+      if (position < 0) {
+        LOG.warn(
+            "Skipping delete with invalid negative position: file={}, position={}",
+            sourceFile,
+            position);
+        skippedInvalidPositions++;
+        continue;
+      }
+
       FileMapping mapping = fileMappingIndex.get(sourceFile);
 
       if (mapping == null) {
         // File was not compacted - this shouldn't happen in normal use
         // since we filter deletes by compacted files, but we handle it gracefully
+        skippedNotCompacted++;
         continue;
       }
 
       // Find the run containing this position
-      CompactionMap.Run run = mapping.runForPosition(delete.position());
+      CompactionMap.Run run = mapping.runForPosition(position);
 
       if (run == null) {
         // Position not found in any run - this means the row was filtered out during compaction
         // Drop the delete silently (idempotent - row doesn't exist in target file)
+        skippedFilteredRows++;
         continue;
       }
 
       // Map the position using the run
-      long newPosition = run.mapPosition(delete.position());
+      long newPosition = run.mapPosition(position);
       String targetFile = mapping.targetFile();
+
+      // Check for duplicates
+      String deleteKey = targetFile + ":" + newPosition;
+      if (!seenDeletes.add(deleteKey)) {
+        duplicatesRemoved++;
+        continue;
+      }
 
       // Create remapped delete record
       PositionDeleteRecord remappedDelete =
@@ -115,7 +177,26 @@ public class DeleteManifestRemapper {
       remappedByTarget.computeIfAbsent(targetFile, k -> Lists.newArrayList()).add(remappedDelete);
     }
 
-    return remappedByTarget;
+    // Log summary if any deletes were skipped
+    int totalSkipped = skippedNotCompacted + skippedFilteredRows + skippedInvalidPositions;
+    if (totalSkipped > 0 || duplicatesRemoved > 0) {
+      LOG.debug(
+          "Remapping summary: remapped={}, skippedNotCompacted={}, skippedFilteredRows={}, "
+              + "skippedInvalidPositions={}, duplicatesRemoved={}",
+          remappedByTarget.values().stream().mapToInt(List::size).sum(),
+          skippedNotCompacted,
+          skippedFilteredRows,
+          skippedInvalidPositions,
+          duplicatesRemoved);
+    }
+
+    return RemappingResult.builder()
+        .remappedDeletes(remappedByTarget)
+        .skippedNotCompacted(skippedNotCompacted)
+        .skippedFilteredRows(skippedFilteredRows)
+        .skippedInvalidPositions(skippedInvalidPositions)
+        .duplicatesRemoved(duplicatesRemoved)
+        .build();
   }
 
   /**
@@ -135,6 +216,15 @@ public class DeleteManifestRemapper {
    */
   public CompactionMap getCompactionMap() {
     return compactionMap;
+  }
+
+  /**
+   * Returns the number of source files in the compaction map.
+   *
+   * @return source file count
+   */
+  public int sourceFileCount() {
+    return fileMappingIndex.size();
   }
 
   private static Map<String, FileMapping> buildFileMappingIndex(CompactionMap compactionMap) {

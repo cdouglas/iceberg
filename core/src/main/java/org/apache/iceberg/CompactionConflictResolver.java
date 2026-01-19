@@ -117,12 +117,23 @@ public class CompactionConflictResolver {
 
     LOG.info("Read {} position deletes referencing compacted files", allDeletes.size());
 
-    // Step 3: Remap deletes using compaction map
+    // Step 3: Remap deletes using compaction map (with metrics)
     DeleteManifestRemapper remapper = new DeleteManifestRemapper(compactionMap);
-    Map<String, List<PositionDeleteRecord>> remappedDeletes = remapper.remapDeletes(allDeletes);
+    RemappingResult remappingResult = remapper.remapDeletesWithMetrics(allDeletes);
+    Map<String, List<PositionDeleteRecord>> remappedDeletes = remappingResult.remappedDeletes();
 
-    int totalRemapped = remappedDeletes.values().stream().mapToInt(List::size).sum();
+    int totalRemapped = remappingResult.totalRemapped();
     LOG.info("Remapped {} deletes to {} target files", totalRemapped, remappedDeletes.size());
+
+    // Log skipped deletes if any
+    if (remappingResult.hasSkippedDeletes()) {
+      LOG.info(
+          "Skipped deletes during remapping: notCompacted={}, filteredRows={}, invalidPositions={}, duplicates={}",
+          remappingResult.skippedNotCompacted(),
+          remappingResult.skippedFilteredRows(),
+          remappingResult.skippedInvalidPositions(),
+          remappingResult.duplicatesRemoved());
+    }
 
     if (remappedDeletes.isEmpty()) {
       LOG.info("All deletes were filtered out during remapping (rows were filtered in compaction)");
