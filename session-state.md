@@ -61,15 +61,29 @@ RewriteDataFilesSparkAction.execute()
 │   └─> Commit with remapped deletes
 ```
 
+### Phase 3: Testing and Validation (COMPLETED)
+
+Created integration tests for conflict resolution:
+
+**New Test File**:
+- `TestSparkCompactionConflictResolution.java` - 6 tests for conflict resolution
+
+**Tests**:
+- `testConflictResolutionDisabledByDefault` - Verifies feature is off by default
+- `testConflictResolutionEnabled` - Tests end-to-end resolution with single delete
+- `testConflictResolutionWithMultipleDeletes` - Tests resolution with multiple deletes
+- `testConflictResolutionMaxFilesExceeded` - Tests max-files limit configuration
+- `testSparkCompactionConflictResolverDirectly` - Tests conflict detection directly
+- `testNoConflictsWhenNoOverlap` - Tests non-overlapping delete scenario
+
+**Notes**:
+- Tests are restricted to V2 format version (position delete files)
+- V3+ uses Deletion Vectors which have different semantics
+- All 6 tests passing
+
 ---
 
 ## Next Steps
-
-### Phase 3: Testing and Validation
-
-1. Create integration tests for `SparkCompactionConflictResolver`
-2. Create end-to-end tests for conflict resolution during rewrite
-3. Test edge cases (filtered rows, multiple source files, etc.)
 
 ### Phase 4: Documentation
 
@@ -87,6 +101,7 @@ RewriteDataFilesSparkAction.execute()
 - `core/src/main/java/org/apache/iceberg/PositionDeletesScanTasks.java`
 - `spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkCompactionConflictResolver.java`
 - `spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkRewriteDataFilesCommitManager.java`
+- `spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestSparkCompactionConflictResolution.java`
 
 **Files Modified**:
 - `core/src/main/java/org/apache/iceberg/TableProperties.java`
@@ -94,10 +109,10 @@ RewriteDataFilesSparkAction.execute()
 - `spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/RewriteDataFilesSparkAction.java`
 - `COMPACTION_DELETE_RECOVERY_PLAN.md`
 
-**Test Status**: All existing tests passing
+**Test Status**: All tests passing (Phase 1, 2, 3)
 
 ---
 
 *Last Updated*: 2026-01-19
-*Session*: Spark-layer implementation
-*Status*: Phase 2 complete, ready for testing
+*Session*: Testing phase complete
+*Status*: Phase 3 complete, ready for documentation
