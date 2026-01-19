@@ -116,33 +116,21 @@ To verify the performance impact:
 
 ---
 
-## 2. Position Tracking Limited to Bin-Pack Rewrites
+## 2. Design Scope: Order-Preserving Compactions
 
-### Issue
+### Supported Operations
 
-Position tracking is only implemented for **bin-pack rewrites** (combining multiple data files without reordering). Rewrite operations that reorder rows are not supported.
+Compaction maps support **order-preserving** compaction operations:
 
-### Impact
+- ✅ **Bin-pack rewrites**: Combining multiple files without reordering (simple concatenation)
+- ✅ **Merge compactions**: Bin-pack with position deletes applied during scan
 
-**Functionality: Rewrite-time reordering not supported**
-- ✅ **Bin-pack rewrites**: Multiple files → single/multiple files (simple concatenation)
-- ✅ **Merge compactions**: Combining data files with position deletes (deletes applied during scan)
-- ❌ **Sorted rewrites**: Row order changes during rewrite operation (e.g., SORT BY column)
-- ❌ **Z-ordered rewrites**: Data reorganization changes positions
-
-### Why This Choice Was Made
-
-Bin-pack is the most common compaction pattern and has simple position semantics:
-- Source rows map sequentially to target: `source[0..N] → target[offset..offset+N]`
-- When position deletes exist, they're applied during scan (standard Iceberg behavior)
-- Only surviving rows appear in DataFrame with `_file` and `_pos` metadata
-- Gaps in runs automatically represent deleted positions
+These operations preserve the relative order of rows within each source file, allowing position mappings to be represented efficiently as runs.
 
 ### How Merge Compactions Work
 
-The implementation **DOES support merge compactions** (bin-pack with position deletes):
+When position deletes exist, they're applied during the scan phase (standard Iceberg behavior). The compaction map correctly tracks the resulting gaps:
 
-**Example:**
 ```
 Source file A: positions 0, 1, 2, 3, 4
 Position delete: delete row 2 from file A
@@ -152,39 +140,22 @@ Target file: positions 0, 1, 2, 3
 Compaction map: Run(0, 0, 2), Run(3, 2, 2)  // Gap at source position 2
 ```
 
-**Why It Works:**
-1. Position deletes applied during scan (before position tracking sees the data)
-2. Only surviving rows get position mappings
-3. Gap at source position 2 automatically represented by non-consecutive runs
-4. No special instrumentation needed for delete handling
+### Out of Scope: Order-Changing Operations
 
-### What Needs to Be Done
+Compaction maps are **not appropriate** for operations that reorder rows:
 
-**For Sorted Rewrites:**
-- Track position transformations as rows are reordered during sort operation
-- Record which source position maps to which target position after sorting
-- Instrument Spark's sort operator to capture position changes
+- **Sorted compactions**: Rewriting data sorted by column(s)
+- **Z-ordered compactions**: Reorganizing data along a space-filling curve for query locality
 
-**For Z-Ordered Rewrites:**
-- Track position changes as data is reorganized
-- Handle complex reordering patterns
-- Coordinate with Z-order implementation
+This is a **design boundary**, not a missing feature. Order-changing operations are inappropriate for compaction maps because:
 
-**Current Status:**
-- Rewrite-time sorting not supported (would require tracking through Spark's sort operator)
-- Scan-time filtering fully supported (position deletes applied during scan)
+1. **Degenerate mappings**: Reordering produces maps with runs of length 1 (every row maps individually), defeating run-length encoding and creating maps as large as the data itself.
 
-### Validation
+2. **Semantic mismatch**: Position deletes identify rows by `(file_path, position)`. After reordering, position N refers to a different logical row. Remapping position deletes through a reorder operation would delete wrong rows.
 
-Comprehensive tests needed to verify merge compactions:
-```bash
-# Test bin-pack with position deletes
-./gradlew :iceberg-spark:iceberg-spark-3.5_2.13:test \
-  --tests "TestBinPackWithPositionTracking.testBinPackWithPositionDeletes"
+3. **Better alternatives exist**: For sorted/Z-ordered compactions, concurrent transactions should use equality deletes (content-based) rather than position deletes, or accept that position deletes against old files are invalidated by the reorder.
 
-# Verify compaction maps have correct gaps
-# Verify position delete remapping works end-to-end
-```
+**Note**: A table with sorted base data and unsorted recent changes is fine—the unsorted changes can be compacted (bin-packed) with position tracking, and later merged into sorted runs without tracking (since the merge applies deletes during scan).
 
 ---
 
@@ -295,7 +266,7 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 | # | Issue | Impact | Status | Priority |
 |---|-------|--------|--------|----------|
 | 1 | Normal scans vs staged scans | 10-20% performance overhead | Documented, acceptable | Medium |
-| 2 | Bin-pack only position tracking | Rewrite-time reordering unsupported (sorted/Z-ordered) | Merge compactions work | Low |
+| 2 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
 | 3 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
 
 **Fixed Issues (Removed from Active List):**
@@ -311,13 +282,11 @@ If you'd like to help address any of these issues:
 
 1. **Normal Scans Performance:** Start with `docs/staged_scan_investigation.md` to understand why staged scans fail, then investigate fixes in Iceberg's staged scan implementation.
 
-2. **Sorted Rewrite Position Tracking:** Design position tracking framework that instruments Spark's sort operator to track position transformations through reordering operations.
+2. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete.
 
-3. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete.
+3. **V3 Deletion Vector Conflict Resolution:** Extend `SparkCompactionConflictResolver` to support V3 format tables with Deletion Vectors.
 
-4. **V3 Deletion Vector Conflict Resolution:** Extend `SparkCompactionConflictResolver` to support V3 format tables with Deletion Vectors.
-
-5. **Spark 4.0 Conflict Resolution Parity:** Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0, along with corresponding tests.
+4. **Spark 4.0 Conflict Resolution Parity:** Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0, along with corresponding tests.
 
 ## References
 
