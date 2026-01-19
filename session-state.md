@@ -81,15 +81,32 @@ Created integration tests for conflict resolution:
 - V3+ uses Deletion Vectors which have different semantics
 - All 6 tests passing
 
+### Phase 4: Documentation (COMPLETED)
+
+Updated documentation with conflict resolution feature:
+
+**Files Updated**:
+- `docs/docs/compaction_maps.md` - Added conflict resolution section, configuration properties, examples
+- `docs/docs/compaction_maps_errata.md` - Updated automatic conflict resolution status
+- `CLAUDE.md` - Added new components, configuration, line references
+
+**Documentation Changes**:
+- Added `write.compaction.resolve-delete-conflicts` property documentation
+- Added `write.compaction.resolve-delete-conflicts.max-files` property documentation
+- Added "Compaction with Automatic Conflict Resolution" example
+- Updated "Conflict Resolution Options" section
+- Updated Future Work to reflect partial completion
+- Updated errata to reflect compaction-level resolution is complete
+
 ---
 
-## Next Steps
+## Implementation Complete
 
-### Phase 4: Documentation
-
-1. Update `docs/docs/compaction_maps.md` with conflict resolution section
-2. Update `CLAUDE.md` with new components
-3. Add example configuration
+All phases of Compaction Delete Recovery are now complete:
+- **Phase 1**: Conflict Detection ✅
+- **Phase 2**: Spark-Layer Resolution ✅
+- **Phase 3**: Testing and Validation ✅
+- **Phase 4**: Documentation ✅
 
 ---
 
@@ -109,10 +126,10 @@ Created integration tests for conflict resolution:
 - `spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/RewriteDataFilesSparkAction.java`
 - `COMPACTION_DELETE_RECOVERY_PLAN.md`
 
-**Test Status**: All tests passing (Phase 1, 2, 3)
+**Test Status**: All tests passing (150+ tests)
 
 ---
 
 *Last Updated*: 2026-01-19
-*Session*: Testing phase complete
-*Status*: Phase 3 complete, ready for documentation
+*Session*: Documentation phase complete
+*Status*: All phases complete (1-4)

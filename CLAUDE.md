@@ -7,11 +7,12 @@
 **Key Achievements**:
 - Full infrastructure for compaction-aware transactions (~18k lines)
 - Advanced remapping optimization (5-160x speedup via smart algorithm selection)
-- Comprehensive test coverage (140+ tests) and empirical validation (324 JMH benchmarks)
+- Comprehensive test coverage (150+ tests) and empirical validation (324 JMH benchmarks)
 - SERIALIZABLE isolation enhancements
+- **Compaction conflict resolution** - Automatic remapping of concurrent position deletes during compaction
 
 **Implementation Status**: Complete on `cmpmap` branch
-**Last Updated**: January 18, 2026
+**Last Updated**: January 19, 2026
 
 ## Feature Architecture
 
@@ -49,6 +50,17 @@ SERIALIZABLE Isolation
     └─> Check REPLACE operations for compaction maps
         └─> WITH maps → no conflict (structural change only)
         └─> WITHOUT maps → ValidationException (data change)
+
+Compaction Conflict Resolution (Spark 3.5)
+└─> SparkRewriteDataFilesCommitManager.commitFileGroups()
+    └─> detectAndResolveConflicts()
+        └─> CompactionConflictDetector.detectConflicts()
+            └─> Scans manifests for conflicting delete files
+        └─> SparkCompactionConflictResolver.resolve()
+            └─> Read conflicting position deletes via Spark
+            └─> Remap using PositionDeleteRemapper
+            └─> Write new delete files referencing compacted files
+            └─> Include remapped deletes in commit
 ```
 
 ## Code Organization
@@ -90,12 +102,27 @@ SERIALIZABLE Isolation
 - `actions/RewriteDataFilesCommitManager.java` - Automatic map generation
 - `actions/RewriteFileGroup.java` - Position mapping support
 
+*Conflict Detection:*
+- `CompactionConflictDetector.java` - Scans manifests to find conflicting delete files
+- `DeleteConflictInfo.java` - Metadata about detected conflicts
+- `PositionDeletesScanTasks.java` - Helper to create scan tasks for delete files
+
+**Spark Layer** (`spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/`):
+
+*Conflict Resolution:*
+- `SparkRewriteDataFilesCommitManager.java` - Extends core commit manager with conflict resolution
+- `SparkCompactionConflictResolver.java` - Reads, remaps, and writes position deletes using Spark
+- `RewriteDataFilesSparkAction.java` - Uses SparkRewriteDataFilesCommitManager
+
 **Test Suite** (`core/src/test/java/org/apache/iceberg/`):
 - Core: TestCompactionMap{Serialization,Builder,Storage,Integration,CommitFlow}
-- Conflicts: TestCompactionConflict{Detection,Resolution}
+- Conflicts: TestCompactionConflict{Detection,Detector,Resolution}
 - Isolation: TestSerializableIsolationWithCompaction
 - Remapping: TestRemapping{Strategies,StrategiesIntegration,AlgorithmSelector}
 - Benchmarks: RemappingAlgorithmBenchmark (324 configurations)
+
+**Spark Test Suite** (`spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/`):
+- TestSparkCompactionConflictResolution (6 tests) - End-to-end conflict resolution tests
 
 ## Critical Implementation Patterns
 
@@ -187,6 +214,12 @@ return IntervalTree;  // Always optimal for m >= 100
 
 // Isolation level (affects validation behavior)
 "write.delete.isolation-level" = "serializable" (default)
+
+// Enable automatic conflict resolution during compaction (Spark 3.5)
+"write.compaction.resolve-delete-conflicts" = "true" (default: false)
+
+// Maximum conflicting delete files to resolve automatically
+"write.compaction.resolve-delete-conflicts.max-files" = "100" (default)
 ```
 
 ### File Naming Convention
@@ -303,6 +336,11 @@ Jump directly to these sections instead of reading entire files:
 **Conflict Detection**:
 - `CompactionMapValidator.java:80-110` - validateNoCompactedReferences()
 - `BaseRowDelta.java:219-238` - validateNoCompactionConflicts()
+- `CompactionConflictDetector.java` - Scans manifests for conflicting delete files
+
+**Compaction Conflict Resolution (Spark 3.5)**:
+- `SparkRewriteDataFilesCommitManager.java:185-234` - detectAndResolveConflicts()
+- `SparkCompactionConflictResolver.java` - Read, remap, write position deletes
 
 **Isolation Logic**:
 - `MergingSnapshotProducer.java:430-508` - validateCompactionAwareConflicts()
@@ -413,18 +451,22 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 ## Branch and Status
 
 **Branch**: `cmpmap` (NOT `vldb` - that's separate prototype)
-**Status**: Implementation complete, partial bug fix committed
-**Last Commit**: 2293b28ef - "docs: Add benchmark results section to REMAPPING_BENCHMARKS.md"
-**Test Status**: 140+ tests passing ✅
+**Status**: Implementation complete, compaction conflict resolution implemented
+**Test Status**: 150+ tests passing ✅
 **Documentation Status**: Current ✅
+
+**Recent Additions**:
+- Compaction conflict resolution (SparkRewriteDataFilesCommitManager, SparkCompactionConflictResolver)
+- TestSparkCompactionConflictResolution (6 integration tests)
+- Configuration properties for opt-in conflict resolution
 
 **Pending Work**:
 1. Fix smart selector for m < 10 unsorted cases (Phase 7.4)
-2. Re-run benchmarks to validate fixes
-3. Update performance claims (5-160x instead of 100-900x)
+2. Application transaction conflict resolution (BaseRowDelta auto-remapping)
+3. V3 Deletion Vector conflict resolution support
 
 ---
 
-*Generated during Claude Code sessions, 2026-01-07 to 2026-01-18*
+*Generated during Claude Code sessions, 2026-01-07 to 2026-01-19*
 *Model: Claude Sonnet 4.5*
 *Total Implementation: ~18.2k lines across core, tests, and documentation*
