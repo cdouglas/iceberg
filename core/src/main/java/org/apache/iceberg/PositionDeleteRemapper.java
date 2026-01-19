@@ -32,10 +32,8 @@ import org.apache.iceberg.deletes.DVPositionReader;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
-import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.ContentFileUtil;
 
 /**
@@ -145,34 +143,6 @@ public class PositionDeleteRemapper {
 
     // Create remapped delete with new file and position
     return PositionDelete.create().set(mapping.targetFile(), newPosition, delete.row());
-  }
-
-  /**
-   * Reads all position deletes from a delete file and checks if any need remapping.
-   *
-   * <p>This is a convenience method that reads the delete file and checks each delete against the
-   * compaction map.
-   *
-   * @param deleteFilePath the path to the delete file
-   * @param io the file IO for reading
-   * @return set of data file paths that are both in this delete file and in the compaction map
-   */
-  public Set<String> findCompactedReferences(String deleteFilePath, FileIO io) {
-    Set<String> compacted = Sets.newHashSet();
-    InputFile inputFile = io.newInputFile(deleteFilePath);
-
-    try (CloseableIterable<PositionDelete<?>> deletes = readPositionDeletes(inputFile)) {
-      for (PositionDelete<?> delete : deletes) {
-        String path = delete.path().toString();
-        if (fileMappingIndex.containsKey(path)) {
-          compacted.add(path);
-        }
-      }
-    } catch (IOException e) {
-      throw new UncheckedIOException("Failed to read position deletes from: " + deleteFilePath, e);
-    }
-
-    return compacted;
   }
 
   /**
@@ -352,35 +322,5 @@ public class PositionDeleteRemapper {
       iter.forEach(positions::add);
     }
     return positions;
-  }
-
-  @SuppressWarnings("UnusedVariable")
-  private CloseableIterable<PositionDelete<?>> readPositionDeletes(InputFile inputFile) {
-    // Read position deletes from the file
-    // This will be implemented using Iceberg's existing readers
-    // For now, throw as placeholder
-    // TODO: Implement proper position delete reading using ParquetAvro or similar
-    throw new UnsupportedOperationException(
-        "Position delete reading not yet implemented - will be added in integration phase");
-  }
-
-  /**
-   * Remaps position delete records using a compaction map (static utility method).
-   *
-   * <p>This is a convenience method that creates a DeleteManifestRemapper and performs the
-   * remapping operation. Use this when you have already read position deletes into
-   * PositionDeleteRecord objects.
-   *
-   * <p>The method groups remapped deletes by target file for efficient writing. Deletes on rows
-   * that were filtered during compaction are dropped silently.
-   *
-   * @param deletes list of position delete records to remap
-   * @param compactionMap the compaction map describing file transformations
-   * @return map from target file path to list of remapped position delete records
-   */
-  public static Map<String, List<PositionDeleteRecord>> remapDeleteManifests(
-      List<PositionDeleteRecord> deletes, CompactionMap compactionMap) {
-    DeleteManifestRemapper remapper = new DeleteManifestRemapper(compactionMap);
-    return remapper.remapDeletes(deletes);
   }
 }

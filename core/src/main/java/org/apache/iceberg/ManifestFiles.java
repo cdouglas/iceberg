@@ -460,45 +460,4 @@ public class ManifestFiles {
         CatalogProperties.IO_MANIFEST_CACHE_MAX_CONTENT_LENGTH,
         CatalogProperties.IO_MANIFEST_CACHE_MAX_CONTENT_LENGTH_DEFAULT);
   }
-
-  /**
-   * Read position deletes from a delete file.
-   *
-   * @param deleteFile the delete file to read
-   * @param io the FileIO to use for reading
-   * @return list of position delete records
-   */
-  public static java.util.List<PositionDeleteRecord> readPositionDeletes(
-      DeleteFile deleteFile, FileIO io) {
-    org.apache.iceberg.io.DeleteManifestReader reader =
-        new org.apache.iceberg.io.DeleteManifestReader(io);
-    return reader.readPositionDeletes(deleteFile);
-  }
-
-  /**
-   * Filter position delete records by referenced data files.
-   *
-   * @param records list of position delete records
-   * @param dataFiles set of data file paths to filter by
-   * @return filtered list of position delete records that reference the given data files
-   */
-  public static java.util.List<PositionDeleteRecord> filterDeletesByReferencedFiles(
-      java.util.List<PositionDeleteRecord> records, java.util.Set<String> dataFiles) {
-    return org.apache.iceberg.io.DeleteManifestReader.filterByReferencedFiles(records, dataFiles);
-  }
-
-  /**
-   * Read position deletes from multiple delete files and filter by referenced data files.
-   *
-   * @param deleteFiles list of delete files to read
-   * @param dataFiles set of data file paths to filter by
-   * @param io the FileIO to use for reading
-   * @return filtered list of position delete records
-   */
-  public static java.util.List<PositionDeleteRecord> readAndFilterPositionDeletes(
-      java.util.List<DeleteFile> deleteFiles, java.util.Set<String> dataFiles, FileIO io) {
-    org.apache.iceberg.io.DeleteManifestReader reader =
-        new org.apache.iceberg.io.DeleteManifestReader(io);
-    return reader.readAndFilterPositionDeletes(deleteFiles, dataFiles);
-  }
 }

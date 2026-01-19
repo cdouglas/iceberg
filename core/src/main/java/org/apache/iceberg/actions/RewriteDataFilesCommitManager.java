@@ -23,28 +23,18 @@ import java.io.UncheckedIOException;
 import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.BaseRewriteFiles;
-import org.apache.iceberg.CompactionConflictDetector;
-import org.apache.iceberg.CompactionConflictResolver;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMapBuilder;
 import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
-import org.apache.iceberg.DeleteConflictInfo;
-import org.apache.iceberg.DeleteFile;
-import org.apache.iceberg.DeleteManifestChanges;
-import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.RewriteFiles;
-import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
-import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.DataFileSet;
 import org.apache.iceberg.util.DeleteFileSet;
 import org.apache.iceberg.util.Tasks;
@@ -108,28 +98,11 @@ public class RewriteDataFilesCommitManager {
     }
 
     // Generate and write compaction map if enabled
-    CompactionMap compactionMap = null;
     if (shouldGenerateCompactionMap()) {
-      compactionMap = buildCompactionMap(fileGroups);
+      CompactionMap compactionMap = buildCompactionMap(fileGroups);
       String compactionMapLocation = writeCompactionMap(compactionMap);
       if (compactionMapLocation != null && rewrite instanceof BaseRewriteFiles) {
         ((BaseRewriteFiles) rewrite).setCompactionMapLocation(compactionMapLocation);
-      }
-    }
-
-    // Resolve conflicting deletes if enabled
-    DeleteManifestChanges conflictResolution = null;
-    if (shouldResolveConflictingDeletes() && compactionMap != null) {
-      conflictResolution = resolveConflictingDeletes(compactionMap, rewrittenDataFiles);
-      if (conflictResolution.hasChanges()) {
-        LOG.info(
-            "Resolved {} conflicting position deletes affecting {} data files",
-            conflictResolution.totalDeletesRemapped(),
-            conflictResolution.affectedDataFiles());
-        // Add remapped delete files to the rewrite operation
-        for (DeleteFile deleteFile : conflictResolution.addedDeleteFiles()) {
-          rewrite.addFile(deleteFile);
-        }
       }
     }
 
@@ -191,97 +164,6 @@ public class RewriteDataFilesCommitManager {
             TableProperties.COMPACTION_MAP_ENABLED,
             String.valueOf(TableProperties.COMPACTION_MAP_ENABLED_DEFAULT))
         .equalsIgnoreCase("true");
-  }
-
-  /**
-   * Check if conflicting deletes should be automatically remapped.
-   *
-   * @return true if conflict resolution is enabled
-   */
-  private boolean shouldResolveConflictingDeletes() {
-    return table
-        .properties()
-        .getOrDefault(
-            TableProperties.COMPACTION_REMAP_CONFLICTING_DELETES,
-            String.valueOf(TableProperties.COMPACTION_REMAP_CONFLICTING_DELETES_DEFAULT))
-        .equalsIgnoreCase("true");
-  }
-
-  /**
-   * Get the maximum number of delete manifests to process during conflict resolution.
-   *
-   * @return the configured limit
-   */
-  private int maxRemapManifests() {
-    return Integer.parseInt(
-        table
-            .properties()
-            .getOrDefault(
-                TableProperties.COMPACTION_REMAP_MAX_MANIFESTS,
-                String.valueOf(TableProperties.COMPACTION_REMAP_MAX_MANIFESTS_DEFAULT)));
-  }
-
-  /**
-   * Resolve conflicting position deletes that were added concurrently with this compaction.
-   *
-   * <p>This method detects position deletes that reference files being compacted and remaps them to
-   * the new compacted files using the compaction map.
-   *
-   * @param compactionMap the compaction map describing file transformations
-   * @param rewrittenDataFiles the data files being rewritten
-   * @return changes containing remapped delete files, or empty if no conflicts
-   */
-  private DeleteManifestChanges resolveConflictingDeletes(
-      CompactionMap compactionMap, DataFileSet rewrittenDataFiles) {
-    Snapshot currentSnapshot = table.currentSnapshot();
-    if (currentSnapshot == null || currentSnapshot.snapshotId() == startingSnapshotId) {
-      // No changes since compaction started, no conflicts possible
-      return DeleteManifestChanges.empty();
-    }
-
-    // Extract source file paths from the files being rewritten
-    Set<String> filesToCompact = Sets.newHashSet();
-    for (DataFile dataFile : rewrittenDataFiles) {
-      filesToCompact.add(dataFile.path().toString());
-    }
-
-    // Detect conflicts
-    TableMetadata metadata = ((HasTableOperations) table).operations().current();
-    CompactionConflictDetector detector =
-        new CompactionConflictDetector(table.io(), metadata, startingSnapshotId, currentSnapshot);
-    DeleteConflictInfo conflicts = detector.detectConflicts(filesToCompact);
-
-    if (!conflicts.hasConflicts()) {
-      LOG.debug("No conflicting deletes detected for compaction");
-      return DeleteManifestChanges.empty();
-    }
-
-    // Check max manifests limit
-    int deleteManifestCount = conflicts.deleteFileCount();
-    int maxManifests = maxRemapManifests();
-    if (deleteManifestCount > maxManifests) {
-      throw new ValidationException(
-          "Compaction conflict resolution exceeded maximum manifest limit. "
-              + "Found %d conflicting delete files, limit is %d. "
-              + "Either increase %s or disable %s to fail on conflicts.",
-          deleteManifestCount,
-          maxManifests,
-          TableProperties.COMPACTION_REMAP_MAX_MANIFESTS,
-          TableProperties.COMPACTION_REMAP_CONFLICTING_DELETES);
-    }
-
-    LOG.info(
-        "Detected {} conflicting delete files affecting {} data files, attempting resolution",
-        conflicts.deleteFileCount(),
-        conflicts.affectedDataFileCount());
-
-    // Resolve conflicts
-    try {
-      CompactionConflictResolver resolver = new CompactionConflictResolver(table);
-      return resolver.resolve(compactionMap, conflicts);
-    } catch (IOException e) {
-      throw new UncheckedIOException("Failed to resolve conflicting deletes", e);
-    }
   }
 
   /**
