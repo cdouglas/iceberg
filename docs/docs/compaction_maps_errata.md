@@ -22,101 +22,7 @@ title: "Compaction Maps - Implementation Errata"
 
 This document lists expedient implementation choices and simplifications made during development that we intend to revisit and improve later. These are not bugs but pragmatic decisions to ship functionality faster while documenting technical debt.
 
-## 1. Normal Scans Instead of Staged Scans
-
-### Issue
-
-Position tracking uses **normal scans** instead of **staged scans** for reading data during bin-pack rewrites when compaction map generation is enabled.
-
-### Impact
-
-**Performance: ~10-20% slower**
-- Normal scans re-scan manifests that were already scanned during planning
-- File path filter evaluation adds overhead
-- Manifest reader instantiation repeated
-
-### Why This Choice Was Made
-
-Staged scans don't properly expose metadata columns (`_file`, `_pos`) to Spark's physical planner:
-
-```
-Staged Scan Behavior:
-1. Metadata columns added to scan schema ✅
-2. Spark V2ScanRelationPushDown optimizer phase ❌
-3. PushDownUtils.toOutputAttrs fails with "key not found" error
-4. Metadata columns pruned away before reaching executor
-```
-
-Normal scans fully support metadata columns through Spark's `SupportsMetadataColumns` interface and preserve them through the entire query planning pipeline.
-
-### Investigation
-
-See [`docs/staged_scan_investigation.md`](../../docs/staged_scan_investigation.md) for detailed investigation including:
-- Stack traces showing where staged scans fail
-- Analysis of Spark's optimization phases
-- Why `toOutputAttrs` can't map metadata column names to field IDs
-- Multiple attempted solutions and their outcomes
-
-### What Needs to Be Done
-
-**Option 1: Fix Staged Scan Metadata Column Support (Preferred)**
-
-Investigate and fix the root cause in Iceberg's staged scan implementation:
-- Ensure metadata columns survive Spark's `V2ScanRelationPushDown` optimization
-- Fix `PushDownUtils.toOutputAttrs` mapping for metadata columns
-- Maintain backward compatibility with existing staged scan usage
-
-**Option 2: Optimize Normal Scan Path (Workaround)**
-
-If fixing staged scans proves complex:
-- Cache manifest scan results between planning and execution
-- Optimize file path filter evaluation
-- Consider pre-computed file sets similar to staged scans
-
-**Option 3: Alternative Metadata Propagation**
-
-Explore alternative mechanisms for propagating metadata:
-- Custom Spark physical plan nodes that inject metadata
-- Partition-level metadata aggregation instead of row-level
-- Broadcast variables containing file-to-position mappings
-
-### Current Workaround
-
-The ~10-20% performance overhead is acceptable for the initial implementation because:
-- Compaction map generation is an opt-in feature (disabled by default)
-- Used primarily for high-concurrency workloads where conflict resolution matters more than raw throughput
-- Overhead only applies when `write.compaction-map.enabled=true`
-- Most production workloads can absorb this cost for the safety guarantees
-
-### Code Location
-
-```
-spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkBinPackFileRewriteRunner.java
-
-Lines 55-116: Scan type selection logic
-Lines 57-67: Documentation explaining the tradeoff
-Lines 69-104: Normal scan path with metadata columns
-Lines 106-116: Staged scan fallback when position tracking disabled
-```
-
-### Validation
-
-To verify the performance impact:
-```bash
-# Run bin-pack without position tracking (staged scans)
-./gradlew :iceberg-spark:iceberg-spark-3.5_2.13:test \
-  --tests "TestRewriteDataFilesAction.testBinPackWithoutCompactionMaps"
-
-# Run bin-pack with position tracking (normal scans)
-./gradlew :iceberg-spark:iceberg-spark-3.5_2.13:test \
-  --tests "TestRewriteDataFilesAction.testBinPackWithCompactionMaps"
-
-# Compare execution times and manifest read counts
-```
-
----
-
-## 2. Design Scope: Order-Preserving Compactions
+## 1. Design Scope: Order-Preserving Compactions
 
 ### Supported Operations
 
@@ -159,7 +65,7 @@ This is a **design boundary**, not a missing feature. Order-changing operations 
 
 ---
 
-## 3. Automatic Conflict Resolution (Partial)
+## 2. Automatic Conflict Resolution (Partial)
 
 ### Issue
 
@@ -265,11 +171,11 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 | # | Issue | Impact | Status | Priority |
 |---|-------|--------|--------|----------|
-| 1 | Normal scans vs staged scans | 10-20% performance overhead | Documented, acceptable | Medium |
-| 2 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
-| 3 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
+| 1 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
+| 2 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
 
 **Fixed Issues (Removed from Active List):**
+- ~~Normal scans vs staged scans~~ - ✅ FIXED: Staged scans now work with explicit metadata column selection
 - ~~Compaction map location not in manifests~~ - ✅ FIXED in commit 41324b697
 - ~~Target-pending placeholder bug~~ - ✅ FIXED in commit e8287a752
 - ~~Spark 3.5 format v3 + position tracking~~ - ✅ FIXED in commit e8287a752
@@ -280,13 +186,11 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 If you'd like to help address any of these issues:
 
-1. **Normal Scans Performance:** Start with `docs/staged_scan_investigation.md` to understand why staged scans fail, then investigate fixes in Iceberg's staged scan implementation.
+1. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete.
 
-2. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete.
+2. **V3 Deletion Vector Conflict Resolution:** Extend `SparkCompactionConflictResolver` to support V3 format tables with Deletion Vectors.
 
-3. **V3 Deletion Vector Conflict Resolution:** Extend `SparkCompactionConflictResolver` to support V3 format tables with Deletion Vectors.
-
-4. **Spark 4.0 Conflict Resolution Parity:** Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0, along with corresponding tests.
+3. **Spark 4.0 Conflict Resolution Parity:** Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0, along with corresponding tests.
 
 ## References
 
