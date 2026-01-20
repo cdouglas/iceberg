@@ -203,9 +203,12 @@ The smart selector (`RemappingAlgorithmSelector`) chooses optimal strategies bas
 - **sorted** = whether positions are sorted
 - **gapRatio** = sparsity of source range
 
-**Current Selection Logic** (after Phase 7.3 bug fix):
+**Current Selection Logic** (Phase 7.4 - sortedness check fix):
 ```java
-if (m < 10) return RangeQuery;  // NOTE: Needs sortedness check (known issue)
+if (m < 10) {
+  if (sorted) return RangeQuery;
+  return BinarySearch;  // Fixed: avoids O(n log n) sorting overhead
+}
 if (m < 100) {
   if (sorted && n > m) return StreamJoin;
   return BinarySearch;
@@ -218,8 +221,6 @@ return IntervalTree;  // Always optimal for m >= 100
 - Medium runs (m=100, sorted): 4-22x vs linear
 - Many runs (m=1000, sorted): 23-142x vs linear
 - Smart selector: <5% overhead for most scenarios (after bug fix)
-
-**Known Issue**: Selector doesn't check sortedness for m < 10, causing 3500%+ overhead for unsorted data (RangeQuery requires O(n log n) sorting). Fix pending.
 
 **Details**: See `REMAPPING_BENCHMARKS.md` for benchmark methodology. Implementation history available via `git log --grep="remapping" cmpmap`.
 
@@ -292,22 +293,15 @@ Generated via: `CompactionMaps.newCompactionMapFile(table, snapshotId)`
 **Location**: `BaseRowDelta.java:219-238`
 **Tests**: `TestCompactionConflictDetection.java`
 
-### Issue 4: Smart Selector Choosing Wrong Strategy
+### Issue 4: Smart Selector Choosing Wrong Strategy (FIXED)
 
-**Symptoms**: Poor performance for specific workload.
+**Status**: Fixed in Phase 7.4
 
-**Known Issues**:
-- m < 10, unsorted: Selector chooses RangeQuery (requires sorting), should choose BinarySearch
-- Fix pending in Phase 7.4
+The selector now checks sortedness for m < 10 cases:
+- Sorted positions → RangeQuery (optimal)
+- Unsorted positions → BinarySearch (avoids O(n log n) sorting overhead)
 
-**Workaround**: Manually instantiate strategy:
-```java
-RemappingStrategy strategy = new BinarySearchStrategy(runs);
-Map<Long, Run> results = strategy.runForPositions(positions);
-```
-
-**Location**: `RemappingAlgorithmSelector.java:63-113`
-**Analysis**: `benchmark/remapping-optimization/ANALYSIS_20260116.md`
+**Location**: `RemappingAlgorithmSelector.java:75-86`
 
 ### Issue 5: Test Failures in Isolation Tests
 
@@ -480,6 +474,7 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 **Documentation Status**: Current ✅
 
 **Recent Additions**:
+- Smart selector fix for m < 10 unsorted cases (Phase 7.4) - eliminates 3500% overhead
 - Spark 4.0 conflict resolution parity (commit 539432b51)
 - V3 Deletion Vector conflict resolution support (commit 368ae59e9)
 - Staged scan optimization for position tracking (commit 0fef1aee2)
@@ -488,8 +483,7 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 - Configuration properties for opt-in conflict resolution
 
 **Pending Work**:
-1. Fix smart selector for m < 10 unsorted cases (Phase 7.4)
-2. Application transaction conflict resolution (BaseRowDelta auto-remapping)
+1. Application transaction conflict resolution (BaseRowDelta auto-remapping)
 
 ---
 

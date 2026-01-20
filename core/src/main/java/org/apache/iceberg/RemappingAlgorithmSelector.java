@@ -31,18 +31,19 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
  * <ul>
  *   <li>m = number of runs in mapping
  *   <li>n = number of positions to remap
- *   <li>sorted = whether positions are sorted
+ *   <li>sorted = whether positions are sorted (detected via sampling)
  *   <li>gapRatio = percentage of source range not covered by runs
  * </ul>
  *
  * <p>Selection rules:
  *
  * <ul>
- *   <li>m < 10: Always use RangeQuery (optimal for few runs)
+ *   <li>m < 10, sorted: Use RangeQuery (optimal for few runs)
+ *   <li>m < 10, unsorted: Use BinarySearch (no sorting overhead)
  *   <li>n/m > 100 with gaps: Use RangeQuery (high fan-in with sparsity)
- *   <li>sorted && n > m: Use StreamJoin (optimal for sorted bulk)
- *   <li>m < 100: Use BinarySearch (simple and fast)
- *   <li>Default: Use IntervalTree (good for all scenarios)
+ *   <li>m < 100, sorted && n > m: Use StreamJoin (optimal for sorted bulk)
+ *   <li>m < 100, otherwise: Use BinarySearch (simple and fast)
+ *   <li>m >= 100: Use IntervalTree (optimal for many runs)
  * </ul>
  */
 public class RemappingAlgorithmSelector {
@@ -72,9 +73,17 @@ public class RemappingAlgorithmSelector {
       return new LinearSearchStrategy(runs);
     }
 
-    // Very few runs: RangeQuery always optimal
+    // Very few runs: choice depends on sortedness
+    // RangeQuery is optimal for sorted data (O(m log n) with no sorting overhead)
+    // For unsorted data, RangeQuery requires O(n log n) sorting, making BinarySearch better
     if (m < FEW_RUNS_THRESHOLD) {
-      return new RangeQueryStrategy(runs);
+      boolean sorted = isSorted(positions);
+      if (sorted) {
+        return new RangeQueryStrategy(runs);
+      } else {
+        // BinarySearch is O(n log m) and works efficiently on unsorted data
+        return new BinarySearchStrategy(runs);
+      }
     }
 
     // High fan-in (many positions per run)
