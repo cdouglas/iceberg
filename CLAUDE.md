@@ -197,34 +197,35 @@ Compaction maps support **order-preserving** operations only:
 
 ## Remapping Algorithm Selection
 
-The smart selector (`RemappingAlgorithmSelector`) chooses optimal strategies based on:
-- **m** = number of runs in mapping
-- **n** = number of positions to remap
-- **sorted** = whether positions are sorted
-- **gapRatio** = sparsity of source range
+The smart selector (`RemappingAlgorithmSelector`) chooses optimal strategies based on empirical JMH benchmark data (324 configurations tested January 2026), not theoretical complexity analysis.
 
-**Current Selection Logic** (Phase 7.4 complete - sortedness checks in all branches):
+**Key Empirical Findings:**
+- **UNSORTED data**: IntervalTree wins 46/54 scenarios regardless of m, n, or gaps
+- **SORTED data**: RangeQuery or StreamJoin win; IntervalTree **never** wins
+- **BinarySearch**: Never optimal in any tested scenario (removed from selection)
+
+**Current Selection Logic** (Empirically-derived, January 2026):
 ```java
-if (m < 10) {
-  if (sorted) return RangeQuery;
-  return BinarySearch;  // Fixed: avoids O(n log n) sorting overhead
+if (!sorted) {
+    return IntervalTree;        // Wins 46/54 unsorted scenarios
 }
-if (n/m > 100 && gapRatio > 0.3) {  // High fan-in with gaps
-  if (sorted) return RangeQuery;
-  return IntervalTree;  // Fixed: avoids O(n log n) sorting overhead
+
+// Sorted data below - IntervalTree never wins for sorted
+if (gapRatio > 0.3) {
+    return RangeQuery;          // Sparse: skip gaps efficiently
 }
-if (m < 100) {
-  if (sorted && n > m) return StreamJoin;
-  return BinarySearch;
+
+if (m >= 100 && n >= 10000) {
+    return StreamJoin;          // Bulk sorted: O(n+m) linear scan wins
 }
-return IntervalTree;  // Always optimal for m >= 100
+
+return RangeQuery;              // Default for sorted: O(m log n)
 ```
 
 **Performance** (from Jan 2026 benchmarks):
-- Few runs (m=10, sorted): 5-6x vs linear
-- Medium runs (m=100, sorted): 4-22x vs linear
-- Many runs (m=1000, sorted): 22-23x vs linear
-- Smart selector: Expected <10% overhead for all scenarios after complete fix
+- Sorted data: 2-17x speedup vs linear search
+- Unsorted data: IntervalTree provides consistent performance
+- Smart selector overhead: <15% average (was 56% before fix)
 
 **Details**: See `REMAPPING_BENCHMARKS.md` for benchmark methodology. Implementation history available via `git log --grep="remapping" cmpmap`.
 
@@ -299,21 +300,26 @@ Generated via: `CompactionMaps.newCompactionMapFile(table, snapshotId)`
 
 ### Issue 4: Smart Selector Choosing Wrong Strategy (FIXED)
 
-**Status**: Fixed in Phase 7.4 (complete)
+**Status**: Complete rewrite based on empirical benchmark data (January 2026)
 
-The selector now checks sortedness in ALL branches that might choose RangeQuery:
+The selector was completely rewritten after three benchmark runs revealed fundamental problems with the original heuristic-based approach. The new logic is derived entirely from JMH benchmark results across 324 configurations:
 
-1. **m < 10 branch** (partial fix):
-   - Sorted positions → RangeQuery (optimal)
-   - Unsorted positions → BinarySearch (avoids O(n log n) sorting overhead)
+**Key empirical findings:**
+- **UNSORTED data**: IntervalTree wins 46/54 scenarios regardless of m, n, or gaps
+- **SORTED data**: RangeQuery or StreamJoin win; IntervalTree never wins
+- **BinarySearch**: Never wins any scenario (removed from selection)
 
-2. **High fan-in with gaps branch** (complete fix):
-   - Sorted positions → RangeQuery (optimal)
-   - Unsorted positions → IntervalTree (avoids O(n log n) sorting overhead)
+**New selection logic** (simple 4-branch decision):
+```java
+if (!sorted) return IntervalTree;           // Empirically optimal for unsorted
+if (gapRatio > 0.3) return RangeQuery;      // Skip gaps efficiently
+if (m >= 100 && n >= 10000) return StreamJoin;  // Bulk sorted workloads
+return RangeQuery;                          // Default for sorted
+```
 
-Before the complete fix, unsorted data with high fan-in (n/m > 100) and gaps (gapRatio > 0.3) caused up to 3518% overhead because RangeQuery was chosen without checking sortedness.
+**Expected overhead**: <10% compared to manually selecting optimal strategy (previously 56% average overhead with heuristic approach).
 
-**Location**: `RemappingAlgorithmSelector.java:79-114`
+**Location**: `RemappingAlgorithmSelector.java:79-121`
 
 ### Issue 5: Test Failures in Isolation Tests
 
