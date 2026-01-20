@@ -380,5 +380,4 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios. See
 
 1. **Spark 4.0 Conflict Resolution Parity** - Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0
 2. **Application Transaction Conflict Resolution** - Automatic remapping in BaseRowDelta for application-level position delete conflicts
-3. **V3 Deletion Vector Conflict Resolution** - Extend compaction conflict resolution to support V3 format with Deletion Vectors
-4. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
+3. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.

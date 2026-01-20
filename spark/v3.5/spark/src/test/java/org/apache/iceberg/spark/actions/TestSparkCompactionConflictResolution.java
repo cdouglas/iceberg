@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -43,6 +44,7 @@ import org.apache.iceberg.Parameters;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
@@ -50,6 +52,8 @@ import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
 import org.apache.iceberg.data.GenericAppenderFactory;
 import org.apache.iceberg.data.Record;
+import org.apache.iceberg.deletes.BaseDVFileWriter;
+import org.apache.iceberg.deletes.DVFileWriter;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
 import org.apache.iceberg.encryption.EncryptedFiles;
@@ -57,6 +61,7 @@ import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.encryption.EncryptionKeyMetadata;
 import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -74,10 +79,14 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Tests for compaction conflict resolution with position deletes.
+ * Tests for compaction conflict resolution with position deletes and deletion vectors.
  *
- * <p>These tests verify that when a compaction operation encounters position deletes that reference
- * files being compacted, the deletes can be remapped to reference the new compacted files.
+ * <p>These tests verify that when a compaction operation encounters position deletes or deletion
+ * vectors that reference files being compacted, the deletes can be remapped to reference the new
+ * compacted files.
+ *
+ * <p>Format version 2 uses position delete files, while format version 3 uses deletion vectors
+ * (DVs). Both are supported by the conflict resolution infrastructure.
  */
 @ExtendWith(ParameterizedTestExtension.class)
 public class TestSparkCompactionConflictResolution extends TestBase {
@@ -96,9 +105,8 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
   @Parameters(name = "formatVersion = {0}")
   protected static List<Integer> parameters() {
-    // Only V2 is supported for position delete conflict resolution
-    // V3+ uses DVs (Deletion Vectors) which have different semantics
-    return java.util.Collections.singletonList(2);
+    // V2 uses position delete files, V3 uses deletion vectors
+    return Arrays.asList(2, 3);
   }
 
   private String tableLocation = null;
@@ -384,7 +392,21 @@ public class TestSparkCompactionConflictResolution extends TestBase {
         spark.read().format("iceberg").load(tableLocation).orderBy("id").collectAsList());
   }
 
+  /**
+   * Writes a delete for the given data file and position.
+   *
+   * <p>For V2 format, writes a position delete file. For V3 format, writes a deletion vector.
+   */
   private DeleteFile writePositionDelete(Table table, DataFile dataFile, long position) {
+    if (formatVersion >= 3) {
+      return writeDeletionVector(table, dataFile, position);
+    } else {
+      return writePositionDeleteFile(table, dataFile, position);
+    }
+  }
+
+  /** Writes a position delete file (V2 format). */
+  private DeleteFile writePositionDeleteFile(Table table, DataFile dataFile, long position) {
     OutputFile outputFile =
         table
             .io()
@@ -413,5 +435,25 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     }
 
     return posDeleteWriter.toDeleteFile();
+  }
+
+  /** Writes a deletion vector (V3 format). */
+  private DeleteFile writeDeletionVector(Table table, DataFile dataFile, long position) {
+    OutputFileFactory fileFactory =
+        OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PUFFIN).build();
+
+    StructLike partition = dataFile.partition();
+    String path = dataFile.path().toString();
+
+    DVFileWriter writer = new BaseDVFileWriter(fileFactory, p -> null);
+    try {
+      writer.delete(path, position, table.spec(), partition);
+      writer.close();
+      List<DeleteFile> deleteFiles = writer.result().deleteFiles();
+      assertThat(deleteFiles).hasSize(1);
+      return deleteFiles.get(0);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
   }
 }

@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.spark.actions;
 
+import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
@@ -28,11 +29,14 @@ import org.apache.iceberg.DeleteConflictInfo;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.MetadataTableType;
 import org.apache.iceberg.MetadataTableUtils;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PositionDeleteRemapper;
 import org.apache.iceberg.PositionDeletesScanTask;
 import org.apache.iceberg.PositionDeletesScanTasks;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.deletes.PositionDelete;
+import org.apache.iceberg.deletes.RemappedDVWriter;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
@@ -41,6 +45,7 @@ import org.apache.iceberg.spark.ScanTaskSetManager;
 import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.SparkTableCache;
 import org.apache.iceberg.spark.SparkWriteOptions;
+import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.spark.api.java.function.MapFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Encoder;
@@ -54,19 +59,29 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Resolves compaction conflicts with position deletes using Spark infrastructure.
+ * Resolves compaction conflicts with position deletes and deletion vectors using Spark
+ * infrastructure.
  *
  * <p>When a compaction operation detects that concurrent transactions have added position deletes
- * referencing the files being compacted, this resolver remaps those deletes to reference the new
- * compacted files using the compaction map.
+ * or deletion vectors (DVs) referencing the files being compacted, this resolver remaps those
+ * deletes to reference the new compacted files using the compaction map.
  *
- * <p>The resolution flow:
+ * <p>The resolution flow for position delete files (V2 format):
  *
  * <ol>
  *   <li>Read position deletes from conflicting delete files using Spark
  *   <li>Filter deletes to only those referencing compacted source files
  *   <li>Remap positions using the compaction map via {@link PositionDeleteRemapper}
  *   <li>Write new delete files with remapped positions
+ * </ol>
+ *
+ * <p>The resolution flow for deletion vectors (V3 format):
+ *
+ * <ol>
+ *   <li>Read deleted positions from DV files using {@link
+ *       org.apache.iceberg.deletes.DVPositionReader}
+ *   <li>Remap positions using {@link PositionDeleteRemapper#remapDVBulk}
+ *   <li>Write new DV files using {@link RemappedDVWriter}
  * </ol>
  */
 public class SparkCompactionConflictResolver implements Serializable {
@@ -87,11 +102,13 @@ public class SparkCompactionConflictResolver implements Serializable {
   }
 
   /**
-   * Resolves conflicts by remapping position deletes to reference compacted files.
+   * Resolves conflicts by remapping position deletes and deletion vectors to reference compacted
+   * files.
    *
-   * <p>This method handles two types of position deletes:
+   * <p>This method handles three types of deletes:
    *
    * <ul>
+   *   <li>Deletion vectors (DVs) - remapped using core infrastructure without Spark
    *   <li>File-scoped position deletes that definitely conflict (known data file references)
    *   <li>Multi-file position deletes that may conflict (need content-based filtering)
    * </ul>
@@ -106,14 +123,114 @@ public class SparkCompactionConflictResolver implements Serializable {
       return Lists.newArrayList();
     }
 
-    int fileScopedCount = conflicts.deleteFileCount();
-    int multiFileCount = conflicts.multiFilePositionDeletes().size();
+    // Separate DVs from position delete files
+    List<DeleteFile> dvFiles = Lists.newArrayList();
+    List<DeleteFile> positionDeleteFiles = Lists.newArrayList();
+
+    for (DeleteFile deleteFile : conflicts.conflictingDeleteFiles()) {
+      if (ContentFileUtil.isDV(deleteFile)) {
+        dvFiles.add(deleteFile);
+      } else {
+        positionDeleteFiles.add(deleteFile);
+      }
+    }
+
+    // Multi-file position deletes are always position delete files (not DVs)
+    positionDeleteFiles.addAll(conflicts.multiFilePositionDeletes());
+
+    int dvCount = dvFiles.size();
+    int posDeleteCount = positionDeleteFiles.size();
     LOG.info(
-        "Resolving conflicts: {} file-scoped delete files, {} multi-file position deletes, {} known affected data files",
-        fileScopedCount,
-        multiFileCount,
+        "Resolving conflicts: {} deletion vectors, {} position delete files, {} known affected data files",
+        dvCount,
+        posDeleteCount,
         conflicts.affectedDataFileCount());
 
+    List<DeleteFile> newDeleteFiles = Lists.newArrayList();
+
+    // Handle DVs using core infrastructure (no Spark needed)
+    if (!dvFiles.isEmpty()) {
+      List<DeleteFile> remappedDVs = remapDVs(dvFiles, compactionMap);
+      newDeleteFiles.addAll(remappedDVs);
+      LOG.info("Wrote {} new deletion vectors from {} original DVs", remappedDVs.size(), dvCount);
+    }
+
+    // Handle position delete files using Spark
+    if (!positionDeleteFiles.isEmpty()) {
+      List<DeleteFile> remappedPosDeletes =
+          remapPositionDeletes(positionDeleteFiles, compactionMap);
+      newDeleteFiles.addAll(remappedPosDeletes);
+      LOG.info(
+          "Wrote {} new position delete files from {} original files",
+          remappedPosDeletes.size(),
+          posDeleteCount);
+    }
+
+    LOG.info("Total: wrote {} new delete files with remapped positions", newDeleteFiles.size());
+    return newDeleteFiles;
+  }
+
+  /**
+   * Remaps deletion vectors using core infrastructure.
+   *
+   * <p>DVs are handled without Spark because:
+   *
+   * <ul>
+   *   <li>DVs are single-file scoped (one DV per data file)
+   *   <li>Core infrastructure provides efficient bulk remapping
+   *   <li>No benefit from distributed processing for DV remapping
+   * </ul>
+   *
+   * @param dvFiles the deletion vector files to remap
+   * @param compactionMap the compaction map
+   * @return list of new DV files with remapped positions
+   */
+  private List<DeleteFile> remapDVs(List<DeleteFile> dvFiles, CompactionMap compactionMap) {
+    List<DeleteFile> newDVs = Lists.newArrayList();
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(compactionMap);
+
+    for (DeleteFile dvFile : dvFiles) {
+      try {
+        // Remap positions using bulk API
+        Map<String, Set<Long>> remappedPositions = remapper.remapDVBulk(dvFile, table.io());
+
+        if (remappedPositions.isEmpty()) {
+          LOG.debug("No positions to remap for DV: {}", dvFile.location());
+          continue;
+        }
+
+        // Get partition info from the DV
+        PartitionSpec spec = table.specs().get(dvFile.specId());
+        StructLike partition = dvFile.partition();
+
+        // Write new DVs for each target file
+        RemappedDVWriter writer = new RemappedDVWriter(table, spec, partition);
+        List<DeleteFile> writtenDVs = writer.writeRemappedDVs(remappedPositions);
+        newDVs.addAll(writtenDVs);
+
+        LOG.debug(
+            "Remapped DV {} to {} new DVs targeting {} files",
+            dvFile.location(),
+            writtenDVs.size(),
+            remappedPositions.size());
+
+      } catch (IOException e) {
+        throw new RuntimeException("Failed to remap DV: " + dvFile.location(), e);
+      }
+    }
+
+    return newDVs;
+  }
+
+  /**
+   * Remaps position delete files using Spark infrastructure.
+   *
+   * @param positionDeleteFiles the position delete files to remap
+   * @param compactionMap the compaction map
+   * @return list of new position delete files with remapped positions
+   */
+  private List<DeleteFile> remapPositionDeletes(
+      List<DeleteFile> positionDeleteFiles, CompactionMap compactionMap) {
     String groupId = UUID.randomUUID().toString();
     Table deletesTable =
         MetadataTableUtils.createMetadataTableInstance(table, MetadataTableType.POSITION_DELETES);
@@ -121,52 +238,22 @@ public class SparkCompactionConflictResolver implements Serializable {
     try {
       tableCache.add(groupId, deletesTable);
 
-      // Stage the conflicting delete files for reading (both file-scoped and multi-file)
-      List<PositionDeletesScanTask> tasks = createScanTasks(conflicts);
+      // Create scan tasks for position delete files
+      List<PositionDeletesScanTask> tasks =
+          PositionDeletesScanTasks.create(positionDeleteFiles, table);
       if (tasks.isEmpty()) {
-        LOG.debug("No scan tasks to process");
+        LOG.debug("No scan tasks to process for position deletes");
         return Lists.newArrayList();
       }
       taskSetManager.stageTasks(deletesTable, groupId, tasks);
 
       // Read, remap, and write deletes
-      List<DeleteFile> newDeleteFiles = remapAndWriteDeletes(groupId, compactionMap);
-
-      LOG.info("Wrote {} new delete files with remapped positions", newDeleteFiles.size());
-      return newDeleteFiles;
+      return remapAndWriteDeletes(groupId, compactionMap);
     } finally {
       tableCache.remove(groupId);
       taskSetManager.removeTasks(deletesTable, groupId);
       coordinator.clearRewrite(deletesTable, groupId);
     }
-  }
-
-  /**
-   * Creates scan tasks for all position delete files that may need resolution.
-   *
-   * <p>This includes:
-   *
-   * <ul>
-   *   <li>File-scoped position deletes with known conflicts
-   *   <li>Multi-file position deletes that may contain positions for compacted files
-   * </ul>
-   *
-   * <p>The actual filtering to positions referencing compacted files happens during the read phase.
-   *
-   * @param conflicts the detected conflicts
-   * @return list of scan tasks for reading the delete files
-   */
-  private List<PositionDeletesScanTask> createScanTasks(DeleteConflictInfo conflicts) {
-    // Combine file-scoped conflicts and multi-file position deletes
-    List<DeleteFile> allDeleteFiles = Lists.newArrayList();
-    allDeleteFiles.addAll(conflicts.conflictingDeleteFiles());
-    allDeleteFiles.addAll(conflicts.multiFilePositionDeletes());
-
-    if (allDeleteFiles.isEmpty()) {
-      return Lists.newArrayList();
-    }
-
-    return PositionDeletesScanTasks.create(allDeleteFiles, table);
   }
 
   /**
