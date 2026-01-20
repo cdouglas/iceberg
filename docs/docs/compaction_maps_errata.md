@@ -69,11 +69,11 @@ This is a **design boundary**, not a missing feature. Order-changing operations 
 
 ### Issue
 
-Automatic conflict resolution is **now available for compaction operations** (Spark 3.5), but **application transactions still require manual resolution**.
+Automatic conflict resolution is **now available for compaction operations** (Spark 3.5 and 4.0), but **application transactions still require manual resolution**.
 
 ### Current Status
 
-**✅ Compaction Operations (Spark 3.5):**
+**✅ Compaction Operations (Spark 3.5 and 4.0):**
 
 Automatic conflict resolution is implemented via `SparkRewriteDataFilesCommitManager`:
 ```java
@@ -87,9 +87,9 @@ table.updateProperties()
 SparkActions.get(spark).rewriteDataFiles(table).execute();
 ```
 
-**Limitations:**
-- Only V2 format tables (position delete files)
-- V3+ uses Deletion Vectors with different semantics
+**Supported:**
+- V2 format tables (position delete files)
+- V3 format tables (deletion vectors)
 - Subject to `max-files` limit (default: 100)
 
 **❌ Application Transactions:**
@@ -124,19 +124,17 @@ rowDelta.commit();
 //   3. Retry commit transparently
 ```
 
-**V3 Deletion Vector Support:**
-
-Extend compaction conflict resolution to V3 format tables with Deletion Vectors.
-
 ### Code Location
 
-**Compaction Resolution (Implemented):**
+**Compaction Resolution (Implemented for Spark 3.5 and 4.0):**
 ```
 spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkRewriteDataFilesCommitManager.java
+spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/actions/SparkRewriteDataFilesCommitManager.java
   detectAndResolveConflicts() - Detects and resolves conflicts during commit
 
 spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkCompactionConflictResolver.java
-  resolve() - Reads, remaps, and writes conflicting position deletes
+spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/actions/SparkCompactionConflictResolver.java
+  resolve() - Reads, remaps, and writes conflicting position deletes and DVs
 
 core/src/main/java/org/apache/iceberg/CompactionConflictDetector.java
   detectConflicts() - Scans manifests to find conflicting delete files
@@ -157,8 +155,12 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 ### Validation
 
 ```bash
-# Test compaction conflict resolution
+# Test compaction conflict resolution (Spark 3.5)
 ./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test \
+  --tests "TestSparkCompactionConflictResolution"
+
+# Test compaction conflict resolution (Spark 4.0)
+./gradlew :iceberg-spark:iceberg-spark-4.0_2.13:test \
   --tests "TestSparkCompactionConflictResolution"
 
 # Test manual resolution (application transactions)
@@ -177,6 +179,7 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 **Fixed Issues (Removed from Active List):**
 - ~~Normal scans vs staged scans~~ - ✅ FIXED: Staged scans now work with explicit metadata column selection
 - ~~V3 Deletion Vector conflict resolution~~ - ✅ FIXED: SparkCompactionConflictResolver now supports DVs
+- ~~Spark 4.0 Conflict Resolution Parity~~ - ✅ FIXED: SparkCompactionConflictResolver and SparkRewriteDataFilesCommitManager ported to Spark 4.0
 - ~~Compaction map location not in manifests~~ - ✅ FIXED in commit 41324b697
 - ~~Target-pending placeholder bug~~ - ✅ FIXED in commit e8287a752
 - ~~Spark 3.5 format v3 + position tracking~~ - ✅ FIXED in commit e8287a752
@@ -187,9 +190,7 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 If you'd like to help address any of these issues:
 
-1. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete.
-
-2. **Spark 4.0 Conflict Resolution Parity:** Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0, along with corresponding tests.
+1. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete for both Spark 3.5 and 4.0.
 
 ## References
 
