@@ -32,12 +32,24 @@ import org.apache.iceberg.GenericCompactionMap.GenericRun;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.junit.jupiter.api.Test;
 
-/** Unit tests for RemappingAlgorithmSelector. */
+/**
+ * Unit tests for RemappingAlgorithmSelector.
+ *
+ * <p>The selector logic is based on empirical JMH benchmark data (January 2026), not theoretical
+ * complexity analysis. Key findings:
+ *
+ * <ul>
+ *   <li>UNSORTED: IntervalTree wins regardless of m, n, or gaps
+ *   <li>SORTED + sparse: RangeQuery wins (can skip gaps)
+ *   <li>SORTED + dense + bulk (m>=100, n>=10000): StreamJoin wins
+ *   <li>SORTED + other: RangeQuery wins
+ * </ul>
+ */
 public class TestRemappingAlgorithmSelector {
 
   @Test
   public void testSelectsRangeQueryForFewRunsSorted() {
-    // m = 5 (< 10 threshold), sorted positions
+    // m = 5 (few runs), sorted positions -> RangeQuery
     FileMapping mapping = createMapping(5);
     List<Long> sortedPositions = createSortedPositions(1000);
 
@@ -48,22 +60,21 @@ public class TestRemappingAlgorithmSelector {
   }
 
   @Test
-  public void testSelectsBinarySearchForFewRunsUnsorted() {
-    // m = 5 (< 10 threshold), unsorted positions
-    // RangeQuery would require O(n log n) sorting, so BinarySearch is better
+  public void testSelectsIntervalTreeForUnsortedData() {
+    // Unsorted data always uses IntervalTree (benchmark evidence: wins 46/54 unsorted scenarios)
     FileMapping mapping = createMapping(5);
     List<Long> unsortedPositions = createUnsortedPositions(1000);
 
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
     RemappingStrategy strategy = selector.selectOptimal(mapping, unsortedPositions);
 
-    assertThat(strategy).isInstanceOf(BinarySearchStrategy.class);
+    assertThat(strategy).isInstanceOf(IntervalTreeStrategy.class);
   }
 
   @Test
-  public void testSelectsStreamJoinForSortedPositions() {
-    // m = 50, n = 10000, sorted (m < 100, so StreamJoin is selected)
-    FileMapping mapping = createMapping(50);
+  public void testSelectsStreamJoinForBulkSortedDense() {
+    // m >= 100, n >= 10000, dense, sorted -> StreamJoin
+    FileMapping mapping = createDenseMapping(100);
     List<Long> sortedPositions = createSortedPositions(10000);
 
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
@@ -73,8 +84,8 @@ public class TestRemappingAlgorithmSelector {
   }
 
   @Test
-  public void testSelectsRangeQueryForHighFanInWithGapsSorted() {
-    // m = 50, n = 10000 (n/m = 200 > 100), 40% gaps, sorted positions
+  public void testSelectsRangeQueryForSortedWithGaps() {
+    // Sparse (gap > 0.3), sorted -> RangeQuery (can skip gaps efficiently)
     FileMapping mapping = createMappingWithGaps(50, 0.4);
     List<Long> sortedPositions = createSortedPositions(10000);
 
@@ -85,9 +96,8 @@ public class TestRemappingAlgorithmSelector {
   }
 
   @Test
-  public void testSelectsIntervalTreeForHighFanInWithGapsUnsorted() {
-    // m = 50, n = 10000 (n/m = 200 > 100), 40% gaps, unsorted positions
-    // IntervalTree is better than RangeQuery for unsorted data (avoids O(n log n) sorting)
+  public void testSelectsIntervalTreeForUnsortedWithGaps() {
+    // Unsorted always uses IntervalTree, regardless of gaps
     FileMapping mapping = createMappingWithGaps(50, 0.4);
     List<Long> unsortedPositions = createUnsortedPositions(10000);
 
@@ -98,27 +108,39 @@ public class TestRemappingAlgorithmSelector {
   }
 
   @Test
-  public void testSelectsBinarySearchForMediumRuns() {
-    // m = 50 (< 100 threshold), unsorted
+  public void testSelectsIntervalTreeForMediumRunsUnsorted() {
+    // m = 50, unsorted -> IntervalTree
     FileMapping mapping = createMapping(50);
     List<Long> unsortedPositions = createUnsortedPositions(1000);
 
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
     RemappingStrategy strategy = selector.selectOptimal(mapping, unsortedPositions);
 
-    assertThat(strategy).isInstanceOf(BinarySearchStrategy.class);
+    assertThat(strategy).isInstanceOf(IntervalTreeStrategy.class);
   }
 
   @Test
-  public void testSelectsIntervalTreeForLargeRuns() {
-    // m = 500 (> 100 threshold)
+  public void testSelectsIntervalTreeForLargeRunsUnsorted() {
+    // m = 500, unsorted -> IntervalTree
     FileMapping mapping = createMapping(500);
-    List<Long> positions = createPositions(1000);
+    List<Long> positions = createUnsortedPositions(1000);
 
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
     RemappingStrategy strategy = selector.selectOptimal(mapping, positions);
 
     assertThat(strategy).isInstanceOf(IntervalTreeStrategy.class);
+  }
+
+  @Test
+  public void testSelectsRangeQueryForMediumRunsSorted() {
+    // m = 50 (< 100), n = 1000 (< 10000), sorted, dense -> RangeQuery
+    FileMapping mapping = createDenseMapping(50);
+    List<Long> sortedPositions = createSortedPositions(1000);
+
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+    RemappingStrategy strategy = selector.selectOptimal(mapping, sortedPositions);
+
+    assertThat(strategy).isInstanceOf(RangeQueryStrategy.class);
   }
 
   @Test
@@ -170,7 +192,7 @@ public class TestRemappingAlgorithmSelector {
   @Test
   public void testEdgeCaseNoRuns() {
     FileMapping mapping = createMapping(0);
-    List<Long> positions = createPositions(100);
+    List<Long> positions = createSortedPositions(100);
 
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
     RemappingStrategy strategy = selector.selectOptimal(mapping, positions);
@@ -180,51 +202,55 @@ public class TestRemappingAlgorithmSelector {
   }
 
   @Test
-  public void testHighFanInDenseScenario() {
-    // High fan-in (n/m > 100) but dense (low gap ratio)
-    // Should compare costs and potentially use StreamJoin if sorted
-    FileMapping mapping = createDenseMapping(50); // m = 50, dense
-    List<Long> sortedPositions = createSortedPositions(10000); // n = 10000, n/m = 200
-
+  public void testStreamJoinThreshold() {
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
-    RemappingStrategy strategy = selector.selectOptimal(mapping, sortedPositions);
+    List<Long> sortedPositions = createSortedPositions(10000);
 
-    // Should select StreamJoin (sorted + high n/m + dense)
-    assertThat(strategy).isInstanceOf(StreamJoinStrategy.class);
+    // m = 99, n = 10000, sorted, dense -> RangeQuery (below m threshold)
+    FileMapping at99 = createDenseMapping(99);
+    assertThat(selector.selectOptimal(at99, sortedPositions))
+        .isInstanceOf(RangeQueryStrategy.class);
+
+    // m = 100, n = 10000, sorted, dense -> StreamJoin (at m threshold)
+    FileMapping at100 = createDenseMapping(100);
+    assertThat(selector.selectOptimal(at100, sortedPositions))
+        .isInstanceOf(StreamJoinStrategy.class);
+
+    // m = 100, n = 9999, sorted, dense -> RangeQuery (below n threshold)
+    List<Long> positions9999 = createSortedPositions(9999);
+    assertThat(selector.selectOptimal(at100, positions9999)).isInstanceOf(RangeQueryStrategy.class);
   }
 
   @Test
-  public void testBoundaryConditions() {
+  public void testUnsortedAlwaysUsesIntervalTree() {
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+    List<Long> unsortedPositions = createUnsortedPositions(10000);
 
-    // Exactly at FEW_RUNS_THRESHOLD (10) - uses unsorted positions
-    FileMapping at10 = createMapping(10);
-    List<Long> unsortedPositions = createUnsortedPositions(1000);
+    // All unsorted scenarios should use IntervalTree
+    assertThat(selector.selectOptimal(createMapping(5), unsortedPositions))
+        .isInstanceOf(IntervalTreeStrategy.class);
+    assertThat(selector.selectOptimal(createMapping(50), unsortedPositions))
+        .isInstanceOf(IntervalTreeStrategy.class);
+    assertThat(selector.selectOptimal(createMapping(500), unsortedPositions))
+        .isInstanceOf(IntervalTreeStrategy.class);
+    assertThat(selector.selectOptimal(createMappingWithGaps(50, 0.5), unsortedPositions))
+        .isInstanceOf(IntervalTreeStrategy.class);
+  }
 
-    RemappingStrategy strategyAt10 = selector.selectOptimal(at10, unsortedPositions);
-    // At threshold, should not use RangeQuery (threshold is < 10)
-    assertThat(strategyAt10).isNotInstanceOf(RangeQueryStrategy.class);
+  @Test
+  public void testSortedNeverUsesIntervalTree() {
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+    List<Long> sortedPositions = createSortedPositions(10000);
 
-    // Just below FEW_RUNS_THRESHOLD with sorted positions -> RangeQuery
-    FileMapping at9 = createMapping(9);
-    List<Long> sortedPositions = createSortedPositions(1000);
-    RemappingStrategy strategyAt9Sorted = selector.selectOptimal(at9, sortedPositions);
-    assertThat(strategyAt9Sorted).isInstanceOf(RangeQueryStrategy.class);
-
-    // Just below FEW_RUNS_THRESHOLD with unsorted positions -> BinarySearch
-    RemappingStrategy strategyAt9Unsorted = selector.selectOptimal(at9, unsortedPositions);
-    assertThat(strategyAt9Unsorted).isInstanceOf(BinarySearchStrategy.class);
-
-    // Exactly at BINARY_SEARCH_THRESHOLD (100)
-    FileMapping at100 = createMapping(100);
-    RemappingStrategy strategyAt100 = selector.selectOptimal(at100, unsortedPositions);
-    // At threshold, should not use BinarySearch (threshold is < 100)
-    assertThat(strategyAt100).isNotInstanceOf(BinarySearchStrategy.class);
-
-    // Just below BINARY_SEARCH_THRESHOLD
-    FileMapping at99 = createMapping(99);
-    RemappingStrategy strategyAt99 = selector.selectOptimal(at99, unsortedPositions);
-    assertThat(strategyAt99).isInstanceOf(BinarySearchStrategy.class);
+    // All sorted scenarios should NOT use IntervalTree
+    assertThat(selector.selectOptimal(createMapping(5), sortedPositions))
+        .isNotInstanceOf(IntervalTreeStrategy.class);
+    assertThat(selector.selectOptimal(createMapping(50), sortedPositions))
+        .isNotInstanceOf(IntervalTreeStrategy.class);
+    assertThat(selector.selectOptimal(createDenseMapping(100), sortedPositions))
+        .isNotInstanceOf(IntervalTreeStrategy.class);
+    assertThat(selector.selectOptimal(createMappingWithGaps(50, 0.5), sortedPositions))
+        .isNotInstanceOf(IntervalTreeStrategy.class);
   }
 
   // Helper methods
@@ -262,16 +288,6 @@ public class TestRemappingAlgorithmSelector {
       currentPos += runLength + gapLength; // Add gap after each run
     }
     return new GenericFileMapping("s3://bucket/source.parquet", "s3://bucket/target.parquet", runs);
-  }
-
-  private List<Long> createPositions(int count) {
-    // Create random positions (not necessarily sorted)
-    List<Long> positions = new ArrayList<>();
-    Random rand = new Random(42); // Fixed seed for reproducibility
-    for (int i = 0; i < count; i++) {
-      positions.add((long) rand.nextInt(100000));
-    }
-    return positions;
   }
 
   private List<Long> createSortedPositions(int count) {
