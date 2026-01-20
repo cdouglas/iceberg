@@ -73,15 +73,28 @@ public class TestRemappingAlgorithmSelector {
   }
 
   @Test
-  public void testSelectsRangeQueryForHighFanInWithGaps() {
-    // m = 50, n = 10000 (n/m = 200 > 100), 40% gaps
+  public void testSelectsRangeQueryForHighFanInWithGapsSorted() {
+    // m = 50, n = 10000 (n/m = 200 > 100), 40% gaps, sorted positions
     FileMapping mapping = createMappingWithGaps(50, 0.4);
-    List<Long> positions = createPositions(10000);
+    List<Long> sortedPositions = createSortedPositions(10000);
 
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
-    RemappingStrategy strategy = selector.selectOptimal(mapping, positions);
+    RemappingStrategy strategy = selector.selectOptimal(mapping, sortedPositions);
 
     assertThat(strategy).isInstanceOf(RangeQueryStrategy.class);
+  }
+
+  @Test
+  public void testSelectsIntervalTreeForHighFanInWithGapsUnsorted() {
+    // m = 50, n = 10000 (n/m = 200 > 100), 40% gaps, unsorted positions
+    // IntervalTree is better than RangeQuery for unsorted data (avoids O(n log n) sorting)
+    FileMapping mapping = createMappingWithGaps(50, 0.4);
+    List<Long> unsortedPositions = createUnsortedPositions(10000);
+
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+    RemappingStrategy strategy = selector.selectOptimal(mapping, unsortedPositions);
+
+    assertThat(strategy).isInstanceOf(IntervalTreeStrategy.class);
   }
 
   @Test
