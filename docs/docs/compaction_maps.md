@@ -243,18 +243,17 @@ Compaction map: Run(0, 0, 2), Run(3, 2, 2)  // Gap at source position 2
 
 ### 3. Conflict Resolution Options
 
-**For Compaction Operations (Spark 3.5):**
+**For Compaction Operations (Spark 3.5 and 4.0):**
 
 Automatic conflict resolution is available via `write.compaction.resolve-delete-conflicts=true`. When enabled, compactions automatically detect and remap conflicting position deletes from concurrent transactions. This is the recommended approach for high-concurrency workloads.
 
 **Supported Delete Types:**
 - ✅ **File-scoped position deletes**: Deletes with `referencedDataFile` set (created with `DeleteGranularity.FILE`)
 - ✅ **Multi-file position deletes**: Deletes spanning multiple data files (created with `DeleteGranularity.PARTITION`) - these are detected as potential conflicts and resolved by reading delete content
+- ✅ **Deletion vectors (V3)**: Single-file scoped DVs are remapped using core infrastructure
 - ❌ **Equality deletes**: Not file-scoped, handled by standard Iceberg semantics (not conflicts)
 
 **Limitations:**
-- Only available for V2 format tables (position delete files)
-- V3+ uses Deletion Vectors which have different semantics
 - Subject to `max-files` limit for safety
 - Multi-file position deletes require reading delete file content for resolution (additional I/O)
 
@@ -378,6 +377,5 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios. See
 
 ## Future Work
 
-1. **Spark 4.0 Conflict Resolution Parity** - Port `SparkCompactionConflictResolver` and `SparkRewriteDataFilesCommitManager` from Spark 3.5 to Spark 4.0
-2. **Application Transaction Conflict Resolution** - Automatic remapping in BaseRowDelta for application-level position delete conflicts
-3. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
+1. **Application Transaction Conflict Resolution** - Automatic remapping in BaseRowDelta for application-level position delete conflicts
+2. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
