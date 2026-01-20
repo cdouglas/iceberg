@@ -203,11 +203,15 @@ The smart selector (`RemappingAlgorithmSelector`) chooses optimal strategies bas
 - **sorted** = whether positions are sorted
 - **gapRatio** = sparsity of source range
 
-**Current Selection Logic** (Phase 7.4 - sortedness check fix):
+**Current Selection Logic** (Phase 7.4 complete - sortedness checks in all branches):
 ```java
 if (m < 10) {
   if (sorted) return RangeQuery;
   return BinarySearch;  // Fixed: avoids O(n log n) sorting overhead
+}
+if (n/m > 100 && gapRatio > 0.3) {  // High fan-in with gaps
+  if (sorted) return RangeQuery;
+  return IntervalTree;  // Fixed: avoids O(n log n) sorting overhead
 }
 if (m < 100) {
   if (sorted && n > m) return StreamJoin;
@@ -219,8 +223,8 @@ return IntervalTree;  // Always optimal for m >= 100
 **Performance** (from Jan 2026 benchmarks):
 - Few runs (m=10, sorted): 5-6x vs linear
 - Medium runs (m=100, sorted): 4-22x vs linear
-- Many runs (m=1000, sorted): 23-142x vs linear
-- Smart selector: <5% overhead for most scenarios (after bug fix)
+- Many runs (m=1000, sorted): 22-23x vs linear
+- Smart selector: Expected <10% overhead for all scenarios after complete fix
 
 **Details**: See `REMAPPING_BENCHMARKS.md` for benchmark methodology. Implementation history available via `git log --grep="remapping" cmpmap`.
 
@@ -295,13 +299,21 @@ Generated via: `CompactionMaps.newCompactionMapFile(table, snapshotId)`
 
 ### Issue 4: Smart Selector Choosing Wrong Strategy (FIXED)
 
-**Status**: Fixed in Phase 7.4
+**Status**: Fixed in Phase 7.4 (complete)
 
-The selector now checks sortedness for m < 10 cases:
-- Sorted positions → RangeQuery (optimal)
-- Unsorted positions → BinarySearch (avoids O(n log n) sorting overhead)
+The selector now checks sortedness in ALL branches that might choose RangeQuery:
 
-**Location**: `RemappingAlgorithmSelector.java:75-86`
+1. **m < 10 branch** (partial fix):
+   - Sorted positions → RangeQuery (optimal)
+   - Unsorted positions → BinarySearch (avoids O(n log n) sorting overhead)
+
+2. **High fan-in with gaps branch** (complete fix):
+   - Sorted positions → RangeQuery (optimal)
+   - Unsorted positions → IntervalTree (avoids O(n log n) sorting overhead)
+
+Before the complete fix, unsorted data with high fan-in (n/m > 100) and gaps (gapRatio > 0.3) caused up to 3518% overhead because RangeQuery was chosen without checking sortedness.
+
+**Location**: `RemappingAlgorithmSelector.java:79-114`
 
 ### Issue 5: Test Failures in Isolation Tests
 

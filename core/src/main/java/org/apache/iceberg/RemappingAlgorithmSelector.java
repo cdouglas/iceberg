@@ -40,7 +40,8 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
  * <ul>
  *   <li>m < 10, sorted: Use RangeQuery (optimal for few runs)
  *   <li>m < 10, unsorted: Use BinarySearch (no sorting overhead)
- *   <li>n/m > 100 with gaps: Use RangeQuery (high fan-in with sparsity)
+ *   <li>n/m > 100 with gaps, sorted: Use RangeQuery (high fan-in with sparsity)
+ *   <li>n/m > 100 with gaps, unsorted: Use IntervalTree (avoids sorting overhead)
  *   <li>m < 100, sorted && n > m: Use StreamJoin (optimal for sorted bulk)
  *   <li>m < 100, otherwise: Use BinarySearch (simple and fast)
  *   <li>m >= 100: Use IntervalTree (optimal for many runs)
@@ -88,19 +89,28 @@ public class RemappingAlgorithmSelector {
 
     // High fan-in (many positions per run)
     if (n / m > HIGH_FAN_IN_THRESHOLD) {
+      boolean sorted = isSorted(positions);
       double gapRatio = estimateGapRatio(mapping);
 
       if (gapRatio > SIGNIFICANT_GAPS_THRESHOLD) {
-        // Sparse runs with high fan-in: RangeQuery optimal
-        return new RangeQueryStrategy(runs);
+        // Sparse runs with high fan-in
+        if (sorted) {
+          // RangeQuery optimal for sorted data (no sorting overhead)
+          return new RangeQueryStrategy(runs);
+        } else {
+          // For unsorted data, IntervalTree avoids O(n log n) sorting
+          return new IntervalTreeStrategy(runs);
+        }
       }
 
-      // Dense runs: compare costs
-      long indexCost = (long) n * log2(n);
-      long lookupCost = (long) n * log2(m);
+      // Dense runs: compare costs only for sorted data
+      if (sorted) {
+        long indexCost = (long) n * log2(n);
+        long lookupCost = (long) n * log2(m);
 
-      if (indexCost + n < lookupCost) {
-        return new RangeQueryStrategy(runs);
+        if (indexCost + n < lookupCost) {
+          return new RangeQueryStrategy(runs);
+        }
       }
     }
 
