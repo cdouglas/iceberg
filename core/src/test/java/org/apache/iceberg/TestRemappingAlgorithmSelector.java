@@ -36,15 +36,28 @@ import org.junit.jupiter.api.Test;
 public class TestRemappingAlgorithmSelector {
 
   @Test
-  public void testSelectsRangeQueryForFewRuns() {
-    // m = 5 (< 10 threshold)
+  public void testSelectsRangeQueryForFewRunsSorted() {
+    // m = 5 (< 10 threshold), sorted positions
     FileMapping mapping = createMapping(5);
-    List<Long> positions = createPositions(1000);
+    List<Long> sortedPositions = createSortedPositions(1000);
 
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
-    RemappingStrategy strategy = selector.selectOptimal(mapping, positions);
+    RemappingStrategy strategy = selector.selectOptimal(mapping, sortedPositions);
 
     assertThat(strategy).isInstanceOf(RangeQueryStrategy.class);
+  }
+
+  @Test
+  public void testSelectsBinarySearchForFewRunsUnsorted() {
+    // m = 5 (< 10 threshold), unsorted positions
+    // RangeQuery would require O(n log n) sorting, so BinarySearch is better
+    FileMapping mapping = createMapping(5);
+    List<Long> unsortedPositions = createUnsortedPositions(1000);
+
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+    RemappingStrategy strategy = selector.selectOptimal(mapping, unsortedPositions);
+
+    assertThat(strategy).isInstanceOf(BinarySearchStrategy.class);
   }
 
   @Test
@@ -171,28 +184,33 @@ public class TestRemappingAlgorithmSelector {
   public void testBoundaryConditions() {
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
 
-    // Exactly at FEW_RUNS_THRESHOLD (10)
+    // Exactly at FEW_RUNS_THRESHOLD (10) - uses unsorted positions
     FileMapping at10 = createMapping(10);
-    List<Long> positions = createPositions(1000);
+    List<Long> unsortedPositions = createUnsortedPositions(1000);
 
-    RemappingStrategy strategyAt10 = selector.selectOptimal(at10, positions);
+    RemappingStrategy strategyAt10 = selector.selectOptimal(at10, unsortedPositions);
     // At threshold, should not use RangeQuery (threshold is < 10)
     assertThat(strategyAt10).isNotInstanceOf(RangeQueryStrategy.class);
 
-    // Just below FEW_RUNS_THRESHOLD
+    // Just below FEW_RUNS_THRESHOLD with sorted positions -> RangeQuery
     FileMapping at9 = createMapping(9);
-    RemappingStrategy strategyAt9 = selector.selectOptimal(at9, positions);
-    assertThat(strategyAt9).isInstanceOf(RangeQueryStrategy.class);
+    List<Long> sortedPositions = createSortedPositions(1000);
+    RemappingStrategy strategyAt9Sorted = selector.selectOptimal(at9, sortedPositions);
+    assertThat(strategyAt9Sorted).isInstanceOf(RangeQueryStrategy.class);
+
+    // Just below FEW_RUNS_THRESHOLD with unsorted positions -> BinarySearch
+    RemappingStrategy strategyAt9Unsorted = selector.selectOptimal(at9, unsortedPositions);
+    assertThat(strategyAt9Unsorted).isInstanceOf(BinarySearchStrategy.class);
 
     // Exactly at BINARY_SEARCH_THRESHOLD (100)
     FileMapping at100 = createMapping(100);
-    RemappingStrategy strategyAt100 = selector.selectOptimal(at100, createUnsortedPositions(1000));
+    RemappingStrategy strategyAt100 = selector.selectOptimal(at100, unsortedPositions);
     // At threshold, should not use BinarySearch (threshold is < 100)
     assertThat(strategyAt100).isNotInstanceOf(BinarySearchStrategy.class);
 
     // Just below BINARY_SEARCH_THRESHOLD
     FileMapping at99 = createMapping(99);
-    RemappingStrategy strategyAt99 = selector.selectOptimal(at99, createUnsortedPositions(1000));
+    RemappingStrategy strategyAt99 = selector.selectOptimal(at99, unsortedPositions);
     assertThat(strategyAt99).isInstanceOf(BinarySearchStrategy.class);
   }
 
