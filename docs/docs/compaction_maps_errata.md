@@ -179,7 +179,7 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 **Fixed Issues (Removed from Active List):**
 - ~~Normal scans vs staged scans~~ - ✅ FIXED: Staged scans now work with explicit metadata column selection
 - ~~V3 Deletion Vector conflict resolution~~ - ✅ FIXED: SparkCompactionConflictResolver now supports DVs
-- ~~Spark 4.0 Conflict Resolution Parity~~ - ✅ FIXED: SparkCompactionConflictResolver and SparkRewriteDataFilesCommitManager ported to Spark 4.0
+- ~~Spark 4.0 Conflict Resolution Parity~~ - ✅ FIXED in commit 539432b51
 - ~~Compaction map location not in manifests~~ - ✅ FIXED in commit 41324b697
 - ~~Target-pending placeholder bug~~ - ✅ FIXED in commit e8287a752
 - ~~Spark 3.5 format v3 + position tracking~~ - ✅ FIXED in commit e8287a752

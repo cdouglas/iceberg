@@ -52,15 +52,15 @@ SERIALIZABLE Isolation
         └─> WITH maps → no conflict (structural change only)
         └─> WITHOUT maps → ValidationException (data change)
 
-Compaction Conflict Resolution (Spark 3.5)
+Compaction Conflict Resolution (Spark 3.5 and 4.0)
 └─> SparkRewriteDataFilesCommitManager.commitFileGroups()
     └─> detectAndResolveConflicts()
         └─> CompactionConflictDetector.detectConflicts()
             └─> Scans manifests for conflicting delete files
         └─> SparkCompactionConflictResolver.resolve()
-            └─> Read conflicting position deletes via Spark
-            └─> Remap using PositionDeleteRemapper
-            └─> Write new delete files referencing compacted files
+            └─> Separate DVs from position delete files
+            └─> DVs: Remap using PositionDeleteRemapper.remapDVBulk()
+            └─> Position deletes: Read via Spark, remap, write new files
             └─> Include remapped deletes in commit
 ```
 
@@ -108,12 +108,14 @@ Compaction Conflict Resolution (Spark 3.5)
 - `DeleteConflictInfo.java` - Metadata about detected conflicts
 - `PositionDeletesScanTasks.java` - Helper to create scan tasks for delete files
 
-**Spark Layer** (`spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/`):
+**Spark Layer** (`spark/v3.5/` and `spark/v4.0/`):
 
-*Conflict Resolution:*
+*Conflict Resolution (both Spark 3.5 and 4.0):*
 - `SparkRewriteDataFilesCommitManager.java` - Extends core commit manager with conflict resolution
-- `SparkCompactionConflictResolver.java` - Reads, remaps, and writes position deletes using Spark
+- `SparkCompactionConflictResolver.java` - Reads, remaps, and writes position deletes and DVs using Spark
 - `RewriteDataFilesSparkAction.java` - Uses SparkRewriteDataFilesCommitManager
+
+*Note*: Spark 4.0 requires cast to `org.apache.spark.sql.classic.SparkSession` for `cloneSession()`
 
 **Test Suite** (`core/src/test/java/org/apache/iceberg/`):
 - Core: TestCompactionMap{Serialization,Builder,Storage,Integration,CommitFlow}
@@ -122,8 +124,8 @@ Compaction Conflict Resolution (Spark 3.5)
 - Remapping: TestRemapping{Strategies,StrategiesIntegration,AlgorithmSelector}
 - Benchmarks: RemappingAlgorithmBenchmark (324 configurations)
 
-**Spark Test Suite** (`spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/`):
-- TestSparkCompactionConflictResolution (6 tests) - End-to-end conflict resolution tests
+**Spark Test Suite** (both `spark/v3.5/` and `spark/v4.0/`):
+- TestSparkCompactionConflictResolution (12 tests each: 6 V2 + 6 V3) - End-to-end conflict resolution tests
 
 ## Critical Implementation Patterns
 
@@ -235,7 +237,7 @@ return IntervalTree;  // Always optimal for m >= 100
 // Isolation level (affects validation behavior)
 "write.delete.isolation-level" = "serializable" (default)
 
-// Enable automatic conflict resolution during compaction (Spark 3.5)
+// Enable automatic conflict resolution during compaction (Spark 3.5 and 4.0)
 "write.compaction.resolve-delete-conflicts" = "true" (default: false)
 
 // Maximum conflicting delete files to resolve automatically
@@ -358,9 +360,9 @@ Jump directly to these sections instead of reading entire files:
 - `BaseRowDelta.java:219-238` - validateNoCompactionConflicts()
 - `CompactionConflictDetector.java` - Scans manifests for conflicting delete files
 
-**Compaction Conflict Resolution (Spark 3.5)**:
+**Compaction Conflict Resolution (Spark 3.5 and 4.0)**:
 - `SparkRewriteDataFilesCommitManager.java:185-234` - detectAndResolveConflicts()
-- `SparkCompactionConflictResolver.java` - Read, remap, write position deletes
+- `SparkCompactionConflictResolver.java` - Read, remap, write position deletes and DVs
 
 **Isolation Logic**:
 - `MergingSnapshotProducer.java:430-508` - validateCompactionAwareConflicts()
@@ -464,9 +466,8 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 - `REMAPPING_BENCHMARKS.md` - JMH benchmark documentation and methodology
 - `benchmark/remapping-optimization/` - Benchmark execution and analysis tools
 
-**Implementation Plans**:
-- `docs/STAGED_SCAN_METADATA_FIX_PLAN.md` - Plan to fix staged scans for position tracking (10-20% perf gain)
-- `docs/staged_scan_investigation.md` - Investigation of staged scan metadata column issues
+**Historical Investigation** (resolved):
+- `docs/staged_scan_investigation.md` - Staged scan metadata column investigation (fixed in commit 0fef1aee2)
 
 **Implementation Context**:
 - `CLAUDE.md` - This file (practical guidance for working with compaction maps)
@@ -474,26 +475,24 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 ## Branch and Status
 
 **Branch**: `cmpmap` (NOT `vldb` - that's separate prototype)
-**Status**: Implementation complete, compaction conflict resolution implemented
+**Status**: Implementation complete, full conflict resolution for Spark 3.5 and 4.0
 **Test Status**: 150+ tests passing ✅
 **Documentation Status**: Current ✅
 
 **Recent Additions**:
+- Spark 4.0 conflict resolution parity (commit 539432b51)
+- V3 Deletion Vector conflict resolution support (commit 368ae59e9)
+- Staged scan optimization for position tracking (commit 0fef1aee2)
 - Compaction conflict resolution (SparkRewriteDataFilesCommitManager, SparkCompactionConflictResolver)
-- TestSparkCompactionConflictResolution (6 integration tests)
+- TestSparkCompactionConflictResolution (12 tests: V2 + V3 for both Spark versions)
 - Configuration properties for opt-in conflict resolution
-- Spark 4.0 position tracking fix for V3 format + Parquet (commit 65dedde35)
-- Documentation: Reframed sorted/Z-ordered as "out of scope by design" (not limitations)
 
 **Pending Work**:
-1. Staged scan metadata column support - Fix staged scans to support `_file`/`_pos` for 10-20% perf gain (see `docs/STAGED_SCAN_METADATA_FIX_PLAN.md`)
-2. Fix smart selector for m < 10 unsorted cases (Phase 7.4)
-3. Application transaction conflict resolution (BaseRowDelta auto-remapping)
-4. V3 Deletion Vector conflict resolution support
-5. Spark 4.0 conflict resolution parity (port SparkCompactionConflictResolver from Spark 3.5)
+1. Fix smart selector for m < 10 unsorted cases (Phase 7.4)
+2. Application transaction conflict resolution (BaseRowDelta auto-remapping)
 
 ---
 
 *Generated during Claude Code sessions, 2026-01-07 to 2026-01-19*
 *Models: Claude Sonnet 4.5, Claude Opus 4.5*
-*Total Implementation: ~18.2k lines across core, tests, and documentation*
+*Total Implementation: ~19k lines across core, tests, and documentation*
