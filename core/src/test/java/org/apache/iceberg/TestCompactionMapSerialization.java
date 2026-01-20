@@ -183,6 +183,54 @@ public class TestCompactionMapSerialization {
   }
 
   @Test
+  public void testTargetPathInterning() throws IOException {
+    // Create multiple file mappings that all share the same target file
+    // This simulates a bin-pack compaction where many small files are combined into one
+    String sharedTargetPath = "s3://bucket/warehouse/db/table/data/compacted-output.parquet";
+
+    FileMapping mapping1 =
+        new GenericFileMapping(
+            "s3://bucket/warehouse/db/table/data/file1.parquet",
+            sharedTargetPath,
+            ImmutableList.of(new GenericRun(0L, 0L, 1000L)));
+
+    FileMapping mapping2 =
+        new GenericFileMapping(
+            "s3://bucket/warehouse/db/table/data/file2.parquet",
+            sharedTargetPath,
+            ImmutableList.of(new GenericRun(0L, 1000L, 500L)));
+
+    FileMapping mapping3 =
+        new GenericFileMapping(
+            "s3://bucket/warehouse/db/table/data/file3.parquet",
+            sharedTargetPath,
+            ImmutableList.of(new GenericRun(0L, 1500L, 750L)));
+
+    CompactionMap originalMap =
+        new GenericCompactionMap(
+            SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, ImmutableList.of(mapping1, mapping2, mapping3));
+
+    // Write and read back - this should trigger interning
+    CompactionMap readMap = writeAndRead(originalMap);
+
+    assertThat(readMap.fileMappings()).hasSize(3);
+
+    // After interning, all three mappings should share the same String instance for targetFile
+    String target1 = readMap.fileMappings().get(0).targetFile();
+    String target2 = readMap.fileMappings().get(1).targetFile();
+    String target3 = readMap.fileMappings().get(2).targetFile();
+
+    // Verify values are equal
+    assertThat(target1).isEqualTo(sharedTargetPath);
+    assertThat(target2).isEqualTo(sharedTargetPath);
+    assertThat(target3).isEqualTo(sharedTargetPath);
+
+    // Verify object identity (same instance due to interning)
+    assertThat(target1).isSameAs(target2);
+    assertThat(target2).isSameAs(target3);
+  }
+
+  @Test
   public void testCopy() throws IOException {
     Run run = new GenericRun(0L, 100L, 50L);
     FileMapping mapping =
