@@ -135,6 +135,36 @@ public class GenericCompactionMap extends SupportsIndexProjection
     return new GenericCompactionMap(this);
   }
 
+  /**
+   * Interns target file paths to reduce memory usage when many source files map to the same target.
+   *
+   * <p>In a typical bin-pack compaction, many source files (e.g., 100) map to a single target file.
+   * Without interning, each FileMapping holds a separate String object for the same target path.
+   * This method deduplicates those strings so all mappings to the same target share one String
+   * instance.
+   *
+   * <p>This is called automatically during {@link CompactionMaps#read(InputFile)}.
+   */
+  @SuppressWarnings(
+      "ReferenceEquality") // Intentional: checking if interning provides deduplication
+  void internTargetPaths() {
+    if (fileMappings == null || fileMappings.length == 0) {
+      return;
+    }
+
+    Map<String, String> internedPaths = new HashMap<>();
+    for (FileMapping mapping : fileMappings) {
+      if (mapping instanceof GenericFileMapping) {
+        GenericFileMapping gfm = (GenericFileMapping) mapping;
+        String target = gfm.targetFile();
+        String interned = internedPaths.computeIfAbsent(target, k -> k);
+        if (target != interned) {
+          gfm.set(1, interned);
+        }
+      }
+    }
+  }
+
   // StructLike implementation
   @Override
   public Object get(int pos) {

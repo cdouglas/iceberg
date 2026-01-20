@@ -83,7 +83,14 @@ public class CompactionMaps {
             .build()) {
 
       // Compaction map file should contain exactly one record
-      return maps.iterator().next();
+      CompactionMap map = maps.iterator().next();
+
+      // Intern target paths to reduce memory usage when many sources map to same target
+      if (map instanceof GenericCompactionMap) {
+        ((GenericCompactionMap) map).internTargetPaths();
+      }
+
+      return map;
 
     } catch (IOException e) {
       throw new RuntimeIOException(e, "Cannot read compaction map file: %s", inputFile.location());
