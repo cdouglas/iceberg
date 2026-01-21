@@ -247,12 +247,68 @@ rm -f "$RUN_FILE"
 
 echo ""
 echo "=============================================="
+echo "Running Analysis"
+echo "=============================================="
+
+# Convert JSON to text format for analyze_results.py (expects JMH text output)
+# The merged JSON can be analyzed directly if we update the script, but for now
+# generate a CSV from JSON using python
+
+CSV_FILE="$RESULTS_DIR/results-merged-${TIMESTAMP}.csv"
+echo "Generating CSV from JSON..."
+
+python3 - "$MERGED_FILE" "$CSV_FILE" << 'PYTHON_SCRIPT'
+import json
+import sys
+import csv
+
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+
+with open(sys.argv[2], 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['strategy', 'gap_ratio', 'num_positions', 'num_runs', 'sorted', 'avg_time_us', 'error_us'])
+
+    for result in data:
+        benchmark = result['benchmark'].split('.')[-1]  # e.g., "linearSearch"
+        params = result.get('params', {})
+        score = result['primaryMetric']['score']
+        error = result['primaryMetric']['scoreError']
+
+        writer.writerow([
+            benchmark,
+            params.get('gapRatio', ''),
+            params.get('numPositions', ''),
+            params.get('numRuns', ''),
+            params.get('sorted', ''),
+            f"{score:.3f}",
+            f"{error:.3f}"
+        ])
+
+print(f"Wrote {len(data)} results to {sys.argv[2]}")
+PYTHON_SCRIPT
+
+echo ""
+echo "Running analysis..."
+if [ -f "$SCRIPT_DIR/analyze_results.py" ]; then
+    python3 "$SCRIPT_DIR/analyze_results.py" "$MERGED_FILE" 2>/dev/null || echo "  Analysis script failed (non-fatal)"
+fi
+
+echo ""
+echo "Generating visualizations..."
+if [ -f "$SCRIPT_DIR/visualize_results.py" ] && [ -f "$CSV_FILE" ]; then
+    cd "$SCRIPT_DIR"
+    python3 visualize_results.py "$CSV_FILE" 2>/dev/null || echo "  Visualization failed (non-fatal)"
+    cd - >/dev/null
+fi
+
+echo ""
+echo "=============================================="
 echo "Benchmark Complete"
 echo "=============================================="
-echo "Individual results:"
-ls -lh "$RESULTS_DIR"/results-*-${TIMESTAMP}.json 2>/dev/null | sed 's/^/  /'
 echo ""
-echo "Merged results: $MERGED_FILE"
+echo "Results:"
+ls -lh "$RESULTS_DIR"/results-*-${TIMESTAMP}.* 2>/dev/null | sed 's/^/  /'
 echo ""
-echo "To analyze:"
-echo "  python3 analyze_results.py $MERGED_FILE"
+echo "Charts:"
+ls -lh "$SCRIPT_DIR"/*.png 2>/dev/null | sed 's/^/  /' || echo "  (none generated)"
