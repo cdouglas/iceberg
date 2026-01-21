@@ -1,22 +1,64 @@
-# Remapping Algorithm Benchmark Results
+# Remapping Algorithm Benchmark
 
-This directory contains JMH benchmark results for the remapping algorithm optimization.
+JMH benchmarks for comparing remapping algorithm strategies used in compaction map position remapping.
 
 ## Quick Start
 
-### Local Execution
+### Parallel Execution (Recommended for Large Machines)
+
+For machines with many cores, run all 6 strategies in parallel containers:
 
 ```bash
-# Quick benchmark (~30 min)
-./run_full_benchmark.sh --quick
+cd benchmark/remapping-optimization
 
-# Full benchmark suite (~2-3 hours)
-./run_full_benchmark.sh
+# Default settings (~2 hours with 6 parallel containers)
+./run_parallel_benchmark.sh
+
+# Quick test (~20 min)
+./run_parallel_benchmark.sh quick
+
+# Full suite with more iterations (~4 hours)
+./run_parallel_benchmark.sh full
+
+# Check status of running benchmark
+./run_parallel_benchmark.sh status
+
+# Cancel running benchmark
+./run_parallel_benchmark.sh cancel
 ```
 
-### Docker Compose (Recommended)
+**Features:**
+- Launches 6 containers simultaneously (one per strategy)
+- Reduces full benchmark from ~11 hours to ~2 hours
+- **Reentrant**: Safe to disconnect and reconnect - running again waits for existing containers
+- Automatically merges results, runs analysis, and generates visualizations
 
-Docker Compose provides an isolated environment with persistent results storage.
+### Single Container Execution
+
+For simpler execution or resource-constrained environments:
+
+```bash
+cd benchmark/remapping-optimization
+
+# Default benchmark (~45 min)
+./run_docker_benchmark.sh
+
+# Quick test (~15 min)
+./run_docker_benchmark.sh quick
+
+# Full suite (~2-3 hours)
+./run_docker_benchmark.sh full
+
+# Smart selector only
+./run_docker_benchmark.sh selector
+
+# Custom JMH arguments
+./run_docker_benchmark.sh RemappingAlgorithmBenchmark.intervalTree -wi 2 -i 3 -f 1
+```
+
+### Docker Compose
+
+Docker Compose provides predefined service configurations:
 
 ```bash
 cd benchmark/remapping-optimization
@@ -24,294 +66,222 @@ cd benchmark/remapping-optimization
 # Build the image
 docker compose build
 
-# Run quick benchmark (~10-15 min)
-docker compose run --rm benchmark-quick
+# Run benchmarks
+docker compose run --rm benchmark-quick    # ~10-15 min
+docker compose run --rm benchmark          # ~45 min
+docker compose run --rm benchmark-full     # ~2-3 hours
+docker compose run --rm benchmark-selector # Smart selector only
 
-# Run default benchmark (~45 min)
-docker compose run --rm benchmark
-
-# Run full suite (~2-3 hours)
-docker compose run --rm benchmark-full
-
-# Run only smart selector tests
-docker compose run --rm benchmark-selector
-
-# View results
-docker compose run --rm shell ls -la /benchmark/results
-
-# Copy results to local directory
-docker compose cp benchmark:/benchmark/results ./local-results
-
-# Run analysis on results
+# Run analysis
 docker compose run --rm analyze
 
-# Interactive shell for exploration
+# Interactive shell
 docker compose run --rm shell
-
-# Clean up (removes volume with results)
-docker compose down -v
 ```
 
-### Docker (Manual)
+### Local Execution (No Docker)
 
-For more control, use Docker directly:
+Run directly with Gradle:
 
 ```bash
-# Build from repository root
+# From repository root
+./gradlew :iceberg-core:jmh \
+    -PjmhIncludeRegex=RemappingAlgorithmBenchmark \
+    -PjmhArgs="-wi 3 -i 5 -f 2 -rf json -rff benchmark/remapping-optimization/results/results.json"
+```
+
+## Building the Docker Image
+
+The scripts automatically build the image if needed. To build manually:
+
+```bash
+# From repository root
 docker build -t iceberg-jmh-benchmark -f benchmark/remapping-optimization/Dockerfile .
-
-# Run with results mounted to local directory
-docker run --rm --cpus=4 --memory=8g \
-    -v $(pwd)/benchmark/remapping-optimization/results:/benchmark/results \
-    iceberg-jmh-benchmark
-
-# Quick benchmark
-docker run --rm iceberg-jmh-benchmark RemappingAlgorithmBenchmark -wi 1 -i 2 -f 1
 ```
 
-## Benchmark Organization
+The Dockerfile uses a multi-stage build:
+1. **Builder stage**: Compiles `iceberg-core:jmhJar` with minimal dependencies
+2. **Runtime stage**: JRE with the JMH jar and Python for analysis
 
-### File Naming Convention
+Build time is ~5-10 minutes depending on network and cache state.
+
+## Results
+
+Results are written to the `results/` directory (bind-mounted from the container):
 
 ```
-results_YYYYMMDD_HHMMSS.<format>
+results/
+├── results-merged-TIMESTAMP.json    # Combined results from parallel run
+├── results-merged-TIMESTAMP.csv     # CSV for analysis
+├── results-linearSearch-TIMESTAMP.json
+├── results-binarySearch-TIMESTAMP.json
+├── results-intervalTree-TIMESTAMP.json
+├── results-streamJoin-TIMESTAMP.json
+├── results-rangeQuery-TIMESTAMP.json
+└── results-smartSelector-TIMESTAMP.json
 ```
 
-- **YYYYMMDD**: Date in year-month-day format
-- **HHMMSS**: Time in hour-minute-second format (24-hour)
-- **format**: Output format (txt, json, csv)
-
-### Output Formats
-
-**Text Format (`.txt`)**
-- Human-readable output with full JMH logs
-- Includes warmup iterations, measurement iterations, and final results
-- Best for understanding what happened during the benchmark run
-
-**JSON Format (`.json`)**
-- Machine-readable structured output
-- Contains all benchmark results with full metadata
-- Best for programmatic analysis and visualization
-- Can be parsed with tools like `jq`
-
-**CSV Format (`.csv`)** (if generated)
-- Spreadsheet-friendly tabular format
-- Easy to import into Excel, Google Sheets, or data analysis tools
-- Best for creating charts and comparative analysis
+Charts are generated in the script directory:
+```
+benchmark/remapping-optimization/
+├── chart_strategy_comparison.png
+├── chart_selector_overhead.png
+└── chart_speedup_vs_linear.png
+```
 
 ## Benchmark Parameters
 
-The full benchmark suite tests 54 parameter combinations:
+The full benchmark suite tests 54 parameter combinations per strategy:
 
-**Parameters:**
-- **numRuns**: 10, 100, 1000 (m = number of runs in compaction map)
-- **numPositions**: 1000, 10000, 100000 (n = number of positions to remap)
-- **gapRatio**: 0.0 (dense), 0.3 (moderate gaps), 0.5 (sparse)
-- **sorted**: true, false
+| Parameter | Values | Description |
+|-----------|--------|-------------|
+| `numRuns` | 10, 100, 1000 | Number of runs in compaction map (m) |
+| `numPositions` | 1000, 10000, 100000 | Number of positions to remap (n) |
+| `gapRatio` | 0.0, 0.3, 0.5 | Sparsity: dense, moderate, sparse |
+| `sorted` | true, false | Whether positions are pre-sorted |
 
-**Strategies Benchmarked:**
-1. `linearSearch` - O(m) baseline
-2. `binarySearch` - O(log m) optimized
-3. `intervalTree` - O(log m) with tree structure
-4. `streamJoin` - O(n + m) for sorted positions
-5. `rangeQuery` - O(m log n) for high fan-in
-6. `smartSelector` - Automatic optimal selection
+**Total**: 6 strategies × 54 combinations = 324 benchmark configurations
 
-**Total Configurations**: 6 strategies × 54 parameter combinations = 324 benchmark runs
+### Strategies
 
-## Running Benchmarks
+| Strategy | Complexity | Best For |
+|----------|------------|----------|
+| `linearSearch` | O(m) | Baseline only |
+| `binarySearch` | O(log m) | Never optimal (kept for comparison) |
+| `intervalTree` | O(log m) | Unsorted data |
+| `streamJoin` | O(n + m) | Large sorted workloads |
+| `rangeQuery` | O(m log n) | Sorted data with gaps |
+| `smartSelector` | Varies | Automatic selection |
 
-### Full Suite
+## Analysis
 
-```bash
-./gradlew :iceberg-core:jmh \
-    -PjmhIncludeRegex=RemappingAlgorithmBenchmark \
-    -PjmhArgs="-rf json -rff benchmark/remapping-optimization/results_TIMESTAMP.json"
-```
+### Automatic Analysis
 
-**Duration**: Approximately 2-3 hours
-
-### Specific Scenarios
+The parallel benchmark script runs analysis automatically. For manual analysis:
 
 ```bash
-# Test high fan-in scenario (many positions, few runs)
-./gradlew :iceberg-core:jmh \
-    -PjmhIncludeRegex=RemappingAlgorithmBenchmark \
-    -PjmhParams="numRuns=10,numPositions=100000,gapRatio=0.0,sorted=true"
+# Analyze JSON results
+python3 analyze_results.py results/results-merged-TIMESTAMP.json
 
-# Test sorted bulk remapping
-./gradlew :iceberg-core:jmh \
-    -PjmhIncludeRegex=RemappingAlgorithmBenchmark \
-    -PjmhParams="numRuns=100,numPositions=10000,sorted=true"
-
-# Test smart selector only
-./gradlew :iceberg-core:jmh \
-    -PjmhIncludeRegex=RemappingAlgorithmBenchmark.smartSelector
+# Generate charts from CSV
+python3 visualize_results.py results/results-merged-TIMESTAMP.csv
 ```
 
-## Analyzing Results
+### Analysis Output
 
-### Automated Analysis Script
-
-The `analyze_results.py` script provides comprehensive analysis of benchmark results:
-
-```bash
-# Run analysis on text output
-python3 analyze_results.py results_20260116_162342.txt
-```
-
-**Output includes:**
-- Summary statistics (total scenarios, measurements)
-- Optimal strategy breakdown by scenario characteristics
-- Smart selector overhead analysis
-- Performance comparison by scale
-- CSV export for further analysis
-
-**Example output:**
 ```
 BENCHMARK SUMMARY
 - Total scenarios: 54
 - Total measurements: 324
 
 OPTIMAL STRATEGY BY SCENARIO
-rangeQuery: 24 scenarios (all sorted)
-intervalTree: 24 scenarios (all unsorted)
-streamJoin: 5 scenarios
+intervalTree: 27 scenarios (unsorted data)
+rangeQuery: 20 scenarios (sorted with gaps)
+streamJoin: 7 scenarios (large sorted workloads)
 
-SMART SELECTOR OVERHEAD ANALYSIS
-- Average overhead: 5-10% (expected)
-- High overhead cases flagged for investigation
+SMART SELECTOR OVERHEAD
+- Average overhead: <10% vs manually selecting optimal
+- Overhead > 20% flagged for investigation
 ```
 
-### Visualization
-
-The `visualize_results.py` script generates charts from benchmark data:
-
-```bash
-# Generate all charts from CSV
-python3 visualize_results.py results_20260116_162342.csv
-```
-
-**Requirements:**
-```bash
-pip3 install matplotlib
-```
-
-**Generated charts:**
-1. `chart_strategy_comparison.png` - Performance comparison across all strategies
-2. `chart_selector_overhead.png` - Smart selector overhead vs optimal (top 20 worst cases)
-3. `chart_speedup_vs_linear.png` - Speedup comparison against linear search baseline
-
-### Quick Analysis (Text Output)
-
-```bash
-# View full results
-cat results_20260116_162342.txt
-
-# Extract summary statistics
-grep "Benchmark" results_20260116_162342.txt | grep -A 1 "Mode"
-
-# Find fastest strategies
-grep "avgt" results_20260116_162342.txt | sort -k 6 -n
-```
-
-### Detailed Analysis (JSON Output)
+### Manual Analysis
 
 ```bash
 # Pretty-print JSON
-jq '.' results_20260116_162342.json
+jq '.' results/results-merged-TIMESTAMP.json
 
-# Extract specific benchmark results
-jq '.[] | select(.benchmark | contains("smartSelector"))' results_20260116_162342.json
+# Find smartSelector results
+jq '.[] | select(.benchmark | contains("smartSelector"))' results.json
 
 # Compare strategies for specific parameters
-jq '.[] | select(.params.numRuns == "100" and .params.numPositions == "10000")' results_20260116_162342.json
+jq '.[] | select(.params.numRuns == "100" and .params.numPositions == "10000")' results.json
 ```
 
-## Key Findings (January 2026)
+## Key Findings
 
-Based on 324-configuration benchmarks:
+Based on empirical benchmarks (January 2026):
 
 ### Unsorted Data
-- **Winner**: IntervalTree (wins 46/54 unsorted scenarios)
+- **Winner**: IntervalTree (wins ~85% of unsorted scenarios)
 - **Speedup**: 2-7x over BinarySearch
-- **Why**: O(log m) lookups without sorting overhead
+- **Why**: O(log m) lookups without O(n log n) sorting overhead
 
 ### Sorted Data
-- **Winner**: RangeQuery or StreamJoin (IntervalTree never wins)
+- **Winner**: RangeQuery or StreamJoin
 - **Speedup**: 1.5-3x over IntervalTree
-- **Why**: Can exploit sorted order for efficient scanning
+- **Why**: Exploits sorted order for efficient scanning
 
-### BinarySearch
-- **Never wins** any scenario (removed from selector)
-
-### Smart Selector Decision Tree
+### Smart Selector Logic
 
 ```
 if unsorted:
-    return IntervalTree        # Wins 85% of unsorted scenarios
+    return IntervalTree
 
 if gapRatio > 0.3:
-    return RangeQuery          # Sparse: skip gaps efficiently
+    return RangeQuery      # Skip gaps efficiently
 
 if m >= 100 and n >= 10000:
-    return StreamJoin          # Bulk sorted workloads
+    return StreamJoin      # Bulk sorted workloads
 
-return RangeQuery              # Default for sorted
+return RangeQuery          # Default for sorted
 ```
-
-### Smart Selector Overhead
-- **Expected**: <10% compared to manually selecting optimal
-- **Validation**: Compare `smartSelector` results to best strategy for each scenario
-
-## Interpreting Scores
-
-JMH reports scores in **microseconds per operation** (us/op) with Mode=AverageTime:
-- **Lower is better**
-- Score represents average time to remap all positions
-- Error margin (±) indicates measurement variance
-
-Example:
-```
-RemappingAlgorithmBenchmark.streamJoin  avgt  5  123.456 ± 10.234  us/op
-```
-- Average: 123.456 microseconds per operation
-- Standard deviation: ±10.234 microseconds
-- 5 measurement iterations
 
 ## Troubleshooting
 
-### High Error Margins
+### Container Exits Immediately (Exit Code 137)
 
-If error margins exceed 20% of measurements:
-- Close other applications
-- Use AC power (not battery)
-- Use Docker with dedicated resources (`--cpus=4 --memory=8g`)
-- Increase fork count (`-f 5`)
-
-### Out of Memory
+OOM killed. Reduce heap size or remove memory limits:
 
 ```bash
-# Increase heap in Docker
-docker run --rm -e JAVA_OPTS="-Xms8g -Xmx8g" ...
-
-# Or locally
-./gradlew :iceberg-core:jmh -PjmhJvmArgs="-Xmx16g"
+# Use smaller heap
+docker run --rm -e JAVA_OPTS="-Xms2g -Xmx2g -XX:+UseG1GC" iceberg-jmh-benchmark
 ```
+
+### High Error Margins (>20%)
+
+Indicates noisy measurements. Use Docker for isolation:
+- Close other applications
+- Use AC power (not battery)
+- Increase fork count: `-f 5`
 
 ### Build Failures
 
 ```bash
-# Clean and rebuild
-./gradlew clean :iceberg-core:jmhJar
+# Clean rebuild
+docker build --no-cache -t iceberg-jmh-benchmark -f benchmark/remapping-optimization/Dockerfile .
 
-# Skip checks during build
-./gradlew :iceberg-core:jmhJar -x test -x spotlessCheck
+# Or locally
+./gradlew clean :iceberg-core:jmhJar -x test -x spotlessCheck
 ```
+
+### Stale Docker Compose Cache
+
+Docker Compose can cache old configurations. Use the shell scripts instead, or:
+
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose run --rm benchmark
+```
+
+## JMH Parameters
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-wi` | 3 | Warmup iterations |
+| `-i` | 5 | Measurement iterations |
+| `-f` | 2 | Forks (separate JVM runs) |
+| `-rf` | json | Result format |
+| `-rff` | - | Result file path |
+
+**Presets:**
+- `quick`: `-wi 1 -i 2 -f 1` (~15 min single, ~20 min parallel)
+- `default`: `-wi 3 -i 5 -f 2` (~45 min single, ~2 hours parallel)
+- `full`: `-wi 5 -i 10 -f 3` (~3 hours single, ~4 hours parallel)
 
 ## References
 
 - **Benchmark Implementation**: `core/src/jmh/java/org/apache/iceberg/RemappingAlgorithmBenchmark.java`
-- **Test Data Generation**: `core/src/jmh/java/org/apache/iceberg/RemappingBenchmarkUtils.java`
-- **Documentation**: `REMAPPING_BENCHMARKS.md`
 - **Strategy Implementations**: `core/src/main/java/org/apache/iceberg/*Strategy.java`
+- **Smart Selector**: `core/src/main/java/org/apache/iceberg/RemappingAlgorithmSelector.java`
+- **Detailed Documentation**: `REMAPPING_BENCHMARKS.md` (repository root)
