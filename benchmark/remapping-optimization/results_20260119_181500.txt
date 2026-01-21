@@ -1,0 +1,65 @@
+Starting a Gradle Daemon, 1 busy Daemon could not be reused, use --status for details
+Configuration on demand is an incubating feature.
+> Task :iceberg-core:processResources NO-SOURCE
+> Task :iceberg-api:processResources NO-SOURCE
+> Task :iceberg-common:processResources NO-SOURCE
+> Task :iceberg-core:processTestResources UP-TO-DATE
+> Task :iceberg-core:processJmhResources NO-SOURCE
+> Task :iceberg-bundled-guava:compileJava UP-TO-DATE
+> Task :iceberg-bundled-guava:processResources NO-SOURCE
+> Task :iceberg-bundled-guava:classes UP-TO-DATE
+> Task :iceberg-bundled-guava:compileTestJava NO-SOURCE
+> Task :iceberg-bundled-guava:shadowJar UP-TO-DATE
+> Task :iceberg-common:compileJava UP-TO-DATE
+> Task :iceberg-common:classes UP-TO-DATE
+> Task :iceberg-api:compileJava UP-TO-DATE
+> Task :iceberg-api:classes UP-TO-DATE
+> Task :iceberg-api:compileTestJava UP-TO-DATE
+> Task :iceberg-core:compileJava UP-TO-DATE
+> Task :iceberg-core:classes UP-TO-DATE
+> Task :generateGitProperties
+> Task :buildInfo
+> Task :spotlessInternalRegisterDependencies UP-TO-DATE
+> Task :iceberg-common:jar UP-TO-DATE
+> Task :iceberg-api:jar UP-TO-DATE
+> Task :iceberg-api:processTestResources UP-TO-DATE
+> Task :iceberg-api:testClasses UP-TO-DATE
+> Task :iceberg-api:testJar UP-TO-DATE
+> Task :iceberg-core:compileTestJava UP-TO-DATE
+> Task :iceberg-core:testClasses UP-TO-DATE
+> Task :iceberg-core:compileJmhJava UP-TO-DATE
+> Task :iceberg-core:jmhClasses UP-TO-DATE
+> Task :iceberg-core:jmhRunBytecodeGenerator UP-TO-DATE
+> Task :iceberg-core:jmhCompileGeneratedClasses UP-TO-DATE
+> Task :iceberg-core:jmhJar UP-TO-DATE
+
+> Task :iceberg-core:jmh FAILED
+ERROR: org.openjdk.jmh.runner.RunnerException: ERROR: Another JMH instance might be running. Unable to acquire the JMH lock (/home/chris/work/iceberg/core/build/tmp/jmh/jmh.lock), exiting. Use -Djmh.ignoreLock=true to forcefully continue.
+	at org.openjdk.jmh.runner.Runner.run(Runner.java:210)
+	at org.openjdk.jmh.Main.main(Main.java:71)
+
+> Task :iceberg-core:jmhReport
+JMH Report generated, please open: file:///home/chris/work/iceberg/core/build/reports/jmh/results/index.html
+
+[Incubating] Problems report is available at: file:///home/chris/work/iceberg/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':iceberg-core:jmh'.
+> Process 'command '/usr/lib/jvm/java-17-openjdk-amd64/bin/java'' finished with non-zero exit value 1
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 22s
+20 actionable tasks: 3 executed, 17 up-to-date
