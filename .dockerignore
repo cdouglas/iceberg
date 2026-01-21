@@ -1,0 +1,75 @@
+# Docker ignore file for JMH benchmark builds
+# Reduces build context size significantly
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Build outputs (will be regenerated)
+**/build/
+**/target/
+**/*.class
+**/*.jar
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+.project
+.classpath
+.settings/
+
+# Documentation (not needed for build)
+docs/
+site/
+*.md
+!README.md
+
+# Modules not needed for iceberg-core benchmarks
+spark/
+flink/
+hive-metastore/
+mr/
+kafka-connect/
+aws/
+aws-bundle/
+azure/
+azure-bundle/
+gcp/
+gcp-bundle/
+aliyun/
+dell/
+snowflake/
+delta-lake/
+bigquery/
+nessie/
+arrow/
+orc/
+parquet/
+open-api/
+data/
+bom/
+
+# Test data and fixtures
+**/test-fixtures/
+**/test-data/
+
+# Benchmark results (will be regenerated)
+benchmark/remapping-optimization/results_*.txt
+benchmark/remapping-optimization/results_*.csv
+benchmark/remapping-optimization/results_*.json
+benchmark/remapping-optimization/*.png
+benchmark/remapping-optimization/*.log
+benchmark/remapping-optimization/BENCHMARK_REPORT_*.md
+benchmark/remapping-optimization/venv/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db

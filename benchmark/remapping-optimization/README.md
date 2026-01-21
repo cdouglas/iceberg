@@ -2,6 +2,73 @@
 
 This directory contains JMH benchmark results for the remapping algorithm optimization.
 
+## Quick Start
+
+### Local Execution
+
+```bash
+# Quick benchmark (~30 min)
+./run_full_benchmark.sh --quick
+
+# Full benchmark suite (~2-3 hours)
+./run_full_benchmark.sh
+```
+
+### Docker Compose (Recommended)
+
+Docker Compose provides an isolated environment with persistent results storage.
+
+```bash
+cd benchmark/remapping-optimization
+
+# Build the image
+docker compose build
+
+# Run quick benchmark (~10-15 min)
+docker compose run --rm benchmark-quick
+
+# Run default benchmark (~45 min)
+docker compose run --rm benchmark
+
+# Run full suite (~2-3 hours)
+docker compose run --rm benchmark-full
+
+# Run only smart selector tests
+docker compose run --rm benchmark-selector
+
+# View results
+docker compose run --rm shell ls -la /benchmark/results
+
+# Copy results to local directory
+docker compose cp benchmark:/benchmark/results ./local-results
+
+# Run analysis on results
+docker compose run --rm analyze
+
+# Interactive shell for exploration
+docker compose run --rm shell
+
+# Clean up (removes volume with results)
+docker compose down -v
+```
+
+### Docker (Manual)
+
+For more control, use Docker directly:
+
+```bash
+# Build from repository root
+docker build -t iceberg-jmh-benchmark -f benchmark/remapping-optimization/Dockerfile .
+
+# Run with results mounted to local directory
+docker run --rm --cpus=4 --memory=8g \
+    -v $(pwd)/benchmark/remapping-optimization/results:/benchmark/results \
+    iceberg-jmh-benchmark
+
+# Quick benchmark
+docker run --rm iceberg-jmh-benchmark RemappingAlgorithmBenchmark -wi 1 -i 2 -f 1
+```
+
 ## Benchmark Organization
 
 ### File Naming Convention
@@ -161,25 +228,40 @@ jq '.[] | select(.benchmark | contains("smartSelector"))' results_20260116_16234
 jq '.[] | select(.params.numRuns == "100" and .params.numPositions == "10000")' results_20260116_162342.json
 ```
 
-## Expected Results
+## Key Findings (January 2026)
 
-### Few Runs (m=10)
-- **Winner**: RangeQuery
-- **Speedup**: 100-750x over linear search
-- **Why**: O(m log n) optimal when m is very small
+Based on 324-configuration benchmarks:
 
-### Medium Runs (m=100), Sorted
-- **Winner**: StreamJoin
-- **Speedup**: 100x over linear search
-- **Why**: O(n + m) single pass beats O(n log m)
+### Unsorted Data
+- **Winner**: IntervalTree (wins 46/54 unsorted scenarios)
+- **Speedup**: 2-7x over BinarySearch
+- **Why**: O(log m) lookups without sorting overhead
 
-### Many Runs (m=1000), Sorted
-- **Winner**: StreamJoin
-- **Speedup**: 900x over linear search
-- **Why**: Linear scan dominates over repeated tree lookups
+### Sorted Data
+- **Winner**: RangeQuery or StreamJoin (IntervalTree never wins)
+- **Speedup**: 1.5-3x over IntervalTree
+- **Why**: Can exploit sorted order for efficient scanning
+
+### BinarySearch
+- **Never wins** any scenario (removed from selector)
+
+### Smart Selector Decision Tree
+
+```
+if unsorted:
+    return IntervalTree        # Wins 85% of unsorted scenarios
+
+if gapRatio > 0.3:
+    return RangeQuery          # Sparse: skip gaps efficiently
+
+if m >= 100 and n >= 10000:
+    return StreamJoin          # Bulk sorted workloads
+
+return RangeQuery              # Default for sorted
+```
 
 ### Smart Selector Overhead
-- **Expected**: Within 5-10% of optimal strategy
+- **Expected**: <10% compared to manually selecting optimal
 - **Validation**: Compare `smartSelector` results to best strategy for each scenario
 
 ## Interpreting Scores
@@ -196,6 +278,36 @@ RemappingAlgorithmBenchmark.streamJoin  avgt  5  123.456 ± 10.234  us/op
 - Average: 123.456 microseconds per operation
 - Standard deviation: ±10.234 microseconds
 - 5 measurement iterations
+
+## Troubleshooting
+
+### High Error Margins
+
+If error margins exceed 20% of measurements:
+- Close other applications
+- Use AC power (not battery)
+- Use Docker with dedicated resources (`--cpus=4 --memory=8g`)
+- Increase fork count (`-f 5`)
+
+### Out of Memory
+
+```bash
+# Increase heap in Docker
+docker run --rm -e JAVA_OPTS="-Xms8g -Xmx8g" ...
+
+# Or locally
+./gradlew :iceberg-core:jmh -PjmhJvmArgs="-Xmx16g"
+```
+
+### Build Failures
+
+```bash
+# Clean and rebuild
+./gradlew clean :iceberg-core:jmhJar
+
+# Skip checks during build
+./gradlew :iceberg-core:jmhJar -x test -x spotlessCheck
+```
 
 ## References
 
