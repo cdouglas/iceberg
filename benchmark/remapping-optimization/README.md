@@ -56,29 +56,6 @@ cd benchmark/remapping-optimization
 ./run_docker_benchmark.sh RemappingAlgorithmBenchmark.intervalTree -wi 2 -i 3 -f 1
 ```
 
-### Docker Compose
-
-Docker Compose provides predefined service configurations:
-
-```bash
-cd benchmark/remapping-optimization
-
-# Build the image
-docker compose build
-
-# Run benchmarks
-docker compose run --rm benchmark-quick    # ~10-15 min
-docker compose run --rm benchmark          # ~45 min
-docker compose run --rm benchmark-full     # ~2-3 hours
-docker compose run --rm benchmark-selector # Smart selector only
-
-# Run analysis
-docker compose run --rm analyze
-
-# Interactive shell
-docker compose run --rm shell
-```
-
 ### Local Execution (No Docker)
 
 Run directly with Gradle:
@@ -252,16 +229,6 @@ docker build --no-cache -t iceberg-jmh-benchmark -f benchmark/remapping-optimiza
 
 # Or locally
 ./gradlew clean :iceberg-core:jmhJar -x test -x spotlessCheck
-```
-
-### Stale Docker Compose Cache
-
-Docker Compose can cache old configurations. Use the shell scripts instead, or:
-
-```bash
-docker compose down
-docker compose build --no-cache
-docker compose run --rm benchmark
 ```
 
 ## JMH Parameters
