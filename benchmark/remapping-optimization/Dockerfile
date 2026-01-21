@@ -84,10 +84,10 @@ RUN apt-get update && \
 RUN mkdir -p /benchmark/results
 
 # Set JVM options for benchmarking
-# - Fixed heap to avoid GC variance
-# - Disable biased locking (removed in newer JDKs, causes warnings)
+# - Fixed heap to avoid GC variance (2GB is plenty for these benchmarks)
 # - Use G1GC for consistent behavior
-ENV JAVA_OPTS="-Xms4g -Xmx4g -XX:+UseG1GC -XX:+AlwaysPreTouch"
+# Override via: docker run -e JAVA_OPTS="-Xms4g -Xmx4g" ...
+ENV JAVA_OPTS="-Xms2g -Xmx2g -XX:+UseG1GC"
 
 # Default entrypoint runs the remapping benchmarks
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar iceberg-core-jmh.jar $0 $@"]

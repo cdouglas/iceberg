@@ -8,8 +8,11 @@
 #
 # Results are stored in the 'benchmark-results' named volume.
 # To access results:
-#   docker compose run --rm benchmark ls /benchmark/results
-#   docker compose cp benchmark:/benchmark/results ./local-results
+#   docker compose run --rm shell ls /benchmark/results
+#   docker run --rm -v iceberg-jmh-benchmark-results:/data alpine ls /data
+#
+# To copy results out:
+#   docker run --rm -v iceberg-jmh-benchmark-results:/data -v $(pwd):/out alpine cp -r /data /out/results
 #
 # To clean up:
 #   docker compose down -v                  # Remove containers and volumes
@@ -22,17 +25,9 @@ services:
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
       - benchmark-results:/benchmark/results
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 8G
-        reservations:
-          cpus: '2'
-          memory: 4G
     environment:
-      - JAVA_OPTS=-Xms4g -Xmx4g -XX:+UseG1GC -XX:+AlwaysPreTouch
-    # Default: moderate iterations
+      - JAVA_OPTS=-Xms2g -Xmx2g -XX:+UseG1GC
+    # Default: moderate iterations (~45 min)
     command: ["RemappingAlgorithmBenchmark", "-wi", "3", "-i", "5", "-f", "2", "-rf", "json", "-rff", "/benchmark/results/results.json"]
 
   # Quick benchmark for testing (~10-15 min)
@@ -42,13 +37,8 @@ services:
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
       - benchmark-results:/benchmark/results
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 8G
     environment:
-      - JAVA_OPTS=-Xms4g -Xmx4g -XX:+UseG1GC -XX:+AlwaysPreTouch
+      - JAVA_OPTS=-Xms2g -Xmx2g -XX:+UseG1GC
     command: ["RemappingAlgorithmBenchmark", "-wi", "1", "-i", "2", "-f", "1", "-rf", "json", "-rff", "/benchmark/results/results-quick.json"]
 
   # Full benchmark suite (~2-3 hours)
@@ -58,13 +48,8 @@ services:
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
       - benchmark-results:/benchmark/results
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 8G
     environment:
-      - JAVA_OPTS=-Xms6g -Xmx6g -XX:+UseG1GC -XX:+AlwaysPreTouch
+      - JAVA_OPTS=-Xms4g -Xmx4g -XX:+UseG1GC
     command: ["RemappingAlgorithmBenchmark", "-wi", "5", "-i", "10", "-f", "3", "-rf", "json", "-rff", "/benchmark/results/results-full.json"]
 
   # Smart selector only (for validating selector logic)
@@ -74,13 +59,8 @@ services:
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
       - benchmark-results:/benchmark/results
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 8G
     environment:
-      - JAVA_OPTS=-Xms4g -Xmx4g -XX:+UseG1GC -XX:+AlwaysPreTouch
+      - JAVA_OPTS=-Xms2g -Xmx2g -XX:+UseG1GC
     command: ["RemappingAlgorithmBenchmark.smartSelector", "-wi", "3", "-i", "5", "-f", "2", "-rf", "json", "-rff", "/benchmark/results/results-selector.json"]
 
   # Analysis container - runs Python analysis on results
