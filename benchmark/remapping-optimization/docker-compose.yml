@@ -6,16 +6,11 @@
 #   docker compose run benchmark-quick      # Run quick benchmarks
 #   docker compose run benchmark-full       # Run full suite
 #
-# Results are stored in the 'benchmark-results' named volume.
-# To access results:
-#   docker compose run --rm shell ls /benchmark/results
-#   docker run --rm -v iceberg-jmh-benchmark-results:/data alpine ls /data
-#
-# To copy results out:
-#   docker run --rm -v iceberg-jmh-benchmark-results:/data -v $(pwd):/out alpine cp -r /data /out/results
+# Results are written to ./results/ directory (bind mount)
+#   ls results/
 #
 # To clean up:
-#   docker compose down -v                  # Remove containers and volumes
+#   docker compose down                     # Remove containers
 
 services:
   # Default benchmark with moderate settings
@@ -24,7 +19,7 @@ services:
       context: ../..
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
-      - benchmark-results:/benchmark/results
+      - ./results:/benchmark/results
     environment:
       - JAVA_OPTS=-Xms2g -Xmx2g -XX:+UseG1GC
     # Default: moderate iterations (~45 min)
@@ -36,7 +31,7 @@ services:
       context: ../..
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
-      - benchmark-results:/benchmark/results
+      - ./results:/benchmark/results
     environment:
       - JAVA_OPTS=-Xms2g -Xmx2g -XX:+UseG1GC
     command: ["RemappingAlgorithmBenchmark", "-wi", "1", "-i", "2", "-f", "1", "-rf", "json", "-rff", "/benchmark/results/results-quick.json"]
@@ -47,7 +42,7 @@ services:
       context: ../..
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
-      - benchmark-results:/benchmark/results
+      - ./results:/benchmark/results
     environment:
       - JAVA_OPTS=-Xms4g -Xmx4g -XX:+UseG1GC
     command: ["RemappingAlgorithmBenchmark", "-wi", "5", "-i", "10", "-f", "3", "-rf", "json", "-rff", "/benchmark/results/results-full.json"]
@@ -58,7 +53,7 @@ services:
       context: ../..
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
-      - benchmark-results:/benchmark/results
+      - ./results:/benchmark/results
     environment:
       - JAVA_OPTS=-Xms2g -Xmx2g -XX:+UseG1GC
     command: ["RemappingAlgorithmBenchmark.smartSelector", "-wi", "3", "-i", "5", "-f", "2", "-rf", "json", "-rff", "/benchmark/results/results-selector.json"]
@@ -69,7 +64,7 @@ services:
       context: ../..
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
-      - benchmark-results:/benchmark/results
+      - ./results:/benchmark/results
     entrypoint: ["python3"]
     command: ["analyze_results.py", "/benchmark/results/results.json"]
 
@@ -79,11 +74,7 @@ services:
       context: ../..
       dockerfile: benchmark/remapping-optimization/Dockerfile
     volumes:
-      - benchmark-results:/benchmark/results
+      - ./results:/benchmark/results
     entrypoint: ["/bin/bash"]
     stdin_open: true
     tty: true
-
-volumes:
-  benchmark-results:
-    name: iceberg-jmh-benchmark-results
