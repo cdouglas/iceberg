@@ -302,11 +302,10 @@ def main():
     # Print summary
     print_summary(results)
 
-    # Generate CSV (handle both .json and .txt inputs)
-    if results_file.endswith('.json'):
-        csv_file = results_file.replace('.json', '.csv')
-    else:
-        csv_file = results_file.replace('.txt', '.csv')
+    # Generate CSV with explicit derived filename
+    import os
+    base, ext = os.path.splitext(results_file)
+    csv_file = f"{base}_analysis.csv"
     generate_csv(results, csv_file)
 
 
