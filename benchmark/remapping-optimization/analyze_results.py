@@ -16,9 +16,53 @@ from typing import Dict, List, Tuple
 
 
 def parse_jmh_results(filename: str) -> List[Dict]:
-    """Parse JMH benchmark results into structured data."""
+    """Parse JMH benchmark results into structured data.
+
+    Supports both text format and JSON format.
+    """
     results = []
 
+    # Try JSON format first
+    if filename.endswith('.json'):
+        import json
+        with open(filename, 'r') as f:
+            data = json.load(f)
+
+        for item in data:
+            benchmark = item['benchmark'].split('.')[-1]
+            params = item.get('params', {})
+            score = item['primaryMetric']['score']
+            error = item['primaryMetric']['scoreError']
+
+            results.append({
+                'strategy': benchmark,
+                'gap_ratio': float(params.get('gapRatio', 0)),
+                'num_positions': int(params.get('numPositions', 0)),
+                'num_runs': int(params.get('numRuns', 0)),
+                'sorted': params.get('sorted', 'false') == 'true',
+                'avg_time_us': float(score),
+                'error_us': float(error)
+            })
+        return results
+
+    # Try CSV format
+    if filename.endswith('.csv'):
+        import csv
+        with open(filename, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                results.append({
+                    'strategy': row['strategy'],
+                    'gap_ratio': float(row['gap_ratio']),
+                    'num_positions': int(row['num_positions']),
+                    'num_runs': int(row['num_runs']),
+                    'sorted': row['sorted'] == 'true',
+                    'avg_time_us': float(row['avg_time_us']),
+                    'error_us': float(row['error_us'])
+                })
+        return results
+
+    # Fall back to text format
     with open(filename, 'r') as f:
         for line in f:
             # Match result lines like:
