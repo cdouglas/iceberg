@@ -373,24 +373,38 @@ echo ""
 MERGED_FILE="$RESULTS_DIR/results-merged-${TIMESTAMP}.json"
 echo "Merging results to $MERGED_FILE..."
 
-# Combine JSON arrays
-echo "[" > "$MERGED_FILE"
-first=true
-for strategy in "${STRATEGIES[@]}"; do
-    result_file="$RESULTS_DIR/results-${strategy}-${TIMESTAMP}.json"
-    if [ -f "$result_file" ] && [ -s "$result_file" ]; then
-        if [ "$first" = true ]; then
-            first=false
-        else
-            echo "," >> "$MERGED_FILE"
-        fi
-        # Strip leading [ and trailing ], append contents
-        sed '1s/^\[//; $s/\]$//' "$result_file" >> "$MERGED_FILE"
-    else
-        echo "  Warning: Missing or empty $result_file"
-    fi
-done
-echo "]" >> "$MERGED_FILE"
+# Combine JSON arrays using Python for correctness
+python3 - "$RESULTS_DIR" "$TIMESTAMP" "$MERGED_FILE" "${STRATEGIES[@]}" << 'PYTHON_MERGE'
+import json
+import sys
+import os
+
+results_dir = sys.argv[1]
+timestamp = sys.argv[2]
+output_file = sys.argv[3]
+strategies = sys.argv[4:]
+
+merged = []
+for strategy in strategies:
+    result_file = os.path.join(results_dir, f"results-{strategy}-{timestamp}.json")
+    if os.path.exists(result_file) and os.path.getsize(result_file) > 0:
+        try:
+            with open(result_file) as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    merged.extend(data)
+                else:
+                    merged.append(data)
+        except json.JSONDecodeError as e:
+            print(f"  Warning: Invalid JSON in {result_file}: {e}")
+    else:
+        print(f"  Warning: Missing or empty {result_file}")
+
+with open(output_file, 'w') as f:
+    json.dump(merged, f, indent=2)
+
+print(f"  Merged {len(merged)} benchmark results")
+PYTHON_MERGE
 
 # Cleanup containers
 echo "Cleaning up containers..."

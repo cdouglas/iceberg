@@ -32,7 +32,7 @@ def load_results(csv_file):
                 'gap_ratio': float(row['gap_ratio']),
                 'num_positions': int(row['num_positions']),
                 'num_runs': int(row['num_runs']),
-                'sorted': row['sorted'] == 'True',
+                'sorted': row['sorted'].lower() == 'true',
                 'avg_time_us': float(row['avg_time_us']),
                 'error_us': float(row['error_us'])
             })
