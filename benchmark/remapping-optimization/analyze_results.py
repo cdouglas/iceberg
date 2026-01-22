@@ -302,8 +302,11 @@ def main():
     # Print summary
     print_summary(results)
 
-    # Generate CSV
-    csv_file = results_file.replace('.txt', '.csv')
+    # Generate CSV (handle both .json and .txt inputs)
+    if results_file.endswith('.json'):
+        csv_file = results_file.replace('.json', '.csv')
+    else:
+        csv_file = results_file.replace('.txt', '.csv')
     generate_csv(results, csv_file)
 
 
