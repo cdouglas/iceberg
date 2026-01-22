@@ -206,12 +206,13 @@ public class TestRemappingAlgorithmSelector {
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
     List<Long> sortedPositions = createSortedPositions(10000);
 
-    // m = 99, n = 10000, sorted, dense -> RangeQuery (below m threshold)
+    // m = 99, n = 10000, sorted, dense -> StreamJoin (n threshold met, m irrelevant)
+    // Benchmark evidence: StreamJoin wins for dense sorted data regardless of m
     FileMapping at99 = createDenseMapping(99);
     assertThat(selector.selectOptimal(at99, sortedPositions))
-        .isInstanceOf(RangeQueryStrategy.class);
+        .isInstanceOf(StreamJoinStrategy.class);
 
-    // m = 100, n = 10000, sorted, dense -> StreamJoin (at m threshold)
+    // m = 100, n = 10000, sorted, dense -> StreamJoin (n threshold met)
     FileMapping at100 = createDenseMapping(100);
     assertThat(selector.selectOptimal(at100, sortedPositions))
         .isInstanceOf(StreamJoinStrategy.class);
