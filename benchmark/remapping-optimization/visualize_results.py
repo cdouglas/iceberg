@@ -274,22 +274,27 @@ def create_all_charts(csv_file):
     results = load_results(csv_file)
     print(f"Loaded {len(results)} measurements")
 
-    output_dir = csv_file.rsplit('/', 1)[0] if '/' in csv_file else '.'
+    # Derive output prefix from input filename
+    import os
+    output_dir = os.path.dirname(csv_file) or '.'
+    basename = os.path.basename(csv_file)
+    # Extract timestamp if present (e.g., results-merged-20260122_140158.csv -> 20260122_140158)
+    prefix = basename.replace('.csv', '').replace('results-merged-', '')
 
-    # Generate charts
+    # Generate charts with timestamp prefix
     create_strategy_comparison_chart(
         results,
-        f"{output_dir}/chart_strategy_comparison.png"
+        f"{output_dir}/chart_{prefix}_strategy_comparison.png"
     )
 
     create_selector_overhead_chart(
         results,
-        f"{output_dir}/chart_selector_overhead.png"
+        f"{output_dir}/chart_{prefix}_selector_overhead.png"
     )
 
     create_speedup_chart(
         results,
-        f"{output_dir}/chart_speedup_vs_linear.png"
+        f"{output_dir}/chart_{prefix}_speedup_vs_linear.png"
     )
 
     print("\nAll charts generated successfully!")
