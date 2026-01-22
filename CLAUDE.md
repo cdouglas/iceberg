@@ -200,14 +200,14 @@ Compaction maps support **order-preserving** operations only:
 The smart selector (`RemappingAlgorithmSelector`) chooses optimal strategies based on empirical JMH benchmark data (324 configurations tested January 2026), not theoretical complexity analysis.
 
 **Key Empirical Findings:**
-- **UNSORTED data**: IntervalTree wins 46/54 scenarios regardless of m, n, or gaps
+- **UNSORTED data**: IntervalTree wins 25/27 scenarios regardless of m, n, or gaps
 - **SORTED data**: RangeQuery or StreamJoin win; IntervalTree **never** wins
-- **BinarySearch**: Never optimal in any tested scenario (removed from selection)
+- **BinarySearch**: Rarely optimal (2 edge cases only, not worth selecting)
 
 **Current Selection Logic** (Empirically-derived, January 2026):
 ```java
 if (!sorted) {
-    return IntervalTree;        // Wins 46/54 unsorted scenarios
+    return IntervalTree;        // Wins 25/27 unsorted scenarios
 }
 
 // Sorted data below - IntervalTree never wins for sorted
@@ -215,17 +215,18 @@ if (gapRatio > 0.3) {
     return RangeQuery;          // Sparse: skip gaps efficiently
 }
 
-if (m >= 100 && n >= 10000) {
-    return StreamJoin;          // Bulk sorted: O(n+m) linear scan wins
+if (n >= 10000) {
+    return StreamJoin;          // Dense sorted bulk: O(n+m) wins regardless of m
 }
 
 return RangeQuery;              // Default for sorted: O(m log n)
 ```
 
-**Performance** (from Jan 2026 benchmarks):
-- Sorted data: 2-17x speedup vs linear search
-- Unsorted data: IntervalTree provides consistent performance
-- Smart selector overhead: <15% average (was 56% before fix)
+**Performance** (from Jan 22, 2026 benchmarks):
+- Small scale (n=1000): 1.2-1.5x speedup vs linear
+- Medium scale (n=10000): 4-6x speedup vs linear
+- Large scale (n=100000): 23-31x speedup vs linear
+- Smart selector overhead: 5% average, 2% median
 
 **Details**: See `REMAPPING_BENCHMARKS.md` for benchmark methodology. Implementation history available via `git log --grep="remapping" cmpmap`.
 
