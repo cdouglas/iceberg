@@ -1,0 +1,12 @@
+# Benchmark results (generated)
+results/
+results_*.txt
+results_*.json
+results_*.csv
+
+# Reports (generated)
+BENCHMARK_REPORT_*.md
+
+# Run state file
+.benchmark_run
+benchmark_run.log
