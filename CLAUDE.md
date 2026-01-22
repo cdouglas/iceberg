@@ -215,18 +215,18 @@ if (gapRatio > 0.3) {
     return RangeQuery;          // Sparse: skip gaps efficiently
 }
 
-if (n >= 10000) {
-    return StreamJoin;          // Dense sorted bulk: O(n+m) wins regardless of m
+if (n >= 10000 && m >= 100) {
+    return StreamJoin;          // Dense sorted bulk with many runs
 }
 
-return RangeQuery;              // Default for sorted: O(m log n)
+return RangeQuery;              // Default for sorted (including small m with large n)
 ```
 
 **Performance** (from Jan 22, 2026 benchmarks):
-- Small scale (n=1000): 1.2-1.5x speedup vs linear
-- Medium scale (n=10000): 4-6x speedup vs linear
-- Large scale (n=100000): 23-31x speedup vs linear
-- Smart selector overhead: 5% average, 2% median
+- Small scale (n=1000): 1.1-1.5x speedup vs linear
+- Medium scale (n=10000): 4.9-5.6x speedup vs linear
+- Large scale (n=100000): 21-31x speedup vs linear
+- Smart selector overhead: 6% average
 
 **Details**: See `REMAPPING_BENCHMARKS.md` for benchmark methodology. Implementation history available via `git log --grep="remapping" cmpmap`.
 

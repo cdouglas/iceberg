@@ -42,7 +42,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
  *   <li>UNSORTED data: IntervalTree wins in 25/27 scenarios regardless of m, n, or gaps
  *   <li>SORTED data: RangeQuery or StreamJoin win; IntervalTree never wins
  *   <li>SORTED + sparse (gap > 0.3): RangeQuery optimal (can skip gaps)
- *   <li>SORTED + dense (gap <= 0.3) + n >= 10000: StreamJoin optimal regardless of m
+ *   <li>SORTED + dense (gap <= 0.3) + n >= 10000 + m >= 100: StreamJoin optimal
  *   <li>BinarySearch rarely wins (only 2 edge cases, not worth selecting)
  * </ul>
  */
@@ -50,6 +50,7 @@ public class RemappingAlgorithmSelector {
 
   private static final double SPARSE_GAP_THRESHOLD = 0.3;
   private static final int BULK_POSITION_THRESHOLD = 10000;
+  private static final int MANY_RUNS_THRESHOLD = 100;
   private static final int SORTEDNESS_SAMPLE_SIZE = 1000;
 
   /**
@@ -59,13 +60,13 @@ public class RemappingAlgorithmSelector {
    *
    * <pre>
    * if unsorted:
-   *     return IntervalTree        # Wins 46/54 unsorted scenarios
+   *     return IntervalTree        # Wins 25/27 unsorted scenarios
    *
    * # Sorted data below
    * if gapRatio > 0.3:
    *     return RangeQuery          # Sparse data: skip gaps efficiently
    *
-   * if n >= 10000:
+   * if n >= 10000 AND m >= 100:
    *     return StreamJoin          # Dense sorted bulk: O(n+m) linear scan wins
    *
    * return RangeQuery              # Default for sorted: O(m log n)
@@ -106,10 +107,10 @@ public class RemappingAlgorithmSelector {
       return new RangeQueryStrategy(runs);
     }
 
-    // Dense sorted data with many positions: StreamJoin wins regardless of m
-    // Benchmark evidence: StreamJoin wins for (n>=10000, gap<=0.3, sorted)
-    // Examples: m=10/n=10000, m=100/n=10000, m=1000/n=100000
-    if (n >= BULK_POSITION_THRESHOLD) {
+    // Dense sorted data with many positions AND many runs: StreamJoin wins
+    // Benchmark evidence: StreamJoin wins for (n>=10000, m>=100, gap<=0.3, sorted)
+    // For small m (e.g., m=10), RangeQuery is still faster even with large n
+    if (n >= BULK_POSITION_THRESHOLD && m >= MANY_RUNS_THRESHOLD) {
       return new StreamJoinStrategy(runs);
     }
 
