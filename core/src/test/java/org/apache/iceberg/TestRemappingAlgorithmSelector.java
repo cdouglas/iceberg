@@ -40,8 +40,9 @@ import org.junit.jupiter.api.Test;
  *
  * <ul>
  *   <li>UNSORTED: IntervalTree wins regardless of m, n, or gaps
- *   <li>SORTED + sparse: RangeQuery wins (can skip gaps)
- *   <li>SORTED + dense + bulk (m>=100, n>=10000): StreamJoin wins
+ *   <li>SORTED + sparse (gap > 0.3): RangeQuery wins (can skip gaps)
+ *   <li>SORTED + dense + bulk (m >= 100, n >= 10000): StreamJoin wins
+ *   <li>SORTED + small m (m < 100): RangeQuery wins even for large n
  *   <li>SORTED + other: RangeQuery wins
  * </ul>
  */
@@ -206,13 +207,13 @@ public class TestRemappingAlgorithmSelector {
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
     List<Long> sortedPositions = createSortedPositions(10000);
 
-    // m = 99, n = 10000, sorted, dense -> StreamJoin (n threshold met, m irrelevant)
-    // Benchmark evidence: StreamJoin wins for dense sorted data regardless of m
+    // m = 99, n = 10000, sorted, dense -> RangeQuery (below m threshold)
+    // Benchmark evidence: For small m, RangeQuery wins even with large n
     FileMapping at99 = createDenseMapping(99);
     assertThat(selector.selectOptimal(at99, sortedPositions))
-        .isInstanceOf(StreamJoinStrategy.class);
+        .isInstanceOf(RangeQueryStrategy.class);
 
-    // m = 100, n = 10000, sorted, dense -> StreamJoin (n threshold met)
+    // m = 100, n = 10000, sorted, dense -> StreamJoin (both thresholds met)
     FileMapping at100 = createDenseMapping(100);
     assertThat(selector.selectOptimal(at100, sortedPositions))
         .isInstanceOf(StreamJoinStrategy.class);
@@ -220,6 +221,11 @@ public class TestRemappingAlgorithmSelector {
     // m = 100, n = 9999, sorted, dense -> RangeQuery (below n threshold)
     List<Long> positions9999 = createSortedPositions(9999);
     assertThat(selector.selectOptimal(at100, positions9999)).isInstanceOf(RangeQueryStrategy.class);
+
+    // m = 10, n = 100000, sorted, dense -> RangeQuery (below m threshold)
+    FileMapping at10 = createDenseMapping(10);
+    List<Long> positions100k = createSortedPositions(100000);
+    assertThat(selector.selectOptimal(at10, positions100k)).isInstanceOf(RangeQueryStrategy.class);
   }
 
   @Test

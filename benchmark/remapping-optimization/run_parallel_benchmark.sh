@@ -204,8 +204,28 @@ fi
 
 echo ""
 
+# Wait for all containers to complete (handles Ctrl+C during monitoring)
+echo "Waiting for all containers to complete..."
+FAILED_CONTAINERS=""
+for strategy in "${STRATEGIES[@]}"; do
+    container_name="${CONTAINER_PREFIX}-${strategy}-${TIMESTAMP}"
+    if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo "  Waiting for $strategy..."
+        exit_code=$(docker wait "$container_name" 2>/dev/null || echo "1")
+        if [ "$exit_code" != "0" ]; then
+            FAILED_CONTAINERS="$FAILED_CONTAINERS $strategy"
+        fi
+    fi
+done
+
+if [ -n "$FAILED_CONTAINERS" ]; then
+    echo "WARNING: Some containers failed:$FAILED_CONTAINERS"
+    echo "Check logs with: docker logs jmh-bench-<strategy>-${TIMESTAMP}"
+fi
+
 # Merge results
 MERGED_FILE="$RESULTS_DIR/results-merged-${TIMESTAMP}.json"
+echo ""
 echo "Merging results to $MERGED_FILE..."
 
 # Combine JSON arrays using Python for correctness
@@ -220,6 +240,7 @@ output_file = sys.argv[3]
 strategies = sys.argv[4:]
 
 merged = []
+missing = []
 for strategy in strategies:
     result_file = os.path.join(results_dir, f"results-{strategy}-{timestamp}.json")
     if os.path.exists(result_file) and os.path.getsize(result_file) > 0:
@@ -230,16 +251,44 @@ for strategy in strategies:
                     merged.extend(data)
                 else:
                     merged.append(data)
+                print(f"  {strategy}: {len(data) if isinstance(data, list) else 1} results")
         except json.JSONDecodeError as e:
-            print(f"  Warning: Invalid JSON in {result_file}: {e}")
+            print(f"  WARNING: Invalid JSON in {result_file}: {e}")
+            missing.append(strategy)
     else:
-        print(f"  Warning: Missing or empty {result_file}")
+        print(f"  WARNING: Missing or empty {result_file}")
+        missing.append(strategy)
 
+if missing:
+    print(f"\n  WARNING: {len(missing)} strategy results missing: {', '.join(missing)}")
+    print("  (containers may have failed - check docker logs)")
+
+if not merged:
+    print("\n  ERROR: No results to merge!")
+    sys.exit(1)
+
+# Write merged JSON
 with open(output_file, 'w') as f:
     json.dump(merged, f, indent=2)
 
-print(f"  Merged {len(merged)} benchmark results")
+# Verify the output is valid JSON
+try:
+    with open(output_file) as f:
+        verify = json.load(f)
+    if len(verify) != len(merged):
+        print(f"  ERROR: Verification failed - expected {len(merged)}, got {len(verify)}")
+        sys.exit(1)
+    print(f"  Merged {len(merged)} benchmark results (verified)")
+except json.JSONDecodeError as e:
+    print(f"  ERROR: Output file is not valid JSON: {e}")
+    sys.exit(1)
 PYTHON_MERGE
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Merge failed. Results may be incomplete."
+    echo "Individual result files are preserved in $RESULTS_DIR"
+    exit 1
+fi
 
 # Cleanup containers
 echo "Cleaning up containers..."
