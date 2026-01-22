@@ -44,169 +44,22 @@ get_all_containers() {
     docker ps -a --filter "name=${CONTAINER_PREFIX}" --format "{{.Names}}" 2>/dev/null | sort
 }
 
-# Get progress percentage from container logs
-# Returns: integer 0-100, or "done" if container exited successfully, or "fail" if failed
-get_container_progress() {
-    local container_name="$1"
-
-    # Check if container is still running
-    if ! docker ps --format "{{.Names}}" | grep -q "^${container_name}$"; then
-        # Container stopped - check exit code
-        local exit_code
-        exit_code=$(docker inspect "$container_name" --format='{{.State.ExitCode}}' 2>/dev/null || echo "255")
-        if [ "$exit_code" -eq 0 ]; then
-            echo "done"
-        else
-            echo "fail:$exit_code"
-        fi
-        return
-    fi
-
-    # Extract latest progress from logs
-    # JMH outputs: "# Run progress: 50.00% complete, ETA 00:01:23"
-    local progress
-    progress=$(docker logs --tail 100 "$container_name" 2>&1 | \
-        grep -o "Run progress: [0-9.]*%" | \
-        tail -1 | \
-        grep -o "[0-9.]*" || echo "0")
-
-    # Return integer percentage
-    printf "%.0f" "$progress" 2>/dev/null || echo "0"
-}
-
-# Draw a progress bar
-# Args: current_percent total_width
-draw_progress_bar() {
-    local percent=$1
-    local width=${2:-30}
-    local filled=$((percent * width / 100))
-    local empty=$((width - filled))
-
-    printf "["
-    printf "%${filled}s" | tr ' ' '█'
-    printf "%${empty}s" | tr ' ' '░'
-    printf "]"
-}
-
-# Monitor progress of all containers until completion
-# Args: container_names (space-separated)
+# Monitor progress using Python script (better terminal handling)
 monitor_progress() {
     local timestamp="$1"
-    shift
-    local strategies=("$@")
-    local total=${#strategies[@]}
-    local completed=0
-    local failed=0
-    declare -A progress_map
-    declare -A status_map
+    python3 "${SCRIPT_DIR}/progress_monitor.py" "$timestamp"
+}
 
-    # Initialize
-    for strategy in "${strategies[@]}"; do
-        progress_map[$strategy]=0
-        status_map[$strategy]="running"
-    done
-
-    # Hide cursor
-    tput civis 2>/dev/null || true
-
-    # Trap to restore cursor on exit
-    trap 'tput cnorm 2>/dev/null || true' EXIT
-
-    while [ $completed -lt $total ]; do
-        # Update progress for each container
-        local total_progress=0
-        completed=0
-        failed=0
-
-        for strategy in "${strategies[@]}"; do
-            local container_name="${CONTAINER_PREFIX}-${strategy}-${timestamp}"
-            local prog
-            prog=$(get_container_progress "$container_name")
-
-            if [ "$prog" = "done" ]; then
-                progress_map[$strategy]=100
-                status_map[$strategy]="done"
-                ((completed++))
-            elif [[ "$prog" == fail:* ]]; then
-                progress_map[$strategy]=100
-                status_map[$strategy]="$prog"
-                ((completed++))
-                ((failed++))
-            else
-                progress_map[$strategy]=$prog
-                status_map[$strategy]="running"
-            fi
-
-            total_progress=$((total_progress + progress_map[$strategy]))
-        done
-
-        # Calculate overall progress
-        local overall=$((total_progress / total))
-
-        # Move cursor up to overwrite previous output (7 lines: header + 6 strategies)
-        if [ -n "${PROGRESS_DISPLAYED:-}" ]; then
-            tput cuu 8 2>/dev/null || printf "\033[8A"
-        fi
-        PROGRESS_DISPLAYED=1
-
-        # Clear and redraw
-        tput el 2>/dev/null || true
-        printf "Progress: "
-        draw_progress_bar $overall
-        printf " %3d%% (%d/%d containers complete)\n" "$overall" "$completed" "$total"
-
-        tput el 2>/dev/null || true
-        echo ""
-
-        for strategy in "${strategies[@]}"; do
-            tput el 2>/dev/null || true
-            local status="${status_map[$strategy]}"
-            local prog="${progress_map[$strategy]}"
-
-            if [ "$status" = "done" ]; then
-                printf "  %-14s ✓ done\n" "$strategy:"
-            elif [[ "$status" == fail:* ]]; then
-                local exit_code="${status#fail:}"
-                printf "  %-14s ✗ failed (exit %s)\n" "$strategy:" "$exit_code"
-            else
-                printf "  %-14s %3d%%\n" "$strategy:" "$prog"
-            fi
-        done
-
-        # Exit if all done
-        [ $completed -ge $total ] && break
-
-        # Wait before next poll
-        sleep 3
-    done
-
-    # Show cursor
-    tput cnorm 2>/dev/null || true
-    trap - EXIT
-
-    echo ""
-    if [ $failed -gt 0 ]; then
-        echo "WARNING: $failed container(s) failed"
-        for strategy in "${strategies[@]}"; do
-            local status="${status_map[$strategy]}"
-            if [[ "$status" == fail:* ]]; then
-                local container_name="${CONTAINER_PREFIX}-${strategy}-${timestamp}"
-                echo "  $strategy last log lines:"
-                docker logs --tail 10 "$container_name" 2>&1 | sed 's/^/    /'
-            fi
-        done
-        return 1
-    fi
-    return 0
+# Quick status check using Python script
+show_status() {
+    local timestamp="$1"
+    python3 "${SCRIPT_DIR}/progress_monitor.py" "$timestamp" --once
 }
 
 # Check status
 if [ "${1:-}" = "status" ]; then
     running=$(get_running_containers)
     if [ -n "$running" ]; then
-        echo "Running benchmark containers:"
-        echo ""
-
         # Get timestamp from run file or extract from container name
         if [ -f "$RUN_FILE" ]; then
             ts=$(cat "$RUN_FILE")
@@ -216,27 +69,9 @@ if [ "${1:-}" = "status" ]; then
             ts="${first_container##*-}"
         fi
 
-        # Show progress for each strategy
-        total_progress=0
-        count=0
-        for strategy in "${STRATEGIES[@]}"; do
-            container_name="${CONTAINER_PREFIX}-${strategy}-${ts}"
-            if docker ps --format "{{.Names}}" | grep -q "^${container_name}$"; then
-                prog=$(get_container_progress "$container_name")
-                printf "  %-14s %3d%%\n" "$strategy:" "$prog"
-                total_progress=$((total_progress + prog))
-                ((count++))
-            fi
-        done
-
-        if [ $count -gt 0 ]; then
-            overall=$((total_progress / count))
-            echo ""
-            printf "Overall: "
-            draw_progress_bar $overall
-            printf " %d%%\n" "$overall"
-        fi
-
+        echo "Benchmark in progress (Run ID: $ts)"
+        echo ""
+        show_status "$ts"
         echo ""
         echo "Follow logs with:"
         echo "  docker logs -f <container_name>"
@@ -288,7 +123,7 @@ if [ -n "$running" ]; then
     echo ""
 
     # Monitor progress until completion
-    monitor_progress "$TIMESTAMP" "${STRATEGIES[@]}" || true
+    monitor_progress "$TIMESTAMP" || true
 
     # Continue to merge step with existing timestamp
     if [ -f "$RUN_FILE" ]; then
@@ -364,7 +199,7 @@ else
     echo ""
 
     # Monitor progress until completion
-    monitor_progress "$TIMESTAMP" "${STRATEGIES[@]}" || true
+    monitor_progress "$TIMESTAMP" || true
 fi
 
 echo ""
