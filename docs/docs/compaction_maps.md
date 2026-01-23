@@ -369,7 +369,6 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios (324
 
 - **[Implementation Details](compaction_maps_impl.md)** - Architecture, API usage, testing, and Spark implementation
 - **[Implementation Errata](compaction_maps_errata.md)** - Known shortcuts and technical debt
-- **[Staged Scan Investigation](../../docs/staged_scan_investigation.md)** - Historical investigation of staged scan metadata columns (now resolved)
 - [Iceberg Position Deletes Specification](https://iceberg.apache.org/spec/#position-delete-files)
 - [Iceberg Manifest Format](https://iceberg.apache.org/spec/#manifests)
 

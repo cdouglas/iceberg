@@ -1049,8 +1049,6 @@ Staged scans don't properly expose metadata columns to Spark's physical planner.
 
 Normal scans fully support metadata columns through Spark's `SupportsMetadataColumns` interface and preserve them through the entire query planning pipeline.
 
-See [`docs/staged_scan_investigation.md`](../../docs/staged_scan_investigation.md) for detailed investigation and [`compaction_maps_errata.md`](compaction_maps_errata.md) for tradeoffs.
-
 ### Performance Considerations
 
 **Position Tracking Overhead:**
