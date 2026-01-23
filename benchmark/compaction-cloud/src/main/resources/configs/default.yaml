@@ -1,0 +1,35 @@
+# Compaction Cloud Benchmark - Default Configuration
+# This configuration provides reasonable defaults for local testing
+
+# Table configuration
+table-location: benchmark-tables
+format-version: 2
+compaction-maps-enabled: true
+
+# Workload configuration
+workload-mode: RANDOM
+random-seed: 42
+
+# Simulation parameters
+base-row-count: 1000000
+merge-on-read-penalty: 0.1
+compaction-speedup: 10.0
+rows-per-ms: 10000
+
+# Execution parameters
+num-iterations: 10
+concurrent-writers: 4
+concurrent-compactors: 1
+
+# Random workload parameters
+num-files: 100
+avg-rows-per-file: 100000
+row-count-variance: 0.2
+delete-selectivity: 0.001
+compaction-frequency: 0.1
+conflict-probability: 0.3
+
+# Statistics
+collect-detailed-stats: true
+output-dir: benchmark-results
+comparison-run: false
