@@ -195,4 +195,3 @@ If you'd like to help address any of these issues:
 ## References
 
 - [Main Compaction Maps Documentation](compaction_maps.md)
-- [Staged Scan Investigation](../../docs/staged_scan_investigation.md)

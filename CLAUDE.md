@@ -479,9 +479,6 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 - `REMAPPING_BENCHMARKS.md` - JMH benchmark documentation and methodology
 - `benchmark/remapping-optimization/` - Benchmark execution and analysis tools
 
-**Historical Investigation** (resolved):
-- `docs/staged_scan_investigation.md` - Staged scan metadata column investigation (fixed in commit 0fef1aee2)
-
 **Implementation Context**:
 - `CLAUDE.md` - This file (practical guidance for working with compaction maps)
 
