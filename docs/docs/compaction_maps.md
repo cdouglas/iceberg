@@ -332,26 +332,24 @@ The remapping implementation includes multiple optimized algorithms with automat
 
 | Strategy | Complexity | Best For | Status |
 |----------|------------|----------|--------|
-| Linear Search | O(n*m) | m < 10 (baseline) | ✅ Complete |
-| Binary Search | O(n log m) | 10 ≤ m < 100 | ✅ Complete |
-| Interval Tree | O(n log m) | m ≥ 100 | ✅ Complete |
-| Stream Join | O(n + m) | Sorted positions | ✅ Complete |
-| Range Query | O(m log n) | High fan-in (n >> m) | ✅ Complete |
+| Linear Search | O(n*m) | Baseline only | ✅ Complete |
+| Binary Search | O(n log m) | Unsorted, medium m | ✅ Complete |
+| Interval Tree | O(n log m) | Unsorted data | ✅ Complete |
+| Stream Join | O(n + m) | Sorted, dense, m ≥ 100 | ✅ Complete |
+| Range Query | O(m log n) | Sorted, sparse or small m | ✅ Complete |
 
-**Performance Improvements:**
+**Measured Performance (Jan 22, 2026 benchmarks):**
 
-- **Single-position lookup**: 15-100x speedup (binary search and interval tree)
-- **Bulk sorted remapping**: 100-750x speedup (stream join)
-- **High fan-in scenarios**: 250x speedup (range query)
-- **Automatic selection**: Smart algorithm selector chooses optimal strategy based on workload characteristics (run count, position count, sortedness, gap ratio)
+Speedup vs LinearSearch baseline (sorted=true, gap=0.0):
 
-**Example Performance (n=10,000 positions):**
-
-| Runs (m) | Linear | Binary | Stream Join | Range Query | Best Strategy |
-|----------|--------|--------|-------------|-------------|---------------|
-| 10 | 100K ops | 33K ops | 10K ops | **133 ops** | Range Query (750x) |
-| 100 | 1M ops | 67K ops | **10K ops** | 1.3K ops | Stream Join (100x) |
-| 1000 | 10M ops | 100K ops | **11K ops** | 13K ops | Stream Join (900x) |
+| Scale | Best Strategy | Speedup |
+|-------|---------------|---------|
+| n=1000, m=10-1000 | StreamJoin/RangeQuery | 1.1-1.4x |
+| n=10000, m=10 | RangeQuery | 6.5x |
+| n=10000, m=100-1000 | StreamJoin | 3.3-3.4x |
+| n=100000, m=10 | RangeQuery | 6.7x |
+| n=100000, m=100 | StreamJoin | 23.6x |
+| n=100000, m=1000 | StreamJoin | 32.4x |
 
 **Smart Selection:**
 
@@ -361,11 +359,11 @@ The `RemappingAlgorithmSelector` automatically chooses the optimal strategy base
 - Sortedness: Whether positions are sorted (detected via sampling)
 - Gap ratio: Percentage of source range not covered by runs
 
-Selection overhead is <5% and provides near-optimal performance across all workload types.
+Selection overhead is ~5% average and provides near-optimal performance across all workload types.
 
 **Benchmarking:**
 
-Comprehensive JMH benchmark suite validates performance across 54 scenarios. See `REMAPPING_BENCHMARKS.md` for detailed benchmarking documentation and instructions.
+Comprehensive JMH benchmark suite validates performance across 54 scenarios (324 total configurations). See `REMAPPING_BENCHMARKS.md` for detailed benchmarking documentation and instructions.
 
 ## References
 

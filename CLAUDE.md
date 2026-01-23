@@ -6,14 +6,14 @@
 
 **Key Achievements**:
 - Full infrastructure for compaction-aware transactions (~18k lines)
-- Advanced remapping optimization (5-160x speedup via smart algorithm selection)
+- Advanced remapping optimization (1.1-32x speedup via smart algorithm selection)
 - Comprehensive test coverage (150+ tests) and empirical validation (324 JMH benchmarks)
 - SERIALIZABLE isolation enhancements
 - **Compaction conflict resolution** - Automatic remapping of concurrent position deletes during compaction
 - **Staged scan optimization** - Position tracking now uses efficient staged scans with explicit metadata column selection
 
 **Implementation Status**: Complete on `cmpmap` branch
-**Last Updated**: January 19, 2026
+**Last Updated**: January 22, 2026
 
 ## Feature Architecture
 
@@ -303,22 +303,22 @@ Generated via: `CompactionMaps.newCompactionMapFile(table, snapshotId)`
 
 **Status**: Complete rewrite based on empirical benchmark data (January 2026)
 
-The selector was completely rewritten after three benchmark runs revealed fundamental problems with the original heuristic-based approach. The new logic is derived entirely from JMH benchmark results across 324 configurations:
+The selector was completely rewritten after multiple benchmark runs revealed fundamental problems with the original heuristic-based approach. The logic is derived entirely from JMH benchmark results across 324 configurations:
 
-**Key empirical findings:**
-- **UNSORTED data**: IntervalTree wins 46/54 scenarios regardless of m, n, or gaps
-- **SORTED data**: RangeQuery or StreamJoin win; IntervalTree never wins
-- **BinarySearch**: Never wins any scenario (removed from selection)
+**Key empirical findings (Jan 22, 2026 benchmarks):**
+- **UNSORTED data**: IntervalTree wins 24/27 scenarios regardless of m, n, or gaps
+- **SORTED data**: RangeQuery (17 scenarios) or StreamJoin (10 scenarios) win; IntervalTree never wins
+- **BinarySearch**: Wins 3 edge cases (unsorted, m=1000, n=1000) but not worth special-casing
 
-**New selection logic** (simple 4-branch decision):
+**Current selection logic** (simple 4-branch decision):
 ```java
 if (!sorted) return IntervalTree;           // Empirically optimal for unsorted
 if (gapRatio > 0.3) return RangeQuery;      // Skip gaps efficiently
-if (m >= 100 && n >= 10000) return StreamJoin;  // Bulk sorted workloads
+if (n >= 10000 && m >= 100) return StreamJoin;  // Dense sorted bulk with many runs
 return RangeQuery;                          // Default for sorted
 ```
 
-**Expected overhead**: <10% compared to manually selecting optimal strategy (previously 56% average overhead with heuristic approach).
+**Measured overhead**: 4.68% average compared to optimal strategy (Jan 22, 2026 benchmarks).
 
 **Location**: `RemappingAlgorithmSelector.java:79-121`
 
@@ -493,7 +493,7 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 **Documentation Status**: Current ✅
 
 **Recent Additions**:
-- Smart selector fix for m < 10 unsorted cases (Phase 7.4) - eliminates 3500% overhead
+- Smart selector tuning: require m >= 100 for StreamJoin (Jan 22, 2026) - 4.68% avg overhead
 - Spark 4.0 conflict resolution parity (commit 539432b51)
 - V3 Deletion Vector conflict resolution support (commit 368ae59e9)
 - Staged scan optimization for position tracking (commit 0fef1aee2)
@@ -506,6 +506,6 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 ---
 
-*Generated during Claude Code sessions, 2026-01-07 to 2026-01-19*
+*Generated during Claude Code sessions, 2026-01-07 to 2026-01-22*
 *Models: Claude Sonnet 4.5, Claude Opus 4.5*
 *Total Implementation: ~19k lines across core, tests, and documentation*
