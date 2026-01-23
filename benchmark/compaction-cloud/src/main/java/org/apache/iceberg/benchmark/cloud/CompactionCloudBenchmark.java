@@ -19,6 +19,7 @@
 package org.apache.iceberg.benchmark.cloud;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -27,9 +28,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.iceberg.benchmark.cloud.config.BenchmarkConfig;
 import org.apache.iceberg.benchmark.cloud.metrics.BenchmarkReport;
 import org.apache.iceberg.benchmark.cloud.metrics.MetricsCollector;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -96,13 +99,12 @@ public class CompactionCloudBenchmark {
       // Initialize table
       initializeTable();
 
-      // Generate workload
+      // Create workload generator (events generated on demand)
       WorkloadGenerator generator = WorkloadGenerator.create(config);
-      List<WorkloadGenerator.WorkloadEvent> events = generator.generate();
-      LOG.info("Generated {} workload events", events.size());
+      LOG.info("Executing workload with lazy event generation...");
 
       // Execute workload
-      executeWorkload(events);
+      executeWorkload(generator);
 
       // Generate report
       long elapsedTime = System.currentTimeMillis() - startTime;
@@ -128,53 +130,110 @@ public class CompactionCloudBenchmark {
     LOG.info("Table initialized at: {}", config.tableLocation());
   }
 
-  private void executeWorkload(List<WorkloadGenerator.WorkloadEvent> events) throws InterruptedException {
+  /**
+   * Execute workload events from the generator.
+   *
+   * <p>Events are consumed from the iterator and validated to be in non-decreasing timestamp order.
+   * Events with the same timestamp are executed concurrently.
+   *
+   * @param generator the workload generator (Iterator)
+   * @throws InterruptedException if execution is interrupted
+   * @throws IllegalStateException if events are not in timestamp order
+   */
+  private void executeWorkload(WorkloadGenerator generator) throws InterruptedException {
     LOG.info("Executing workload with {} concurrent writers...", config.concurrentWriters());
 
-    ExecutorService executor = Executors.newFixedThreadPool(
-        config.concurrentWriters() + config.concurrentCompactors());
+    ExecutorService executor =
+        Executors.newFixedThreadPool(config.concurrentWriters() + config.concurrentCompactors());
 
     AtomicInteger completedEvents = new AtomicInteger(0);
-    int totalEvents = events.size();
+    AtomicLong lastTimestamp = new AtomicLong(Long.MIN_VALUE);
 
-    // Group events by timestamp for concurrent execution
-    int i = 0;
-    while (i < events.size()) {
-      long currentTimestamp = events.get(i).timestamp();
+    while (generator.hasNext()) {
+      // Collect all events with the same timestamp
+      List<WorkloadEvent> concurrentEvents = new ArrayList<>();
+      WorkloadEvent firstEvent = generator.next();
 
-      // Find all events with the same timestamp
-      int startIdx = i;
-      while (i < events.size() && events.get(i).timestamp() == currentTimestamp) {
-        i++;
+      // Validate timestamp order
+      Preconditions.checkState(
+          firstEvent.timestamp() >= lastTimestamp.get(),
+          "WorkloadGenerator must emit events in non-decreasing timestamp order. "
+              + "Got timestamp %s after %s",
+          firstEvent.timestamp(),
+          lastTimestamp.get());
+
+      long currentTimestamp = firstEvent.timestamp();
+      concurrentEvents.add(firstEvent);
+
+      // Peek ahead to collect all events with the same timestamp
+      while (generator.hasNext()) {
+        // We need to peek, but Iterator doesn't support peek, so we'll collect greedily
+        // This is safe because we validate order as we go
+        WorkloadEvent nextEvent = generator.next();
+
+        Preconditions.checkState(
+            nextEvent.timestamp() >= currentTimestamp,
+            "WorkloadGenerator must emit events in non-decreasing timestamp order. "
+                + "Got timestamp %s after %s",
+            nextEvent.timestamp(),
+            currentTimestamp);
+
+        if (nextEvent.timestamp() == currentTimestamp) {
+          concurrentEvents.add(nextEvent);
+        } else {
+          // Different timestamp - need to process current batch first
+          // Put this event back conceptually by creating a wrapper generator
+          // Instead, we'll just execute this event in the next batch
+          lastTimestamp.set(currentTimestamp);
+
+          // Execute current batch
+          executeConcurrentEvents(executor, concurrentEvents, completedEvents);
+
+          // Start new batch with this event
+          concurrentEvents = new ArrayList<>();
+          concurrentEvents.add(nextEvent);
+          currentTimestamp = nextEvent.timestamp();
+        }
       }
 
-      // Execute concurrent events
-      List<WorkloadGenerator.WorkloadEvent> concurrentEvents = events.subList(startIdx, i);
-      CountDownLatch latch = new CountDownLatch(concurrentEvents.size());
-
-      for (WorkloadGenerator.WorkloadEvent event : concurrentEvents) {
-        executor.submit(() -> {
-          try {
-            executeEvent(event);
-            int completed = completedEvents.incrementAndGet();
-            if (completed % 10 == 0) {
-              LOG.info("Progress: {}/{} events completed", completed, totalEvents);
-            }
-          } finally {
-            latch.countDown();
-          }
-        });
+      // Execute remaining events
+      if (!concurrentEvents.isEmpty()) {
+        lastTimestamp.set(currentTimestamp);
+        executeConcurrentEvents(executor, concurrentEvents, completedEvents);
       }
-
-      // Wait for all concurrent events to complete
-      latch.await();
     }
 
     executor.shutdown();
     executor.awaitTermination(1, TimeUnit.HOURS);
+
+    LOG.info("Completed {} events", completedEvents.get());
   }
 
-  private void executeEvent(WorkloadGenerator.WorkloadEvent event) {
+  private void executeConcurrentEvents(
+      ExecutorService executor, List<WorkloadEvent> events, AtomicInteger completedEvents)
+      throws InterruptedException {
+    CountDownLatch latch = new CountDownLatch(events.size());
+
+    for (WorkloadEvent event : events) {
+      executor.submit(
+          () -> {
+            try {
+              executeEvent(event);
+              int completed = completedEvents.incrementAndGet();
+              if (completed % 10 == 0) {
+                LOG.info("Progress: {} events completed", completed);
+              }
+            } finally {
+              latch.countDown();
+            }
+          });
+    }
+
+    // Wait for all concurrent events to complete
+    latch.await();
+  }
+
+  private void executeEvent(WorkloadEvent event) {
     switch (event.type()) {
       case INITIAL_LOAD:
         transactionSimulator.executeInitialLoad(
