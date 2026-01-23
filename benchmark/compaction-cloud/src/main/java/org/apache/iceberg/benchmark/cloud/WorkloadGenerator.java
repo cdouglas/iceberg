@@ -19,32 +19,33 @@
 package org.apache.iceberg.benchmark.cloud;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Random;
 import org.apache.iceberg.benchmark.cloud.config.BenchmarkConfig;
 import org.apache.iceberg.benchmark.cloud.config.TraceParser;
 import org.apache.iceberg.benchmark.cloud.config.WorkloadConfig;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 
 /**
- * Interface for generating workload events for the compaction benchmark.
+ * Iterator-based interface for generating workload events for the compaction benchmark.
+ *
+ * <p>Events are generated on demand (lazily) to minimize memory usage. Implementations MUST emit
+ * events in non-decreasing timestamp order - this is validated by consumers.
  *
  * <p>Supports two modes:
  *
  * <ul>
- *   <li>TRACE_REPLAY: Replay events from a YAML trace file
- *   <li>RANDOM: Generate random events based on configuration parameters
+ *   <li>TRACE_REPLAY: Replay events from a YAML trace file (sorted at construction time)
+ *   <li>RANDOM: Generate random events based on configuration parameters (generated on demand)
  * </ul>
  */
-public interface WorkloadGenerator {
-
-  /**
-   * Generate a list of workload events.
-   *
-   * @return list of events sorted by timestamp
-   */
-  List<WorkloadEvent> generate();
+public interface WorkloadGenerator extends Iterator<WorkloadEvent> {
 
   /**
    * Create a workload generator based on configuration.
@@ -63,6 +64,17 @@ public interface WorkloadGenerator {
       default:
         throw new IllegalArgumentException("Unknown workload mode: " + config.workloadMode());
     }
+  }
+
+  /**
+   * Create a random workload generator with explicit seed.
+   *
+   * @param config benchmark configuration
+   * @param seed random seed for reproducibility
+   * @return generator instance
+   */
+  static WorkloadGenerator createRandom(BenchmarkConfig config, long seed) {
+    return new RandomWorkloadGenerator(config, seed);
   }
 
   /** Event types for the workload. */
@@ -97,124 +109,16 @@ public interface WorkloadGenerator {
     COMPACTING
   }
 
-  /** A workload event to be executed. */
-  class WorkloadEvent {
-    private final EventType type;
-    private final long timestamp;
-    private final String table;
-    private final double selectivity;
-    private final DeletePattern pattern;
-    private final int fileCount;
-    private final DeleteTarget target;
-
-    public WorkloadEvent(
-        EventType type,
-        long timestamp,
-        String table,
-        double selectivity,
-        DeletePattern pattern,
-        int fileCount,
-        DeleteTarget target) {
-      this.type = type;
-      this.timestamp = timestamp;
-      this.table = table;
-      this.selectivity = selectivity;
-      this.pattern = pattern;
-      this.fileCount = fileCount;
-      this.target = target;
-    }
-
-    public static Builder builder(EventType type) {
-      return new Builder(type);
-    }
-
-    public EventType type() {
-      return type;
-    }
-
-    public long timestamp() {
-      return timestamp;
-    }
-
-    public String table() {
-      return table;
-    }
-
-    public double selectivity() {
-      return selectivity;
-    }
-
-    public DeletePattern pattern() {
-      return pattern;
-    }
-
-    public int fileCount() {
-      return fileCount;
-    }
-
-    public DeleteTarget target() {
-      return target;
-    }
-
-    public static class Builder {
-      private final EventType type;
-      private long timestamp = 0;
-      private String table = "default";
-      private double selectivity = 0.001;
-      private DeletePattern pattern = DeletePattern.RANDOM;
-      private int fileCount = 10;
-      private DeleteTarget target = DeleteTarget.ANY;
-
-      Builder(EventType type) {
-        this.type = type;
-      }
-
-      public Builder timestamp(long ts) {
-        this.timestamp = ts;
-        return this;
-      }
-
-      public Builder table(String t) {
-        this.table = t;
-        return this;
-      }
-
-      public Builder selectivity(double s) {
-        this.selectivity = s;
-        return this;
-      }
-
-      public Builder pattern(DeletePattern p) {
-        this.pattern = p;
-        return this;
-      }
-
-      public Builder fileCount(int count) {
-        this.fileCount = count;
-        return this;
-      }
-
-      public Builder target(DeleteTarget t) {
-        this.target = t;
-        return this;
-      }
-
-      public WorkloadEvent build() {
-        return new WorkloadEvent(type, timestamp, table, selectivity, pattern, fileCount, target);
-      }
-    }
-  }
-
-  /** Generator that replays events from a trace file. */
+  /**
+   * Generator that replays events from a trace file.
+   *
+   * <p>Events are sorted by timestamp at construction time and iterated in order.
+   */
   class TraceReplayGenerator implements WorkloadGenerator {
-    private final WorkloadConfig workloadConfig;
+    private final List<WorkloadEvent> sortedEvents;
+    private int currentIndex = 0;
 
     public TraceReplayGenerator(WorkloadConfig workloadConfig) {
-      this.workloadConfig = workloadConfig;
-    }
-
-    @Override
-    public List<WorkloadEvent> generate() {
       List<WorkloadEvent> events = new ArrayList<>();
 
       for (WorkloadConfig.WorkloadEvent traceEvent : workloadConfig.events()) {
@@ -235,8 +139,36 @@ public interface WorkloadGenerator {
         events.add(event);
       }
 
+      // Sort once at construction time
       events.sort(Comparator.comparingLong(WorkloadEvent::timestamp));
-      return events;
+      this.sortedEvents = events;
+
+      // Validate order
+      validateOrder(sortedEvents);
+    }
+
+    private void validateOrder(List<WorkloadEvent> events) {
+      for (int i = 1; i < events.size(); i++) {
+        Preconditions.checkArgument(
+            events.get(i).timestamp() >= events.get(i - 1).timestamp(),
+            "Events must be in non-decreasing timestamp order at index %s: %s > %s",
+            i,
+            events.get(i - 1).timestamp(),
+            events.get(i).timestamp());
+      }
+    }
+
+    @Override
+    public boolean hasNext() {
+      return currentIndex < sortedEvents.size();
+    }
+
+    @Override
+    public WorkloadEvent next() {
+      if (!hasNext()) {
+        throw new NoSuchElementException("No more events");
+      }
+      return sortedEvents.get(currentIndex++);
     }
 
     private EventType convertEventType(WorkloadConfig.EventType type) {
@@ -287,66 +219,128 @@ public interface WorkloadGenerator {
     }
   }
 
-  /** Generator that creates random workload events. */
+  /**
+   * Generator that creates random workload events on demand.
+   *
+   * <p>Events are generated lazily using a state machine to ensure deterministic replay from the
+   * same seed. Events are always emitted in non-decreasing timestamp order.
+   *
+   * <p>State machine phases:
+   *
+   * <ol>
+   *   <li>INITIAL_LOAD - emit initial load event
+   *   <li>ITERATION - for each iteration, emit DELETE_ROWS, possibly COMPACTION with optional
+   *       CONCURRENT_DELETE
+   *   <li>DONE - no more events
+   * </ol>
+   */
   class RandomWorkloadGenerator implements WorkloadGenerator {
     private final BenchmarkConfig config;
     private final Random random;
 
+    // State machine
+    private enum Phase {
+      INITIAL_LOAD,
+      ITERATION,
+      DONE
+    }
+
+    private Phase phase = Phase.INITIAL_LOAD;
+    private int currentIteration = 0;
+    private long currentTimestamp = 0;
+
+    // Buffer for events at the same timestamp (e.g., COMPACTION + CONCURRENT_DELETE)
+    private final Deque<WorkloadEvent> pendingEvents = new ArrayDeque<>();
+
     public RandomWorkloadGenerator(BenchmarkConfig config) {
+      this(config, config.randomSeed());
+    }
+
+    public RandomWorkloadGenerator(BenchmarkConfig config, long seed) {
       this.config = config;
-      this.random = new Random(config.randomSeed());
+      this.random = new Random(seed);
     }
 
     @Override
-    public List<WorkloadEvent> generate() {
-      List<WorkloadEvent> events = new ArrayList<>();
-      long timestamp = 0;
+    public boolean hasNext() {
+      if (!pendingEvents.isEmpty()) {
+        return true;
+      }
+      generateNextBatch();
+      return !pendingEvents.isEmpty();
+    }
 
-      // Initial load
-      events.add(
-          WorkloadEvent.builder(EventType.INITIAL_LOAD)
-              .timestamp(timestamp++)
-              .table("benchmark")
-              .fileCount(config.numFiles())
-              .build());
+    @Override
+    public WorkloadEvent next() {
+      if (!hasNext()) {
+        throw new NoSuchElementException("No more events");
+      }
+      return pendingEvents.pollFirst();
+    }
 
-      // Generate iterations of operations
-      for (int i = 0; i < config.numIterations(); i++) {
-        // Add delete operations
-        events.add(
-            WorkloadEvent.builder(EventType.DELETE_ROWS)
-                .timestamp(timestamp++)
-                .table("benchmark")
-                .selectivity(config.deleteSelectivity())
-                .pattern(randomPattern())
-                .build());
+    /**
+     * Generate the next batch of events based on current state machine phase.
+     *
+     * <p>This method advances the state machine and populates pendingEvents with the next
+     * event(s). Events at the same timestamp are batched together.
+     */
+    private void generateNextBatch() {
+      switch (phase) {
+        case INITIAL_LOAD:
+          pendingEvents.add(
+              WorkloadEvent.builder(EventType.INITIAL_LOAD)
+                  .timestamp(currentTimestamp++)
+                  .table("benchmark")
+                  .fileCount(config.numFiles())
+                  .build());
+          phase = Phase.ITERATION;
+          break;
 
-        // Possibly add compaction
-        if (random.nextDouble() < config.compactionFrequency()) {
-          long compactionTs = timestamp++;
+        case ITERATION:
+          if (currentIteration >= config.numIterations()) {
+            phase = Phase.DONE;
+            return;
+          }
 
-          // Possibly add concurrent delete (for conflict testing)
-          if (random.nextDouble() < config.conflictProbability()) {
-            events.add(
-                WorkloadEvent.builder(EventType.CONCURRENT_DELETE)
-                    .timestamp(compactionTs) // Same timestamp as compaction
+          // Always add a DELETE_ROWS event
+          pendingEvents.add(
+              WorkloadEvent.builder(EventType.DELETE_ROWS)
+                  .timestamp(currentTimestamp++)
+                  .table("benchmark")
+                  .selectivity(config.deleteSelectivity())
+                  .pattern(randomPattern())
+                  .build());
+
+          // Possibly add compaction (and concurrent delete)
+          if (random.nextDouble() < config.compactionFrequency()) {
+            long compactionTs = currentTimestamp++;
+
+            // Concurrent delete has same timestamp as compaction
+            if (random.nextDouble() < config.conflictProbability()) {
+              pendingEvents.add(
+                  WorkloadEvent.builder(EventType.CONCURRENT_DELETE)
+                      .timestamp(compactionTs)
+                      .table("benchmark")
+                      .selectivity(config.deleteSelectivity() / 2)
+                      .target(DeleteTarget.COMPACTING)
+                      .build());
+            }
+
+            pendingEvents.add(
+                WorkloadEvent.builder(EventType.COMPACTION)
+                    .timestamp(compactionTs)
                     .table("benchmark")
-                    .selectivity(config.deleteSelectivity() / 2)
-                    .target(DeleteTarget.COMPACTING)
+                    .fileCount(Math.max(2, config.numFiles() / 10))
                     .build());
           }
 
-          events.add(
-              WorkloadEvent.builder(EventType.COMPACTION)
-                  .timestamp(compactionTs)
-                  .table("benchmark")
-                  .fileCount(Math.max(2, config.numFiles() / 10))
-                  .build());
-        }
-      }
+          currentIteration++;
+          break;
 
-      events.sort(Comparator.comparingLong(WorkloadEvent::timestamp));
-      return events;
+        case DONE:
+          // No more events
+          break;
+      }
     }
 
     private DeletePattern randomPattern() {

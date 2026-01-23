@@ -21,7 +21,7 @@ package org.apache.iceberg.benchmark.cloud;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
-import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.List;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
@@ -39,12 +39,13 @@ public class TestCompactionCloudBenchmark {
 
   @BeforeEach
   void setUp() {
-    config = BenchmarkConfig.defaults()
-        .withTableLocation(tempDir.getAbsolutePath())
-        .withNumIterations(2)
-        .withNumFiles(10)
-        .withAvgRowsPerFile(1000)
-        .withCollectDetailedStats(true);
+    config =
+        BenchmarkConfig.defaults()
+            .withTableLocation(tempDir.getAbsolutePath())
+            .withNumIterations(2)
+            .withNumFiles(10)
+            .withAvgRowsPerFile(1000)
+            .withCollectDetailedStats(true);
   }
 
   @Test
@@ -63,8 +64,8 @@ public class TestCompactionCloudBenchmark {
   void testSimulatedDataFileBatch() {
     PartitionSpec spec = PartitionSpec.unpartitioned();
 
-    DataFile[] files = SimulatedDataFile.createBatch(
-        spec, 5, 1000, 0.2, new java.util.Random(42));
+    DataFile[] files =
+        SimulatedDataFile.createBatch(spec, 5, 1000, 0.2, new java.util.Random(42));
 
     assertThat(files).hasSize(5);
     for (DataFile file : files) {
@@ -84,16 +85,34 @@ public class TestCompactionCloudBenchmark {
   }
 
   @Test
-  void testWorkloadGeneratorRandom() {
-    WorkloadGenerator generator = new WorkloadGenerator.RandomWorkloadGenerator(config);
+  void testWorkloadGeneratorIterator() {
+    WorkloadGenerator generator = WorkloadGenerator.createRandom(config, config.randomSeed());
 
-    List<WorkloadGenerator.WorkloadEvent> events = generator.generate();
+    // Should have events
+    assertThat(generator.hasNext()).isTrue();
+
+    // First event should be INITIAL_LOAD
+    WorkloadEvent first = generator.next();
+    assertThat(first.type()).isEqualTo(WorkloadGenerator.EventType.INITIAL_LOAD);
+  }
+
+  @Test
+  void testWorkloadGeneratorEmitsInOrder() {
+    WorkloadGenerator generator = WorkloadGenerator.createRandom(config, config.randomSeed());
+
+    List<WorkloadEvent> events = new ArrayList<>();
+    long lastTimestamp = Long.MIN_VALUE;
+
+    while (generator.hasNext()) {
+      WorkloadEvent event = generator.next();
+      assertThat(event.timestamp())
+          .as("Events must be in non-decreasing timestamp order")
+          .isGreaterThanOrEqualTo(lastTimestamp);
+      lastTimestamp = event.timestamp();
+      events.add(event);
+    }
 
     assertThat(events).isNotEmpty();
-    // Should have at least initial load
-    assertThat(events.stream()
-        .anyMatch(e -> e.type() == WorkloadGenerator.EventType.INITIAL_LOAD))
-        .isTrue();
   }
 
   @Test
@@ -135,5 +154,51 @@ public class TestCompactionCloudBenchmark {
     assertThat(loaded.tableLocation()).isEqualTo(config.tableLocation());
     assertThat(loaded.numIterations()).isEqualTo(config.numIterations());
     assertThat(loaded.numFiles()).isEqualTo(config.numFiles());
+  }
+
+  @Test
+  void testWorkloadEventEquality() {
+    WorkloadEvent event1 =
+        WorkloadEvent.builder(WorkloadGenerator.EventType.DELETE_ROWS)
+            .timestamp(100)
+            .table("test")
+            .selectivity(0.01)
+            .pattern(WorkloadGenerator.DeletePattern.RANDOM)
+            .build();
+
+    WorkloadEvent event2 =
+        WorkloadEvent.builder(WorkloadGenerator.EventType.DELETE_ROWS)
+            .timestamp(100)
+            .table("test")
+            .selectivity(0.01)
+            .pattern(WorkloadGenerator.DeletePattern.RANDOM)
+            .build();
+
+    WorkloadEvent event3 =
+        WorkloadEvent.builder(WorkloadGenerator.EventType.DELETE_ROWS)
+            .timestamp(101) // Different timestamp
+            .table("test")
+            .selectivity(0.01)
+            .pattern(WorkloadGenerator.DeletePattern.RANDOM)
+            .build();
+
+    assertThat(event1).isEqualTo(event2);
+    assertThat(event1.hashCode()).isEqualTo(event2.hashCode());
+    assertThat(event1).isNotEqualTo(event3);
+  }
+
+  @Test
+  void testWorkloadEventToString() {
+    WorkloadEvent event =
+        WorkloadEvent.builder(WorkloadGenerator.EventType.COMPACTION)
+            .timestamp(42)
+            .table("benchmark")
+            .fileCount(10)
+            .build();
+
+    String str = event.toString();
+    assertThat(str).contains("COMPACTION");
+    assertThat(str).contains("42");
+    assertThat(str).contains("benchmark");
   }
 }
