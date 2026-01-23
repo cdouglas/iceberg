@@ -601,7 +601,7 @@ ManifestWriter.toManifestFile()
 
 **Overview:**
 
-The initial implementation used naive linear search (O(m) per position lookup) in `GenericCompactionMap.GenericFileMapping.runForPosition()`. For workloads with n position deletes and m runs, this resulted in O(n*m) total cost. A five-phase optimization implemented multiple strategies with automatic selection, achieving 15-250x speedup depending on workload characteristics.
+The initial implementation used naive linear search (O(m) per position lookup) in `GenericCompactionMap.GenericFileMapping.runForPosition()`. For workloads with n position deletes and m runs, this resulted in O(n*m) total cost. A five-phase optimization implemented multiple strategies with automatic selection, achieving 1.1-32x speedup depending on workload characteristics (validated via JMH benchmarks January 2026).
 
 **Implementation Summary:**
 
@@ -638,25 +638,23 @@ The initial implementation used naive linear search (O(m) per position lookup) i
 - `core/src/jmh/java/org/apache/iceberg/RemappingBenchmarkUtils.java` - Benchmark utilities
 - `REMAPPING_BENCHMARKS.md` - Comprehensive benchmark documentation
 
-**Performance Improvements:**
+**Measured Performance (January 22, 2026 benchmarks):**
 
-**Single-Position Lookup:**
+Speedup vs LinearSearch baseline (sorted=true, gap=0.0):
 
-| Strategy | Complexity | m=10 | m=100 | m=1000 | Speedup |
-|----------|------------|------|-------|--------|---------|
-| Linear | O(m) | 10 ops | 100 ops | 1,000 ops | 1x |
-| Binary | O(log m) | 3.3 ops | 6.6 ops | 10 ops | 3-100x |
-| Interval Tree | O(log m) | 3.3 ops | 6.6 ops | 10 ops | 3-100x |
+| Scale | Best Strategy | Speedup | Time (µs) |
+|-------|---------------|---------|-----------|
+| n=1000, m=10 | StreamJoin | 1.4x | 28 |
+| n=1000, m=100 | StreamJoin | 1.3x | 30 |
+| n=1000, m=1000 | StreamJoin | 1.2x | 36 |
+| n=10000, m=10 | RangeQuery | 6.5x | 48 |
+| n=10000, m=100 | StreamJoin | 3.3x | 361 |
+| n=10000, m=1000 | StreamJoin | 3.4x | 371 |
+| n=100000, m=10 | RangeQuery | 6.7x | 529 |
+| n=100000, m=100 | StreamJoin | 23.6x | 889 |
+| n=100000, m=1000 | StreamJoin | 32.4x | 5380 |
 
-**Bulk Remapping (n=10,000 sorted positions):**
-
-| Strategy | Complexity | m=10 | m=100 | m=1000 | Best For |
-|----------|------------|------|-------|--------|----------|
-| Linear | O(n*m) | 100K | 1M | 10M | - |
-| Binary (per-pos) | O(n log m) | 33K | 67K | 100K | - |
-| Stream Join | O(n + m) | 10K | 10K | 11K | m ≈ n |
-| Range Query | O(m log n) | 133 | 1.3K | 13K | n >> m |
-| **Speedup** | | **750x** | **750x** | **900x** | |
+*Note: Theoretical complexity analysis (ops counts) replaced with empirical benchmark data.*
 
 **Smart Algorithm Selection:**
 
@@ -667,12 +665,13 @@ The `RemappingAlgorithmSelector` automatically chooses optimal strategy based on
 3. **Sortedness**: Whether positions are sorted (detected via sampling)
 4. **Gap ratio**: Percentage of source range not covered by runs
 
-**Selection Rules:**
-- `m < 10`: RangeQuery (always optimal for few runs)
-- `n/m > 100` with gaps: RangeQuery (high fan-in with sparsity benefits from predicate pushdown)
-- Sorted and `n > m`: StreamJoin (O(n + m) single pass)
-- `m < 100`: BinarySearch (simple and fast)
-- Default: IntervalTree (good for all scenarios)
+**Selection Rules (updated January 22, 2026):**
+- Unsorted: IntervalTree (wins 24/27 unsorted scenarios)
+- Sorted + sparse (gapRatio > 0.3): RangeQuery (skip gaps efficiently)
+- Sorted + dense + n >= 10000 + m >= 100: StreamJoin (bulk merge-join)
+- Sorted + other: RangeQuery (default for sorted data)
+
+Selection overhead: ~5% average vs optimal strategy.
 
 **Example Usage:**
 
@@ -902,7 +901,7 @@ See `REMAPPING_BENCHMARKS.md` for detailed documentation on running and interpre
   - Deletion vector remapping scenarios
   - N:M compaction (multiple sources to multiple targets)
   - Gap handling (positions deleted during compaction)
-  - **Remapping algorithm optimization** (15-250x speedup validation)
+  - **Remapping algorithm optimization** (1.1-32x speedup validated via JMH)
   - **Smart algorithm selection** (automatic optimal strategy choice)
   - **Bulk API integration** (5-10x faster than per-position remapping)
   - **End-to-end Spark workflows** (bin-pack with position deletes, conflict resolution)

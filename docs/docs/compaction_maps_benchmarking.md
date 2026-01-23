@@ -90,43 +90,41 @@ JMH options:
 - `-rf FORMAT` - Result format (text, csv, json)
 - `-rff FILE` - Result output file
 
-## Expected Performance Characteristics
+## Measured Performance Characteristics
+
+*Based on January 22, 2026 benchmark results (324 configurations)*
 
 ### Few Runs (m = 10)
 
-**RangeQuery** is optimal:
-- O(m log n) complexity
-- Fast for few runs regardless of position count
-- Expected: 100-1000µs for 100k positions
+**RangeQuery** is optimal for sorted data:
+- Measured: 48µs for n=10k, 529µs for n=100k (sorted, gap=0.0)
+- 6.5-6.7x speedup vs LinearSearch
 
 ### Medium Runs (m = 100)
 
 **Sorted positions**: StreamJoin optimal
-- O(n + m) single pass
-- Expected: 500-2000µs for 10k positions
+- Measured: 361µs for n=10k, 889µs for n=100k (sorted, gap=0.0)
+- 3.3-23.6x speedup vs LinearSearch
 
-**Unsorted positions**: BinarySearch optimal
-- O(n log m) complexity
-- Expected: 1000-5000µs for 10k positions
+**Unsorted positions**: IntervalTree optimal
+- IntervalTree wins all unsorted scenarios
 
 ### Many Runs (m = 1000)
 
-**IntervalTree** optimal:
-- O(n log m) with good cache locality
-- Expected: 5000-20000µs for 10k positions
+**Sorted**: StreamJoin optimal
+- Measured: 371µs for n=10k, 5380µs for n=100k (sorted, gap=0.0)
+- 3.4-32.4x speedup vs LinearSearch
 
-### High Fan-in (n >> m)
+**Unsorted**: IntervalTree optimal
 
-**RangeQuery** optimal when n/m > 100:
-- O(m log n) complexity
-- Expected: 1000-5000µs for 100k positions, 10 runs
+### Selection Summary
 
-### With Gaps (gapRatio > 0.3)
-
-**Predicate pushdown** benefits:
-- Filters irrelevant runs
-- 30-50% speedup for sparse scenarios
-- RangeQuery benefits most from sparsity
+| Condition | Best Strategy |
+|-----------|---------------|
+| Unsorted | IntervalTree |
+| Sorted + gapRatio > 0.3 | RangeQuery |
+| Sorted + n >= 10000 + m >= 100 | StreamJoin |
+| Sorted + other | RangeQuery |
 
 ## Interpreting Results
 
@@ -156,11 +154,11 @@ Compare strategies relative to LinearSearch:
 ```
 Speedup = LinearSearch_Time / Strategy_Time
 
-Expected speedups for typical workloads:
-- BinarySearch: 10-15x (m=100)
-- IntervalTree: 15-20x (m=1000)
-- StreamJoin: 20-50x (sorted, m=100)
-- RangeQuery: 100-250x (m=10, n=100k)
+Measured speedups (January 2026 benchmarks):
+- Small scale (n=1000): 1.1-1.4x
+- Medium scale (n=10000): 3.3-6.5x
+- Large scale (n=100000): 6.7-32.4x
+- Smart selector overhead: ~5% average
 ```
 
 ## Benchmark Scenarios Matrix
@@ -169,25 +167,25 @@ Total scenarios: 3 (numRuns) × 3 (numPositions) × 3 (gapRatio) × 2 (sorted) =
 
 **Key Scenarios to Review:**
 
-1. **Few runs, many positions**
+1. **Few runs, many positions (sorted)**
    - numRuns=10, numPositions=100000, sorted=true
-   - Expected winner: RangeQuery
+   - Winner: RangeQuery (6.7x speedup)
 
 2. **Many runs, sorted positions**
    - numRuns=1000, numPositions=10000, sorted=true
-   - Expected winner: StreamJoin
+   - Winner: StreamJoin (3.4x speedup)
 
 3. **Medium runs, unsorted**
    - numRuns=100, numPositions=10000, sorted=false
-   - Expected winner: BinarySearch
+   - Winner: IntervalTree (unsorted always uses IntervalTree)
 
-4. **High gaps, high fan-in**
-   - numRuns=10, numPositions=100000, gapRatio=0.5
-   - Expected winner: RangeQuery (predicate pushdown benefit)
+4. **Large scale, sorted**
+   - numRuns=1000, numPositions=100000, sorted=true
+   - Winner: StreamJoin (32.4x speedup)
 
-5. **Large scale**
-   - numRuns=1000, numPositions=100000
-   - Expected winner: IntervalTree or StreamJoin (if sorted)
+5. **Large scale, unsorted**
+   - numRuns=1000, numPositions=100000, sorted=false
+   - Winner: IntervalTree
 
 ## Troubleshooting
 
@@ -230,38 +228,44 @@ Reduce position count or run with more heap:
 
 ## Benchmark Results
 
-### January 16, 2026 Run (324 Configurations)
+### January 22, 2026 Run (Latest - 324 Configurations)
 
-**Run ID**: `results_20260116_162342`
-**Location**: `benchmark/remapping-optimization/`
-**Duration**: ~2.5 hours
-**VM**: OpenJDK 17.0.17, 32GB heap
+**Run ID**: `results_20260122_140158`
+**Location**: `benchmark/remapping-optimization/results/`
+**Duration**: ~2 hours
+**VM**: OpenJDK 17, containerized
 
 **Key Findings**:
 
-1. **Actual Speedups** (vs LinearSearch baseline):
-   - Few runs (m=10, sorted): 5-6x speedup
-   - Medium runs (m=100, sorted): 4-22x speedup
-   - Many runs (m=1000, sorted): 23-142x speedup
-   - Large scale (m=1000, n=100K, unsorted): 161x speedup
+1. **Actual Speedups** (vs LinearSearch baseline, sorted=true, gap=0.0):
+   - Small scale (n=1000): 1.1-1.4x speedup
+   - Medium scale (n=10000): 3.3-6.5x speedup
+   - Large scale (n=100000): 6.7-32.4x speedup
 
 2. **Optimal Strategy by Scenario**:
-   - RangeQuery: 24 scenarios (all sorted with low m)
-   - IntervalTree: 24 scenarios (all unsorted, or high m)
-   - StreamJoin: 5 scenarios (sorted with medium m)
-   - BinarySearch: 1 scenario (unsorted, medium-high m)
+   - IntervalTree: 24 scenarios (all unsorted)
+   - RangeQuery: 17 scenarios (sorted, sparse or small m)
+   - StreamJoin: 10 scenarios (sorted, dense, m ≥ 100)
+   - BinarySearch: 3 scenarios (unsorted edge cases with m=1000)
 
 3. **Smart Selector Performance**:
-   - **Issue Found**: Initial implementation had 194% average overhead
-   - **Root Cause**: Selection logic flaws (see CLAUDE.md Phase 7.3)
-   - **Worst Cases**: 3500%+ overhead for unsorted data with m < 10
-   - **Best Cases**: <5% overhead for sorted data with correct selection
-   - **Status**: Partial fix committed, full fix pending
+   - **Average overhead**: 4.68%
+   - **Max overhead**: 33.3% (unsorted edge case where BinarySearch wins)
+   - **Selector faster than optimal**: 20 cases (measurement variance)
 
-4. **IntervalTree vs StreamJoin** (key insight):
-   - For m ≥ 100, sorted data: IntervalTree 4-6x faster than StreamJoin
-   - Reason: Better cache locality at high m
-   - Updated selector to prefer IntervalTree for m ≥ 100
+4. **Key Insight**: StreamJoin requires m ≥ 100
+   - For small m (e.g., m=10), RangeQuery wins even with large n
+   - Updated selector to require both n >= 10000 AND m >= 100 for StreamJoin
+
+### January 16, 2026 Run (Historical - Pre-Fix)
+
+**Run ID**: `results_20260116_162342`
+**Status**: Historical reference only (selector has been significantly updated since)
+
+**Issues Found** (now fixed):
+- Initial selector had 194% average overhead
+- 3500%+ overhead for unsorted data with m < 10
+- Selection logic flaws corrected in subsequent commits
 
 ### Analysis Tools
 
