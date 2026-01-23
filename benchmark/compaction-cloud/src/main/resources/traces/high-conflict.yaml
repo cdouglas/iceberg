@@ -1,0 +1,149 @@
+# High Conflict Workload Trace
+# Stress test for compaction conflict handling
+
+name: "High conflict workload"
+description: "Stress test with high conflict rates to evaluate remapping performance"
+
+parameters:
+  base_tables:
+    - name: stress_test
+      rows: 10000000
+      files: 100
+
+events:
+  # Initial data load
+  - type: INITIAL_LOAD
+    timestamp: 0
+    table: benchmark
+
+  # Wave 1: Multiple concurrent conflicts
+  - type: COMPACTION
+    timestamp: 1000
+    table: benchmark
+    file_count: 20
+
+  - type: CONCURRENT_DELETE
+    timestamp: 1000
+    table: benchmark
+    selectivity: 0.002
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 1000
+    table: benchmark
+    selectivity: 0.001
+    target: COMPACTING
+
+  # Wave 2: More compaction with conflicts
+  - type: DELETE_ROWS
+    timestamp: 2000
+    table: benchmark
+    selectivity: 0.003
+    pattern: RANDOM
+
+  - type: COMPACTION
+    timestamp: 3000
+    table: benchmark
+    file_count: 25
+
+  - type: CONCURRENT_DELETE
+    timestamp: 3000
+    table: benchmark
+    selectivity: 0.002
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 3000
+    table: benchmark
+    selectivity: 0.002
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 3000
+    table: benchmark
+    selectivity: 0.001
+    target: COMPACTING
+
+  # Wave 3: Heavy conflict scenario
+  - type: DELETE_ROWS
+    timestamp: 4000
+    table: benchmark
+    selectivity: 0.005
+    pattern: CLUSTERED
+
+  - type: COMPACTION
+    timestamp: 5000
+    table: benchmark
+    file_count: 30
+
+  - type: CONCURRENT_DELETE
+    timestamp: 5000
+    table: benchmark
+    selectivity: 0.003
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 5000
+    table: benchmark
+    selectivity: 0.002
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 5000
+    table: benchmark
+    selectivity: 0.002
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 5000
+    table: benchmark
+    selectivity: 0.001
+    target: COMPACTING
+
+  # Wave 4: Maximum stress
+  - type: COMPACTION
+    timestamp: 6000
+    table: benchmark
+    file_count: 40
+
+  - type: CONCURRENT_DELETE
+    timestamp: 6000
+    table: benchmark
+    selectivity: 0.005
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 6000
+    table: benchmark
+    selectivity: 0.004
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 6000
+    table: benchmark
+    selectivity: 0.003
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 6000
+    table: benchmark
+    selectivity: 0.002
+    target: COMPACTING
+
+  - type: CONCURRENT_DELETE
+    timestamp: 6000
+    table: benchmark
+    selectivity: 0.001
+    target: COMPACTING
+
+  # Final cleanup compaction
+  - type: COMPACTION
+    timestamp: 7000
+    table: benchmark
+    file_count: 50
+
+  - type: CONCURRENT_DELETE
+    timestamp: 7000
+    table: benchmark
+    selectivity: 0.001
+    target: COMPACTING

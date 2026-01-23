@@ -1,0 +1,95 @@
+# TPC-H-like Workload Trace
+# Simulates TPC-H style analytics with updates
+
+name: "TPC-H-like workload"
+description: "Simulates TPC-H style analytics with periodic updates and compaction"
+
+parameters:
+  base_tables:
+    - name: lineitem
+      rows: 6000000
+      files: 60
+    - name: orders
+      rows: 1500000
+      files: 15
+
+events:
+  # Initial data load
+  - type: INITIAL_LOAD
+    timestamp: 0
+    table: benchmark
+
+  # Simulate daily batch updates (small deletes)
+  - type: DELETE_ROWS
+    timestamp: 1000
+    table: benchmark
+    selectivity: 0.001
+    pattern: RANDOM
+
+  - type: DELETE_ROWS
+    timestamp: 2000
+    table: benchmark
+    selectivity: 0.0005
+    pattern: SEQUENTIAL
+
+  # First compaction with concurrent updates (potential conflict)
+  - type: COMPACTION
+    timestamp: 3000
+    table: benchmark
+    file_count: 10
+
+  - type: CONCURRENT_DELETE
+    timestamp: 3000
+    table: benchmark
+    selectivity: 0.0005
+    target: COMPACTING
+
+  # More updates
+  - type: DELETE_ROWS
+    timestamp: 4000
+    table: benchmark
+    selectivity: 0.001
+    pattern: CLUSTERED
+
+  - type: DELETE_ROWS
+    timestamp: 5000
+    table: benchmark
+    selectivity: 0.002
+    pattern: RANDOM
+
+  # Second compaction
+  - type: COMPACTION
+    timestamp: 6000
+    table: benchmark
+    file_count: 15
+
+  # More updates
+  - type: DELETE_ROWS
+    timestamp: 7000
+    table: benchmark
+    selectivity: 0.001
+    pattern: RANDOM
+
+  - type: ADD_FILES
+    timestamp: 8000
+    table: benchmark
+    file_count: 5
+
+  # Third compaction with conflict
+  - type: COMPACTION
+    timestamp: 9000
+    table: benchmark
+    file_count: 20
+
+  - type: CONCURRENT_DELETE
+    timestamp: 9000
+    table: benchmark
+    selectivity: 0.001
+    target: COMPACTING
+
+  # Final batch of updates
+  - type: DELETE_ROWS
+    timestamp: 10000
+    table: benchmark
+    selectivity: 0.0005
+    pattern: SEQUENTIAL
