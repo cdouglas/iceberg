@@ -44,6 +44,10 @@ include 'delta-lake'
 include 'open-api'
 include 'mr'
 
+// Benchmark modules (standalone, not part of release)
+include 'benchmark:compaction-cloud'
+include 'benchmark:remapping-microbenchmark'
+
 project(':bom').name = 'iceberg-bom'
 project(':api').name = 'iceberg-api'
 project(':common').name = 'iceberg-common'

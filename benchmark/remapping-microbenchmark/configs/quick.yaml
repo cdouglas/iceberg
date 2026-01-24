@@ -1,0 +1,45 @@
+# Quick configuration for remapping microbenchmark
+#
+# Minimal configuration for verifying the benchmark works.
+# Runs in ~1-2 minutes locally.
+
+storage-uri: "file:///tmp/remapping-benchmark"
+cloud-provider: LOCAL
+
+# Minimal delete counts
+delete-counts:
+  - 1000
+  - 10000
+
+# Minimal run counts
+run-counts:
+  - 10
+  - 100
+
+# Single density
+densities:
+  - SPARSE
+
+# Both formats
+formats:
+  - POSITION_DELETE_FILE
+  - DELETION_VECTOR
+
+# Key strategies only
+strategies:
+  - LINEAR
+  - INTERVAL_TREE
+  - SMART
+
+# Minimal iterations
+warmup-iterations: 1
+measurement-iterations: 3
+
+output-dir: "quick-results"
+random-seed: 42
+
+fanout-factors:
+  - 10
+
+split-factors:
+  - 1
