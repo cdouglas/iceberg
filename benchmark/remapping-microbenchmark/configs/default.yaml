@@ -1,0 +1,59 @@
+# Default configuration for remapping microbenchmark
+#
+# This configuration runs a small benchmark suitable for local testing.
+# For SIGMOD-ready results, use sigmod.yaml with cloud storage.
+
+storage-uri: "file:///tmp/remapping-benchmark"
+cloud-provider: LOCAL
+
+# Delete counts to test (number of position deletes)
+delete-counts:
+  - 1000
+  - 10000
+  - 100000
+
+# Run counts to test (number of runs in compaction map)
+run-counts:
+  - 10
+  - 100
+  - 1000
+
+# Density patterns
+densities:
+  - SPARSE   # ~1% deleted, scattered positions
+  - DENSE    # ~50% deleted, clustered positions
+
+# Delete file formats
+formats:
+  - POSITION_DELETE_FILE  # V2/V3 Parquet files
+  - DELETION_VECTOR       # V3 Puffin files with Roaring bitmaps
+
+# Remapping strategies to benchmark
+strategies:
+  - LINEAR
+  - BINARY_SEARCH
+  - INTERVAL_TREE
+  - STREAM_JOIN
+  - RANGE_QUERY
+  - SMART
+
+# Execution parameters
+warmup-iterations: 3
+measurement-iterations: 10
+
+# Output configuration
+output-dir: "benchmark-results"
+
+# Reproducibility
+random-seed: 42
+
+# Compaction scenario parameters
+fanout-factors:
+  - 2
+  - 10
+  - 100
+
+split-factors:
+  - 1
+  - 5
+  - 10

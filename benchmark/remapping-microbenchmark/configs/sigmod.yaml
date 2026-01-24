@@ -1,0 +1,73 @@
+# SIGMOD-ready configuration for remapping microbenchmark
+#
+# This configuration runs a comprehensive benchmark across all meaningful
+# parameter combinations. Designed for cloud storage to capture realistic
+# I/O latencies.
+#
+# Expected runtime: ~4-6 hours depending on cloud provider
+# Expected scenarios: 6 strategies × 4 delete counts × 4 run counts × 2 densities × 2 formats = 768 scenarios
+# With 10 iterations each: 7680 measurements
+
+# Storage should be overridden via command line: --storage-uri s3://my-bucket/benchmark
+storage-uri: "s3://iceberg-benchmark/remapping"
+cloud-provider: AWS_S3
+
+# Delete counts: from small (1K) to large scale (1M)
+# These match realistic position delete file sizes
+delete-counts:
+  - 1000       # Small: Quick operations, testing strategy overhead
+  - 10000      # Medium: Typical conflict scenario
+  - 100000     # Large: Heavy delete workload
+  - 1000000    # Very large: Stress test
+
+# Run counts: from simple (10) to complex (10K) compaction maps
+# Higher run counts indicate more file splits/merges
+run-counts:
+  - 10         # Simple: Few source files merged
+  - 100        # Moderate: Typical bin-pack
+  - 1000       # Complex: Many small files
+  - 10000      # Very complex: Highly fragmented
+
+# Density patterns
+densities:
+  - SPARSE   # ~1% deleted, scattered positions (worst case for bitmaps)
+  - DENSE    # ~50% deleted, clustered positions (best case for bitmaps)
+
+# Delete file formats
+formats:
+  - POSITION_DELETE_FILE  # V2/V3 Parquet files with (path, pos) tuples
+  - DELETION_VECTOR       # V3 Puffin files with Roaring bitmaps
+
+# Remapping strategies to benchmark
+strategies:
+  - LINEAR         # O(n×m) baseline
+  - BINARY_SEARCH  # O(n log m) per position
+  - INTERVAL_TREE  # O(n log m) with balanced tree
+  - STREAM_JOIN    # O(n+m) merge-join for sorted
+  - RANGE_QUERY    # O(m log n) inverted query
+  - SMART          # Automatic selection
+
+# Execution parameters
+# More iterations for statistical significance
+warmup-iterations: 5
+measurement-iterations: 20
+
+# Output configuration
+output-dir: "sigmod-results"
+
+# Reproducibility - use fixed seed
+random-seed: 20260124
+
+# Compaction scenario parameters
+# These control the shape of the compaction map
+fanout-factors:
+  - 2      # 2 files merged into 1
+  - 10     # 10 files merged into 1
+  - 50     # 50 files merged into 1
+  - 100    # 100 files merged into 1
+
+split-factors:
+  - 1      # No split (pure merge)
+  - 2      # Split into 2 targets
+  - 5      # Split into 5 targets
+  - 10     # Split into 10 targets
