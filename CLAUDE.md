@@ -181,6 +181,18 @@ Compaction maps support **order-preserving** operations only:
 
 **Note**: Tables with sorted base data and unsorted changes are fine—unsorted changes can be compacted with position tracking, then merged into sorted runs (merge applies deletes during scan, no tracking needed).
 
+### 3.5 One-to-One Source-Target Assumption
+
+Compaction maps assume **each source file maps to exactly one target file**. Multi-target mappings (source file spanning multiple targets) are not supported.
+
+**Where enforced**:
+- `CompactionMapBuilder.addFileMapping()` - Uses source file as unique key
+- `PositionMappingCoordinator.aggregateMappings()` - Uses first target only
+
+**When this could fail**: Large source file + small target file size = source spans target boundary. Rare in practice because bin-pack targets small files and planner distributes evenly.
+
+**Details**: See `docs/docs/compaction_maps_errata.md` Section 2.
+
 ### 4. Two Types of Conflicts
 
 **A. Position Delete Conflicts** (detected by CompactionMapValidator):
