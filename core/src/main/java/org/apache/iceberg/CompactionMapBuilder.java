@@ -104,10 +104,13 @@ public class CompactionMapBuilder {
    *
    * <p>This builder automatically merges consecutive runs for efficiency. For example, adding
    * Run(0, 0, 100) followed by Run(100, 100, 50) will be merged into a single Run(0, 0, 150).
+   *
+   * <p>Supports multi-target mappings where a source file's rows span multiple target files. Each
+   * run can specify its own target file, which prevents merging across different targets.
    */
   public static class FileMappingBuilder {
     private final String sourceFile;
-    private final String targetFile;
+    private final String targetFile; // Default target for backward compat
     private final List<RunBuilder> runs;
 
     FileMappingBuilder(String sourceFile, String targetFile) {
@@ -117,9 +120,10 @@ public class CompactionMapBuilder {
     }
 
     /**
-     * Adds a run of position mappings from source to target.
+     * Adds a run of position mappings from source to the default target file.
      *
-     * <p>If this run is consecutive with the previous run, they will be automatically merged.
+     * <p>If this run is consecutive with the previous run (and uses the same target), they will be
+     * automatically merged.
      *
      * @param sourcePosition starting position in the source file
      * @param targetPosition starting position in the target file
@@ -127,21 +131,41 @@ public class CompactionMapBuilder {
      * @return this builder for method chaining
      */
     public FileMappingBuilder addRun(long sourcePosition, long targetPosition, long length) {
+      return addRun(sourcePosition, targetPosition, length, null);
+    }
+
+    /**
+     * Adds a run of position mappings from source to a specific target file.
+     *
+     * <p>If this run is consecutive with the previous run and uses the same target file, they will
+     * be automatically merged.
+     *
+     * <p>Use this method for multi-target mappings where a source file's rows span multiple target
+     * files (e.g., due to target file size limits).
+     *
+     * @param sourcePosition starting position in the source file
+     * @param targetPosition starting position in the target file
+     * @param length number of rows in this run
+     * @param runTargetFile the target file for this run, or null to use the default target
+     * @return this builder for method chaining
+     */
+    public FileMappingBuilder addRun(
+        long sourcePosition, long targetPosition, long length, String runTargetFile) {
       Preconditions.checkArgument(sourcePosition >= 0, "Source position must be non-negative");
       Preconditions.checkArgument(targetPosition >= 0, "Target position must be non-negative");
       Preconditions.checkArgument(length > 0, "Run length must be positive");
 
-      // Try to merge with the last run
+      // Try to merge with the last run (only if same target file)
       if (!runs.isEmpty()) {
         RunBuilder lastRun = runs.get(runs.size() - 1);
-        if (lastRun.canMerge(sourcePosition, targetPosition)) {
+        if (lastRun.canMerge(sourcePosition, targetPosition, runTargetFile)) {
           lastRun.extend(length);
           return this;
         }
       }
 
       // Cannot merge, add as new run
-      runs.add(new RunBuilder(sourcePosition, targetPosition, length));
+      runs.add(new RunBuilder(sourcePosition, targetPosition, length, runTargetFile));
       return this;
     }
 
@@ -158,21 +182,29 @@ public class CompactionMapBuilder {
   private static class RunBuilder {
     private final long sourcePosition;
     private final long targetPosition;
+    private final String targetFile; // Per-run target, null means use parent's default
     private long length;
 
-    RunBuilder(long sourcePosition, long targetPosition, long length) {
+    RunBuilder(long sourcePosition, long targetPosition, long length, String targetFile) {
       this.sourcePosition = sourcePosition;
       this.targetPosition = targetPosition;
       this.length = length;
+      this.targetFile = targetFile;
     }
 
     /**
      * Checks if a new run can be merged with this run.
      *
-     * <p>Two runs can be merged if they are consecutive in both source and target files.
+     * <p>Two runs can be merged if they are consecutive in both source and target files, and they
+     * have the same target file.
      */
-    boolean canMerge(long nextSourcePosition, long nextTargetPosition) {
-      return nextSourcePosition == sourcePosition + length
+    boolean canMerge(long nextSourcePosition, long nextTargetPosition, String nextTargetFile) {
+      boolean sameTarget =
+          (targetFile == null && nextTargetFile == null)
+              || (targetFile != null && targetFile.equals(nextTargetFile));
+
+      return sameTarget
+          && nextSourcePosition == sourcePosition + length
           && nextTargetPosition == targetPosition + length;
     }
 
@@ -182,7 +214,7 @@ public class CompactionMapBuilder {
     }
 
     Run build() {
-      return new GenericRun(sourcePosition, targetPosition, length);
+      return new GenericRun(sourcePosition, targetPosition, length, targetFile);
     }
   }
 }

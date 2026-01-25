@@ -131,17 +131,20 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
   }
 
   /**
-   * Represents position mapping from a source file to a target file during a rewrite operation.
+   * Represents position mapping from a source file to target file(s) during a rewrite operation.
    *
    * <p>This metadata tracks how rows from source files are mapped to target files, which is used to
    * generate compaction maps for remapping position deletes.
    *
    * <p>Supports multi-run mappings to handle gaps from deleted rows. Each run represents a
    * contiguous range of positions mapped from source to target.
+   *
+   * <p>Supports multi-target mappings where a single source file's rows span multiple target files
+   * (e.g., due to target file size limits). Each run specifies its own target file.
    */
   public static class FilePositionMapping {
     private final String sourceFile;
-    private final String targetFile;
+    private final String targetFile; // Default target for backward compat; may be null if per-run
     private final List<Run> runs;
 
     /**
@@ -225,6 +228,35 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
       return runs;
     }
 
+    /**
+     * Returns the effective target file for a given run.
+     *
+     * <p>If the run has its own target file, returns that. Otherwise, returns the mapping's default
+     * target file.
+     */
+    public String targetFileForRun(Run run) {
+      return run.targetFile() != null ? run.targetFile() : targetFile;
+    }
+
+    /**
+     * Returns all unique target files in this mapping.
+     *
+     * <p>For single-target mappings, returns a set with one element. For multi-target mappings,
+     * returns all distinct target files across all runs.
+     */
+    public Set<String> targetFiles() {
+      Set<String> targets =
+          runs.stream()
+              .map(run -> run.targetFile() != null ? run.targetFile() : targetFile)
+              .collect(Collectors.toSet());
+      return targets;
+    }
+
+    /** Returns true if this mapping spans multiple target files. */
+    public boolean isMultiTarget() {
+      return targetFiles().size() > 1;
+    }
+
     @Override
     public String toString() {
       return MoreObjects.toStringHelper(this)
@@ -238,17 +270,28 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
      * Represents a contiguous run of rows mapped from source to target.
      *
      * <p>A run describes that rows at positions [sourceOffset, sourceOffset + length) in the source
-     * file are mapped to [targetOffset, targetOffset + length) in the target file.
+     * file are mapped to [targetOffset, targetOffset + length) in a target file.
+     *
+     * <p>The target file can be specified per-run to support multi-target mappings, or null to use
+     * the parent FilePositionMapping's targetFile (for backward compatibility).
      */
     public static class Run {
       private final long sourceOffset;
       private final long targetOffset;
       private final long length;
+      private final String targetFile; // Per-run target, null means use parent's targetFile
 
+      /** Constructor without per-run target (backward compatible). */
       public Run(long sourceOffset, long targetOffset, long length) {
+        this(sourceOffset, targetOffset, length, null);
+      }
+
+      /** Constructor with per-run target file for multi-target mappings. */
+      public Run(long sourceOffset, long targetOffset, long length, String targetFile) {
         this.sourceOffset = sourceOffset;
         this.targetOffset = targetOffset;
         this.length = length;
+        this.targetFile = targetFile;
       }
 
       public long sourceOffset() {
@@ -263,12 +306,20 @@ public class RewriteFileGroup extends RewriteGroupBase<FileGroupInfo, FileScanTa
         return length;
       }
 
+      /**
+       * Returns the target file for this run, or null if the parent's targetFile should be used.
+       */
+      public String targetFile() {
+        return targetFile;
+      }
+
       @Override
       public String toString() {
         return MoreObjects.toStringHelper(this)
             .add("sourceOffset", sourceOffset)
             .add("targetOffset", targetOffset)
             .add("length", length)
+            .add("targetFile", targetFile)
             .toString();
       }
     }

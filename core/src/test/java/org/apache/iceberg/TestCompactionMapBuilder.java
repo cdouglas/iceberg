@@ -250,4 +250,140 @@ public class TestCompactionMapBuilder {
     assertThat(map.targetSnapshotId()).isEqualTo(2L);
     assertThat(map.fileMappings()).isEmpty();
   }
+
+  @Test
+  public void testMultiTargetMappingWithExplicitTargetFiles() {
+    // Tests a source file whose rows span multiple target files due to size limits
+    CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
+
+    builder
+        .addFileMapping("source.parquet", "target1.parquet") // default target
+        .addRun(0, 0, 100, "target1.parquet") // Rows 0-99 -> target1
+        .addRun(100, 0, 100, "target2.parquet"); // Rows 100-199 -> target2
+
+    CompactionMap map = builder.build();
+    FileMapping mapping = map.fileMappings().get(0);
+
+    // Should have 2 runs (different targets, cannot merge)
+    assertThat(mapping.runs()).hasSize(2);
+
+    Run run1 = mapping.runs().get(0);
+    assertThat(run1.sourcePosition()).isEqualTo(0);
+    assertThat(run1.targetPosition()).isEqualTo(0);
+    assertThat(run1.length()).isEqualTo(100);
+    assertThat(run1.targetFile()).isEqualTo("target1.parquet");
+
+    Run run2 = mapping.runs().get(1);
+    assertThat(run2.sourcePosition()).isEqualTo(100);
+    assertThat(run2.targetPosition()).isEqualTo(0);
+    assertThat(run2.length()).isEqualTo(100);
+    assertThat(run2.targetFile()).isEqualTo("target2.parquet");
+  }
+
+  @Test
+  public void testMultiTargetRunsWithSameTargetMerge() {
+    CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
+
+    builder
+        .addFileMapping("source.parquet", "default.parquet")
+        .addRun(0, 0, 100, "target1.parquet")
+        .addRun(100, 100, 50, "target1.parquet"); // Same target, consecutive -> merge
+
+    CompactionMap map = builder.build();
+    FileMapping mapping = map.fileMappings().get(0);
+
+    // Should merge into single run
+    assertThat(mapping.runs()).hasSize(1);
+
+    Run run = mapping.runs().get(0);
+    assertThat(run.sourcePosition()).isEqualTo(0);
+    assertThat(run.targetPosition()).isEqualTo(0);
+    assertThat(run.length()).isEqualTo(150);
+    assertThat(run.targetFile()).isEqualTo("target1.parquet");
+  }
+
+  @Test
+  public void testMultiTargetRunsWithDifferentTargetsDoNotMerge() {
+    CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
+
+    builder
+        .addFileMapping("source.parquet", "default.parquet")
+        .addRun(0, 0, 100, "target1.parquet")
+        .addRun(100, 100, 50, "target2.parquet"); // Different target -> no merge
+
+    CompactionMap map = builder.build();
+    FileMapping mapping = map.fileMappings().get(0);
+
+    // Should have 2 runs (different targets)
+    assertThat(mapping.runs()).hasSize(2);
+
+    Run run1 = mapping.runs().get(0);
+    assertThat(run1.targetFile()).isEqualTo("target1.parquet");
+
+    Run run2 = mapping.runs().get(1);
+    assertThat(run2.targetFile()).isEqualTo("target2.parquet");
+  }
+
+  @Test
+  public void testMultiTargetWithNullAndExplicitTargets() {
+    // Test mixing null (use default) with explicit targets
+    CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
+
+    builder
+        .addFileMapping("source.parquet", "default.parquet")
+        .addRun(0, 0, 100) // null target -> uses default
+        .addRun(100, 100, 50, null) // explicit null -> should merge
+        .addRun(150, 150, 25, "different.parquet"); // explicit target -> no merge
+
+    CompactionMap map = builder.build();
+    FileMapping mapping = map.fileMappings().get(0);
+
+    // First two should merge (both null), third is separate
+    assertThat(mapping.runs()).hasSize(2);
+
+    Run run1 = mapping.runs().get(0);
+    assertThat(run1.sourcePosition()).isEqualTo(0);
+    assertThat(run1.length()).isEqualTo(150);
+    assertThat(run1.targetFile()).isNull();
+
+    Run run2 = mapping.runs().get(1);
+    assertThat(run2.sourcePosition()).isEqualTo(150);
+    assertThat(run2.length()).isEqualTo(25);
+    assertThat(run2.targetFile()).isEqualTo("different.parquet");
+  }
+
+  @Test
+  public void testComplexMultiTargetPattern() {
+    // Simulates realistic multi-target scenario: source rows split across multiple targets
+    // due to target file size limits
+    CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
+
+    builder
+        .addFileMapping("large_source.parquet", "target_001.parquet")
+        .addRun(0, 0, 1000, "target_001.parquet") // First 1000 rows -> target_001
+        .addRun(1000, 1000, 500, "target_001.parquet") // Continue in target_001
+        .addRun(1500, 0, 1000, "target_002.parquet") // Next 1000 rows -> target_002
+        .addRun(2500, 0, 500, "target_003.parquet"); // Last 500 rows -> target_003
+
+    CompactionMap map = builder.build();
+    FileMapping mapping = map.fileMappings().get(0);
+
+    // target_001 runs should merge, others separate
+    assertThat(mapping.runs()).hasSize(3);
+
+    Run run1 = mapping.runs().get(0);
+    assertThat(run1.sourcePosition()).isEqualTo(0);
+    assertThat(run1.length()).isEqualTo(1500);
+    assertThat(run1.targetFile()).isEqualTo("target_001.parquet");
+
+    Run run2 = mapping.runs().get(1);
+    assertThat(run2.sourcePosition()).isEqualTo(1500);
+    assertThat(run2.length()).isEqualTo(1000);
+    assertThat(run2.targetFile()).isEqualTo("target_002.parquet");
+
+    Run run3 = mapping.runs().get(2);
+    assertThat(run3.sourcePosition()).isEqualTo(2500);
+    assertThat(run3.length()).isEqualTo(500);
+    assertThat(run3.targetFile()).isEqualTo("target_003.parquet");
+  }
 }
