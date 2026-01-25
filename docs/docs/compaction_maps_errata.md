@@ -65,7 +65,112 @@ This is a **design boundary**, not a missing feature. Order-changing operations 
 
 ---
 
-## 2. Automatic Conflict Resolution (Partial)
+## 2. Source Files Spanning Multiple Targets (Unsupported)
+
+### Issue
+
+The current compaction map implementation assumes **each source file maps to exactly one target file**. When a source file's rows span multiple target files (due to target file size limits), the compaction map will be incomplete or incorrect.
+
+### Root Cause
+
+Two components enforce this one-to-one assumption:
+
+**CompactionMapBuilder** (`core/src/main/java/org/apache/iceberg/CompactionMapBuilder.java:69-72`):
+```java
+Preconditions.checkArgument(
+    !fileMappings.containsKey(sourceFile),
+    "File mapping for source file %s already exists",
+    sourceFile);
+```
+
+The builder uses source file path as a unique key, preventing multiple mappings from the same source.
+
+**PositionMappingCoordinator** (`spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/PositionMappingCoordinator.java:209-214`):
+```java
+// Use the target file from the first position
+// Note: This assumes all positions map to the same target file, which is true for
+// simple bin-pack. For multi-target scenarios, this would need enhancement.
+String targetFile = positions.get(0).targetFile;
+result.put(
+    sourceFile, new RewriteFileGroup.FilePositionMapping(sourceFile, targetFile, runs));
+```
+
+The coordinator takes only the first target file, dropping any mappings to subsequent targets.
+
+### Conditions That Cause Multi-Target Mappings
+
+Source files span multiple targets when:
+
+1. **Large source files + small target size**: A source file larger than `TARGET_FILE_SIZE_BYTES` will necessarily span multiple targets.
+
+2. **Unlucky alignment**: A source file starts near the end of a target file's capacity. Example:
+   ```
+   Target size: 512MB
+   Source files: A (300MB), B (400MB), C (300MB)
+
+   Writing sequence:
+   - Target 1: A (300MB) + B[0..212MB] = 512MB → rolls over
+   - Target 2: B[212MB..400MB] + C (300MB) = 488MB
+
+   Result: Source file B spans targets 1 and 2
+   ```
+
+3. **Sort/Z-order rewrites**: These shuffle data across partitions, making cross-target mapping inevitable. (Note: sort/Z-order are out of scope for compaction maps regardless—see Section 1.)
+
+### Why Bin-Pack Rarely Triggers This
+
+The bin-pack planner is designed to avoid source-spanning-target scenarios:
+
+1. **Even file distribution**: `expectedOutputFiles()` in `SizeBasedFileRewritePlanner` calculates the number of output files and rounds to minimize small remainder files. It distributes input evenly across targets.
+
+2. **Compaction targets small files**: Bin-pack compaction specifically targets files smaller than `TARGET_FILE_SIZE_BYTES`. If your source files are already larger than target size, they wouldn't be selected for compaction.
+
+3. **Statistical distribution**: With the default `MIN_INPUT_FILES=5` requirement, a group contains multiple small files. For a source file to span the target boundary, it would need to start exactly at the remaining capacity of a nearly-full target—a rare alignment.
+
+4. **Typical file sizes**: Production workloads usually have source files much smaller than target file size (that's why you're compacting). A 50MB source file won't span a 512MB target boundary unless it lands at exactly 462MB+ into the target.
+
+### Impact
+
+When multi-target mapping occurs:
+
+- **Partial map generation**: Only mappings to the first target file are recorded
+- **Incorrect remapping**: Position deletes referencing the "lost" portion would remap to wrong positions
+- **Silent data corruption potential**: No error is raised; the map is simply incomplete
+
+### Workaround
+
+If you suspect multi-target scenarios:
+
+1. **Increase target file size**: Set `TARGET_FILE_SIZE_BYTES` larger than your largest source file
+2. **Reduce group size**: Lower `MAX_FILE_GROUP_SIZE_BYTES` to create smaller, more uniform groups
+3. **Avoid compaction maps for edge cases**: Disable `write.compaction-map.enabled` for tables with unusually large files
+
+### Future Enhancement
+
+Supporting one-to-many and many-to-many mappings would require:
+
+1. **Schema change**: `FileMapping` would need a list of targets instead of a single target
+2. **Builder change**: `CompactionMapBuilder.addFileMapping()` would need to accept or append additional targets
+3. **Coordinator change**: `PositionMappingCoordinator` would need to group runs by target file and create separate mappings
+
+This is not currently planned but could be implemented if real-world use cases require it.
+
+### Code Location
+
+```
+core/src/main/java/org/apache/iceberg/CompactionMapBuilder.java:66-77
+  addFileMapping() - Enforces single target per source
+
+spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/PositionMappingCoordinator.java:144-218
+  aggregateMappings() - Uses first target only
+
+core/src/main/java/org/apache/iceberg/actions/SizeBasedFileRewritePlanner.java:192-246
+  inputSplitSize(), expectedOutputFiles() - Planning logic that minimizes splits
+```
+
+---
+
+## 3. Automatic Conflict Resolution (Partial)
 
 ### Issue
 
@@ -174,7 +279,8 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 | # | Issue | Impact | Status | Priority |
 |---|-------|--------|--------|----------|
 | 1 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
-| 2 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
+| 2 | Source files spanning multiple targets | Multi-target mappings silently incomplete | Known limitation | Low |
+| 3 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Normal scans vs staged scans~~ - ✅ FIXED: Staged scans now work with explicit metadata column selection
@@ -190,7 +296,9 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 If you'd like to help address any of these issues:
 
-1. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete for both Spark 3.5 and 4.0.
+1. **Multi-Target Mapping Support:** Extend `CompactionMapBuilder` and `PositionMappingCoordinator` to support source files mapping to multiple targets. This requires schema changes to `FileMapping` and careful handling of run boundaries across target files. Low priority unless real-world use cases emerge.
+
+2. **Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete for both Spark 3.5 and 4.0.
 
 ## References
 
