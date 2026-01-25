@@ -252,6 +252,116 @@ public class TestCompactionMapSerialization {
         .isEqualTo(originalMap.fileMappings().get(0).sourceFile());
   }
 
+  @Test
+  public void testMultiTargetMappingRoundTrip() throws IOException {
+    // Create a multi-target mapping where source rows span multiple target files
+    Run run1 = new GenericRun(0L, 0L, 100L, "s3://bucket/table/target1.parquet");
+    Run run2 = new GenericRun(100L, 0L, 100L, "s3://bucket/table/target2.parquet");
+    Run run3 = new GenericRun(200L, 0L, 50L, "s3://bucket/table/target3.parquet");
+
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/table/large-source.parquet",
+            "s3://bucket/table/target1.parquet", // default target
+            ImmutableList.of(run1, run2, run3));
+
+    CompactionMap originalMap =
+        new GenericCompactionMap(SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, ImmutableList.of(mapping));
+
+    // Write and read back
+    CompactionMap readMap = writeAndRead(originalMap);
+
+    // Verify multi-target mapping preserved
+    assertThat(readMap.fileMappings()).hasSize(1);
+    FileMapping readMapping = readMap.fileMappings().get(0);
+    assertThat(readMapping.sourceFile()).isEqualTo("s3://bucket/table/large-source.parquet");
+    assertThat(readMapping.targetFile()).isEqualTo("s3://bucket/table/target1.parquet");
+    assertThat(readMapping.runs()).hasSize(3);
+
+    Run readRun1 = readMapping.runs().get(0);
+    assertThat(readRun1.sourcePosition()).isEqualTo(0L);
+    assertThat(readRun1.targetPosition()).isEqualTo(0L);
+    assertThat(readRun1.length()).isEqualTo(100L);
+    assertThat(readRun1.targetFile()).isEqualTo("s3://bucket/table/target1.parquet");
+
+    Run readRun2 = readMapping.runs().get(1);
+    assertThat(readRun2.sourcePosition()).isEqualTo(100L);
+    assertThat(readRun2.targetPosition()).isEqualTo(0L);
+    assertThat(readRun2.length()).isEqualTo(100L);
+    assertThat(readRun2.targetFile()).isEqualTo("s3://bucket/table/target2.parquet");
+
+    Run readRun3 = readMapping.runs().get(2);
+    assertThat(readRun3.sourcePosition()).isEqualTo(200L);
+    assertThat(readRun3.targetPosition()).isEqualTo(0L);
+    assertThat(readRun3.length()).isEqualTo(50L);
+    assertThat(readRun3.targetFile()).isEqualTo("s3://bucket/table/target3.parquet");
+  }
+
+  @Test
+  public void testMultiTargetWithNullRunTargets() throws IOException {
+    // Create mapping with runs that use the default target (null targetFile)
+    Run run1 = new GenericRun(0L, 0L, 100L); // null target = use default
+    Run run2 = new GenericRun(100L, 100L, 50L, null); // explicit null = use default
+    Run run3 = new GenericRun(150L, 0L, 50L, "s3://bucket/table/different.parquet"); // explicit
+
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/table/source.parquet",
+            "s3://bucket/table/default-target.parquet",
+            ImmutableList.of(run1, run2, run3));
+
+    CompactionMap originalMap =
+        new GenericCompactionMap(SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, ImmutableList.of(mapping));
+
+    CompactionMap readMap = writeAndRead(originalMap);
+
+    FileMapping readMapping = readMap.fileMappings().get(0);
+    assertThat(readMapping.runs()).hasSize(3);
+
+    // First two runs should have null targetFile (use default)
+    assertThat(readMapping.runs().get(0).targetFile()).isNull();
+    assertThat(readMapping.runs().get(1).targetFile()).isNull();
+
+    // Third run has explicit target
+    assertThat(readMapping.runs().get(2).targetFile())
+        .isEqualTo("s3://bucket/table/different.parquet");
+  }
+
+  @Test
+  public void testMultiTargetRunPathInterning() throws IOException {
+    // Create multiple runs that share the same target file path
+    String sharedTarget = "s3://bucket/warehouse/db/table/compacted.parquet";
+
+    Run run1 = new GenericRun(0L, 0L, 100L, sharedTarget);
+    Run run2 = new GenericRun(100L, 100L, 50L, sharedTarget);
+    Run run3 = new GenericRun(150L, 0L, 50L, "s3://bucket/other.parquet");
+    Run run4 = new GenericRun(200L, 150L, 25L, sharedTarget);
+
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/source.parquet", "s3://bucket/default.parquet",
+            ImmutableList.of(run1, run2, run3, run4));
+
+    CompactionMap originalMap =
+        new GenericCompactionMap(SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, ImmutableList.of(mapping));
+
+    CompactionMap readMap = writeAndRead(originalMap);
+    FileMapping readMapping = readMap.fileMappings().get(0);
+
+    // After interning, runs with the same target path should share the same String instance
+    String target1 = readMapping.runs().get(0).targetFile();
+    String target2 = readMapping.runs().get(1).targetFile();
+    String target4 = readMapping.runs().get(3).targetFile();
+
+    assertThat(target1).isEqualTo(sharedTarget);
+    assertThat(target2).isEqualTo(sharedTarget);
+    assertThat(target4).isEqualTo(sharedTarget);
+
+    // Verify object identity (same instance due to interning)
+    assertThat(target1).isSameAs(target2);
+    assertThat(target2).isSameAs(target4);
+  }
+
   private CompactionMap writeAndRead(CompactionMap compactionMap) throws IOException {
     OutputFile outputFile = new InMemoryOutputFile();
 

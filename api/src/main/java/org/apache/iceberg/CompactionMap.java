@@ -81,7 +81,12 @@ public interface CompactionMap {
         Types.NestedField.required(
             10, "target_position", Types.LongType.get(), "Starting position in target file"),
         Types.NestedField.required(
-            11, "length", Types.LongType.get(), "Number of rows in this run"));
+            11, "length", Types.LongType.get(), "Number of rows in this run"),
+        Types.NestedField.optional(
+            12,
+            "target_file",
+            Types.StringType.get(),
+            "Target file for this run (multi-target support). If null, uses parent FileMapping.targetFile"));
   }
 
   // Schema for the compaction map file
@@ -143,7 +148,10 @@ public interface CompactionMap {
    * Represents a contiguous run of rows mapped from source to target.
    *
    * <p>A run describes that rows at positions [sourcePosition, sourcePosition + length) in the
-   * source file are mapped to [targetPosition, targetPosition + length) in the target file.
+   * source file are mapped to [targetPosition, targetPosition + length) in a target file.
+   *
+   * <p>The target file can be specified per-run (via {@link #targetFile()}) to support multi-target
+   * mappings, or null to use the parent FileMapping's targetFile.
    */
   interface Run {
     /** Returns the starting position in source file. */
@@ -154,6 +162,16 @@ public interface CompactionMap {
 
     /** Returns the number of rows in this run. */
     long length();
+
+    /**
+     * Returns the target file for this run, or null to use the parent FileMapping's targetFile.
+     *
+     * <p>This enables multi-target mappings where a source file's rows span multiple target files
+     * (e.g., due to target file size limits).
+     */
+    default String targetFile() {
+      return null;
+    }
 
     /**
      * Given a position in the source file (must be within this run), returns the corresponding

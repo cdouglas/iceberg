@@ -143,6 +143,8 @@ public class GenericCompactionMap extends SupportsIndexProjection
    * This method deduplicates those strings so all mappings to the same target share one String
    * instance.
    *
+   * <p>For multi-target mappings, this also interns target paths stored in individual runs.
+   *
    * <p>This is called automatically during {@link CompactionMaps#read(InputFile)}.
    */
   @SuppressWarnings(
@@ -156,10 +158,28 @@ public class GenericCompactionMap extends SupportsIndexProjection
     for (FileMapping mapping : fileMappings) {
       if (mapping instanceof GenericFileMapping) {
         GenericFileMapping gfm = (GenericFileMapping) mapping;
+
+        // Intern the mapping-level target file
         String target = gfm.targetFile();
-        String interned = internedPaths.computeIfAbsent(target, k -> k);
-        if (target != interned) {
-          gfm.set(1, interned);
+        if (target != null) {
+          String interned = internedPaths.computeIfAbsent(target, k -> k);
+          if (target != interned) {
+            gfm.set(1, interned);
+          }
+        }
+
+        // Intern per-run target files (for multi-target mappings)
+        for (Run run : gfm.runs()) {
+          if (run instanceof GenericRun) {
+            GenericRun gr = (GenericRun) run;
+            String runTarget = gr.targetFile();
+            if (runTarget != null) {
+              String interned = internedPaths.computeIfAbsent(runTarget, k -> k);
+              if (runTarget != interned) {
+                gr.set(3, interned);
+              }
+            }
+          }
         }
       }
     }
@@ -344,6 +364,7 @@ public class GenericCompactionMap extends SupportsIndexProjection
     private long sourcePosition;
     private long targetPosition;
     private long length;
+    private String targetFile; // Per-run target, null means use parent FileMapping's targetFile
 
     public GenericRun(Schema avroSchema) {
       this.avroSchema = avroSchema;
@@ -351,16 +372,24 @@ public class GenericCompactionMap extends SupportsIndexProjection
 
     public GenericRun() {}
 
+    /** Constructor without per-run target (backward compatible). */
     public GenericRun(long sourcePosition, long targetPosition, long length) {
+      this(sourcePosition, targetPosition, length, null);
+    }
+
+    /** Constructor with per-run target file for multi-target mappings. */
+    public GenericRun(long sourcePosition, long targetPosition, long length, String targetFile) {
       this.sourcePosition = sourcePosition;
       this.targetPosition = targetPosition;
       this.length = length;
+      this.targetFile = targetFile;
     }
 
     private GenericRun(GenericRun toCopy) {
       this.sourcePosition = toCopy.sourcePosition;
       this.targetPosition = toCopy.targetPosition;
       this.length = toCopy.length;
+      this.targetFile = toCopy.targetFile;
     }
 
     @Override
@@ -379,6 +408,11 @@ public class GenericCompactionMap extends SupportsIndexProjection
     }
 
     @Override
+    public String targetFile() {
+      return targetFile;
+    }
+
+    @Override
     public Run copy() {
       return new GenericRun(this);
     }
@@ -386,7 +420,7 @@ public class GenericCompactionMap extends SupportsIndexProjection
     // StructLike implementation
     @Override
     public int size() {
-      return 3;
+      return 4;
     }
 
     @Override
@@ -403,6 +437,8 @@ public class GenericCompactionMap extends SupportsIndexProjection
           return targetPosition;
         case 2:
           return length;
+        case 3:
+          return targetFile;
         default:
           throw new UnsupportedOperationException("Unknown field ordinal: " + pos);
       }
@@ -419,6 +455,9 @@ public class GenericCompactionMap extends SupportsIndexProjection
           return;
         case 2:
           this.length = (Long) value;
+          return;
+        case 3:
+          this.targetFile = (String) value;
           return;
         default:
           throw new UnsupportedOperationException("Unknown field ordinal: " + pos);

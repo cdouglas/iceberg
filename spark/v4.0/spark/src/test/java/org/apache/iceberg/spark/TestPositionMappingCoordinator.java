@@ -216,7 +216,9 @@ public class TestPositionMappingCoordinator {
 
   @Test
   public void testSingleSourceFileToMultipleTargets() {
-    // Single source file split into multiple targets
+    // Single source file split into multiple targets - this should work
+    // Each run stores its own target file path for multi-target support.
+
     // SourceA positions 0-99 -> target1
     for (int i = 0; i < 100; i++) {
       coordinator.recordMapping(
@@ -232,12 +234,33 @@ public class TestPositionMappingCoordinator {
     Map<String, RewriteFileGroup.FilePositionMapping> mappings =
         coordinator.fetchMappings(mockTable, fileSetId);
 
-    // Note: Current implementation keys by source file only, so this will create 2 separate
-    // mappings
-    // The implementation should be enhanced to support composite keys (source, target)
-    // For now, verify that at least one mapping exists
-    assertThat(mappings).isNotEmpty();
-    assertThat(mappings.containsKey("sourceA.parquet")).isTrue();
+    assertThat(mappings).hasSize(1);
+    RewriteFileGroup.FilePositionMapping mapping = mappings.get("sourceA.parquet");
+    assertThat(mapping).isNotNull();
+    assertThat(mapping.sourceFile()).isEqualTo("sourceA.parquet");
+
+    // Should have 2 runs (one per target file)
+    assertThat(mapping.runs()).hasSize(2);
+
+    // Verify first run goes to target1
+    RewriteFileGroup.FilePositionMapping.Run run1 = mapping.runs().get(0);
+    assertThat(run1.sourceOffset()).isEqualTo(0L);
+    assertThat(run1.targetOffset()).isEqualTo(0L);
+    assertThat(run1.length()).isEqualTo(100L);
+    assertThat(run1.targetFile()).isEqualTo("target1.parquet");
+
+    // Verify second run goes to target2
+    RewriteFileGroup.FilePositionMapping.Run run2 = mapping.runs().get(1);
+    assertThat(run2.sourceOffset()).isEqualTo(100L);
+    assertThat(run2.targetOffset()).isEqualTo(0L);
+    assertThat(run2.length()).isEqualTo(100L);
+    assertThat(run2.targetFile()).isEqualTo("target2.parquet");
+
+    // Verify multi-target helpers
+    assertThat(mapping.isMultiTarget()).isTrue();
+    assertThat(mapping.targetFiles()).containsExactlyInAnyOrder("target1.parquet", "target2.parquet");
+    assertThat(mapping.targetFileForRun(run1)).isEqualTo("target1.parquet");
+    assertThat(mapping.targetFileForRun(run2)).isEqualTo("target2.parquet");
   }
 
   @Test

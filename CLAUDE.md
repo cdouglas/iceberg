@@ -11,9 +11,10 @@
 - SERIALIZABLE isolation enhancements
 - **Compaction conflict resolution** - Automatic remapping of concurrent position deletes during compaction
 - **Staged scan optimization** - Position tracking now uses efficient staged scans with explicit metadata column selection
+- **Multi-target mapping support** - Source files can span multiple target files with per-run target tracking
 
 **Implementation Status**: Complete on `cmpmap` branch
-**Last Updated**: January 22, 2026
+**Last Updated**: January 24, 2026
 
 ## Feature Architecture
 
@@ -181,17 +182,19 @@ Compaction maps support **order-preserving** operations only:
 
 **Note**: Tables with sorted base data and unsorted changes are fine—unsorted changes can be compacted with position tracking, then merged into sorted runs (merge applies deletes during scan, no tracking needed).
 
-### 3.5 One-to-One Source-Target Assumption
+### 3.5 Multi-Target Mapping Support
 
-Compaction maps assume **each source file maps to exactly one target file**. Multi-target mappings (source file spanning multiple targets) are not supported.
+Compaction maps support **source files mapping to multiple target files** (e.g., when target file size limits cause a source file's rows to span multiple outputs).
 
-**Where enforced**:
-- `CompactionMapBuilder.addFileMapping()` - Uses source file as unique key
-- `PositionMappingCoordinator.aggregateMappings()` - Uses first target only
+**Implementation** (added Jan 24, 2026):
+- Each `Run` in a `FileMapping` can specify its own `targetFile` (optional, null means use parent's default)
+- `CompactionMapBuilder` accepts per-run target files and only merges runs with matching targets
+- `PositionMappingCoordinator` tracks target file changes and creates multi-target runs
+- Target file paths are interned for memory efficiency (shared String instances)
 
-**When this could fail**: Large source file + small target file size = source spans target boundary. Rare in practice because bin-pack targets small files and planner distributes evenly.
+**Schema**: The Run struct includes an optional `target_file` field (ID 12) for per-run targets.
 
-**Details**: See `docs/docs/compaction_maps_errata.md` Section 2.
+**Backward compatibility**: Existing compaction maps with null run targets use the FileMapping's `targetFile` as before.
 
 ### 4. Two Types of Conflicts
 
