@@ -43,6 +43,20 @@ class GCSInputFile extends BaseGCSFile implements InputFile {
         metrics);
   }
 
+  static GCSInputFile fromBlobId(
+      BlobId blobId, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
+    return new GCSInputFile(storage, blobId, null, gcpProperties, metrics);
+  }
+
+  static GCSInputFile fromBlobId(
+      BlobId blobId,
+      long length,
+      Storage storage,
+      GCPProperties gcpProperties,
+      MetricsContext metrics) {
+    return new GCSInputFile(storage, blobId, length > 0 ? length : null, gcpProperties, metrics);
+  }
+
   GCSInputFile(
       Storage storage,
       BlobId blobId,

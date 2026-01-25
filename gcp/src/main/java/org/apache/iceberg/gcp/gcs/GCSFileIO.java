@@ -30,12 +30,14 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.apache.iceberg.common.DynConstructors;
 import org.apache.iceberg.gcp.GCPProperties;
+import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.DelegateFileIO;
 import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.StorageCredential;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.io.SupportsStorageCredentials;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
@@ -60,7 +62,7 @@ import org.slf4j.LoggerFactory;
  * <p>See <a href="https://cloud.google.com/storage/docs/folders#overview">Cloud Storage
  * Overview</a>
  */
-public class GCSFileIO implements DelegateFileIO, SupportsStorageCredentials {
+public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations, SupportsStorageCredentials {
   private static final Logger LOG = LoggerFactory.getLogger(GCSFileIO.class);
   private static final String DEFAULT_METRICS_IMPL =
       "org.apache.iceberg.hadoop.HadoopMetricsContext";
@@ -121,6 +123,16 @@ public class GCSFileIO implements DelegateFileIO, SupportsStorageCredentials {
   @Override
   public OutputFile newOutputFile(String path) {
     return GCSOutputFile.fromLocation(path, clientForStoragePath(path), metrics);
+  }
+
+  @Override
+  public AtomicOutputFile newOutputFile(InputFile replace) {
+    Preconditions.checkArgument(
+        replace instanceof GCSInputFile, "InputFile must be a GCSInputFile: %s", replace);
+    GCSInputFile gcsInputFile = (GCSInputFile) replace;
+    PrefixedStorage storage = clientForStoragePath(replace.location());
+    return GCSOutputFile.fromBlobId(
+        gcsInputFile.blobId(), storage.storage(), storage.gcpProperties(), metrics);
   }
 
   @SuppressWarnings("resource")

@@ -21,20 +21,30 @@ package org.apache.iceberg.gcp.gcs;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.gcp.GCPProperties;
+import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.CAS;
+import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.metrics.MetricsContext;
+import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
-class GCSOutputFile extends BaseGCSFile implements OutputFile {
+class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
   static GCSOutputFile fromLocation(
       String location, PrefixedStorage storage, MetricsContext metrics) {
     return new GCSOutputFile(
         storage.storage(), BlobId.fromGsUtilUri(location), storage.gcpProperties(), metrics);
+  }
+
+  static GCSOutputFile fromBlobId(
+      BlobId blobId, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
+    return new GCSOutputFile(storage, blobId, gcpProperties, metrics);
   }
 
   GCSOutputFile(
@@ -69,5 +79,38 @@ class GCSOutputFile extends BaseGCSFile implements OutputFile {
   @Override
   public InputFile toInputFile() {
     return new GCSInputFile(storage(), blobId(), null, gcpProperties(), metrics());
+  }
+
+  @Override
+  public CAS prepare(Supplier<InputStream> source, Strategy howto) throws IOException {
+    final GCSChecksum checksum = new GCSChecksum();
+    try (InputStream in = source.get();
+        FileChecksumOutputStream chk =
+            new FileChecksumOutputStream(ByteStreams.nullOutputStream(), checksum)) {
+      ByteStreams.copy(in, chk);
+    }
+    return checksum;
+  }
+
+  @Override
+  public InputFile writeAtomic(CAS token, final Supplier<InputStream> source) throws IOException {
+    final InputFile[] result = new InputFile[1];
+    try (InputStream src = source.get()) {
+      try (GCSAtomicOutputStream dest =
+          new GCSAtomicOutputStream(
+              storage(),
+              blobId(),
+              gcpProperties(),
+              metrics(),
+              token,
+              written -> result[0] = written)) {
+        byte[] buf = new byte[gcpProperties().channelWriteChunkSize().orElse(32 * 1024)];
+        int nread;
+        while ((nread = src.read(buf)) != -1) {
+          dest.write(buf, 0, nread);
+        }
+      }
+    }
+    return result[0];
   }
 }
