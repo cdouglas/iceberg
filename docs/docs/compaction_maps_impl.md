@@ -87,6 +87,7 @@ interface Run {
   long sourcePosition();   // Starting position in source file
   long targetPosition();   // Starting position in target file
   long length();          // Number of rows in this run
+  String targetFile();    // Per-run target (null = use parent's targetFile)
   long mapPosition(long sourcePos);  // Transform a single position
 }
 ```
@@ -110,7 +111,7 @@ record CompactionMap {
 
 record FileMapping {
   string source_file;
-  string target_file;
+  string target_file;      // Default target for backward compat
   array<Run> runs;
 }
 
@@ -118,7 +119,29 @@ record Run {
   long source_position;
   long target_position;
   long length;
+  optional string target_file;  // Per-run target (null = use parent's)
 }
+```
+
+**Multi-Target Mapping:**
+
+When a source file's rows span multiple target files (e.g., due to target file size limits), each run specifies its own target file:
+
+```
+Source: large-file.parquet (3000 rows)
+Targets: target-001.parquet (1500 rows capacity), target-002.parquet
+
+CompactionMap:
+  file_mappings: [
+    {
+      source_file: "s3://bucket/data/large-file.parquet",
+      target_file: "s3://bucket/data/target-001.parquet",  // default
+      runs: [
+        {source_position: 0, target_position: 0, length: 1500, target_file: "target-001.parquet"},
+        {source_position: 1500, target_position: 0, length: 1500, target_file: "target-002.parquet"}
+      ]
+    }
+  ]
 ```
 
 **Example:**
@@ -177,7 +200,7 @@ CompactionMapBuilder builder = new CompactionMapBuilder(
 CompactionMapBuilder.FileMappingBuilder fileMapping =
     builder.addFileMapping(
         "s3://bucket/data/file1.parquet",      // Source file
-        "s3://bucket/data/compacted.parquet"   // Target file
+        "s3://bucket/data/compacted.parquet"   // Default target file
     );
 
 // Add runs as data is written
@@ -193,6 +216,37 @@ builder.addFileMapping(
 
 // Build the map
 CompactionMap map = builder.build();
+```
+
+### Building Multi-Target Compaction Maps
+
+When a source file spans multiple target files:
+
+```java
+CompactionMapBuilder builder = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
+
+// Large source file that spans two target files
+CompactionMapBuilder.FileMappingBuilder fileMapping =
+    builder.addFileMapping(
+        "s3://bucket/data/large-source.parquet",
+        "s3://bucket/data/target-001.parquet"  // Default target
+    );
+
+// First 1500 rows go to target-001
+fileMapping.addRun(0, 0, 1500, "s3://bucket/data/target-001.parquet");
+
+// Next 1500 rows go to target-002 (different target file)
+fileMapping.addRun(1500, 0, 1500, "s3://bucket/data/target-002.parquet");
+
+CompactionMap map = builder.build();
+
+// Verify multi-target support
+FileMapping mapping = map.mappingForFile("s3://bucket/data/large-source.parquet");
+for (Run run : mapping.runs()) {
+    String target = run.targetFile() != null ? run.targetFile() : mapping.targetFile();
+    System.out.println("Source [" + run.sourcePosition() + ", " +
+        (run.sourcePosition() + run.length()) + ") -> " + target);
+}
 ```
 
 ### Writing Compaction Maps
@@ -1089,10 +1143,10 @@ Run: (sourcePosition: Long, targetPosition: Long, length: Long)
 
 ### 2. One Source File Per FileMapping
 
-- Each source file has its own FileMapping to a target file
-- One source can map to one target
+- Each source file has its own FileMapping
+- One source can map to one or more targets (via per-run target files)
 - Multiple sources can map to same target (bin-pack)
-- One source split across multiple targets requires multiple FileMappings
+- Per-run target files support source files spanning multiple targets
 - This design supports efficient lookup and simple position transformation
 
 ### 3. Map Storage Per Snapshot
@@ -1108,6 +1162,145 @@ Run: (sourcePosition: Long, targetPosition: Long, length: Long)
 - Currently used for documentation/monitoring only
 - Future: Could warn or split maps when threshold exceeded
 - **Current approach**: Run-length encoding keeps maps small enough
+
+## Soundness Analysis
+
+This section analyzes the correctness guarantees of compaction map generation. **If a compaction map is produced, it is sound** — meaning position remapping using the map will produce correct results.
+
+### Invariants
+
+The following invariants are maintained throughout the compaction map generation pipeline:
+
+#### 1. Completeness: Every Written Row is Tracked
+
+**Guarantee:** If a row is written to a target file, its position mapping is recorded.
+
+**Implementation:**
+- `PositionTrackingDataWriter.write()` is called for every row
+- Each call buffers a `(sourceFile, sourcePos, targetPos)` tuple
+- After commit, all buffered mappings are recorded to `PositionMappingCoordinator`
+- The recording happens atomically with the writer commit
+
+**Code path:**
+```
+write(row) → buffer mapping → commit() → recordBufferedMappingsWithActualPaths()
+```
+
+#### 2. Source Position Correctness
+
+**Guarantee:** Source positions in the map match actual row positions in source files.
+
+**Implementation:**
+- Source positions come from Iceberg's `_pos` metadata column
+- `_pos` is populated by the scan and represents the row's actual position
+- Position deletes are applied during scan, so deleted rows never reach the writer
+
+**Key insight:** The `_pos` column is authoritative — it comes from Iceberg's internal tracking, not user data.
+
+#### 3. Target Position Correctness
+
+**Guarantee:** Target positions in the map match actual row positions in target files.
+
+**Implementation:**
+- `outputPosition` counter starts at 0 for each target file
+- Counter increments by 1 for each `write()` call
+- This matches exactly how rows are written to Parquet/ORC files (0-indexed, sequential)
+
+**Invariant:** `outputPosition` after N writes equals N, matching the target file's row count.
+
+#### 4. Target File Path Correctness
+
+**Guarantee:** Target file paths in the map are actual file paths, not placeholders.
+
+**Implementation:**
+- Target paths are extracted from `WriterCommitMessage` after `commit()` completes
+- The commit message contains `DataFile` objects with actual paths
+- Buffered mappings are recorded only after paths are known
+
+**Historical note:** An early bug used placeholder strings; this was fixed by the buffer-and-record pattern (see `PositionTrackingDataWriter.recordBufferedMappingsWithActualPaths()`).
+
+#### 5. Gap Correctness (Deleted Rows)
+
+**Guarantee:** Gaps in runs represent rows that were deleted during compaction.
+
+**Implementation:**
+- Iceberg applies position deletes during the scan phase
+- Deleted rows are never passed to `PositionTrackingDataWriter`
+- Gaps appear naturally in source positions (e.g., positions 0, 1, 3, 4 with 2 deleted)
+- `PositionMappingCoordinator.aggregateMappings()` detects gaps by checking consecutive positions
+
+**Correctness argument:** A source position is in a run if and only if its row was written. Therefore:
+- Positions in runs: rows exist in target (correctly remapped)
+- Positions in gaps: rows were deleted (remapping correctly returns null)
+
+#### 6. Multi-Target Correctness
+
+**Guarantee:** When a source file spans multiple target files, each run has the correct target.
+
+**Implementation:**
+- Each `recordMapping()` call includes the actual target file path
+- `PositionMappingCoordinator.aggregateMappings()` creates new runs when target files change
+- `CompactionMapBuilder.canMerge()` only merges runs with matching target files
+
+**Invariant:** Runs with different target files are never merged.
+
+#### 7. Run Merging Correctness
+
+**Guarantee:** Merged runs are mathematically equivalent to their constituent mappings.
+
+**Implementation:** `CompactionMapBuilder.RunBuilder.canMerge()` requires:
+1. Same target file
+2. `nextSourcePosition == currentSourceEnd` (consecutive in source)
+3. `nextTargetPosition == currentTargetEnd` (consecutive in target)
+
+**Mathematical property:** If runs R1=(s1, t1, len1) and R2=(s2, t2, len2) satisfy:
+- s2 = s1 + len1
+- t2 = t1 + len1
+- same target file
+
+Then merged run (s1, t1, len1+len2) produces identical mappings for all positions.
+
+#### 8. Serialization Correctness
+
+**Guarantee:** Avro serialization preserves all mapping data.
+
+**Implementation:**
+- `GenericCompactionMap` implements `StructLike`, `IndexedRecord`, `SchemaConstructable`
+- Schema field IDs are stable (defined in `CompactionMap.java`)
+- Round-trip tested in `TestCompactionMapSerialization`
+- Target path interning preserves string equality (uses `String.equals()`)
+
+### Failure Modes and Mitigations
+
+| Failure Mode | Detection | Mitigation |
+|--------------|-----------|------------|
+| Writer task failure | Spark task retry | Buffered mappings discarded on abort |
+| Coordinator data loss | Map has fewer mappings | Commit manager logs warning; incomplete maps not written |
+| Avro write failure | IOException during write | Compaction map location not set; rewrite proceeds without map |
+| Schema mismatch | Avro deserialization error | Maps are immutable; schema evolution via optional fields |
+
+### Verification
+
+The soundness of compaction maps is verified by:
+
+1. **Unit tests:** `TestCompactionMapBuilder`, `TestCompactionMapSerialization`
+2. **Integration tests:** `TestDVRemappingEndToEnd`, `TestSparkBinPackWithPositionDeletes`
+3. **Property-based tests:** `TestRemappingStrategies` (10,000+ lookups comparing all strategies)
+4. **End-to-end Spark tests:** `TestSparkCompactionConflictResolution`
+
+### Summary
+
+**Compaction maps are sound by construction:**
+
+1. **Row tracking is complete:** Every `write()` records a mapping
+2. **Source positions are authoritative:** `_pos` comes from Iceberg's scan
+3. **Target positions are sequential:** Counter matches file layout
+4. **Target paths are actual:** Extracted from commit message
+5. **Gaps represent deletes:** Rows not written have no mapping
+6. **Multi-target is handled:** Per-run target files prevent cross-target errors
+7. **Merging is conservative:** Only mathematically equivalent runs merge
+
+If the compaction completes successfully and a compaction map is written, the map correctly represents the position transformations that occurred.
 
 ## Contributing
 
