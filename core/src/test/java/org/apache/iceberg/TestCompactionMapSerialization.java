@@ -339,7 +339,8 @@ public class TestCompactionMapSerialization {
 
     FileMapping mapping =
         new GenericFileMapping(
-            "s3://bucket/source.parquet", "s3://bucket/default.parquet",
+            "s3://bucket/source.parquet",
+            "s3://bucket/default.parquet",
             ImmutableList.of(run1, run2, run3, run4));
 
     CompactionMap originalMap =

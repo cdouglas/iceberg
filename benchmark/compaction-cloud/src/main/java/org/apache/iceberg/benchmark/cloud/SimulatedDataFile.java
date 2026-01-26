@@ -75,7 +75,8 @@ public final class SimulatedDataFile {
    * @param partitionPath partition path in format "field1=value1/field2=value2"
    * @return a DataFile with the specified partition
    */
-  public static DataFile createPartitioned(PartitionSpec spec, long rowCount, String partitionPath) {
+  public static DataFile createPartitioned(
+      PartitionSpec spec, long rowCount, String partitionPath) {
     return DataFiles.builder(spec)
         .withPath(generateFilePath())
         .withPartitionPath(partitionPath)
@@ -96,7 +97,11 @@ public final class SimulatedDataFile {
    * @return array of simulated data files
    */
   public static DataFile[] createBatch(
-      PartitionSpec spec, int numFiles, long avgRowsPerFile, double variance, java.util.Random random) {
+      PartitionSpec spec,
+      int numFiles,
+      long avgRowsPerFile,
+      double variance,
+      java.util.Random random) {
     DataFile[] files = new DataFile[numFiles];
     for (int i = 0; i < numFiles; i++) {
       double factor = 1.0 + (random.nextDouble() * 2 - 1) * variance;

@@ -54,10 +54,7 @@ public class TestDeletionVectorGenerator {
   @AfterEach
   public void tearDown() throws IOException {
     if (tempDir != null && Files.exists(tempDir)) {
-      Files.walk(tempDir)
-          .sorted(Comparator.reverseOrder())
-          .map(Path::toFile)
-          .forEach(File::delete);
+      Files.walk(tempDir).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
     }
   }
 
@@ -67,8 +64,7 @@ public class TestDeletionVectorGenerator {
     String referencedFile = "s3://bucket/data/file1.parquet";
 
     GeneratedDeletionVector result =
-        generator.generate(
-            fileIO.newOutputFile(outputPath), 1000, referencedFile, Density.SPARSE);
+        generator.generate(fileIO.newOutputFile(outputPath), 1000, referencedFile, Density.SPARSE);
 
     assertThat(result.path()).isEqualTo(outputPath);
     assertThat(result.numDeletes()).isEqualTo(1000);
@@ -172,8 +168,7 @@ public class TestDeletionVectorGenerator {
     String referencedFile = "s3://bucket/data/file1.parquet";
 
     GeneratedDeletionVector sparse =
-        generator.generate(
-            fileIO.newOutputFile(sparsePath), 10000, referencedFile, Density.SPARSE);
+        generator.generate(fileIO.newOutputFile(sparsePath), 10000, referencedFile, Density.SPARSE);
     GeneratedDeletionVector dense =
         new DeletionVectorGenerator(SEED + 1, 1_000_000L)
             .generate(fileIO.newOutputFile(densePath), 10000, referencedFile, Density.DENSE);

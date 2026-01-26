@@ -61,7 +61,8 @@ public class TraceParser {
    * @throws IOException if the resource cannot be read or parsed
    */
   public static WorkloadConfig parseResource(String resourcePath) throws IOException {
-    try (InputStream stream = TraceParser.class.getClassLoader().getResourceAsStream(resourcePath)) {
+    try (InputStream stream =
+        TraceParser.class.getClassLoader().getResourceAsStream(resourcePath)) {
       if (stream == null) {
         throw new IOException("Resource not found: " + resourcePath);
       }

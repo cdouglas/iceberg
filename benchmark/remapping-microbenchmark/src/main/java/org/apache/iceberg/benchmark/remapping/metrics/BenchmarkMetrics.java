@@ -449,9 +449,12 @@ public class BenchmarkMetrics {
       summary.p99TotalLatencyMs = percentile(latencies, 99) / 1_000_000.0;
 
       // Compute phase breakdowns
-      summary.avgReadPct = measured.stream().mapToDouble(BenchmarkResult::readPct).average().orElse(0);
-      summary.avgRemapPct = measured.stream().mapToDouble(BenchmarkResult::remapPct).average().orElse(0);
-      summary.avgWritePct = measured.stream().mapToDouble(BenchmarkResult::writePct).average().orElse(0);
+      summary.avgReadPct =
+          measured.stream().mapToDouble(BenchmarkResult::readPct).average().orElse(0);
+      summary.avgRemapPct =
+          measured.stream().mapToDouble(BenchmarkResult::remapPct).average().orElse(0);
+      summary.avgWritePct =
+          measured.stream().mapToDouble(BenchmarkResult::writePct).average().orElse(0);
 
       // Compute throughput
       summary.avgThroughput =

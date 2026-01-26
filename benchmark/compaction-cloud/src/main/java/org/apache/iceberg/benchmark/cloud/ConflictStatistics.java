@@ -134,7 +134,8 @@ public class ConflictStatistics {
   }
 
   // Record compaction operations
-  public void recordSuccessfulCompaction(int numFiles, long numRows, long durationNs, boolean hasMap) {
+  public void recordSuccessfulCompaction(
+      int numFiles, long numRows, long durationNs, boolean hasMap) {
     totalCompactions.incrementAndGet();
     successfulCompactions.incrementAndGet();
     totalCompactionTimeNs.addAndGet(durationNs);
@@ -167,9 +168,7 @@ public class ConflictStatistics {
   }
 
   public void recordStrategyUsage(String strategy, long durationNs) {
-    strategyMetrics
-        .computeIfAbsent(strategy, k -> new StrategyMetrics())
-        .record(durationNs);
+    strategyMetrics.computeIfAbsent(strategy, k -> new StrategyMetrics()).record(durationNs);
   }
 
   // Getters for statistics

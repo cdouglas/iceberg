@@ -73,9 +73,10 @@ public class BenchmarkReport {
     File dir = new File(outputDir);
     dir.mkdirs();
 
-    String timestamp = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
-        .withZone(ZoneId.systemDefault())
-        .format(Instant.now());
+    String timestamp =
+        DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+            .withZone(ZoneId.systemDefault())
+            .format(Instant.now());
 
     // Write JSON statistics
     File statsFile = new File(dir, "statistics_" + timestamp + ".json");
@@ -163,7 +164,8 @@ public class BenchmarkReport {
       writer.println();
       writer.printf("Timestamp: %s%n", TIMESTAMP_FORMAT.format(Instant.now()));
       writer.printf("Elapsed Time: %.2f seconds%n", elapsedTimeMs / 1000.0);
-      writer.printf("Compaction Maps: %s%n", config.compactionMapsEnabled() ? "ENABLED" : "DISABLED");
+      writer.printf(
+          "Compaction Maps: %s%n", config.compactionMapsEnabled() ? "ENABLED" : "DISABLED");
       writer.printf("Format Version: %d%n", config.formatVersion());
       writer.println();
 
@@ -171,12 +173,18 @@ public class BenchmarkReport {
       writer.println("                    Transaction Summary");
       writer.println("───────────────────────────────────────────────────────────────");
       writer.printf("Total Deletes:        %,d%n", stats.getTotalDeletes());
-      writer.printf("  Successful:         %,d (%.1f%%)%n",
+      writer.printf(
+          "  Successful:         %,d (%.1f%%)%n",
           stats.getSuccessfulDeletes(),
-          stats.getTotalDeletes() > 0 ? 100.0 * stats.getSuccessfulDeletes() / stats.getTotalDeletes() : 0);
-      writer.printf("  Failed:             %,d (%.1f%%)%n",
+          stats.getTotalDeletes() > 0
+              ? 100.0 * stats.getSuccessfulDeletes() / stats.getTotalDeletes()
+              : 0);
+      writer.printf(
+          "  Failed:             %,d (%.1f%%)%n",
           stats.getFailedDeletes(),
-          stats.getTotalDeletes() > 0 ? 100.0 * stats.getFailedDeletes() / stats.getTotalDeletes() : 0);
+          stats.getTotalDeletes() > 0
+              ? 100.0 * stats.getFailedDeletes() / stats.getTotalDeletes()
+              : 0);
       writer.printf("  Conflicts:          %,d%n", stats.getConflictedDeletes());
       writer.printf("Conflict Rate:        %.2f%%%n", stats.getConflictRate() * 100);
       writer.printf("Remap Success Rate:   %.2f%%%n", stats.getRemapSuccessRate() * 100);
@@ -187,9 +195,12 @@ public class BenchmarkReport {
       writer.println("───────────────────────────────────────────────────────────────");
       writer.printf("Total Compactions:    %,d%n", stats.getTotalCompactions());
       writer.printf("  Successful:         %,d%n", stats.getSuccessfulCompactions());
-      writer.printf("  With Maps:          %,d (%.1f%%)%n",
+      writer.printf(
+          "  With Maps:          %,d (%.1f%%)%n",
           stats.getCompactionsWithMaps(),
-          stats.getTotalCompactions() > 0 ? 100.0 * stats.getCompactionsWithMaps() / stats.getTotalCompactions() : 0);
+          stats.getTotalCompactions() > 0
+              ? 100.0 * stats.getCompactionsWithMaps() / stats.getTotalCompactions()
+              : 0);
       writer.printf("Total Rows Compacted: %,d%n", stats.getTotalRowsCompacted());
       writer.printf("Avg Files/Compaction: %.1f%n", stats.getAvgFilesPerCompaction());
       writer.println();
@@ -226,10 +237,9 @@ public class BenchmarkReport {
         writer.println("───────────────────────────────────────────────────────────────");
         for (Map.Entry<String, ConflictStatistics.StrategyMetrics> entry :
             stats.getStrategyMetrics().entrySet()) {
-          writer.printf("%-20s: %,d uses, avg %.2f ms%n",
-              entry.getKey(),
-              entry.getValue().getCount(),
-              entry.getValue().getAvgLatencyMs());
+          writer.printf(
+              "%-20s: %,d uses, avg %.2f ms%n",
+              entry.getKey(), entry.getValue().getCount(), entry.getValue().getAvgLatencyMs());
         }
         writer.println();
       }

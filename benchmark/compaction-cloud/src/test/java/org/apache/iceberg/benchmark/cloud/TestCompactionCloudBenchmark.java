@@ -64,8 +64,7 @@ public class TestCompactionCloudBenchmark {
   void testSimulatedDataFileBatch() {
     PartitionSpec spec = PartitionSpec.unpartitioned();
 
-    DataFile[] files =
-        SimulatedDataFile.createBatch(spec, 5, 1000, 0.2, new java.util.Random(42));
+    DataFile[] files = SimulatedDataFile.createBatch(spec, 5, 1000, 0.2, new java.util.Random(42));
 
     assertThat(files).hasSize(5);
     for (DataFile file : files) {

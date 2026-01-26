@@ -24,7 +24,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
-import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.benchmark.remapping.BenchmarkConfig.Density;
 import org.apache.iceberg.data.GenericRecord;
@@ -79,11 +78,7 @@ public class PositionDeleteGenerator {
    * @return metadata about the generated file
    */
   public GeneratedDeleteFile generate(
-      OutputFile outputFile,
-      int numDeletes,
-      int numSourceFiles,
-      Density density,
-      boolean sorted)
+      OutputFile outputFile, int numDeletes, int numSourceFiles, Density density, boolean sorted)
       throws IOException {
 
     List<PositionDelete<Record>> deletes = new ArrayList<>(numDeletes);
@@ -123,13 +118,7 @@ public class PositionDeleteGenerator {
     long fileSize = writePositionDeletes(outputFile, deletes);
 
     return new GeneratedDeleteFile(
-        outputFile.location(),
-        numDeletes,
-        numSourceFiles,
-        fileSize,
-        density,
-        sorted,
-        sourceFiles);
+        outputFile.location(), numDeletes, numSourceFiles, fileSize, density, sorted, sourceFiles);
   }
 
   private List<String> generateSourceFilePaths(int numFiles) {
@@ -254,7 +243,12 @@ public class PositionDeleteGenerator {
       return String.format(
           Locale.ROOT,
           "PositionDeleteFile{path=%s, deletes=%d, files=%d, size=%d, density=%s, sorted=%s}",
-          path, numDeletes, numSourceFiles, fileSizeBytes, density, sorted);
+          path,
+          numDeletes,
+          numSourceFiles,
+          fileSizeBytes,
+          density,
+          sorted);
     }
   }
 }

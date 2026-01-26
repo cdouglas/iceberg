@@ -54,10 +54,7 @@ public class TestCompactionMapGenerator {
   @AfterEach
   public void tearDown() throws IOException {
     if (tempDir != null && Files.exists(tempDir)) {
-      Files.walk(tempDir)
-          .sorted(Comparator.reverseOrder())
-          .map(Path::toFile)
-          .forEach(File::delete);
+      Files.walk(tempDir).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
     }
   }
 
