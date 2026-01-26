@@ -165,8 +165,8 @@ Each measurement includes:
 # Build the benchmark module
 ./gradlew :benchmark:remapping-microbenchmark:build
 
-# Create fat JAR for distribution
-./gradlew :benchmark:remapping-microbenchmark:fatJar
+# Create shadow JAR for distribution
+./gradlew :benchmark:remapping-microbenchmark:shadowJar
 ```
 
 ## Architecture
@@ -207,10 +207,16 @@ From empirical benchmarks (January 2026):
 ## Dependencies
 
 - Apache Iceberg core (compaction map APIs)
+- Apache Iceberg AWS/GCP/Azure modules (cloud storage via FileIO)
 - Apache Parquet (position delete files)
 - Roaring Bitmaps (deletion vectors)
-- Hadoop FileSystem (cloud storage access)
 - Jackson (YAML/JSON parsing)
+
+Cloud storage is handled via Iceberg's `ResolvingFileIO`, which automatically selects the appropriate FileIO implementation based on URI scheme:
+- `s3://`, `s3a://`, `s3n://` → S3FileIO
+- `gs://` → GCSFileIO
+- `abfs://`, `abfss://` → ADLSFileIO
+- `file://` or local paths → HadoopFileIO (fallback)
 
 ## License
 
