@@ -1,0 +1,3 @@
+# State directories (contain instance IDs, IPs, etc.)
+*/state/
+state/
