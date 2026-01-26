@@ -151,10 +151,12 @@ public class RemappingBenchmarkRunner {
       metrics.record(result);
     }
 
-    // Measurement iterations
+    // Measurement iterations (offset by warmup count to avoid file path collision)
+    int warmupCount = config.warmupIterations();
     for (int i = 0; i < config.measurementIterations(); i++) {
       BenchmarkResult result =
-          runSingleIteration(testData, format, density, numDeletes, numRuns, strategy, i, false);
+          runSingleIteration(
+              testData, format, density, numDeletes, numRuns, strategy, warmupCount + i, false);
       metrics.record(result);
     }
 

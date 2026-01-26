@@ -97,14 +97,15 @@ public class TestRemappingBenchmarkRunner {
     assertThat(warmup.numDeletes()).isEqualTo(100);
     assertThat(warmup.numRuns()).isEqualTo(5);
 
-    // Check measurement results
+    // Check measurement results (iteration numbers are offset by warmup count to avoid file
+    // collision)
     BenchmarkResult measurement1 = results.get(1);
     assertThat(measurement1.warmup()).isFalse();
-    assertThat(measurement1.iteration()).isEqualTo(0);
+    assertThat(measurement1.iteration()).isEqualTo(1); // warmup count (1) + 0
 
     BenchmarkResult measurement2 = results.get(2);
     assertThat(measurement2.warmup()).isFalse();
-    assertThat(measurement2.iteration()).isEqualTo(1);
+    assertThat(measurement2.iteration()).isEqualTo(2); // warmup count (1) + 1
 
     // Verify latencies are recorded
     for (BenchmarkResult result : results) {
