@@ -23,13 +23,13 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.benchmark.remapping.metrics.BenchmarkMetrics;
 import org.apache.iceberg.benchmark.remapping.metrics.BenchmarkMetrics.ScenarioSummary;
-import org.apache.iceberg.hadoop.HadoopFileIO;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.ResolvingFileIO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,8 +83,8 @@ public class RemappingMicrobenchmark {
     // Save config for reproducibility
     config.save(outputDir + "/config.yaml");
 
-    // Create FileIO based on storage URI
-    FileIO fileIO = createFileIO(config);
+    // Create FileIO - uses ResolvingFileIO which auto-detects from URI scheme
+    FileIO fileIO = createFileIO();
     String baseLocation = config.storageUri() + "/run_" + timestamp;
 
     // Run benchmark
@@ -144,32 +144,26 @@ public class RemappingMicrobenchmark {
     return config;
   }
 
-  @SuppressWarnings("unused")
-  private static FileIO createFileIO(BenchmarkConfig config) {
-    Configuration hadoopConf = new Configuration();
-    // storageUri used for cloud provider configuration (placeholder for future implementation)
-    String storageUri = config.storageUri();
-
-    // Configure for cloud providers
-    switch (config.cloudProvider()) {
-      case AWS_S3:
-        // S3 configuration would go here
-        // hadoopConf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem");
-        break;
-      case GCP_GCS:
-        // GCS configuration would go here
-        // hadoopConf.set("fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem");
-        break;
-      case AZURE_BLOB:
-        // Azure Blob configuration would go here
-        break;
-      case LOCAL:
-      default:
-        // Use default Hadoop local filesystem
-        break;
-    }
-
-    return new HadoopFileIO(hadoopConf);
+  /**
+   * Creates a FileIO instance that automatically resolves to the correct implementation based on
+   * the storage URI scheme.
+   *
+   * <p>Supported schemes:
+   *
+   * <ul>
+   *   <li>{@code s3://}, {@code s3a://}, {@code s3n://} - AWS S3 via S3FileIO
+   *   <li>{@code gs://} - Google Cloud Storage via GCSFileIO
+   *   <li>{@code abfs://}, {@code abfss://} - Azure Data Lake Storage via ADLSFileIO
+   *   <li>{@code file://} or local paths - Local filesystem via HadoopFileIO (fallback)
+   * </ul>
+   *
+   * <p>Note: Cloud provider credentials are resolved via standard environment mechanisms (AWS
+   * credentials chain, GCP application default credentials, Azure managed identity, etc.)
+   */
+  private static FileIO createFileIO() {
+    ResolvingFileIO fileIO = new ResolvingFileIO();
+    fileIO.initialize(Collections.emptyMap());
+    return fileIO;
   }
 
   private static void printSummary(BenchmarkMetrics metrics) {

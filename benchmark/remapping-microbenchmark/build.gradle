@@ -41,15 +41,28 @@ dependencies {
   // Roaring bitmaps for deletion vectors
   implementation libs.roaringbitmap
 
-  // Hadoop filesystem support
-  implementation(libs.hadoop3.client) {
+  // Hadoop common for HadoopConfigurable interface used by ResolvingFileIO
+  implementation(libs.hadoop3.common) {
     exclude group: 'log4j', module: 'log4j'
     exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+    exclude group: 'org.slf4j', module: 'slf4j-reload4j'
   }
+
+  // Cloud storage support via Iceberg FileIO (optional runtime dependencies)
+  runtimeOnly project(':iceberg-aws')
+  runtimeOnly project(':iceberg-gcp')
+  runtimeOnly project(':iceberg-azure')
 
   // Logging
   implementation libs.slf4j.api
   runtimeOnly libs.slf4j.simple
+
+  // Required by Parquet for reading/writing files
+  runtimeOnly(libs.hadoop3.mapreduce.client.core) {
+    exclude group: 'log4j', module: 'log4j'
+    exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+    exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+  }
 
   // Testing
   testImplementation libs.junit.jupiter
