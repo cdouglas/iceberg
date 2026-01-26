@@ -106,9 +106,7 @@ public class MetricsCollector {
 
     if (detailedLogging) {
       LOG.debug(
-          "Remap {}: duration={}ms",
-          success ? "success" : "failed",
-          durationNs / 1_000_000.0);
+          "Remap {}: duration={}ms", success ? "success" : "failed", durationNs / 1_000_000.0);
     }
   }
 
@@ -135,8 +133,7 @@ public class MetricsCollector {
     LOG.warn("Compaction failed: duration={}ms", durationNs / 1_000_000.0);
   }
 
-  public void recordMapBuild(
-      int numFiles, long numRows, CompactionMap map, long durationNs) {
+  public void recordMapBuild(int numFiles, long numRows, CompactionMap map, long durationNs) {
     // Estimate map size (simplified - actual size would require serialization)
     int runCount = estimateRunCount(numFiles, numRows);
     long estimatedSize = estimateMapSize(numFiles, runCount);

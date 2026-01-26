@@ -83,9 +83,7 @@ public class TestWorkloadGenerator {
       }
     }
 
-    assertThat(anyDifference)
-        .as("Different seeds should produce different workloads")
-        .isTrue();
+    assertThat(anyDifference).as("Different seeds should produce different workloads").isTrue();
   }
 
   @ParameterizedTest
@@ -100,9 +98,7 @@ public class TestWorkloadGenerator {
     List<WorkloadEvent> run1 = collectAllEvents(config, seed);
     List<WorkloadEvent> run2 = collectAllEvents(config, seed);
 
-    assertThat(run1)
-        .as("Same seed %d should produce identical workloads", seed)
-        .isEqualTo(run2);
+    assertThat(run1).as("Same seed %d should produce identical workloads", seed).isEqualTo(run2);
   }
 
   @Test
@@ -132,9 +128,7 @@ public class TestWorkloadGenerator {
       }
     }
 
-    assertThat(patterns1)
-        .as("Delete patterns should be deterministic")
-        .isEqualTo(patterns2);
+    assertThat(patterns1).as("Delete patterns should be deterministic").isEqualTo(patterns2);
   }
 
   // ========== Event Order Tests ==========
@@ -251,8 +245,7 @@ public class TestWorkloadGenerator {
 
   @Test
   void testIteratorContractHasNextIdempotent() {
-    BenchmarkConfig config =
-        BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(5);
+    BenchmarkConfig config = BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(5);
 
     WorkloadGenerator generator = WorkloadGenerator.createRandom(config, 42L);
 
@@ -267,8 +260,7 @@ public class TestWorkloadGenerator {
 
   @Test
   void testIteratorContractNoSuchElement() {
-    BenchmarkConfig config =
-        BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(1);
+    BenchmarkConfig config = BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(1);
 
     WorkloadGenerator generator = WorkloadGenerator.createRandom(config, 42L);
 
@@ -284,8 +276,7 @@ public class TestWorkloadGenerator {
 
   @Test
   void testIteratorContractEmptyAfterExhaustion() {
-    BenchmarkConfig config =
-        BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(2);
+    BenchmarkConfig config = BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(2);
 
     WorkloadGenerator generator = WorkloadGenerator.createRandom(config, 42L);
 
@@ -304,10 +295,7 @@ public class TestWorkloadGenerator {
   @Test
   void testInitialLoadEventIsFirst() {
     BenchmarkConfig config =
-        BenchmarkConfig.defaults()
-            .withRandomSeed(42L)
-            .withNumIterations(10)
-            .withNumFiles(75);
+        BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(10).withNumFiles(75);
 
     WorkloadGenerator generator = WorkloadGenerator.createRandom(config, 42L);
 
@@ -384,8 +372,7 @@ public class TestWorkloadGenerator {
 
   @Test
   void testZeroIterationsProducesOnlyInitialLoad() {
-    BenchmarkConfig config =
-        BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(0);
+    BenchmarkConfig config = BenchmarkConfig.defaults().withRandomSeed(42L).withNumIterations(0);
 
     List<WorkloadEvent> events = collectAllEvents(config, 42L);
 
@@ -405,9 +392,7 @@ public class TestWorkloadGenerator {
 
     // Should have no compaction events
     long compactionCount =
-        events.stream()
-            .filter(e -> e.type() == WorkloadGenerator.EventType.COMPACTION)
-            .count();
+        events.stream().filter(e -> e.type() == WorkloadGenerator.EventType.COMPACTION).count();
 
     assertThat(compactionCount).isZero();
   }
@@ -449,9 +434,7 @@ public class TestWorkloadGenerator {
 
     // Count event types for sanity check
     long deleteCount =
-        events.stream()
-            .filter(e -> e.type() == WorkloadGenerator.EventType.DELETE_ROWS)
-            .count();
+        events.stream().filter(e -> e.type() == WorkloadGenerator.EventType.DELETE_ROWS).count();
 
     // Should have exactly 'iterations' delete events
     assertThat(deleteCount).isEqualTo(iterations);

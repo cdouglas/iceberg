@@ -281,8 +281,8 @@ public interface WorkloadGenerator extends Iterator<WorkloadEvent> {
     /**
      * Generate the next batch of events based on current state machine phase.
      *
-     * <p>This method advances the state machine and populates pendingEvents with the next
-     * event(s). Events at the same timestamp are batched together.
+     * <p>This method advances the state machine and populates pendingEvents with the next event(s).
+     * Events at the same timestamp are batched together.
      */
     private void generateNextBatch() {
       switch (phase) {

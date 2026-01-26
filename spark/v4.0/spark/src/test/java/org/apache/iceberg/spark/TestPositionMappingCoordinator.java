@@ -258,7 +258,8 @@ public class TestPositionMappingCoordinator {
 
     // Verify multi-target helpers
     assertThat(mapping.isMultiTarget()).isTrue();
-    assertThat(mapping.targetFiles()).containsExactlyInAnyOrder("target1.parquet", "target2.parquet");
+    assertThat(mapping.targetFiles())
+        .containsExactlyInAnyOrder("target1.parquet", "target2.parquet");
     assertThat(mapping.targetFileForRun(run1)).isEqualTo("target1.parquet");
     assertThat(mapping.targetFileForRun(run2)).isEqualTo("target2.parquet");
   }

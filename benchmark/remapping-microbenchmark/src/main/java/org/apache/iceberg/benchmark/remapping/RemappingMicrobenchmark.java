@@ -202,12 +202,15 @@ public class RemappingMicrobenchmark {
     java.util.Set<String> baseKeys = new java.util.TreeSet<>();
     for (String key : summaries.keySet()) {
       // Remove strategy suffix
-      String baseKey = key.replaceAll("_(LINEAR|BINARY_SEARCH|INTERVAL_TREE|STREAM_JOIN|RANGE_QUERY|SMART)_", "_X_");
+      String baseKey =
+          key.replaceAll(
+              "_(LINEAR|BINARY_SEARCH|INTERVAL_TREE|STREAM_JOIN|RANGE_QUERY|SMART)_", "_X_");
       baseKeys.add(baseKey);
     }
 
     // Print header
-    System.out.printf("%-40s %10s %10s %10s %10s %10s %10s%n",
+    System.out.printf(
+        "%-40s %10s %10s %10s %10s %10s %10s%n",
         "Scenario", "LINEAR", "BINARY", "INTERVAL", "STREAM", "RANGE", "SMART");
     System.out.println("-".repeat(100));
 
@@ -222,7 +225,10 @@ public class RemappingMicrobenchmark {
 
       System.out.printf("%-40s", label);
 
-      for (String strategy : new String[] {"LINEAR", "BINARY_SEARCH", "INTERVAL_TREE", "STREAM_JOIN", "RANGE_QUERY", "SMART"}) {
+      for (String strategy :
+          new String[] {
+            "LINEAR", "BINARY_SEARCH", "INTERVAL_TREE", "STREAM_JOIN", "RANGE_QUERY", "SMART"
+          }) {
         String fullKey = baseKey.replace("_X_", "_" + strategy + "_");
         ScenarioSummary summary = summaries.get(fullKey);
         if (summary != null) {

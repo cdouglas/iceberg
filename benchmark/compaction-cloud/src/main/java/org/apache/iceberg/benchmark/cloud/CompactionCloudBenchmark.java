@@ -123,10 +123,8 @@ public class CompactionCloudBenchmark {
   private void initializeTable() throws IOException {
     LOG.info("Initializing simulated table...");
     table = SimulatedTable.create("benchmark", config);
-    transactionSimulator =
-        new TransactionSimulator(table, metrics, config, config.randomSeed());
-    compactionSimulator =
-        new CompactionSimulator(table, metrics, config, config.randomSeed() + 1);
+    transactionSimulator = new TransactionSimulator(table, metrics, config, config.randomSeed());
+    compactionSimulator = new CompactionSimulator(table, metrics, config, config.randomSeed() + 1);
     LOG.info("Table initialized at: {}", config.tableLocation());
   }
 
@@ -237,8 +235,7 @@ public class CompactionCloudBenchmark {
     switch (event.type()) {
       case INITIAL_LOAD:
         transactionSimulator.executeInitialLoad(
-            event.fileCount() > 0 ? event.fileCount() : config.numFiles(),
-            config.avgRowsPerFile());
+            event.fileCount() > 0 ? event.fileCount() : config.numFiles(), config.avgRowsPerFile());
         break;
 
       case DELETE_ROWS:
@@ -269,8 +266,7 @@ public class CompactionCloudBenchmark {
 
       case ADD_FILES:
         transactionSimulator.executeAddFiles(
-            event.fileCount() > 0 ? event.fileCount() : 10,
-            config.avgRowsPerFile());
+            event.fileCount() > 0 ? event.fileCount() : 10, config.avgRowsPerFile());
         break;
 
       default:
@@ -349,6 +345,7 @@ public class CompactionCloudBenchmark {
     System.out.println();
     System.out.println("  # Compare with and without maps");
     System.out.println("  java -jar compaction-cloud-benchmark.jar --output-dir results-with-maps");
-    System.out.println("  java -jar compaction-cloud-benchmark.jar --no-maps --output-dir results-no-maps");
+    System.out.println(
+        "  java -jar compaction-cloud-benchmark.jar --no-maps --output-dir results-no-maps");
   }
 }

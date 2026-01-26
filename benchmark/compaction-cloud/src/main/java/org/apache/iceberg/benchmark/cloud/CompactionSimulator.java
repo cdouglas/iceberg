@@ -81,19 +81,18 @@ public class CompactionSimulator {
       }
 
       // Mark files as being compacted (for concurrent conflict testing)
-      compactingFiles = sourceFiles.stream()
-          .map(DataFile::location)
-          .collect(Collectors.toSet());
+      compactingFiles = sourceFiles.stream().map(DataFile::location).collect(Collectors.toSet());
 
       // 2. Calculate and simulate compaction time
       long totalRows = sumRows(sourceFiles);
       simulateCompactionTime(totalRows);
 
       // 3. Create target file
-      DataFile targetFile = SimulatedDataFile.create(
-          table.spec(),
-          totalRows,
-          String.format("data/compacted-%s.parquet", UUID.randomUUID()));
+      DataFile targetFile =
+          SimulatedDataFile.create(
+              table.spec(),
+              totalRows,
+              String.format("data/compacted-%s.parquet", UUID.randomUUID()));
 
       // 4. Build compaction map (if enabled)
       CompactionMap compactionMap = null;
@@ -102,10 +101,7 @@ public class CompactionSimulator {
       if (config.compactionMapsEnabled()) {
         compactionMap = buildCompactionMap(sourceFiles, targetFile);
         metrics.recordMapBuild(
-            sourceFiles.size(),
-            totalRows,
-            compactionMap,
-            System.nanoTime() - mapBuildStart);
+            sourceFiles.size(), totalRows, compactionMap, System.nanoTime() - mapBuildStart);
       }
 
       // 5. Commit rewrite
@@ -117,11 +113,10 @@ public class CompactionSimulator {
 
       // Attach compaction map location (simulated)
       if (compactionMap != null) {
-        String mapLocation = String.format(
-            "%s/metadata/compaction-map-%d-%s.avro",
-            config.tableLocation(),
-            table.currentSnapshot().snapshotId(),
-            UUID.randomUUID());
+        String mapLocation =
+            String.format(
+                "%s/metadata/compaction-map-%d-%s.avro",
+                config.tableLocation(), table.currentSnapshot().snapshotId(), UUID.randomUUID());
         rewrite.set("compaction-map-location", mapLocation);
       }
 
@@ -176,8 +171,7 @@ public class CompactionSimulator {
 
     try (CloseableIterable<DataFile> files =
         table.table().newScan().planFiles().iterator()
-            ? CloseableIterable.withNoopClose(
-                table.table().newScan().planFiles())
+            ? CloseableIterable.withNoopClose(table.table().newScan().planFiles())
             : null) {
       // Just get some files based on what we track
       // In a real implementation, this would scan the manifest
@@ -217,8 +211,7 @@ public class CompactionSimulator {
     long sourceSnapshotId = currentSnapshot != null ? currentSnapshot.snapshotId() : 0;
     long targetSnapshotId = sourceSnapshotId + 1;
 
-    CompactionMapBuilder builder =
-        new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
+    CompactionMapBuilder builder = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
 
     // Build position mappings: each source file's positions map to target offsets
     long targetOffset = 0;

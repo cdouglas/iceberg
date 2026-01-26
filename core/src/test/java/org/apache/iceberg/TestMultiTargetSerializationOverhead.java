@@ -87,8 +87,7 @@ public class TestMultiTargetSerializationOverhead {
     }
 
     CompactionMap mapWithoutRunTargets =
-        new GenericCompactionMap(
-            SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, mappingsWithoutRunTargets);
+        new GenericCompactionMap(SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, mappingsWithoutRunTargets);
 
     // Version 2: With per-run targets (same target repeated)
     List<FileMapping> mappingsWithRunTargets = new ArrayList<>();
@@ -114,12 +113,19 @@ public class TestMultiTargetSerializationOverhead {
     long overheadBytes = sizeWithRunTargets - sizeWithoutRunTargets;
 
     System.out.println("=== Multi-Target Serialization Overhead Test ===");
-    System.out.println("Configuration: " + numSourceFiles + " source files, " + runsPerFile + " runs each");
+    System.out.println(
+        "Configuration: " + numSourceFiles + " source files, " + runsPerFile + " runs each");
     System.out.println("Total runs: " + (numSourceFiles * runsPerFile));
     System.out.println();
-    System.out.println("Serialized size without per-run targets: " + sizeWithoutRunTargets + " bytes");
+    System.out.println(
+        "Serialized size without per-run targets: " + sizeWithoutRunTargets + " bytes");
     System.out.println("Serialized size with per-run targets: " + sizeWithRunTargets + " bytes");
-    System.out.println("Overhead: " + overheadBytes + " bytes (" + String.format("%.2f", (overheadRatio - 1) * 100) + "%)");
+    System.out.println(
+        "Overhead: "
+            + overheadBytes
+            + " bytes ("
+            + String.format("%.2f", (overheadRatio - 1) * 100)
+            + "%)");
     System.out.println();
 
     // Assert overhead is reasonable (less than 50% increase)
@@ -133,7 +139,9 @@ public class TestMultiTargetSerializationOverhead {
     System.out.println(
         overheadRatio < 1.2
             ? "PASS: Overhead is minimal (< 20%) - Avro string deduplication working well"
-            : "WARN: Overhead is " + String.format("%.1f", (overheadRatio - 1) * 100) + "% - still acceptable but higher than expected");
+            : "WARN: Overhead is "
+                + String.format("%.1f", (overheadRatio - 1) * 100)
+                + "% - still acceptable but higher than expected");
   }
 
   /**
@@ -165,8 +173,7 @@ public class TestMultiTargetSerializationOverhead {
               runs));
     }
 
-    CompactionMap map =
-        new GenericCompactionMap(SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, mappings);
+    CompactionMap map = new GenericCompactionMap(SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, mappings);
 
     // Write and read back to verify round-trip
     CompactionMap readMap = writeAndRead(map);
@@ -181,7 +188,8 @@ public class TestMultiTargetSerializationOverhead {
       for (int i = 0; i < mapping.runs().size(); i++) {
         Run run = mapping.runs().get(i);
         int targetIndex = i / runsPerTarget;
-        String expectedTarget = "s3://warehouse/db/table/data/compacted-" + targetIndex + ".parquet";
+        String expectedTarget =
+            "s3://warehouse/db/table/data/compacted-" + targetIndex + ".parquet";
         assertThat(run.targetFile()).isEqualTo(expectedTarget);
       }
     }
@@ -189,15 +197,21 @@ public class TestMultiTargetSerializationOverhead {
     long serializedSize = measureSerializedSize(map);
     System.out.println("=== Multi-Target Mapping Test ===");
     System.out.println(
-        "Configuration: " + numSourceFiles + " source files, " + targetsPerSource + " targets each");
+        "Configuration: "
+            + numSourceFiles
+            + " source files, "
+            + targetsPerSource
+            + " targets each");
     System.out.println("Total runs: " + (numSourceFiles * targetsPerSource * runsPerTarget));
     System.out.println("Serialized size: " + serializedSize + " bytes");
-    System.out.println("Bytes per run: " + String.format("%.1f", (double) serializedSize / (numSourceFiles * targetsPerSource * runsPerTarget)));
+    System.out.println(
+        "Bytes per run: "
+            + String.format(
+                "%.1f",
+                (double) serializedSize / (numSourceFiles * targetsPerSource * runsPerTarget)));
   }
 
-  /**
-   * Validates that target file interning reduces memory usage after read.
-   */
+  /** Validates that target file interning reduces memory usage after read. */
   @Test
   public void testTargetFileInterningAfterRead() throws IOException {
     String sharedTarget = "s3://warehouse/db/table/data/compacted.parquet";
@@ -211,8 +225,7 @@ public class TestMultiTargetSerializationOverhead {
     }
 
     FileMapping mapping =
-        new GenericFileMapping(
-            "s3://warehouse/source.parquet", new String(sharedTarget), runs);
+        new GenericFileMapping("s3://warehouse/source.parquet", new String(sharedTarget), runs);
 
     CompactionMap map =
         new GenericCompactionMap(SOURCE_SNAPSHOT_ID, TARGET_SNAPSHOT_ID, List.of(mapping));
@@ -234,7 +247,8 @@ public class TestMultiTargetSerializationOverhead {
     assertThat(readMapping.targetFile()).isSameAs(firstTarget);
 
     System.out.println("=== Target File Interning Test ===");
-    System.out.println("PASS: All " + numRuns + " runs share the same String instance after interning");
+    System.out.println(
+        "PASS: All " + numRuns + " runs share the same String instance after interning");
   }
 
   private long measureSerializedSize(CompactionMap compactionMap) throws IOException {

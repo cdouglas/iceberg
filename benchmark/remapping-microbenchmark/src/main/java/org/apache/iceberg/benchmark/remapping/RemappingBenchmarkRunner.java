@@ -275,7 +275,8 @@ public class RemappingBenchmarkRunner {
             .project(PositionDeleteGenerator.DELETE_SCHEMA)
             .createReaderFunc(
                 schema ->
-                    GenericParquetReaders.buildReader(PositionDeleteGenerator.DELETE_SCHEMA, schema))
+                    GenericParquetReaders.buildReader(
+                        PositionDeleteGenerator.DELETE_SCHEMA, schema))
             .build()) {
 
       for (Record record : reader) {
@@ -362,8 +363,7 @@ public class RemappingBenchmarkRunner {
       // Check if this file was compacted
       if (!remapper.isCompacted(sourceFile)) {
         // File wasn't compacted, keep original
-        Set<Long> positions =
-            remappedByTarget.computeIfAbsent(sourceFile, k -> new HashSet<>());
+        Set<Long> positions = remappedByTarget.computeIfAbsent(sourceFile, k -> new HashSet<>());
         for (int pos : sourceBitmap) {
           positions.add((long) pos);
         }

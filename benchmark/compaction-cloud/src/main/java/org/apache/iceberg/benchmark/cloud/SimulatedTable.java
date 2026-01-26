@@ -153,7 +153,8 @@ public class SimulatedTable {
    */
   public void addSimulatedFiles(int numFiles, long avgRowsPerFile, Random random) {
     DataFile[] files =
-        SimulatedDataFile.createBatch(spec(), numFiles, avgRowsPerFile, config.rowCountVariance(), random);
+        SimulatedDataFile.createBatch(
+            spec(), numFiles, avgRowsPerFile, config.rowCountVariance(), random);
     addFiles(files);
   }
 

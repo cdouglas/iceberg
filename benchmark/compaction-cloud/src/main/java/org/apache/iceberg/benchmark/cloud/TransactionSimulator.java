@@ -19,7 +19,6 @@
 package org.apache.iceberg.benchmark.cloud;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
@@ -31,7 +30,6 @@ import org.apache.iceberg.benchmark.cloud.config.BenchmarkConfig;
 import org.apache.iceberg.benchmark.cloud.metrics.MetricsCollector;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CompactionConflictException;
-import org.apache.iceberg.io.CloseableIterable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -138,10 +136,7 @@ public class TransactionSimulator {
     table.addFiles(files);
 
     metrics.recordInitialLoad(numFiles, sumRows(files), System.nanoTime() - startTime);
-    LOG.info(
-        "Initial load complete: {} files, {} total rows",
-        numFiles,
-        sumRows(files));
+    LOG.info("Initial load complete: {} files, {} total rows", numFiles, sumRows(files));
   }
 
   /**
@@ -186,8 +181,7 @@ public class TransactionSimulator {
     if (snapshot == null) {
       return false;
     }
-    String deleteCount =
-        snapshot.summary().getOrDefault("total-delete-files", "0");
+    String deleteCount = snapshot.summary().getOrDefault("total-delete-files", "0");
     return Long.parseLong(deleteCount) > 0;
   }
 
@@ -200,8 +194,7 @@ public class TransactionSimulator {
     long remainingDeletes = totalDeletes;
     for (int i = 0; i < numFiles && remainingDeletes > 0; i++) {
       long deletesInFile = Math.min(remainingDeletes, 10000 + random.nextInt(5000));
-      deletes.add(
-          SimulatedDeleteFile.createPositionDeletes(table.spec(), deletesInFile));
+      deletes.add(SimulatedDeleteFile.createPositionDeletes(table.spec(), deletesInFile));
       remainingDeletes -= deletesInFile;
     }
 

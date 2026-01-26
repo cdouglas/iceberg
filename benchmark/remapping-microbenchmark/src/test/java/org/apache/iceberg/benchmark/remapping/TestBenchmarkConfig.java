@@ -47,10 +47,7 @@ public class TestBenchmarkConfig {
   @AfterEach
   public void tearDown() throws IOException {
     if (tempDir != null && Files.exists(tempDir)) {
-      Files.walk(tempDir)
-          .sorted(Comparator.reverseOrder())
-          .map(Path::toFile)
-          .forEach(File::delete);
+      Files.walk(tempDir).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
     }
   }
 
@@ -191,8 +188,7 @@ public class TestBenchmarkConfig {
   @Test
   public void testPartialYamlUsesDefaults() throws IOException {
     // YAML with only some fields specified
-    String yamlContent =
-        "storage-uri: \"file:///custom/path\"\n" + "warmup-iterations: 1\n";
+    String yamlContent = "storage-uri: \"file:///custom/path\"\n" + "warmup-iterations: 1\n";
 
     Path configPath = tempDir.resolve("partial-config.yaml");
     Files.writeString(configPath, yamlContent);
