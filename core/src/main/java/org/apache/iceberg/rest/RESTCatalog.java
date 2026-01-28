@@ -29,10 +29,13 @@ import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.Transaction;
+import org.apache.iceberg.catalog.BaseCatalogTransaction;
 import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.CatalogTransaction;
 import org.apache.iceberg.catalog.LoadContext;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SessionCatalog;
+import org.apache.iceberg.catalog.SupportsCatalogTransactions;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableCommit;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -41,12 +44,16 @@ import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.hadoop.Configurable;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.view.View;
 import org.apache.iceberg.view.ViewBuilder;
 
 public class RESTCatalog
-    implements Catalog, ViewCatalog, SupportsNamespaces, Configurable<Object>, Closeable {
+    implements Catalog,
+        ViewCatalog,
+        SupportsNamespaces,
+        Configurable<Object>,
+        Closeable,
+        SupportsCatalogTransactions {
   private final RESTSessionCatalog sessionCatalog;
   private final Catalog delegate;
   private final SupportsNamespaces nsDelegate;
@@ -298,13 +305,20 @@ public class RESTCatalog
     sessionCatalog.close();
   }
 
-  public void commitTransaction(List<TableCommit> commits) {
+  /**
+   * This performs an atomic multi-table swap for the given {@link TableCommit} instances.
+   *
+   * @param commits The {@link TableCommit} instances containing the changes to be atomically
+   *     applied across multiple tables.
+   */
+  @Override
+  public void commitTransaction(List<TableIdentifier> ignored, List<TableCommit> commits) {
     sessionCatalog.commitTransaction(context, commits);
   }
 
-  public void commitTransaction(TableCommit... commits) {
-    sessionCatalog.commitTransaction(
-        context, ImmutableList.<TableCommit>builder().add(commits).build());
+  @Override
+  public CatalogTransaction createTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    return new BaseCatalogTransaction(this, isolationLevel);
   }
 
   @Override
