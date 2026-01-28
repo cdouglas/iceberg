@@ -45,6 +45,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -65,19 +66,29 @@ public class ADLSFileIOTest {
   public static void initStorage() throws IOException {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
-    AzureSAS creds =
-        AzureSAS.readCreds(new File("/home/chris/work/.cloud/azure/lstnsgym-20250930.json"));
+
+    // Check for Azure credentials via environment variable
+    String credsPath = System.getenv("AZURE_SAS_CREDENTIALS_FILE");
+    AzureSAS creds = credsPath != null ? AzureSAS.readCreds(new File(credsPath)) : null;
+
     if (creds != null) {
       azureProperties = Maps.newHashMap();
       azureProperties.put(
-          AzureProperties.ADLS_SAS_TOKEN_PREFIX + "lstnsgym.dfs.core.windows.net", creds.sasToken);
+          AzureProperties.ADLS_SAS_TOKEN_PREFIX + creds.account + ".dfs.core.windows.net",
+          creds.sasToken);
       az = new AzureSAS.SasResolver(creds);
-      LOG.info("Using remote storage");
+      LOG.info("Using remote storage: {}", creds.account);
     } else {
-      azuriteContainer = new AzuriteContainer();
-      azuriteContainer.start();
-      az = azuriteContainer;
-      LOG.info("Using local storage");
+      // Use Azurite container for local testing - requires Docker
+      try {
+        azuriteContainer = new AzuriteContainer();
+        azuriteContainer.start();
+        az = azuriteContainer;
+        LOG.info("Using local Azurite storage");
+      } catch (Exception e) {
+        LOG.warn("Could not start Azurite container (Docker not available?): {}", e.getMessage());
+        // Tests will be skipped via the assumption in baseBefore
+      }
     }
   }
 
@@ -90,6 +101,10 @@ public class ADLSFileIOTest {
 
   @BeforeEach
   public void baseBefore() {
+    // Skip tests if neither Azure credentials nor Azurite is available
+    Assumptions.assumeTrue(
+        az != null,
+        "Azure storage not available - need AZURE_SAS_CREDENTIALS_FILE env var or Docker for Azurite");
     if (azuriteContainer != null) {
       azuriteContainer.createStorageContainer();
     }
@@ -97,8 +112,12 @@ public class ADLSFileIOTest {
 
   @AfterEach
   public void baseAfter() {
-    if (azuriteContainer != null) {
-      azuriteContainer.deleteStorageContainer();
+    if (azuriteContainer != null && azuriteContainer.isRunning()) {
+      try {
+        azuriteContainer.deleteStorageContainer();
+      } catch (Exception e) {
+        // Ignore cleanup errors
+      }
     }
   }
 
