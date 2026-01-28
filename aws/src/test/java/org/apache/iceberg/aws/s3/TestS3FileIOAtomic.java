@@ -57,13 +57,9 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
-/**
- * Integration tests for S3 atomic operations.
- *
- * <p>These tests require real S3 access and are skipped if S3 client is not available.
- */
 @ExtendWith(TestS3FileIOAtomic.SuccessCleanupExtension.class)
 public class TestS3FileIOAtomic {
+  // private static final Logger LOG = LoggerFactory.getLogger(TestS3FileIOAtomic.class);
   private static final String TEST_BUCKET = "casalog";
 
   private static S3Client s3;
@@ -73,20 +69,18 @@ public class TestS3FileIOAtomic {
 
   @BeforeAll
   public static void initStorage() {
+    // XXX integration tests are well designed, but I'd rather gargle yak piss than configure AWS.
     uniqTestRun = UUID.randomUUID().toString();
-    System.err.println("TEST RUN: " + uniqTestRun);
-    try {
-      final AwsClientFactory clientFactory = AwsClientFactories.defaultFactory();
-      s3 = clientFactory.s3();
-    } catch (Exception e) {
-      // S3 not available
-      s3 = null;
-    }
+    // LOG.info("TEST RUN: {}", uniqTestRun);
+    System.err.println("TEST RUN: " + uniqTestRun); // (logging disabled in tests)
+    final AwsClientFactory clientFactory = AwsClientFactories.defaultFactory();
+    s3 = clientFactory.s3();
+    StaticClientFactory.client = s3;
   }
 
   @BeforeEach
   public void before(TestInfo info) {
-    Assumptions.assumeTrue(s3 != null, "S3 client not available");
+    Assumptions.assumeTrue(s3 != null);
     final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
     warehousePath = uniqTestRun + "/" + testName;
     warehouseLocation = "s3://" + TEST_BUCKET + "/" + warehousePath;
@@ -94,7 +88,7 @@ public class TestS3FileIOAtomic {
 
   @AfterEach
   public void after() {
-    // Cleanup handled by SuccessCleanupExtension
+    // TODO
   }
 
   @Test
@@ -147,6 +141,7 @@ public class TestS3FileIOAtomic {
             .checksumCRC32C(chkStr)
             .contentLength((long) data.length)
             .build();
+    // RequestBody body1 = RequestBody.fromBytes(data);
     RequestBody body1 = RequestBody.fromInputStream(new ByteArrayInputStream(data), data.length);
     s3.putObject(req1, body1);
   }
@@ -276,6 +271,6 @@ public class TestS3FileIOAtomic {
   }
 
   static void cleanupWarehouseLocation() {
-    // Use FileIO to clean up test files
+    // use FileIO
   }
 }
