@@ -20,7 +20,9 @@ package org.apache.iceberg.azure.adlsv2;
 
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeFileOpenInputStreamResult;
+import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.FileRange;
+import com.azure.storage.file.datalake.models.PathProperties;
 import com.azure.storage.file.datalake.options.DataLakeFileInputStreamOptions;
 import java.io.IOException;
 import java.io.InputStream;
@@ -49,6 +51,8 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   private final DataLakeFileClient fileClient;
   private Long fileSize;
   private final AzureProperties azureProperties;
+  private final DataLakeRequestConditions conditions;
+  private PathProperties pathProps;
 
   private InputStream stream;
   private long pos;
@@ -63,9 +67,19 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       Long fileSize,
       AzureProperties azureProperties,
       MetricsContext metrics) {
+    this(fileClient, fileSize, azureProperties, null, metrics);
+  }
+
+  ADLSInputStream(
+      DataLakeFileClient fileClient,
+      Long fileSize,
+      AzureProperties azureProperties,
+      DataLakeRequestConditions conditions,
+      MetricsContext metrics) {
     this.fileClient = fileClient;
     this.fileSize = fileSize;
     this.azureProperties = azureProperties;
+    this.conditions = conditions;
 
     this.readBytes = metrics.counter(FileIOMetricsContext.READ_BYTES, Unit.BYTES);
     this.readOperations = metrics.counter(FileIOMetricsContext.READ_OPERATIONS);
@@ -77,14 +91,22 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
 
   private void openStream() {
     DataLakeFileOpenInputStreamResult result = openRange(new FileRange(pos));
-    this.fileSize = result.getProperties().getFileSize();
+    this.pathProps = result.getProperties();
+    this.fileSize = pathProps.getFileSize();
     this.stream = result.getInputStream();
+  }
+
+  PathProperties pathProperties() {
+    return pathProps;
   }
 
   private DataLakeFileInputStreamOptions getInputOptions(FileRange range) {
     DataLakeFileInputStreamOptions options = new DataLakeFileInputStreamOptions();
     azureProperties.adlsReadBlockSize().ifPresent(options::setBlockSize);
     options.setRange(range);
+    if (conditions != null) {
+      options.setRequestConditions(conditions);
+    }
     return options;
   }
 

@@ -19,19 +19,32 @@
 package org.apache.iceberg.aws.s3;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.util.function.Supplier;
+import org.apache.commons.io.output.NullOutputStream;
 import org.apache.iceberg.encryption.NativeFileCryptoParameters;
 import org.apache.iceberg.encryption.NativelyEncryptedFile;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.CAS;
+import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
+import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.InvalidWriteOffsetException;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
-public class S3OutputFile extends BaseS3File implements OutputFile, NativelyEncryptedFile {
+public class S3OutputFile extends BaseS3File implements AtomicOutputFile, NativelyEncryptedFile {
   private NativeFileCryptoParameters nativeEncryptionParameters;
+  private final String etag;
 
   /**
    * Creates a {@link S3OutputFile} from the given parameters.
@@ -50,7 +63,8 @@ public class S3OutputFile extends BaseS3File implements OutputFile, NativelyEncr
         null,
         new S3URI(location, s3FileIOProperties.bucketToAccessPointMapping()),
         s3FileIOProperties,
-        metrics);
+        metrics,
+        null);
   }
 
   /**
@@ -71,17 +85,24 @@ public class S3OutputFile extends BaseS3File implements OutputFile, NativelyEncr
         asyncClient,
         new S3URI(location, s3FileIOProperties.bucketToAccessPointMapping()),
         s3FileIOProperties,
-        metrics);
+        metrics,
+        null);
   }
 
   static S3OutputFile fromLocation(
       String location, PrefixedS3Client client, MetricsContext metrics) {
+    return fromLocation(location, client, metrics, null);
+  }
+
+  static S3OutputFile fromLocation(
+      String location, PrefixedS3Client client, MetricsContext metrics, String etag) {
     return new S3OutputFile(
         client.s3(),
         client.s3FileIOProperties().isS3AnalyticsAcceleratorEnabled() ? client.s3Async() : null,
         new S3URI(location, client.s3FileIOProperties().bucketToAccessPointMapping()),
         client.s3FileIOProperties(),
-        metrics);
+        metrics,
+        etag);
   }
 
   S3OutputFile(
@@ -89,8 +110,10 @@ public class S3OutputFile extends BaseS3File implements OutputFile, NativelyEncr
       S3AsyncClient asyncClient,
       S3URI uri,
       S3FileIOProperties s3FileIOProperties,
-      MetricsContext metrics) {
+      MetricsContext metrics,
+      String etag) {
     super(client, asyncClient, uri, s3FileIOProperties, metrics);
+    this.etag = etag;
   }
 
   /**
@@ -119,7 +142,8 @@ public class S3OutputFile extends BaseS3File implements OutputFile, NativelyEncr
 
   @Override
   public InputFile toInputFile() {
-    return new S3InputFile(client(), asyncClient(), uri(), null, s3FileIOProperties(), metrics());
+    return new S3InputFile(
+        client(), asyncClient(), uri(), null, s3FileIOProperties(), metrics(), etag);
   }
 
   @Override
@@ -130,5 +154,103 @@ public class S3OutputFile extends BaseS3File implements OutputFile, NativelyEncr
   @Override
   public void setNativeCryptoParameters(NativeFileCryptoParameters nativeCryptoParameters) {
     this.nativeEncryptionParameters = nativeCryptoParameters;
+  }
+
+  @Override
+  public CAS prepare(Supplier<InputStream> source, Strategy howto) throws IOException {
+    // S3OutputStream forces multipart upload w/ attendant MD5 and work pool... meh, do it manually
+    // in writeAtomic. Catalog + metadata writes are likely smaller than multipart would justify.
+    final S3Checksum checksum = new S3Checksum(howto);
+    try (InputStream in = source.get();
+        FileChecksumOutputStream chk =
+            new FileChecksumOutputStream(NullOutputStream.INSTANCE, checksum)) {
+      ByteStreams.copy(in, chk);
+    }
+    return checksum;
+  }
+
+  @Override
+  public InputFile writeAtomic(CAS token, Supplier<InputStream> source) throws IOException {
+    final S3Checksum tok = (S3Checksum) token;
+    switch (tok.getStrategy()) {
+      case CAS:
+        return replaceDestObj(tok, source);
+      case APPEND:
+        return appendDestObj(tok, source);
+      default:
+        throw new UnsupportedOperationException("Unrecognized strategy: " + tok.getStrategy());
+    }
+  }
+
+  private S3InputFile replaceDestObj(S3Checksum token, Supplier<InputStream> source)
+      throws IOException {
+    try (InputStream src = source.get()) {
+      final S3URI location = uri();
+      PutObjectRequest req =
+          PutObjectRequest.builder()
+              .bucket(location.bucket())
+              .key(location.key())
+              .checksumCRC32C(token.contentHeaderString())
+              .contentLength(token.contentLength())
+              .ifMatch(etag)
+              .build();
+      RequestBody content = RequestBody.fromInputStream(src, token.contentLength());
+      PutObjectResponse response = client().putObject(req, content);
+      return new S3InputFile(
+          client(),
+          asyncClient(),
+          location,
+          token.contentLength(),
+          s3FileIOProperties(),
+          metrics(),
+          response.eTag());
+    } catch (S3Exception e) {
+      if (409 == e.statusCode()
+          && "ConditionalRequestConflict".equals(e.awsErrorDetails().errorCode())) {
+        throw new SupportsAtomicOperations.CASException("Conflicting operation", e);
+      }
+      if (412 == e.statusCode() && "PreconditionFailed".equals(e.awsErrorDetails().errorCode())) {
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
+      }
+      throw e;
+    }
+  }
+
+  private S3InputFile appendDestObj(S3Checksum token, Supplier<InputStream> source)
+      throws IOException {
+    final long objLength = getObjectMetadata().contentLength();
+    try (InputStream src = source.get()) {
+      final S3URI location = uri();
+      PutObjectRequest req =
+          PutObjectRequest.builder()
+              .bucket(location.bucket())
+              .key(location.key())
+              .checksumCRC32C(token.contentHeaderString())
+              .contentLength(token.contentLength())
+              .ifMatch(etag)
+              .writeOffsetBytes(objLength)
+              .build();
+      RequestBody content = RequestBody.fromInputStream(src, token.contentLength());
+      PutObjectResponse response = client().putObject(req, content);
+      return new S3InputFile(
+          client(),
+          asyncClient(),
+          location,
+          objLength + token.contentLength(),
+          s3FileIOProperties(),
+          metrics(),
+          response.eTag());
+    } catch (InvalidWriteOffsetException e) {
+      throw new SupportsAtomicOperations.AppendException("Wrong offset", e);
+    } catch (S3Exception e) {
+      if (409 == e.statusCode()
+          && "ConditionalRequestConflict".equals(e.awsErrorDetails().errorCode())) {
+        throw new SupportsAtomicOperations.AppendException("Conflicting operation", e);
+      }
+      if (412 == e.statusCode() && "PreconditionFailed".equals(e.awsErrorDetails().errorCode())) {
+        throw new SupportsAtomicOperations.AppendException("Target modified", e);
+      }
+      throw e;
+    }
   }
 }

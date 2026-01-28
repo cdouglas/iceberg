@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.apache.iceberg.aws.S3FileIOAwsClientFactories;
 import org.apache.iceberg.common.DynConstructors;
+import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.CredentialSupplier;
 import org.apache.iceberg.io.DelegateFileIO;
@@ -39,6 +40,7 @@ import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.StorageCredential;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.io.SupportsRecoveryOperations;
 import org.apache.iceberg.io.SupportsStorageCredentials;
 import org.apache.iceberg.metrics.MetricsContext;
@@ -88,6 +90,7 @@ import software.amazon.awssdk.services.s3.paginators.ListObjectVersionsIterable;
 public class S3FileIO
     implements CredentialSupplier,
         DelegateFileIO,
+        SupportsAtomicOperations,
         SupportsRecoveryOperations,
         SupportsStorageCredentials {
   private static final Logger LOG = LoggerFactory.getLogger(S3FileIO.class);
@@ -187,6 +190,16 @@ public class S3FileIO
 
   @Override
   public OutputFile newOutputFile(String path) {
+    return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics);
+  }
+
+  @Override
+  public AtomicOutputFile newOutputFile(InputFile replace) {
+    final String path = replace.location();
+    if (replace instanceof S3InputFile) {
+      String etag = ((S3InputFile) replace).etag();
+      return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics, etag);
+    }
     return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics);
   }
 

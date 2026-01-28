@@ -29,6 +29,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryptedFile {
   private NativeFileCryptoParameters nativeDecryptionParameters;
   private Long length;
+  private String etag;
 
   /**
    * Creates a {@link S3InputFile} from the given parameters.
@@ -141,8 +142,28 @@ public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryp
       Long length,
       S3FileIOProperties s3FileIOProperties,
       MetricsContext metrics) {
+    this(client, asyncClient, uri, length, s3FileIOProperties, metrics, null);
+  }
+
+  S3InputFile(
+      S3Client client,
+      S3AsyncClient asyncClient,
+      S3URI uri,
+      Long length,
+      S3FileIOProperties s3FileIOProperties,
+      MetricsContext metrics,
+      String etag) {
     super(client, asyncClient, uri, s3FileIOProperties, metrics);
     this.length = length;
+    this.etag = etag;
+  }
+
+  /** Returns the ETag for this input file, used for conditional writes. */
+  public String etag() {
+    if (etag == null && exists()) {
+      this.etag = getObjectMetadata().eTag();
+    }
+    return etag;
   }
 
   /**

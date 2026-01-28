@@ -23,6 +23,7 @@ import com.azure.core.util.Context;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClient;
 import com.azure.storage.file.datalake.DataLakeFileSystemClientBuilder;
+import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import com.azure.storage.file.datalake.models.ListPathsOptions;
 import java.util.Collections;
@@ -31,11 +32,13 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.common.DynConstructors;
+import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.DelegateFileIO;
 import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.util.SerializableMap;
@@ -45,7 +48,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** FileIO implementation backed by Azure Data Lake Storage Gen2. */
-public class ADLSFileIO implements DelegateFileIO {
+public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
 
   private static final Logger LOG = LoggerFactory.getLogger(ADLSFileIO.class);
   private static final String DEFAULT_METRICS_IMPL =
@@ -66,6 +69,11 @@ public class ADLSFileIO implements DelegateFileIO {
   public ADLSFileIO() {}
 
   @VisibleForTesting
+  ADLSFileIO(Map<String, String> props) {
+    initialize(props);
+  }
+
+  @VisibleForTesting
   ADLSFileIO(AzureProperties azureProperties) {
     this.azureProperties = azureProperties;
   }
@@ -82,6 +90,18 @@ public class ADLSFileIO implements DelegateFileIO {
 
   @Override
   public OutputFile newOutputFile(String path) {
+    return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics);
+  }
+
+  @Override
+  public AtomicOutputFile newOutputFile(InputFile replace) {
+    final String path = replace.location();
+    if (replace instanceof ADLSInputFile) {
+      DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
+      final long objLength = replace.exists() ? replace.getLength() : -1L;
+      return new ADLSOutputFile(
+          path, fileClient(path), azureProperties, objLength, conditions, metrics);
+    }
     return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics);
   }
 

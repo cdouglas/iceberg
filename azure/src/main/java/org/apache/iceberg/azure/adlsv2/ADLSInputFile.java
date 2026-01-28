@@ -19,6 +19,8 @@
 package org.apache.iceberg.azure.adlsv2;
 
 import com.azure.storage.file.datalake.DataLakeFileClient;
+import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.SeekableInputStream;
@@ -26,13 +28,14 @@ import org.apache.iceberg.metrics.MetricsContext;
 
 class ADLSInputFile extends BaseADLSFile implements InputFile {
   private Long fileSize;
+  private DataLakeRequestConditions invariants;
 
   ADLSInputFile(
       String location,
       DataLakeFileClient fileClient,
       AzureProperties azureProperties,
       MetricsContext metrics) {
-    this(location, null, fileClient, azureProperties, metrics);
+    this(location, null, fileClient, azureProperties, metrics, null);
   }
 
   ADLSInputFile(
@@ -41,20 +44,55 @@ class ADLSInputFile extends BaseADLSFile implements InputFile {
       DataLakeFileClient fileClient,
       AzureProperties azureProperties,
       MetricsContext metrics) {
+    this(location, fileSize, fileClient, azureProperties, metrics, null);
+  }
+
+  ADLSInputFile(
+      String location,
+      Long fileSize,
+      DataLakeFileClient fileClient,
+      AzureProperties azureProperties,
+      MetricsContext metrics,
+      DataLakeRequestConditions invariants) {
     super(location, fileClient, azureProperties, metrics);
     this.fileSize = fileSize != null && fileSize > 0 ? fileSize : null;
+    this.invariants = invariants;
+  }
+
+  DataLakeRequestConditions conditions() {
+    if (null == invariants) {
+      try {
+        // Base::pathProperties() caches its response, should be invariant
+        invariants = new DataLakeRequestConditions().setIfMatch(pathProperties().getETag());
+      } catch (DataLakeStorageException e) {
+        if (e.getStatusCode() == 404) {
+          // *should* be possible to atomically get properties and !exists, but whatever
+          invariants = new DataLakeRequestConditions().setIfNoneMatch("*");
+        } else {
+          throw e;
+        }
+      }
+    }
+    return invariants;
   }
 
   @Override
   public long getLength() {
     if (fileSize == null) {
-      this.fileSize = fileClient().getProperties().getFileSize();
+      this.fileSize = pathProperties().getFileSize();
     }
     return fileSize;
   }
 
   @Override
   public SeekableInputStream newStream() {
-    return new ADLSInputStream(fileClient(), fileSize, azureProperties(), metrics());
+    ADLSInputStream ret =
+        new ADLSInputStream(fileClient(), fileSize, azureProperties(), invariants, metrics());
+    if (null == invariants) {
+      // Convoluted flow trying to avoid an unnecessary metadata lookup if the InputFile is
+      // immediately resolved
+      invariants = new DataLakeRequestConditions().setIfMatch(ret.pathProperties().getETag());
+    }
+    return ret;
   }
 }

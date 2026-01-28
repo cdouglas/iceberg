@@ -62,7 +62,8 @@ import org.slf4j.LoggerFactory;
  * <p>See <a href="https://cloud.google.com/storage/docs/folders#overview">Cloud Storage
  * Overview</a>
  */
-public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations, SupportsStorageCredentials {
+public class GCSFileIO
+    implements DelegateFileIO, SupportsAtomicOperations, SupportsStorageCredentials {
   private static final Logger LOG = LoggerFactory.getLogger(GCSFileIO.class);
   private static final String DEFAULT_METRICS_IMPL =
       "org.apache.iceberg.hadoop.HadoopMetricsContext";
