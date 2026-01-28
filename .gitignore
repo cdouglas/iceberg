@@ -58,6 +58,7 @@ coverage.xml
 .classpath
 .project
 .settings
+.vscode/
 bin/
 
 # Hive/metastore files
@@ -71,3 +72,4 @@ derby.log
 .java-version
 
 .claude/
+benchmark/remapping-microbenchmark/benchmark-results/
