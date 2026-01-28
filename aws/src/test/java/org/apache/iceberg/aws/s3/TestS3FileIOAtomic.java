@@ -1,0 +1,281 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.iceberg.aws.s3;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.UUID;
+import org.apache.commons.codec.digest.PureJavaCrc32C;
+import org.apache.iceberg.aws.AwsClientFactories;
+import org.apache.iceberg.aws.AwsClientFactory;
+import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.CAS;
+import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.SupportsAtomicOperations;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.io.CharStreams;
+import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.junit.jupiter.api.extension.TestWatcher;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.S3Exception;
+
+/**
+ * Integration tests for S3 atomic operations.
+ *
+ * <p>These tests require real S3 access and are skipped if S3 client is not available.
+ */
+@ExtendWith(TestS3FileIOAtomic.SuccessCleanupExtension.class)
+public class TestS3FileIOAtomic {
+  private static final String TEST_BUCKET = "casalog";
+
+  private static S3Client s3;
+  private static String uniqTestRun;
+  private static String warehouseLocation;
+  private static String warehousePath;
+
+  @BeforeAll
+  public static void initStorage() {
+    uniqTestRun = UUID.randomUUID().toString();
+    System.err.println("TEST RUN: " + uniqTestRun);
+    try {
+      final AwsClientFactory clientFactory = AwsClientFactories.defaultFactory();
+      s3 = clientFactory.s3();
+    } catch (Exception e) {
+      // S3 not available
+      s3 = null;
+    }
+  }
+
+  @BeforeEach
+  public void before(TestInfo info) {
+    Assumptions.assumeTrue(s3 != null, "S3 client not available");
+    final String testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
+    warehousePath = uniqTestRun + "/" + testName;
+    warehouseLocation = "s3://" + TEST_BUCKET + "/" + warehousePath;
+  }
+
+  @AfterEach
+  public void after() {
+    // Cleanup handled by SuccessCleanupExtension
+  }
+
+  @Test
+  public void testObjectPut() throws S3Exception {
+    final String path = warehousePath + "/dingos";
+
+    // write an object
+    PutObjectRequest req1 = PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).build();
+    RequestBody body1 = RequestBody.fromBytes("ate my sandwich".getBytes(StandardCharsets.UTF_8));
+    s3.putObject(req1, body1);
+    PutObjectResponse resp1 = s3.putObject(req1, body1);
+
+    // fail to overwrite it
+    PutObjectRequest req2 =
+        PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).ifMatch("nope").build();
+    RequestBody body2 = RequestBody.fromBytes("ate my tacos".getBytes(StandardCharsets.UTF_8));
+    assertThatThrownBy(() -> s3.putObject(req2, body2))
+        .isInstanceOf(S3Exception.class)
+        .matches(e -> ((S3Exception) e).statusCode() == 412);
+
+    // yup, still the same object
+    HeadObjectRequest req3 = HeadObjectRequest.builder().bucket(TEST_BUCKET).key(path).build();
+    assertThat(s3.headObject(req3)).extracting(HeadObjectResponse::eTag).isEqualTo(resp1.eTag());
+
+    // overwrite w/ if-match
+    PutObjectRequest req4 =
+        PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).ifMatch(resp1.eTag()).build();
+    RequestBody body4 = RequestBody.fromBytes("ate my sushi".getBytes(StandardCharsets.UTF_8));
+    PutObjectResponse resp4 = s3.putObject(req4, body4);
+
+    // new object
+    HeadObjectRequest req5 = HeadObjectRequest.builder().bucket(TEST_BUCKET).key(path).build();
+    assertThat(s3.headObject(req5)).extracting(HeadObjectResponse::eTag).isEqualTo(resp4.eTag());
+  }
+
+  @Test
+  public void testChecksum() throws S3Exception {
+    final String path = warehousePath + "/wombats";
+
+    final byte[] data = "cubed my pineapple".getBytes(StandardCharsets.UTF_8);
+
+    final PureJavaCrc32C chk = new PureJavaCrc32C();
+    chk.update(data, 0, data.length);
+    String chkStr = Base64.getEncoder().encodeToString(Ints.toByteArray((int) chk.getValue()));
+
+    PutObjectRequest req1 =
+        PutObjectRequest.builder()
+            .bucket(TEST_BUCKET)
+            .key(path)
+            .checksumCRC32C(chkStr)
+            .contentLength((long) data.length)
+            .build();
+    RequestBody body1 = RequestBody.fromInputStream(new ByteArrayInputStream(data), data.length);
+    s3.putObject(req1, body1);
+  }
+
+  @Test
+  public void testFileIOOverwrite() throws IOException, S3Exception {
+    final String path = warehousePath + "/yaks";
+    final String location = warehouseLocation + "/yaks";
+
+    PutObjectRequest req1 = PutObjectRequest.builder().bucket(TEST_BUCKET).key(path).build();
+    RequestBody body1 = RequestBody.fromBytes("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
+    s3.putObject(req1, body1);
+
+    // let's see if this works
+    S3FileIO fileIO = new S3FileIO(() -> s3);
+    final InputFile inf = fileIO.newInputFile(location);
+    try (InputStream i = inf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my kiwis");
+    }
+    final AtomicOutputFile outf = fileIO.newOutputFile(inf);
+    final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
+    final CAS chk =
+        outf.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.CAS);
+
+    InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
+    try (InputStream i = replf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my hamster");
+    }
+
+    final AtomicOutputFile outfFail = fileIO.newOutputFile(inf);
+    final byte[] failContent = "shaved your mom".getBytes(StandardCharsets.UTF_8);
+    final CAS chkFail =
+        outfFail.prepare(
+            () -> new ByteArrayInputStream(failContent), AtomicOutputFile.Strategy.CAS);
+
+    assertThatThrownBy(
+            () -> outfFail.writeAtomic(chkFail, () -> new ByteArrayInputStream(failContent)))
+        .isInstanceOf(SupportsAtomicOperations.CASException.class);
+    try (InputStream i = replf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my hamster");
+    }
+  }
+
+  @Test
+  public void testAppend() throws IOException, S3Exception {
+    final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
+    final String objName = "bananaslugs";
+    final String path = "s3://" + EXPR_BUCKET + "/" + objName;
+
+    PutObjectRequest req1 = PutObjectRequest.builder().bucket(EXPR_BUCKET).key(objName).build();
+    RequestBody body1 = RequestBody.fromBytes("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
+    PutObjectResponse resp1 = s3.putObject(req1, body1);
+
+    // let's see if this works
+    S3FileIO fileIO = new S3FileIO(() -> s3);
+    final InputFile inf = fileIO.newInputFile(path);
+    try (InputStream i = inf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my kiwis");
+    }
+
+    final AtomicOutputFile outf = fileIO.newOutputFile(inf);
+    final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
+    final CAS chk =
+        outf.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+    InputFile replf = outf.writeAtomic(chk, () -> new ByteArrayInputStream(replContent));
+    try (InputStream i = replf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my kiwisshaved my hamster");
+    }
+  }
+
+  @Test
+  public void testAppendConditions() throws IOException, S3Exception {
+    final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
+    final String objName = "bananaslugs";
+    final String path = "s3://" + EXPR_BUCKET + "/" + objName;
+
+    S3FileIO fileIO = new S3FileIO(() -> s3);
+    fileIO.initialize(Maps.newHashMap());
+    final OutputFile orig = fileIO.newOutputFile(path);
+    try (OutputStream out = orig.createOrOverwrite()) {
+      out.write("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
+    }
+    final InputFile inf = fileIO.newInputFile(path);
+    try (InputStream i = inf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my kiwis");
+    }
+
+    final AtomicOutputFile app1 = fileIO.newOutputFile(inf);
+    final byte[] replContent = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
+    final CAS chk1 =
+        app1.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+    InputFile replf = app1.writeAtomic(chk1, () -> new ByteArrayInputStream(replContent));
+    try (InputStream i = replf.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my kiwisshaved my hamster");
+    }
+
+    final AtomicOutputFile app3 = fileIO.newOutputFile(replf);
+    final byte[] replContent3 = "shaved my yak".getBytes(StandardCharsets.UTF_8);
+    final CAS chk3 =
+        app3.prepare(
+            () -> new ByteArrayInputStream(replContent3), AtomicOutputFile.Strategy.APPEND);
+    InputFile replf3 = app3.writeAtomic(chk3, () -> new ByteArrayInputStream(replContent3));
+    try (InputStream i = replf3.newStream()) {
+      assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
+          .isEqualTo("shaved my kiwisshaved my hamstershaved my yak");
+    }
+
+    final AtomicOutputFile app2 = fileIO.newOutputFile(inf);
+    final CAS chk2 =
+        app2.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
+    assertThatThrownBy(() -> app2.writeAtomic(chk2, () -> new ByteArrayInputStream(replContent)))
+        .isInstanceOf(SupportsAtomicOperations.AppendException.class);
+  }
+
+  static class SuccessCleanupExtension implements TestWatcher {
+    @Override
+    public void testSuccessful(ExtensionContext ctxt) {
+      cleanupWarehouseLocation();
+    }
+  }
+
+  static void cleanupWarehouseLocation() {
+    // Use FileIO to clean up test files
+  }
+}
