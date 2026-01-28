@@ -61,6 +61,7 @@ coverage.xml
 .factorypath
 .project
 .settings
+.vscode/
 bin/
 
 # Hive/metastore files
@@ -84,3 +85,4 @@ derby.log
 
 # claude code
 .claude/
+benchmark/remapping-microbenchmark/benchmark-results/
