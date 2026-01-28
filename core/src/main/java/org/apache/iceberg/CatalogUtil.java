@@ -77,6 +77,7 @@ public class CatalogUtil {
   public static final String ICEBERG_CATALOG_TYPE_NESSIE = "nessie";
   public static final String ICEBERG_CATALOG_TYPE_JDBC = "jdbc";
   public static final String ICEBERG_CATALOG_TYPE_BIGQUERY = "bigquery";
+  public static final String ICEBERG_CATALOG_TYPE_FILEIO = "fileio";
 
   public static final String ICEBERG_CATALOG_HADOOP = "org.apache.iceberg.hadoop.HadoopCatalog";
   public static final String ICEBERG_CATALOG_HIVE = "org.apache.iceberg.hive.HiveCatalog";
@@ -86,6 +87,7 @@ public class CatalogUtil {
   public static final String ICEBERG_CATALOG_JDBC = "org.apache.iceberg.jdbc.JdbcCatalog";
   public static final String ICEBERG_CATALOG_BIGQUERY =
       "org.apache.iceberg.gcp.bigquery.BigQueryMetastoreCatalog";
+  public static final String ICEBERG_CATALOG_FILEIO = "org.apache.iceberg.io.FileIOCatalog";
 
   private CatalogUtil() {}
 
@@ -335,6 +337,9 @@ public class CatalogUtil {
           break;
         case ICEBERG_CATALOG_TYPE_BIGQUERY:
           catalogImpl = ICEBERG_CATALOG_BIGQUERY;
+          break;
+        case ICEBERG_CATALOG_TYPE_FILEIO:
+          catalogImpl = ICEBERG_CATALOG_FILEIO;
           break;
         default:
           throw new UnsupportedOperationException("Unknown catalog type: " + catalogType);
