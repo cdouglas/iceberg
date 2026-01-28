@@ -69,10 +69,15 @@ public class TestS3FileIOAtomic {
 
   @BeforeAll
   public static void initStorage() {
-    // XXX integration tests are well designed, but I'd rather gargle yak piss than configure AWS.
+    // Skip test if AWS credentials are not available
+    String accessKey = System.getenv("AWS_ACCESS_KEY_ID");
+    String secretKey = System.getenv("AWS_SECRET_ACCESS_KEY");
+    Assumptions.assumeTrue(
+        accessKey != null && secretKey != null,
+        "AWS credentials not available - skipping S3 atomic tests");
+
     uniqTestRun = UUID.randomUUID().toString();
-    // LOG.info("TEST RUN: {}", uniqTestRun);
-    System.err.println("TEST RUN: " + uniqTestRun); // (logging disabled in tests)
+    System.err.println("TEST RUN: " + uniqTestRun);
     final AwsClientFactory clientFactory = AwsClientFactories.defaultFactory();
     s3 = clientFactory.s3();
     StaticClientFactory.client = s3;
