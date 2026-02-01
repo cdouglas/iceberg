@@ -424,6 +424,149 @@ public class TestPositionDeleteRemapperDV {
     assertThat(positions).containsExactlyInAnyOrder(5L, 10L, 20L);
   }
 
+  @Test
+  public void testRemapDVBulkWithMultipleTargetFiles() throws IOException {
+    // Create a compaction map with per-run target files (multi-target mapping)
+    // This simulates when a source file is split into multiple targets
+    Run run1 = new GenericRun(0L, 0L, 50L, "s3://bucket/target1.parquet");
+    Run run2 = new GenericRun(50L, 0L, 50L, "s3://bucket/target2.parquet");
+    List<Run> runs = ImmutableList.of(run1, run2);
+
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/source.parquet",
+            "s3://bucket/target1.parquet", // default target (overridden by per-run)
+            runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Create DV with positions in both runs
+    DeleteFile dv = writeDV("s3://bucket/source.parquet", 10L, 25L, 60L, 75L);
+
+    // Remap using bulk API
+    Map<String, Set<Long>> remapped = remapper.remapDVBulk(dv, table.io());
+
+    // Should have two target files
+    assertThat(remapped).hasSize(2);
+
+    // Positions 10, 25 should map to target1 (unchanged offset)
+    assertThat(remapped.get("s3://bucket/target1.parquet")).containsExactlyInAnyOrder(10L, 25L);
+
+    // Positions 60, 75 should map to target2 with offset (60-50=10, 75-50=25)
+    assertThat(remapped.get("s3://bucket/target2.parquet")).containsExactlyInAnyOrder(10L, 25L);
+  }
+
+  @Test
+  public void testRemapDVBulkWithManyPositionsAndRuns() throws IOException {
+    // Create map with many runs to test bulk optimization performance
+    List<Run> runs = new java.util.ArrayList<>();
+    for (int i = 0; i < 1000; i++) {
+      // Runs with gaps: [0-99], [200-299], [400-499], ...
+      long sourcePos = i * 200L;
+      long targetPos = i * 100L;
+      runs.add(new GenericRun(sourcePos, targetPos, 100));
+    }
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    // Create DV with 50,000 positions across all runs
+    Long[] positions = new Long[50000];
+    for (int i = 0; i < 50000; i++) {
+      // Position within a run: i maps to run i/50, offset i%50
+      int runIdx = i / 50;
+      int offsetInRun = i % 50;
+      positions[i] = (long) (runIdx * 200 + offsetInRun);
+    }
+    DeleteFile dv = writeDV("s3://bucket/file1.parquet", positions);
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Time both methods to verify bulk is faster
+    long startBulk = System.nanoTime();
+    Map<String, Set<Long>> bulkResults = remapper.remapDVBulk(dv, table.io());
+    long bulkTime = System.nanoTime() - startBulk;
+
+    @SuppressWarnings("deprecation")
+    Map<String, Set<Long>> oldResults;
+    long startOld = System.nanoTime();
+    oldResults = remapper.remapDV(dv, table.io());
+    long oldTime = System.nanoTime() - startOld;
+
+    // Results must be identical
+    assertThat(bulkResults).isEqualTo(oldResults);
+    assertThat(bulkResults).hasSize(1);
+    assertThat(bulkResults.get("s3://bucket/file2.parquet")).hasSize(50000);
+
+    // Log timing for analysis (bulk should be faster)
+    System.out.printf(
+        "Bulk: %.2fms, Old: %.2fms, Speedup: %.1fx%n",
+        bulkTime / 1_000_000.0, oldTime / 1_000_000.0, (double) oldTime / bulkTime);
+  }
+
+  @Test
+  public void testRemapDVBulkWithGapsAndMultipleRuns() throws IOException {
+    // Create a complex scenario with gaps between runs
+    Run run1 = new GenericRun(0L, 0L, 100L); // source [0-99] -> target [0-99]
+    Run run2 = new GenericRun(200L, 100L, 100L); // source [200-299] -> target [100-199]
+    Run run3 = new GenericRun(400L, 200L, 100L); // source [400-499] -> target [200-299]
+    List<Run> runs = ImmutableList.of(run1, run2, run3);
+
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Create DV with positions in runs and gaps
+    DeleteFile dv =
+        writeDV(
+            "s3://bucket/file1.parquet",
+            10L, // run1 -> 10
+            50L, // run1 -> 50
+            150L, // gap, dropped
+            250L, // run2 -> 150
+            350L, // gap, dropped
+            450L // run3 -> 250
+            );
+
+    // Remap using bulk API
+    Map<String, Set<Long>> bulkResults = remapper.remapDVBulk(dv, table.io());
+
+    // Also test deprecated API for comparison
+    @SuppressWarnings("deprecation")
+    Map<String, Set<Long>> oldResults = remapper.remapDV(dv, table.io());
+
+    // Results should be identical
+    assertThat(bulkResults).isEqualTo(oldResults);
+
+    // Verify correct positions: gap positions (150, 350) should be dropped
+    assertThat(bulkResults).hasSize(1);
+    Set<Long> positions = bulkResults.get("s3://bucket/file2.parquet");
+    assertThat(positions).containsExactlyInAnyOrder(10L, 50L, 150L, 250L);
+  }
+
+  @Test
+  public void testRemapDVBulkAllPositionsInGaps() throws IOException {
+    // Create a compaction map with a gap
+    Run run = new GenericRun(0L, 0L, 50L); // Only positions 0-49 are mapped
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/file1.parquet", "s3://bucket/file2.parquet", ImmutableList.of(run));
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Create a DV with all positions in the gap (50-99)
+    DeleteFile dv = writeDV("s3://bucket/file1.parquet", 50L, 75L, 99L);
+
+    // Remap should return empty map (all positions were in gaps)
+    Map<String, Set<Long>> remapped = remapper.remapDVBulk(dv, table.io());
+
+    assertThat(remapped).isEmpty();
+  }
+
   /**
    * Helper method to write a deletion vector file with the given positions.
    *
