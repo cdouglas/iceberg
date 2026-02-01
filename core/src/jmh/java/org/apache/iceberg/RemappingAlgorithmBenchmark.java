@@ -44,10 +44,11 @@ import org.openjdk.jmh.annotations.Warmup;
  * workload characteristics:
  *
  * <ul>
- *   <li>Number of runs (m): 10, 100, 1000
+ *   <li>Number of runs (m): 10, 100, 1000, 10000
  *   <li>Number of positions (n): 1000, 10000, 100000
  *   <li>Gap ratio: 0.0 (dense), 0.3 (moderate gaps), 0.5 (sparse)
  *   <li>Sortedness: sorted vs unsorted positions
+ *   <li>Position coverage: 0.1 (10%), 0.5 (50%), 1.0 (100%) of run range
  * </ul>
  *
  * <p>To run this benchmark:
@@ -63,7 +64,15 @@ import org.openjdk.jmh.annotations.Warmup;
  * <pre>
  * ./gradlew :iceberg-core:jmh \
  *     -PjmhIncludeRegex=RemappingAlgorithmBenchmark \
- *     -PjmhParams="numRuns=100,numPositions=10000,gapRatio=0.3,sorted=true"
+ *     -PjmhParams="numRuns=100,numPositions=10000,gapRatio=0.3,sorted=true,positionCoverage=0.1"
+ * </pre>
+ *
+ * <p>To run predicate pushdown comparison (requires enabling NoPushdown strategies):
+ *
+ * <pre>
+ * ./gradlew :iceberg-core:jmh \
+ *     -PjmhIncludeRegex=RemappingAlgorithmBenchmark.streamJoin \
+ *     -PjmhParams="numRuns=1000,numPositions=100000,positionCoverage=0.1,sorted=true"
  * </pre>
  */
 @State(Scope.Benchmark)
@@ -74,7 +83,7 @@ import org.openjdk.jmh.annotations.Warmup;
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 public class RemappingAlgorithmBenchmark {
 
-  @Param({"10", "100", "1000"})
+  @Param({"10", "100", "1000", "10000"})
   private int numRuns;
 
   @Param({"1000", "10000", "100000"})
@@ -85,6 +94,9 @@ public class RemappingAlgorithmBenchmark {
 
   @Param({"true", "false"})
   private boolean sorted;
+
+  @Param({"0.1", "0.5", "1.0"})
+  private double positionCoverage;
 
   private List<Run> runs;
   private List<Long> positions;
@@ -97,12 +109,28 @@ public class RemappingAlgorithmBenchmark {
     mapping =
         new GenericFileMapping("s3://bucket/source.parquet", "s3://bucket/target.parquet", runs);
 
-    // Create positions (sorted or unsorted)
+    // Create positions (sorted or unsorted) with specified coverage
     if (sorted) {
-      positions = RemappingBenchmarkUtils.createSortedPositions(numPositions, numRuns);
+      if (positionCoverage >= 1.0) {
+        positions = RemappingBenchmarkUtils.createSortedPositions(numPositions, numRuns);
+      } else {
+        positions =
+            RemappingBenchmarkUtils.createSortedPositionsWithCoverage(
+                numPositions, numRuns, positionCoverage);
+      }
     } else {
-      positions = RemappingBenchmarkUtils.createRandomPositions(numPositions);
+      if (positionCoverage >= 1.0) {
+        positions = RemappingBenchmarkUtils.createRandomPositions(numPositions);
+      } else {
+        positions =
+            RemappingBenchmarkUtils.createRandomPositionsWithCoverage(
+                numPositions, numRuns, positionCoverage);
+      }
     }
+
+    // Enable NoPushdown strategies for benchmarking
+    StreamJoinNoPushdownStrategy.enableForBenchmarking(true);
+    RangeQueryNoPushdownStrategy.enableForBenchmarking(true);
   }
 
   @Benchmark
@@ -139,6 +167,34 @@ public class RemappingAlgorithmBenchmark {
   public Map<Long, Run> smartSelector() {
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
     RemappingStrategy strategy = selector.selectOptimal(mapping, positions);
+    return strategy.runForPositions(positions);
+  }
+
+  /**
+   * Stream join WITHOUT predicate pushdown optimization.
+   *
+   * <p>This benchmark measures the cost of not filtering runs by position range. Compare with
+   * {@link #streamJoin()} to see the benefit of predicate pushdown.
+   *
+   * <p>Expect this to be 2-10x slower than streamJoin when positionCoverage is low (e.g., 0.1).
+   */
+  @Benchmark
+  public Map<Long, Run> streamJoinNoPushdown() {
+    StreamJoinNoPushdownStrategy strategy = new StreamJoinNoPushdownStrategy(runs);
+    return strategy.runForPositions(positions);
+  }
+
+  /**
+   * Range query WITHOUT predicate pushdown optimization.
+   *
+   * <p>This benchmark measures the cost of not filtering runs by position range. Compare with
+   * {@link #rangeQuery()} to see the benefit of predicate pushdown.
+   *
+   * <p>Expect this to be 2-10x slower than rangeQuery when positionCoverage is low (e.g., 0.1).
+   */
+  @Benchmark
+  public Map<Long, Run> rangeQueryNoPushdown() {
+    RangeQueryNoPushdownStrategy strategy = new RangeQueryNoPushdownStrategy(runs);
     return strategy.runForPositions(positions);
   }
 }

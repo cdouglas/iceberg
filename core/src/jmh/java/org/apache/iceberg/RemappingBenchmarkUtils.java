@@ -30,7 +30,7 @@ import org.apache.iceberg.GenericCompactionMap.GenericRun;
 public class RemappingBenchmarkUtils {
 
   private static final Random RANDOM = new Random(42); // Fixed seed for reproducibility
-  private static final long RUN_LENGTH = 1000; // Fixed run length for consistency
+  static final long RUN_LENGTH = 1000; // Fixed run length for consistency
 
   /**
    * Creates runs with specified gap ratio.
@@ -103,5 +103,100 @@ public class RemappingBenchmarkUtils {
     }
 
     return new ArrayList<>(uniquePositions);
+  }
+
+  /**
+   * Creates sorted positions covering only a fraction of the run range.
+   *
+   * <p>This is used to measure the impact of predicate pushdown optimization. When coverage is low
+   * (e.g., 0.1), positions only span 10% of the runs, allowing strategies with predicate pushdown
+   * to skip 90% of runs.
+   *
+   * @param count number of positions to create
+   * @param numRuns total number of runs
+   * @param coverage fraction of run range to cover (0.0-1.0)
+   * @return list of sorted positions within the covered range
+   */
+  public static List<Long> createSortedPositionsWithCoverage(
+      int count, int numRuns, double coverage) {
+    if (coverage <= 0.0 || coverage > 1.0) {
+      throw new IllegalArgumentException("Coverage must be in (0.0, 1.0], got: " + coverage);
+    }
+
+    List<Long> positions = new ArrayList<>(count);
+
+    // Calculate the range that positions should cover
+    long totalRange = numRuns * RUN_LENGTH * 2; // Account for potential gaps
+    long coveredRange = (long) (totalRange * coverage);
+
+    // Start positions at a random offset within the uncovered portion
+    // This ensures positions don't always start at 0
+    long maxOffset = totalRange - coveredRange;
+    long startOffset = maxOffset > 0 ? (RANDOM.nextLong() & Long.MAX_VALUE) % maxOffset : 0;
+
+    long pos = startOffset;
+    long endPosition = startOffset + coveredRange;
+
+    for (int i = 0; i < count; i++) {
+      // Increment by 1-20 to create realistic sorted distribution
+      pos += RANDOM.nextInt(20) + 1;
+      if (pos >= endPosition) {
+        pos = endPosition - 1;
+      }
+      positions.add(pos);
+    }
+
+    return positions;
+  }
+
+  /**
+   * Creates random unsorted positions covering only a fraction of the run range.
+   *
+   * @param count number of positions to create
+   * @param numRuns total number of runs
+   * @param coverage fraction of run range to cover (0.0-1.0)
+   * @return list of random positions within the covered range
+   */
+  public static List<Long> createRandomPositionsWithCoverage(
+      int count, int numRuns, double coverage) {
+    if (coverage <= 0.0 || coverage > 1.0) {
+      throw new IllegalArgumentException("Coverage must be in (0.0, 1.0], got: " + coverage);
+    }
+
+    Set<Long> uniquePositions = new HashSet<>();
+
+    long totalRange = numRuns * RUN_LENGTH * 2;
+    long coveredRange = (long) (totalRange * coverage);
+    long maxOffset = totalRange - coveredRange;
+    long startOffset = maxOffset > 0 ? (RANDOM.nextLong() & Long.MAX_VALUE) % maxOffset : 0;
+
+    while (uniquePositions.size() < count) {
+      long pos = startOffset + ((RANDOM.nextLong() & Long.MAX_VALUE) % coveredRange);
+      uniquePositions.add(pos);
+    }
+
+    return new ArrayList<>(uniquePositions);
+  }
+
+  /**
+   * Calculates the total range covered by runs.
+   *
+   * @param numRuns number of runs
+   * @param gapRatio gap ratio used when creating runs
+   * @return total range from first run start to last run end
+   */
+  public static long calculateTotalRunRange(int numRuns, double gapRatio) {
+    if (numRuns == 0) {
+      return 0;
+    }
+
+    long range = 0;
+    for (int i = 0; i < numRuns; i++) {
+      range += RUN_LENGTH;
+      if (gapRatio > 0 && i < numRuns - 1) {
+        range += (long) (RUN_LENGTH * gapRatio / (1 - gapRatio));
+      }
+    }
+    return range;
   }
 }
