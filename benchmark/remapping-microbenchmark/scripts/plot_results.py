@@ -28,14 +28,26 @@ except ImportError:
 
 # Set style
 plt.style.use('seaborn-v0_8-whitegrid')
+
+# Colorblind-safe palette (Wong palette)
+# Orange/Blue/Teal are distinguishable by all forms of color vision deficiency
 COLORS = {
-    'aws': '#FF9900',      # AWS Orange
-    'gcp': '#4285F4',      # Google Blue
-    'azure': '#0089D6',    # Azure Blue
+    'aws': '#E69F00',      # Orange (colorblind-safe)
+    'azure': '#0072B2',    # Blue (colorblind-safe)
+    'gcp': '#009E73',      # Teal/Bluish-green (colorblind-safe)
 }
+# Note: Original request was orange/blue/red, but orange+red are confused by
+# red-green colorblind individuals. Teal provides better distinction.
 FORMAT_COLORS = {
     'POSITION_DELETE_FILE': '#2ecc71',  # Green
     'DELETION_VECTOR': '#9b59b6',       # Purple
+}
+
+# Latency breakdown colors (colorblind-safe)
+PHASE_COLORS = {
+    'read': '#56B4E9',   # Sky blue
+    'remap': '#D55E00',  # Vermillion
+    'write': '#F0E442',  # Yellow
 }
 
 
@@ -112,6 +124,219 @@ def plot_cloud_comparison(df: pd.DataFrame, output_dir: Path) -> None:
     plt.savefig(output_dir / 'cloud_comparison.pdf', bbox_inches='tight')
     plt.close()
     print(f"Saved: cloud_comparison.png/pdf")
+
+
+def plot_combined_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> None:
+    """Plot combined latency by provider with read/remap/write breakdown as stacked bars."""
+    # Filter out warmup iterations
+    df = raw_df[~raw_df['warmup']].copy()
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    clouds = sorted(df['cloud'].unique())
+
+    for idx, format_type in enumerate(['POSITION_DELETE_FILE', 'DELETION_VECTOR']):
+        ax = axes[idx]
+        format_df = df[df['format'] == format_type]
+
+        # Aggregate by cloud: mean of read/remap/write times in ms
+        agg_data = format_df.groupby('cloud').agg({
+            'read_ms': 'mean',
+            'remap_ms': 'mean',
+            'write_ms': 'mean',
+            'latency_ms': 'mean'
+        }).reindex(clouds)
+
+        x = np.arange(len(clouds))
+        width = 0.6
+
+        # Create stacked bars
+        bottom = np.zeros(len(clouds))
+
+        # Read phase
+        read_vals = agg_data['read_ms'].values
+        bars_read = ax.bar(x, read_vals, width, label='Read',
+                          color=PHASE_COLORS['read'], bottom=bottom)
+        bottom += read_vals
+
+        # Remap phase
+        remap_vals = agg_data['remap_ms'].values
+        bars_remap = ax.bar(x, remap_vals, width, label='Remap',
+                           color=PHASE_COLORS['remap'], bottom=bottom)
+        bottom += remap_vals
+
+        # Write phase
+        write_vals = agg_data['write_ms'].values
+        bars_write = ax.bar(x, write_vals, width, label='Write',
+                           color=PHASE_COLORS['write'], bottom=bottom)
+
+        # Add total latency labels on top of bars
+        total_vals = agg_data['latency_ms'].values
+        for i, (total, cloud) in enumerate(zip(total_vals, clouds)):
+            ax.annotate(f'{total:.0f}ms',
+                       xy=(i, total + 10),
+                       ha='center', va='bottom',
+                       fontsize=10, fontweight='bold')
+
+        # Customize appearance
+        ax.set_xlabel('Cloud Provider', fontsize=11)
+        ax.set_ylabel('Latency (ms)', fontsize=11)
+
+        format_label = 'Position Delete Files' if format_type == 'POSITION_DELETE_FILE' else 'Deletion Vectors'
+        ax.set_title(format_label, fontsize=12, fontweight='bold')
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([c.upper() for c in clouds], fontsize=11)
+
+        # Add subtle cloud color indicators at bottom
+        for i, cloud in enumerate(clouds):
+            ax.axhline(y=0, xmin=(i/len(clouds)) + 0.05, xmax=((i+1)/len(clouds)) - 0.05,
+                      color=COLORS.get(cloud, '#666'), linewidth=4, alpha=0.8)
+
+        if idx == 1:
+            ax.legend(loc='upper right', fontsize=10)
+
+        ax.grid(axis='y', alpha=0.3)
+        ax.set_ylim(0, max(total_vals) * 1.15)  # Add headroom for labels
+
+    plt.suptitle('Remapping Latency Breakdown by Cloud Provider', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(output_dir / 'combined_latency_breakdown.png', dpi=150, bbox_inches='tight')
+    plt.savefig(output_dir / 'combined_latency_breakdown.pdf', bbox_inches='tight')
+    plt.close()
+    print(f"Saved: combined_latency_breakdown.png/pdf")
+
+
+def plot_compact_cloud_comparison(raw_df: pd.DataFrame, output_dir: Path) -> None:
+    """Compact plot: both formats side-by-side grouped by cloud, using cloud colors."""
+    df = raw_df[~raw_df['warmup']].copy()
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    clouds = sorted(df['cloud'].unique())
+    formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
+    format_labels = ['Pos Del', 'DV']
+
+    # Aggregate by cloud and format
+    agg = df.groupby(['cloud', 'format'])['latency_ms'].mean().unstack()
+
+    x = np.arange(len(clouds))
+    width = 0.35
+
+    for i, (fmt, label) in enumerate(zip(formats, format_labels)):
+        values = [agg.loc[cloud, fmt] if fmt in agg.columns else 0 for cloud in clouds]
+        bars = ax.bar(x + i * width, values, width, label=label)
+
+        # Color bars by cloud
+        for bar, cloud in zip(bars, clouds):
+            bar.set_color(COLORS.get(cloud, '#666'))
+            if i == 1:  # Add hatching to DV bars to distinguish
+                bar.set_hatch('//')
+
+    ax.set_xlabel('Cloud Provider', fontsize=11)
+    ax.set_ylabel('Average Latency (ms)', fontsize=11)
+    ax.set_title('Remapping Latency: Position Deletes vs Deletion Vectors', fontsize=12, fontweight='bold')
+    ax.set_xticks(x + width / 2)
+    ax.set_xticklabels([c.upper() for c in clouds], fontsize=11)
+    ax.legend(title='Format', loc='upper right')
+    ax.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_dir / 'cloud_comparison_compact.png', dpi=150, bbox_inches='tight')
+    plt.savefig(output_dir / 'cloud_comparison_compact.pdf', bbox_inches='tight')
+    plt.close()
+    print(f"Saved: cloud_comparison_compact.png/pdf")
+
+
+def plot_compact_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> None:
+    """Compact plot: latency breakdown with both formats side-by-side, grouped by cloud.
+    Uses cloud colors with hatching patterns for read/remap/write phases."""
+    df = raw_df[~raw_df['warmup']].copy()
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    clouds = sorted(df['cloud'].unique())
+    formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
+    format_labels = ['Pos Del', 'DV']
+
+    # Hatching patterns for phases
+    phase_hatches = {
+        'read': '',       # Solid
+        'remap': '///',   # Diagonal lines
+        'write': '...',   # Dots
+    }
+
+    x = np.arange(len(clouds))
+    width = 0.38
+    bar_positions = [x - width/2, x + width/2]
+
+    # Track max height for y-axis
+    max_height = 0
+
+    for fmt_idx, (fmt, label) in enumerate(zip(formats, format_labels)):
+        format_df = df[df['format'] == fmt]
+
+        agg_data = format_df.groupby('cloud').agg({
+            'read_ms': 'mean',
+            'remap_ms': 'mean',
+            'write_ms': 'mean',
+            'latency_ms': 'mean'
+        }).reindex(clouds)
+
+        positions = bar_positions[fmt_idx]
+        bottom = np.zeros(len(clouds))
+
+        for phase, hatch in phase_hatches.items():
+            phase_vals = agg_data[f'{phase}_ms'].values
+
+            bars = ax.bar(positions, phase_vals, width, bottom=bottom, hatch=hatch,
+                         edgecolor='white', linewidth=0.5)
+
+            # Color by cloud
+            for bar, cloud in zip(bars, clouds):
+                bar.set_facecolor(COLORS.get(cloud, '#666'))
+
+            bottom += phase_vals
+
+        # Add total labels
+        total_vals = agg_data['latency_ms'].values
+        max_height = max(max_height, max(total_vals))
+        for i, total in enumerate(total_vals):
+            ax.annotate(f'{total:.0f}',
+                       xy=(positions[i], total + 5),
+                       ha='center', va='bottom',
+                       fontsize=8, fontweight='bold')
+
+    # Custom legend for phases (using hatching)
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='gray', edgecolor='white', hatch='', label='Read'),
+        Patch(facecolor='gray', edgecolor='white', hatch='///', label='Remap'),
+        Patch(facecolor='gray', edgecolor='white', hatch='...', label='Write'),
+    ]
+    leg1 = ax.legend(handles=legend_elements, loc='upper right', title='Phase', fontsize=9)
+    ax.add_artist(leg1)
+
+    # Add format labels below x-axis
+    ax.set_xticks(x)
+    ax.set_xticklabels([c.upper() for c in clouds], fontsize=11)
+
+    # Add format indicators
+    for i, cloud in enumerate(clouds):
+        ax.text(x[i] - width/2, -max_height * 0.08, 'PD', ha='center', va='top', fontsize=8)
+        ax.text(x[i] + width/2, -max_height * 0.08, 'DV', ha='center', va='top', fontsize=8)
+
+    ax.set_xlabel('')
+    ax.set_ylabel('Latency (ms)', fontsize=11)
+    ax.set_title('Remapping Latency Breakdown by Cloud and Format', fontsize=12, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, max_height * 1.15)
+
+    plt.tight_layout()
+    plt.savefig(output_dir / 'latency_breakdown_compact.png', dpi=150, bbox_inches='tight')
+    plt.savefig(output_dir / 'latency_breakdown_compact.pdf', bbox_inches='tight')
+    plt.close()
+    print(f"Saved: latency_breakdown_compact.png/pdf")
 
 
 def plot_throughput_comparison(df: pd.DataFrame, output_dir: Path) -> None:
@@ -426,6 +651,9 @@ def main():
     if len(raw_df) > 0:
         plot_scaling(raw_df, output_dir)
         plot_boxplots(raw_df, output_dir)
+        plot_combined_latency_breakdown(raw_df, output_dir)
+        plot_compact_cloud_comparison(raw_df, output_dir)
+        plot_compact_latency_breakdown(raw_df, output_dir)
 
     generate_summary_table(df, output_dir)
 
