@@ -26,11 +26,32 @@ import java.util.Set;
 import org.apache.iceberg.CompactionMap.Run;
 import org.apache.iceberg.GenericCompactionMap.GenericRun;
 
-/** Utility methods for creating test data in remapping benchmarks. */
-public class RemappingBenchmarkUtils {
+/**
+ * Utility class for generating test data for remapping benchmarks and tests.
+ *
+ * <p>This class provides methods to generate runs with configurable gap ratios and positions with
+ * configurable coverage. It is used by both JMH benchmarks and unit tests.
+ */
+public class RemappingTestDataGenerator {
 
-  private static final Random RANDOM = new Random(42); // Fixed seed for reproducibility
-  static final long RUN_LENGTH = 1000; // Fixed run length for consistency
+  /** Default run length used for consistency across tests and benchmarks. */
+  public static final long RUN_LENGTH = 1000;
+
+  private final Random random;
+
+  /** Creates a generator with a fixed seed for reproducible results. */
+  public RemappingTestDataGenerator() {
+    this(42); // Fixed seed for reproducibility
+  }
+
+  /**
+   * Creates a generator with a custom seed.
+   *
+   * @param seed the random seed
+   */
+  public RemappingTestDataGenerator(long seed) {
+    this.random = new Random(seed);
+  }
 
   /**
    * Creates runs with specified gap ratio.
@@ -39,7 +60,7 @@ public class RemappingBenchmarkUtils {
    * @param gapRatio percentage of total range that is gaps (0.0 = no gaps, 0.5 = 50% gaps)
    * @return list of runs with gaps
    */
-  public static List<Run> createRunsWithGaps(int numRuns, double gapRatio) {
+  public List<Run> createRunsWithGaps(int numRuns, double gapRatio) {
     List<Run> runs = new ArrayList<>();
     long sourcePosition = 0;
     long targetPosition = 0;
@@ -69,14 +90,14 @@ public class RemappingBenchmarkUtils {
    * @param numRuns number of runs (used to determine range)
    * @return list of sorted positions
    */
-  public static List<Long> createSortedPositions(int count, int numRuns) {
+  public List<Long> createSortedPositions(int count, int numRuns) {
     List<Long> positions = new ArrayList<>(count);
     long maxPosition = numRuns * RUN_LENGTH * 2; // Account for potential gaps
 
     long pos = 0;
     for (int i = 0; i < count; i++) {
       // Increment by 1-20 to create realistic sorted distribution
-      pos += RANDOM.nextInt(20) + 1;
+      pos += random.nextInt(20) + 1;
       if (pos >= maxPosition) {
         pos = maxPosition - 1;
       }
@@ -92,13 +113,13 @@ public class RemappingBenchmarkUtils {
    * @param count number of positions to create
    * @return list of random positions
    */
-  public static List<Long> createRandomPositions(int count) {
+  public List<Long> createRandomPositions(int count) {
     Set<Long> uniquePositions = new HashSet<>();
     long maxRange = (long) count * RUN_LENGTH * 2;
 
     while (uniquePositions.size() < count) {
       // Generate positive longs in reasonable range
-      long pos = (RANDOM.nextLong() & Long.MAX_VALUE) % maxRange;
+      long pos = (random.nextLong() & Long.MAX_VALUE) % maxRange;
       uniquePositions.add(pos);
     }
 
@@ -117,8 +138,7 @@ public class RemappingBenchmarkUtils {
    * @param coverage fraction of run range to cover (0.0-1.0)
    * @return list of sorted positions within the covered range
    */
-  public static List<Long> createSortedPositionsWithCoverage(
-      int count, int numRuns, double coverage) {
+  public List<Long> createSortedPositionsWithCoverage(int count, int numRuns, double coverage) {
     if (coverage <= 0.0 || coverage > 1.0) {
       throw new IllegalArgumentException("Coverage must be in (0.0, 1.0], got: " + coverage);
     }
@@ -132,14 +152,14 @@ public class RemappingBenchmarkUtils {
     // Start positions at a random offset within the uncovered portion
     // This ensures positions don't always start at 0
     long maxOffset = totalRange - coveredRange;
-    long startOffset = maxOffset > 0 ? (RANDOM.nextLong() & Long.MAX_VALUE) % maxOffset : 0;
+    long startOffset = maxOffset > 0 ? (random.nextLong() & Long.MAX_VALUE) % maxOffset : 0;
 
     long pos = startOffset;
     long endPosition = startOffset + coveredRange;
 
     for (int i = 0; i < count; i++) {
       // Increment by 1-20 to create realistic sorted distribution
-      pos += RANDOM.nextInt(20) + 1;
+      pos += random.nextInt(20) + 1;
       if (pos >= endPosition) {
         pos = endPosition - 1;
       }
@@ -157,8 +177,7 @@ public class RemappingBenchmarkUtils {
    * @param coverage fraction of run range to cover (0.0-1.0)
    * @return list of random positions within the covered range
    */
-  public static List<Long> createRandomPositionsWithCoverage(
-      int count, int numRuns, double coverage) {
+  public List<Long> createRandomPositionsWithCoverage(int count, int numRuns, double coverage) {
     if (coverage <= 0.0 || coverage > 1.0) {
       throw new IllegalArgumentException("Coverage must be in (0.0, 1.0], got: " + coverage);
     }
@@ -168,10 +187,10 @@ public class RemappingBenchmarkUtils {
     long totalRange = numRuns * RUN_LENGTH * 2;
     long coveredRange = (long) (totalRange * coverage);
     long maxOffset = totalRange - coveredRange;
-    long startOffset = maxOffset > 0 ? (RANDOM.nextLong() & Long.MAX_VALUE) % maxOffset : 0;
+    long startOffset = maxOffset > 0 ? (random.nextLong() & Long.MAX_VALUE) % maxOffset : 0;
 
     while (uniquePositions.size() < count) {
-      long pos = startOffset + ((RANDOM.nextLong() & Long.MAX_VALUE) % coveredRange);
+      long pos = startOffset + ((random.nextLong() & Long.MAX_VALUE) % coveredRange);
       uniquePositions.add(pos);
     }
 
