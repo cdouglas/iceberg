@@ -119,6 +119,9 @@ runcmd:
 CLOUDINIT
 )
 
+    # Ensure SSH key exists
+    ensure_ssh_key
+
     # Create VM with system-assigned managed identity
     az vm create \
         --resource-group "$RESOURCE_GROUP" \
@@ -127,7 +130,7 @@ CLOUDINIT
         --image Ubuntu2204 \
         --size "$vm_size" \
         --admin-username "$SSH_USER" \
-        --generate-ssh-keys \
+        --ssh-key-value "$(get_ssh_public_key)" \
         --assign-identity \
         --custom-data "$cloud_init" \
         --output none

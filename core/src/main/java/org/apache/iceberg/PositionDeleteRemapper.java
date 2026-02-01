@@ -318,8 +318,11 @@ public class PositionDeleteRemapper {
     // Map the position using the run
     long newPosition = run.mapPosition(delete.pos());
 
+    // Get target file: use per-run target if available, otherwise use mapping's default target
+    String targetFile = run.targetFile() != null ? run.targetFile() : mapping.targetFile();
+
     // Create remapped delete with new file and position
-    return PositionDelete.create().set(mapping.targetFile(), newPosition, delete.row());
+    return PositionDelete.create().set(targetFile, newPosition, delete.row());
   }
 
   /**
@@ -397,8 +400,11 @@ public class PositionDeleteRemapper {
       // Map to target position
       long targetPos = run.mapPosition(sourcePos);
 
+      // Get target file: use per-run target if available, otherwise use mapping's default target
+      String targetFile = run.targetFile() != null ? run.targetFile() : mapping.targetFile();
+
       // Add to result set for target file
-      remappedPositions.computeIfAbsent(mapping.targetFile(), k -> new HashSet<>()).add(targetPos);
+      remappedPositions.computeIfAbsent(targetFile, k -> new HashSet<>()).add(targetPos);
     }
 
     return remappedPositions;
@@ -463,10 +469,11 @@ public class PositionDeleteRemapper {
         // Map to target position
         long targetPos = run.mapPosition(sourcePos);
 
+        // Get target file: use per-run target if available, otherwise use mapping's default target
+        String targetFile = run.targetFile() != null ? run.targetFile() : mapping.targetFile();
+
         // Add to result set for target file
-        remappedPositions
-            .computeIfAbsent(mapping.targetFile(), k -> new HashSet<>())
-            .add(targetPos);
+        remappedPositions.computeIfAbsent(targetFile, k -> new HashSet<>()).add(targetPos);
       }
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to read DV: " + dvFile.location(), e);

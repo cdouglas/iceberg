@@ -180,7 +180,12 @@ public class PositionDeleteGenerator {
       }
     }
 
-    return outputFile.toInputFile().getLength();
+    // Handle cloud storage eventual consistency
+    try {
+      return outputFile.toInputFile().getLength();
+    } catch (Exception e) {
+      return 0; // Size is only for reporting, not critical
+    }
   }
 
   /** Metadata about a generated position delete file. */

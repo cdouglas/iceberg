@@ -33,6 +33,7 @@ init_project_root
 DEFAULT_MACHINE_TYPE="n2-standard-4"
 DEFAULT_ZONE="${GCP_ZONE:-us-central1-a}"
 DEFAULT_PROJECT="${GCP_PROJECT:-}"
+DEFAULT_NETWORK="${GCP_NETWORK:-default}"
 INSTANCE_NAME="iceberg-benchmark"
 SSH_USER="${USER}"
 BENCHMARK="remapping-microbenchmark"
@@ -101,35 +102,42 @@ vm_start() {
 
     log_info "Creating GCE instance..."
 
-    # Startup script
-    local startup_script=$(cat <<'STARTUP'
+    # Ensure SSH key exists (generates if needed)
+    ensure_ssh_key
+
+    # Startup script - uses SSH_USER passed via environment
+    local startup_script=$(cat <<STARTUP
 #!/bin/bash
 set -ex
 
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y --no-install-recommends \
-    openjdk-17-jdk-headless \
-    
+apt-get install -y --no-install-recommends \\
+    openjdk-17-jdk-headless \\
     jq
 
-# Create benchmark directory
-mkdir -p /home/${USER}/benchmark
-chown ${USER}:${USER} /home/${USER}/benchmark
+# Create benchmark directory for SSH user
+mkdir -p /home/${SSH_USER}/benchmark
+chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/benchmark
 STARTUP
 )
+
+    # Prepare SSH key for metadata
+    local ssh_key_content=$(get_ssh_public_key)
+    local metadata_args="startup-script=$startup_script,ssh-keys=${SSH_USER}:${ssh_key_content}"
 
     # Create instance
     gcloud compute instances create "$INSTANCE_NAME" \
         --zone="$zone" \
         --project="$project" \
         --machine-type="$machine_type" \
+        --network="$DEFAULT_NETWORK" \
         --image-family=ubuntu-2204-lts \
         --image-project=ubuntu-os-cloud \
         --boot-disk-size=50GB \
         --scopes=storage-full \
-        --metadata=startup-script="$startup_script" \
+        --metadata="$metadata_args" \
         --tags=benchmark
 
     # Get public IP

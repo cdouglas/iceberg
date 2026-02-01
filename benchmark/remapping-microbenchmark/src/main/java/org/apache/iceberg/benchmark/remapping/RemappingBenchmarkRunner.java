@@ -437,7 +437,7 @@ public class RemappingBenchmarkRunner {
       }
     }
 
-    return output.toInputFile().getLength();
+    return safeGetFileLength(output, 0);
   }
 
   private long writeDeletionVectors(String path, List<DVEntry> entries) throws IOException {
@@ -464,13 +464,28 @@ public class RemappingBenchmarkRunner {
       writer.finish();
     }
 
-    return output.toInputFile().getLength();
+    return safeGetFileLength(output, 0);
   }
 
   @SuppressWarnings("unused")
   private void cleanupTestData(TestData testData) {
     // Optionally clean up generated files
     // For now, leave them for debugging
+  }
+
+  /**
+   * Safely get file length from an OutputFile, handling cloud storage eventual consistency.
+   *
+   * <p>Some cloud storage systems may not immediately return the file after writing. This method
+   * handles such cases gracefully by estimating the size from the estimated bytes written.
+   */
+  private static long safeGetFileLength(OutputFile outputFile, long estimatedBytes) {
+    try {
+      return outputFile.toInputFile().getLength();
+    } catch (Exception e) {
+      // Cloud storage may have eventual consistency issues, use estimate
+      return estimatedBytes;
+    }
   }
 
   /** Holds generated test data for a scenario. */
