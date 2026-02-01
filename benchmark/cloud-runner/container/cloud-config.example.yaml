@@ -1,0 +1,112 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# Cloud Configuration for Iceberg Benchmarks
+#
+# Copy this file to cloud-config.yaml and fill in your values.
+# The benchmark-runner.sh script will read from this file.
+#
+# Run 'benchmark-runner.sh setup' to auto-create missing resources.
+
+# =============================================================================
+# AWS Configuration
+# =============================================================================
+aws:
+  # Region for benchmark resources (default: us-west-2)
+  region: us-west-2
+
+  # S3 bucket for benchmark data (will be created by 'setup' if empty)
+  # Example: my-iceberg-benchmark
+  s3_bucket: ""
+
+  # EC2 SSH key pair name (will be created by 'setup' if not exists)
+  ssh_key_name: iceberg-benchmark
+
+  # Path to SSH private key file (auto-set by 'setup')
+  # ssh_key_file: /output/ssh/iceberg-benchmark.pem
+
+  # Instance type for benchmark VM (default: m5.xlarge, ~$0.19/hr)
+  instance_type: m5.xlarge
+
+  # Set to 'true' after successful setup
+  setup_complete: false
+
+# =============================================================================
+# GCP Configuration
+# =============================================================================
+gcp:
+  # GCP project ID (required - run: gcloud config get-value project)
+  project: ""
+
+  # Region and zone for benchmark resources
+  region: us-central1
+  zone: us-central1-a
+
+  # GCS bucket for benchmark data (will be created by 'setup' if empty)
+  # Example: my-iceberg-benchmark
+  gcs_bucket: ""
+
+  # Machine type for benchmark VM (default: n2-standard-4, ~$0.19/hr)
+  machine_type: n2-standard-4
+
+  # Set to 'true' after successful setup
+  setup_complete: false
+
+# =============================================================================
+# Azure Configuration
+# =============================================================================
+azure:
+  # Resource group for benchmark resources (will be created if not exists)
+  resource_group: iceberg-benchmark-rg
+
+  # Azure region (default: eastus)
+  location: eastus
+
+  # Storage account name (will be created by 'setup' if empty)
+  # Must be globally unique, 3-24 lowercase alphanumeric characters
+  # Example: icebergbench12345
+  storage_account: ""
+
+  # Storage container name (default: benchmark)
+  storage_container: benchmark
+
+  # VM size for benchmark (default: Standard_D4s_v3, ~$0.19/hr)
+  vm_size: Standard_D4s_v3
+
+  # Set to 'true' after successful setup
+  setup_complete: false
+
+# =============================================================================
+# Benchmark Configuration
+# =============================================================================
+benchmark:
+  # Which benchmark to run
+  # Options: remapping-microbenchmark, compaction-cloud
+  name: remapping-microbenchmark
+
+  # Configuration file for the benchmark
+  # Options:
+  #   - configs/quick.yaml    (~1-2 min, verification)
+  #   - configs/default.yaml  (~10-15 min, local testing)
+  #   - configs/sigmod.yaml   (~4-6 hours, publication quality)
+  config: configs/quick.yaml
+
+  # Run on specific clouds only (comma-separated, empty = all available)
+  # Example: aws,gcp
+  clouds: ""

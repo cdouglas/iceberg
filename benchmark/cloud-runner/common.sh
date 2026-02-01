@@ -71,17 +71,55 @@ state_exists() {
 }
 
 # SSH helpers
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR"
+# Default SSH key location for benchmark VMs
+BENCHMARK_SSH_KEY="${HOME}/.ssh/iceberg_benchmark_key"
+
+# Ensure SSH key exists for benchmark VMs (passwordless for automation)
+ensure_ssh_key() {
+    if [[ -n "${SSH_KEY_FILE:-}" && -f "$SSH_KEY_FILE" ]]; then
+        return 0  # User-specified key exists
+    fi
+
+    if [[ -f "$BENCHMARK_SSH_KEY" ]]; then
+        SSH_KEY_FILE="$BENCHMARK_SSH_KEY"
+        return 0  # Benchmark key already exists
+    fi
+
+    log_info "Generating SSH key for benchmark VMs..."
+    ssh-keygen -t ed25519 -f "$BENCHMARK_SSH_KEY" -N "" -C "iceberg-benchmark" >/dev/null 2>&1
+    chmod 600 "$BENCHMARK_SSH_KEY"
+    chmod 644 "${BENCHMARK_SSH_KEY}.pub"
+    SSH_KEY_FILE="$BENCHMARK_SSH_KEY"
+    log_ok "SSH key generated: $BENCHMARK_SSH_KEY"
+}
+
+# Get SSH public key content for VM metadata
+get_ssh_public_key() {
+    ensure_ssh_key
+    cat "${SSH_KEY_FILE}.pub"
+}
+
+# Set SSH_KEY_FILE to use a specific key, otherwise generate/use benchmark key
+SSH_KEY_FILE="${SSH_KEY_FILE:-}"
+
+get_ssh_opts() {
+    local opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR"
+    if [[ -n "$SSH_KEY_FILE" && -f "$SSH_KEY_FILE" ]]; then
+        opts="$opts -i $SSH_KEY_FILE"
+    fi
+    echo "$opts"
+}
 
 wait_for_ssh() {
     local host="$1"
     local user="$2"
     local max_attempts="${3:-30}"
     local attempt=1
+    local ssh_opts=$(get_ssh_opts)
 
     log_info "Waiting for SSH to become available on $host..."
     while [[ $attempt -le $max_attempts ]]; do
-        if ssh $SSH_OPTS "$user@$host" "echo ok" &>/dev/null; then
+        if ssh $ssh_opts "$user@$host" "echo ok" &>/dev/null; then
             log_ok "SSH is ready"
             return 0
         fi
@@ -98,7 +136,8 @@ remote_exec() {
     local host="$1"
     local user="$2"
     shift 2
-    ssh $SSH_OPTS "$user@$host" "$@"
+    local ssh_opts=$(get_ssh_opts)
+    ssh $ssh_opts "$user@$host" "$@"
 }
 
 remote_copy_to() {
@@ -106,7 +145,8 @@ remote_copy_to() {
     local user="$2"
     local src="$3"
     local dst="$4"
-    scp $SSH_OPTS "$src" "$user@$host:$dst"
+    local ssh_opts=$(get_ssh_opts)
+    scp $ssh_opts "$src" "$user@$host:$dst"
 }
 
 remote_copy_from() {
@@ -114,11 +154,12 @@ remote_copy_from() {
     local user="$2"
     local src="$3"
     local dst="$4"
-    scp $SSH_OPTS -r "$user@$host:$src" "$dst"
+    local ssh_opts=$(get_ssh_opts)
+    scp $ssh_opts -r "$user@$host:$src" "$dst"
 }
 
 # Benchmark execution (runs with nohup for reentrance)
-REMOTE_WORK_DIR="/home/\${USER}/benchmark"
+# Note: work_dir is computed per-call using the SSH user parameter
 
 start_benchmark_remote() {
     local host="$1"
@@ -127,39 +168,41 @@ start_benchmark_remote() {
     local config_name="$4"
     local storage_uri="$5"
     local extra_args="${6:-}"
+    local work_dir="/home/${user}/benchmark"
 
     log_info "Starting benchmark on $host..."
 
     # Create and run the benchmark script on remote
+    # Note: Using unquoted RUNSCRIPT heredoc so variables are expanded from local script
     remote_exec "$host" "$user" bash -s <<EOF
 set -e
-mkdir -p $REMOTE_WORK_DIR/results
-cd $REMOTE_WORK_DIR
+mkdir -p ${work_dir}/results
+cd ${work_dir}
 
-# Create run script
-cat > run.sh <<'RUNSCRIPT'
+# Create run script with expanded variables from local machine
+cat > run.sh <<RUNSCRIPT
 #!/bin/bash
 set -e
-cd $REMOTE_WORK_DIR
+cd ${work_dir}
 
 echo "STARTED" > status
-echo "\$(date -Iseconds)" > started_at
+date -Iseconds > started_at
 
-if java -Xmx8g -jar "$jar_name" \\
-    --config "$config_name" \\
-    --storage-uri "$storage_uri" \\
+if java -Xmx8g -jar "${jar_name}" \\
+    --config "${config_name}" \\
+    --storage-uri "${storage_uri}" \\
     --output-dir results \\
-    $extra_args; then
+    ${extra_args}; then
     echo "COMPLETED" > status
 else
     echo "FAILED" > status
 fi
-echo "\$(date -Iseconds)" > finished_at
+date -Iseconds > finished_at
 RUNSCRIPT
 chmod +x run.sh
 
 # Kill any existing benchmark
-pkill -f "$jar_name" 2>/dev/null || true
+pkill -f "${jar_name}" 2>/dev/null || true
 
 # Start with nohup
 nohup ./run.sh > benchmark.log 2>&1 &
@@ -172,14 +215,16 @@ EOF
 check_benchmark_status() {
     local host="$1"
     local user="$2"
+    local work_dir="/home/${user}/benchmark"
 
-    local status=$(remote_exec "$host" "$user" "cat $REMOTE_WORK_DIR/status 2>/dev/null || echo 'NOT_STARTED'")
+    local status=$(remote_exec "$host" "$user" "cat ${work_dir}/status 2>/dev/null || echo 'NOT_STARTED'")
     echo "$status"
 }
 
 show_benchmark_progress() {
     local host="$1"
     local user="$2"
+    local work_dir="/home/${user}/benchmark"
 
     local status=$(check_benchmark_status "$host" "$user")
 
@@ -190,17 +235,17 @@ show_benchmark_progress() {
         STARTED)
             log_info "Benchmark is running..."
             log_info "Recent output:"
-            remote_exec "$host" "$user" "tail -20 $REMOTE_WORK_DIR/benchmark.log 2>/dev/null || echo '(no output yet)'"
+            remote_exec "$host" "$user" "tail -20 ${work_dir}/benchmark.log 2>/dev/null || echo '(no output yet)'"
             ;;
         COMPLETED)
             log_ok "Benchmark completed successfully"
-            remote_exec "$host" "$user" "cat $REMOTE_WORK_DIR/started_at $REMOTE_WORK_DIR/finished_at" | \
+            remote_exec "$host" "$user" "cat ${work_dir}/started_at ${work_dir}/finished_at" | \
                 awk 'NR==1{start=$0} NR==2{print "Started: " start "\nFinished: " $0}'
             ;;
         FAILED)
             log_error "Benchmark failed"
             log_info "Last 50 lines of output:"
-            remote_exec "$host" "$user" "tail -50 $REMOTE_WORK_DIR/benchmark.log"
+            remote_exec "$host" "$user" "tail -50 ${work_dir}/benchmark.log"
             ;;
     esac
 
@@ -210,15 +255,18 @@ show_benchmark_progress() {
 tail_benchmark() {
     local host="$1"
     local user="$2"
+    local work_dir="/home/${user}/benchmark"
+    local ssh_opts=$(get_ssh_opts)
 
     log_info "Tailing benchmark log (Ctrl+C to stop)..."
-    ssh $SSH_OPTS "$user@$host" "tail -f $REMOTE_WORK_DIR/benchmark.log"
+    ssh $ssh_opts "$user@$host" "tail -f ${work_dir}/benchmark.log"
 }
 
 collect_results() {
     local host="$1"
     local user="$2"
     local local_dir="$3"
+    local work_dir="/home/${user}/benchmark"
 
     local status=$(check_benchmark_status "$host" "$user")
 
@@ -234,9 +282,9 @@ collect_results() {
     mkdir -p "$local_dir"
 
     log_info "Collecting results to $local_dir..."
-    remote_copy_from "$host" "$user" "$REMOTE_WORK_DIR/results/" "$local_dir/"
-    remote_copy_from "$host" "$user" "$REMOTE_WORK_DIR/benchmark.log" "$local_dir/"
-    remote_copy_from "$host" "$user" "$REMOTE_WORK_DIR/status" "$local_dir/"
+    remote_copy_from "$host" "$user" "${work_dir}/results/" "$local_dir/"
+    remote_copy_from "$host" "$user" "${work_dir}/benchmark.log" "$local_dir/"
+    remote_copy_from "$host" "$user" "${work_dir}/status" "$local_dir/"
 
     log_ok "Results collected to $local_dir"
 }
@@ -244,16 +292,31 @@ collect_results() {
 # Build helpers
 PROJECT_ROOT=""
 init_project_root() {
-    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[1]}")/../.." && pwd)"
+    # Go up 3 levels from cloud-runner/<cloud>/run.sh to get to repo root
+    # e.g., /workspace/benchmark/cloud-runner/azure -> /workspace
+    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[1]}")/../../.." && pwd)"
 }
 
 build_benchmark_jar() {
     local benchmark="$1"  # remapping-microbenchmark or compaction-cloud
 
-    log_info "Building $benchmark..."
-    (cd "$PROJECT_ROOT" && ./gradlew ":benchmark:$benchmark:shadowJar" -q)
+    # Check if JAR already exists
+    local jar=$(ls -t "$PROJECT_ROOT/benchmark/$benchmark/build/libs/"*".jar" 2>/dev/null | head -1)
+    if [[ -n "$jar" ]]; then
+        log_info "Using existing JAR: $(basename "$jar")" >&2
+        echo "$jar"
+        return 0
+    fi
 
-    local jar=$(ls -t "$PROJECT_ROOT/benchmark/$benchmark/build/libs/"*".jar" | head -1)
+    # Try to build (log to stderr so stdout only has the jar path)
+    log_info "Building $benchmark..." >&2
+    if ! (cd "$PROJECT_ROOT" && ./gradlew ":benchmark:$benchmark:shadowJar" -q); then
+        log_error "Build failed. Run this on the host first:"
+        log_error "  cd $PROJECT_ROOT && ./gradlew :benchmark:$benchmark:shadowJar"
+        return 1
+    fi
+
+    jar=$(ls -t "$PROJECT_ROOT/benchmark/$benchmark/build/libs/"*".jar" | head -1)
     if [[ -z "$jar" ]]; then
         log_error "Failed to find built JAR"
         return 1

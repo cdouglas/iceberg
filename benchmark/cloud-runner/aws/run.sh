@@ -35,6 +35,16 @@ DEFAULT_REGION="${AWS_REGION:-us-west-2}"
 DEFAULT_AMI=""  # Will be looked up
 SSH_USER="ubuntu"
 SSH_KEY_NAME="${AWS_SSH_KEY_NAME:-}"
+# Look for SSH key in common locations
+SSH_KEY_FILE="${AWS_SSH_KEY_FILE:-}"
+if [[ -z "$SSH_KEY_FILE" ]]; then
+    for keypath in "/output/ssh/${SSH_KEY_NAME}.pem" "${HOME}/.ssh/${SSH_KEY_NAME}.pem" "${HOME}/.ssh/id_rsa"; do
+        if [[ -f "$keypath" ]]; then
+            SSH_KEY_FILE="$keypath"
+            break
+        fi
+    done
+fi
 BENCHMARK="remapping-microbenchmark"
 CONFIG_FILE=""
 KEEP_VM=false

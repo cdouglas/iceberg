@@ -48,10 +48,15 @@ dependencies {
     exclude group: 'org.slf4j', module: 'slf4j-reload4j'
   }
 
-  // Cloud storage support via Iceberg FileIO (optional runtime dependencies)
+  // Cloud storage support via Iceberg FileIO
+  // Include both the FileIO implementations AND their dependency bundles
   runtimeOnly project(':iceberg-aws')
   runtimeOnly project(':iceberg-gcp')
   runtimeOnly project(':iceberg-azure')
+  // Bundles provide shaded cloud SDK dependencies
+  runtimeOnly project(':iceberg-aws-bundle')
+  runtimeOnly project(':iceberg-gcp-bundle')
+  runtimeOnly project(':iceberg-azure-bundle')
 
   // Logging
   implementation libs.slf4j.api
@@ -81,7 +86,25 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 test {
-  useJUnitPlatform()
+  useJUnitPlatform {
+    // Exclude integration tests by default
+    excludeTags 'integration'
+  }
+}
+
+// Separate task for integration tests - requires cloud credentials
+tasks.register('integrationTest', Test) {
+  group = 'verification'
+  description = 'Run cloud storage integration tests. Requires GCS_TEST_BUCKET, S3_TEST_BUCKET, or AZURE_TEST_URI env vars.'
+
+  useJUnitPlatform {
+    includeTags 'integration'
+  }
+
+  // Pass through environment variables
+  environment 'GCS_TEST_BUCKET', System.getenv('GCS_TEST_BUCKET') ?: ''
+  environment 'S3_TEST_BUCKET', System.getenv('S3_TEST_BUCKET') ?: ''
+  environment 'AZURE_TEST_URI', System.getenv('AZURE_TEST_URI') ?: ''
 }
 
 jar {
@@ -92,6 +115,7 @@ jar {
 
 shadowJar {
   archiveClassifier.set('')
+  zip64 = true
   mergeServiceFiles()
   manifest {
     attributes 'Main-Class': 'org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark'

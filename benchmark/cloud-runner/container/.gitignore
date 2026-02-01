@@ -1,0 +1,10 @@
+# Benchmark output (local only)
+output/
+
+# Generated config
+cloud-config.yaml
+
+# Credential caches
+.gcloud-cache/
+.azure-cache/
+.ssh-cache/

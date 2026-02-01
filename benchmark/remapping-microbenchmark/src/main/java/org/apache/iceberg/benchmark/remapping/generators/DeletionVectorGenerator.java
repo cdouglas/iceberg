@@ -133,12 +133,21 @@ public class DeletionVectorGenerator {
 
       writer.finish();
 
+      // Try to get file length, but handle cloud storage eventual consistency gracefully
+      long fileLength;
+      try {
+        fileLength = outputFile.toInputFile().getLength();
+      } catch (Exception e) {
+        // Fallback to estimated length if file isn't immediately readable (cloud storage)
+        fileLength = totalBitmapSize + 1024; // estimate: bitmap size + Puffin overhead
+      }
+
       return new GeneratedDeletionVectorFile(
           outputFile.location(),
           referencedDataFiles.size(),
           totalDeletes,
           totalBitmapSize,
-          outputFile.toInputFile().getLength(),
+          fileLength,
           density);
     }
   }
@@ -203,7 +212,12 @@ public class DeletionVectorGenerator {
       writer.finish();
     }
 
-    return outputFile.toInputFile().getLength();
+    // Handle cloud storage eventual consistency
+    try {
+      return outputFile.toInputFile().getLength();
+    } catch (Exception e) {
+      return bitmapData.remaining() + 1024L; // Estimate: bitmap size + Puffin overhead
+    }
   }
 
   /** Metadata about a generated deletion vector. */

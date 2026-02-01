@@ -64,6 +64,15 @@ public class CompactionMapGenerator {
     this(seed, 10_000_000L); // 10M rows per file default
   }
 
+  /** Safely get file length, handling cloud storage eventual consistency. */
+  private static long safeGetFileLength(OutputFile outputFile) {
+    try {
+      return outputFile.toInputFile().getLength();
+    } catch (Exception e) {
+      return 0; // Size is only for reporting, not critical
+    }
+  }
+
   /**
    * Generate a compaction map for a fanout scenario (many sources → one target).
    *
@@ -113,14 +122,15 @@ public class CompactionMapGenerator {
         Collections.singletonList(targetFile),
         numSourceFiles * runsPerFile,
         totalSourceRows,
-        outputFile.toInputFile().getLength(),
+        safeGetFileLength(outputFile),
         CompactionScenario.FANOUT);
   }
 
   /**
    * Generate a compaction map for a split scenario (one source → many targets).
    *
-   * <p>This simulates splitting a large file into multiple smaller files.
+   * <p>This simulates splitting a large file into multiple smaller files. Uses per-run target files
+   * to correctly model a single source mapping to multiple targets.
    *
    * @param outputFile where to write the compaction map
    * @param numTargetFiles number of target files after split
@@ -138,17 +148,19 @@ public class CompactionMapGenerator {
     long sourceOffset = 0;
     int totalRuns = 0;
 
-    for (String targetFile : targetFiles) {
-      CompactionMapBuilder.FileMappingBuilder fileMapping =
-          builder.addFileMapping(sourceFile, targetFile);
+    // Create single file mapping with per-run target files
+    CompactionMapBuilder.FileMappingBuilder fileMapping =
+        builder.addFileMapping(sourceFile, targetFiles.get(0));
 
+    for (String targetFile : targetFiles) {
       long targetRowsRemaining = rowsPerTarget;
       long targetOffset = 0;
       long rowsPerRun = rowsPerTarget / runsPerTarget;
 
       for (int run = 0; run < runsPerTarget; run++) {
         long runRows = (run == runsPerTarget - 1) ? targetRowsRemaining : rowsPerRun;
-        fileMapping.addRun(sourceOffset, targetOffset, runRows);
+        // Use per-run target file for multi-target mapping
+        fileMapping.addRun(sourceOffset, targetOffset, runRows, targetFile);
 
         sourceOffset += runRows;
         targetOffset += runRows;
@@ -166,7 +178,7 @@ public class CompactionMapGenerator {
         targetFiles,
         totalRuns,
         rowsPerFile,
-        outputFile.toInputFile().getLength(),
+        safeGetFileLength(outputFile),
         CompactionScenario.SPLIT);
   }
 
@@ -252,7 +264,7 @@ public class CompactionMapGenerator {
         targetFiles,
         totalRuns,
         totalRows,
-        outputFile.toInputFile().getLength(),
+        safeGetFileLength(outputFile),
         CompactionScenario.MIXED);
   }
 
