@@ -181,6 +181,11 @@ run_container() {
         docker_args+=("-v" "$HOME/.azure:/credentials/azure:ro")
     fi
 
+    # Git config (for commits from inside container)
+    if [[ -f "$HOME/.gitconfig" ]]; then
+        docker_args+=("-v" "$HOME/.gitconfig:/home/claude/.gitconfig:ro")
+    fi
+
     # Output directory (read-write, contains SSH keys from infra setup)
     docker_args+=("-v" "$OUTPUT_DIR:/output")
 
