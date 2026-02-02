@@ -430,11 +430,69 @@ public class PositionDeleteRemapper {
 
     // Optimization: Group positions by (targetFile, run) to enable bulk operations
     // This avoids individual HashSet insertions and enables array-based construction
-    return remapPositionsBulk(mappedRuns, mapping);
+    return remapPositionsBulkInternal(mappedRuns, mapping);
   }
 
   /**
-   * Remaps positions using bulk operations for better performance.
+   * Remaps positions from a source file using the compaction map with bulk operations.
+   *
+   * <p>This is the recommended API for remapping positions when you have them in memory (e.g., from
+   * a RoaringBitmap or other position collection). It provides the same performance benefits as
+   * {@link #remapDVBulk(DeleteFile, FileIO)} but doesn't require constructing a DeleteFile object.
+   *
+   * <p>If the source file is not in the compaction map (not compacted), returns a single-entry map
+   * with the original file and all input positions.
+   *
+   * <p>Positions that fall in gaps between runs (e.g., positions that were deleted during merge
+   * compaction) are silently dropped.
+   *
+   * @param sourceFile the path of the source data file that was compacted
+   * @param positions the positions to remap (should be from the source file)
+   * @return map from target file path to set of remapped positions in that file
+   */
+  public Map<String, Set<Long>> remapPositionsBulk(String sourceFile, Iterable<Long> positions) {
+    Preconditions.checkNotNull(sourceFile, "sourceFile is null");
+    Preconditions.checkNotNull(positions, "positions is null");
+
+    FileMapping mapping = getMapping(sourceFile);
+
+    if (mapping == null) {
+      // File wasn't compacted, return original positions
+      List<Long> positionList = new java.util.ArrayList<>();
+      positions.forEach(positionList::add);
+
+      if (positionList.isEmpty()) {
+        return Collections.emptyMap();
+      }
+
+      // Convert to sorted array and wrap in SortedLongArraySet
+      long[] sortedPositions = new long[positionList.size()];
+      for (int i = 0; i < positionList.size(); i++) {
+        sortedPositions[i] = positionList.get(i);
+      }
+      java.util.Arrays.sort(sortedPositions);
+
+      return Collections.singletonMap(sourceFile, new SortedLongArraySet(sortedPositions));
+    }
+
+    // Collect positions into list for strategy selection
+    List<Long> positionList = new java.util.ArrayList<>();
+    positions.forEach(positionList::add);
+
+    if (positionList.isEmpty()) {
+      return Collections.emptyMap();
+    }
+
+    // Use smart selector to choose optimal strategy
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+    RemappingStrategy strategy = selector.selectOptimal(mapping, positionList);
+    Map<Long, CompactionMap.Run> mappedRuns = strategy.runForPositions(positionList);
+
+    return remapPositionsBulkInternal(mappedRuns, mapping);
+  }
+
+  /**
+   * Internal bulk remapping implementation.
    *
    * <p>Instead of adding positions one-by-one to HashSets, this method:
    *
@@ -447,7 +505,7 @@ public class PositionDeleteRemapper {
    * <p>Performance: ~8x faster than HashSet-based approach for large position counts. At 1M
    * positions: ~16ms vs ~137ms (from JMH benchmarks).
    */
-  private Map<String, Set<Long>> remapPositionsBulk(
+  private Map<String, Set<Long>> remapPositionsBulkInternal(
       Map<Long, CompactionMap.Run> mappedRuns, FileMapping mapping) {
 
     // Step 1: Group source positions by (targetFile, run) for bulk processing

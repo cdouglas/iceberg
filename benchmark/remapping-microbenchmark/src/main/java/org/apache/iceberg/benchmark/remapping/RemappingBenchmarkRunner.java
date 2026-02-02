@@ -362,30 +362,18 @@ public class RemappingBenchmarkRunner {
       String sourceFile = entry.referencedFile;
       RoaringBitmap sourceBitmap = entry.bitmap;
 
-      // Check if this file was compacted
-      if (!remapper.isCompacted(sourceFile)) {
-        // File wasn't compacted, keep original
-        Set<Long> positions = remappedByTarget.computeIfAbsent(sourceFile, k -> new HashSet<>());
-        for (int pos : sourceBitmap) {
-          positions.add((long) pos);
-        }
-        continue;
+      // Convert bitmap to list of positions for bulk API
+      List<Long> positions = new ArrayList<>(sourceBitmap.getCardinality());
+      for (int pos : sourceBitmap) {
+        positions.add((long) pos);
       }
 
-      // Convert bitmap to position deletes and remap each
-      for (int pos : sourceBitmap) {
-        PositionDelete<Record> delete = PositionDelete.create();
-        delete.set(sourceFile, pos, null);
+      // Use the optimized bulk remapping API
+      Map<String, Set<Long>> remapped = remapper.remapPositionsBulk(sourceFile, positions);
 
-        @SuppressWarnings("unchecked")
-        PositionDelete<Record> remappedDelete =
-            (PositionDelete<Record>) remapper.remapDeleteOrNull(delete);
-        if (remappedDelete != null) {
-          String targetFile = remappedDelete.path().toString();
-          remappedByTarget
-              .computeIfAbsent(targetFile, k -> new HashSet<>())
-              .add(remappedDelete.pos());
-        }
+      // Merge into result map
+      for (Map.Entry<String, Set<Long>> e : remapped.entrySet()) {
+        remappedByTarget.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
       }
     }
 

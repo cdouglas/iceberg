@@ -190,6 +190,127 @@ public class TestBulkRemappingIntegration {
     assertThat(positions).containsExactlyInAnyOrder(50L, 150L, 250L);
   }
 
+  @Test
+  public void testRemapPositionsBulkBasic() {
+    // Test the new remapPositionsBulk(String, Iterable<Long>) API
+    List<Run> runs =
+        ImmutableList.of(new GenericRun(0L, 0L, 100L), new GenericRun(100L, 100L, 100L));
+
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Remap using new API with raw positions
+    List<Long> positions = ImmutableList.of(10L, 50L, 110L, 150L);
+    Map<String, Set<Long>> result =
+        remapper.remapPositionsBulk("s3://bucket/file1.parquet", positions);
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey("s3://bucket/file2.parquet");
+    assertThat(result.get("s3://bucket/file2.parquet"))
+        .containsExactlyInAnyOrder(10L, 50L, 110L, 150L);
+  }
+
+  @Test
+  public void testRemapPositionsBulkNonCompacted() {
+    // Test remapping positions for a file that wasn't compacted
+    List<Run> runs = ImmutableList.of(new GenericRun(0L, 0L, 100L));
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Remap positions for a file NOT in the compaction map
+    List<Long> positions = ImmutableList.of(5L, 10L, 20L);
+    Map<String, Set<Long>> result =
+        remapper.remapPositionsBulk("s3://bucket/other-file.parquet", positions);
+
+    // Should return original file with original positions
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey("s3://bucket/other-file.parquet");
+    assertThat(result.get("s3://bucket/other-file.parquet"))
+        .containsExactlyInAnyOrder(5L, 10L, 20L);
+  }
+
+  @Test
+  public void testRemapPositionsBulkWithGaps() {
+    // Test positions in gaps (from merge compaction) are dropped
+    List<Run> runs =
+        ImmutableList.of(
+            new GenericRun(0L, 0L, 50L), // [0-50)
+            new GenericRun(100L, 50L, 50L)); // [100-150) - gap at [50-100)
+
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Positions 60 and 80 are in the gap and should be dropped
+    List<Long> positions = ImmutableList.of(10L, 40L, 60L, 80L, 110L, 140L);
+    Map<String, Set<Long>> result =
+        remapper.remapPositionsBulk("s3://bucket/file1.parquet", positions);
+
+    assertThat(result).hasSize(1);
+    Set<Long> mappedPositions = result.get("s3://bucket/file2.parquet");
+    // 10->10, 40->40, 60 dropped, 80 dropped, 110->60, 140->90
+    assertThat(mappedPositions).containsExactlyInAnyOrder(10L, 40L, 60L, 90L);
+  }
+
+  @Test
+  public void testRemapPositionsBulkEmpty() {
+    List<Run> runs = ImmutableList.of(new GenericRun(0L, 0L, 100L));
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Empty positions list
+    Map<String, Set<Long>> result =
+        remapper.remapPositionsBulk("s3://bucket/file1.parquet", ImmutableList.of());
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void testRemapPositionsBulkLargeScale() {
+    // Test with 100,000 positions to validate performance
+    List<Run> runs = new java.util.ArrayList<>();
+    for (int i = 0; i < 100; i++) {
+      long sourcePos = i * 1000L;
+      long targetPos = i * 1000L;
+      runs.add(new GenericRun(sourcePos, targetPos, 1000));
+    }
+
+    FileMapping mapping =
+        new GenericFileMapping("s3://bucket/file1.parquet", "s3://bucket/file2.parquet", runs);
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    // Create 100,000 positions
+    List<Long> positions = new java.util.ArrayList<>(100000);
+    for (int i = 0; i < 100000; i++) {
+      positions.add((long) i);
+    }
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Should complete quickly
+    long start = System.nanoTime();
+    Map<String, Set<Long>> result =
+        remapper.remapPositionsBulk("s3://bucket/file1.parquet", positions);
+    long elapsed = System.nanoTime() - start;
+
+    assertThat(result).hasSize(1);
+    assertThat(result.get("s3://bucket/file2.parquet")).hasSize(100000);
+
+    // Should complete in less than 1 second
+    assertThat(elapsed).isLessThan(1_000_000_000L);
+  }
+
   /**
    * Helper method to write a deletion vector file with the given positions.
    *

@@ -34,13 +34,13 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 /**
  * Helper for writing remapped DVs after compaction.
  *
- * <p>Takes remapped positions (from PositionDeleteRemapper.remapDV()) and writes new DV files for
- * each target data file.
+ * <p>Takes remapped positions (from PositionDeleteRemapper.remapDVBulk() or
+ * PositionDeleteRemapper.remapPositionsBulk()) and writes new DV files for each target data file.
  *
  * <p>Example usage:
  *
  * <pre>
- * Map&lt;String, Set&lt;Long&gt;&gt; remappedPositions = remapper.remapDV(dvFile, fileIO);
+ * Map&lt;String, Set&lt;Long&gt;&gt; remappedPositions = remapper.remapDVBulk(dvFile, fileIO);
  * RemappedDVWriter writer = new RemappedDVWriter(table, spec, partition);
  * List&lt;DeleteFile&gt; newDVs = writer.writeRemappedDVs(remappedPositions);
  * </pre>
