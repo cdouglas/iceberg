@@ -20,8 +20,10 @@ package org.apache.iceberg.deletes;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -82,11 +84,20 @@ public class DVRemappingPhaseBenchmark {
   @Param({"1000", "10000", "100000", "1000000"})
   private int numDeletes;
 
+  // Lookup ratio: fraction of positions to query (simulates different workloads)
+  // 0.01 = 1% of positions, 0.1 = 10%, 1.0 = 100%
+  @Param({"0.01", "0.1", "0.5", "1.0"})
+  private double lookupRatio;
+
   // Pre-computed test data
   private byte[] serializedBitmap;
   private RoaringPositionBitmap deserializedBitmap;
   private List<Long> positions;
   private long[] positionsArray;
+
+  // Pre-computed lookup queries (positions to search for)
+  private long[] lookupQueries;
+  private Set<Long> preBuiltHashSet;
 
   @Setup(Level.Trial)
   public void setup() {
@@ -112,6 +123,28 @@ public class DVRemappingPhaseBenchmark {
 
     // Serialize bitmap
     serializedBitmap = serializeBitmap(bitmap);
+
+    // Generate lookup queries (mix of hits and misses)
+    int numLookups = Math.max(1, (int) (numDeletes * lookupRatio));
+    lookupQueries = new long[numLookups];
+    Random random = new Random(42); // Fixed seed for reproducibility
+    long maxPos = positionsArray[numDeletes - 1];
+
+    for (int i = 0; i < numLookups; i++) {
+      if (random.nextBoolean()) {
+        // 50% chance: pick an existing position (hit)
+        lookupQueries[i] = positionsArray[random.nextInt(numDeletes)];
+      } else {
+        // 50% chance: pick a random position (may be miss)
+        lookupQueries[i] = Math.abs(random.nextLong()) % (maxPos + 1000);
+      }
+    }
+
+    // Pre-build HashSet for lookup comparison
+    preBuiltHashSet = new HashSet<>(numDeletes);
+    for (long p : positionsArray) {
+      preBuiltHashSet.add(p);
+    }
   }
 
   /** Benchmark: Deserialize Roaring bitmap from bytes. */
@@ -232,6 +265,128 @@ public class DVRemappingPhaseBenchmark {
     }
 
     // 4. Serialize
+    return serializeBitmap(outputBitmap);
+  }
+
+  // ============================================================================
+  // HashSet vs Binary Search comparison benchmarks
+  // These measure the trade-off between construction cost and lookup cost
+  // ============================================================================
+
+  /**
+   * Benchmark: Build HashSet and perform lookups.
+   *
+   * <p>This simulates the current remapping approach: build a HashSet from positions, then check
+   * membership for each query position.
+   */
+  @Benchmark
+  public int hashSetBuildAndLookup(Blackhole blackhole) {
+    // Build HashSet from scratch (simulates remapping scenario)
+    Set<Long> set = new HashSet<>(numDeletes);
+    for (long pos : positionsArray) {
+      set.add(pos);
+    }
+
+    // Perform lookups
+    int hits = 0;
+    for (long query : lookupQueries) {
+      if (set.contains(query)) {
+        hits++;
+      }
+    }
+    blackhole.consume(set);
+    return hits;
+  }
+
+  /**
+   * Benchmark: Use binary search on sorted array for lookups.
+   *
+   * <p>This simulates an alternative approach: keep positions in a sorted array (which they already
+   * are from bitmap iteration) and use binary search for membership checks.
+   */
+  @Benchmark
+  public int binarySearchLookup(Blackhole blackhole) {
+    // positionsArray is already sorted (from bitmap iteration order)
+    // No construction cost - just perform lookups
+
+    int hits = 0;
+    for (long query : lookupQueries) {
+      if (Arrays.binarySearch(positionsArray, query) >= 0) {
+        hits++;
+      }
+    }
+    blackhole.consume(positionsArray);
+    return hits;
+  }
+
+  /**
+   * Benchmark: Lookup only using pre-built HashSet.
+   *
+   * <p>This isolates the lookup cost when the HashSet is already built. Useful for understanding
+   * the per-lookup overhead.
+   */
+  @Benchmark
+  public int hashSetLookupOnly(Blackhole blackhole) {
+    int hits = 0;
+    for (long query : lookupQueries) {
+      if (preBuiltHashSet.contains(query)) {
+        hits++;
+      }
+    }
+    blackhole.consume(preBuiltHashSet);
+    return hits;
+  }
+
+  /**
+   * Benchmark: Full round-trip using binary search instead of HashSet.
+   *
+   * <p>This is the key comparison: can we avoid HashSet entirely by using binary search on the
+   * sorted position array? The trade-off is O(log n) lookups vs O(1), but we save O(n) construction
+   * time.
+   */
+  @Benchmark
+  public byte[] fullRoundTripBinarySearch() {
+    // 1. Deserialize
+    RoaringPositionBitmap inputBitmap = deserializeBitmap(serializedBitmap);
+
+    // 2. Iterate positions into sorted array
+    long[] sortedPositions = new long[numDeletes];
+    int[] idx = {0};
+    inputBitmap.forEach(
+        pos -> {
+          if (idx[0] < sortedPositions.length) {
+            sortedPositions[idx[0]++] = pos;
+          }
+        });
+
+    // 3. Build output bitmap directly (positions are already sorted from bitmap)
+    // In real remapping, we'd apply offset transformation here
+    RoaringPositionBitmap outputBitmap = new RoaringPositionBitmap();
+    for (int i = 0; i < idx[0]; i++) {
+      outputBitmap.set(sortedPositions[i] + 1000);
+    }
+
+    // 4. Serialize
+    return serializeBitmap(outputBitmap);
+  }
+
+  /**
+   * Benchmark: Direct bitmap-to-bitmap transformation (optimal path).
+   *
+   * <p>This is the theoretical optimum: iterate source bitmap positions directly into the output
+   * bitmap without any intermediate data structure. Only possible when we don't need random access
+   * lookups.
+   */
+  @Benchmark
+  public byte[] fullRoundTripDirect() {
+    // 1. Deserialize
+    RoaringPositionBitmap inputBitmap = deserializeBitmap(serializedBitmap);
+
+    // 2. Direct iteration into output bitmap
+    RoaringPositionBitmap outputBitmap = new RoaringPositionBitmap();
+    inputBitmap.forEach(pos -> outputBitmap.set(pos + 1000));
+
+    // 3. Serialize
     return serializeBitmap(outputBitmap);
   }
 
