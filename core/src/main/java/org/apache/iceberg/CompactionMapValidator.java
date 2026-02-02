@@ -21,6 +21,7 @@ package org.apache.iceberg;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.exceptions.ChainedCompactionMapsException;
 import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -38,6 +39,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  *   <li>Identifying manifests with compaction maps in the snapshot history
  *   <li>Loading the compaction maps to determine which files were compacted
  *   <li>Checking if any position deletes in the transaction reference those compacted files
+ *   <li>Detecting chains when multiple sequential compactions affect the same files
  * </ol>
  *
  * <p>This validator is intended to be used in the transaction validation phase, typically in a
@@ -46,12 +48,21 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  * <p>Both position delete files and deletion vectors (DVs) are supported. DVs always have a {@code
  * referencedDataFile} that points to the data file they apply to, making conflict detection
  * straightforward.
+ *
+ * <p><b>Chained Compaction Maps:</b> When multiple compactions occur sequentially (e.g., F1→F2 then
+ * F2→F3), deletes referencing F1 need to be remapped through the chain: F1→F2→F3. This validator
+ * detects such chains and can build a {@link CompactionMapChain} to handle composition.
  */
 class CompactionMapValidator {
   private final FileIO io;
   private final TableMetadata base;
   private final long startingSnapshotId;
   private final Snapshot currentSnapshot;
+
+  // Cached loaded compaction maps (map location -> CompactionMap)
+  private Map<String, CompactionMap> loadedMaps;
+  // Cached list of maps in snapshot order (oldest to newest)
+  private List<CompactionMap> orderedMaps;
 
   /**
    * Creates a validator for checking compaction conflicts.
@@ -72,39 +83,59 @@ class CompactionMapValidator {
   /**
    * Checks if any of the given delete files reference data files that were compacted.
    *
+   * <p>This method also detects chained compaction maps. If files were compacted through multiple
+   * sequential compactions (e.g., F1→F2→F3), a {@link ChainedCompactionMapsException} is thrown
+   * with the chain information needed to compose the maps.
+   *
    * @param deleteFiles the delete files to check
-   * @throws CompactionConflictException if any delete files reference compacted data files
+   * @throws CompactionConflictException if any delete files reference compacted data files (single
+   *     map)
+   * @throws ChainedCompactionMapsException if files were compacted through multiple sequential
+   *     compactions
    */
   void validateNoCompactedReferences(List<DeleteFile> deleteFiles) {
     if (deleteFiles.isEmpty()) {
       return;
     }
 
-    // Find all compaction maps in the snapshot history since the transaction started
-    Map<String, String> compactionMaps = findCompactionMaps();
+    // Load all compaction maps in the snapshot history
+    loadCompactionMaps();
 
-    if (compactionMaps.isEmpty()) {
+    if (loadedMaps.isEmpty()) {
       return; // No compactions occurred
     }
 
+    // Build index from source file to compaction map
+    Map<String, String> sourceFileToMapLocation = buildSourceFileIndex();
+
     // Check if any delete files reference compacted files
-    Set<String> conflicts = findConflicts(deleteFiles, compactionMaps.keySet());
+    Set<String> conflicts = findConflicts(deleteFiles, sourceFileToMapLocation.keySet());
 
-    if (!conflicts.isEmpty()) {
-      // Build map of conflicting files to their compaction map locations
-      Map<String, String> conflictLocations = Maps.newHashMap();
-      for (String conflictFile : conflicts) {
-        conflictLocations.put(conflictFile, compactionMaps.get(conflictFile));
-      }
-
-      throw new CompactionConflictException(
-          String.format(
-              "Cannot commit deletes: referenced data files were compacted: %s. "
-                  + "Use compaction maps to remap deletes before retrying.",
-              conflicts),
-          conflicts,
-          conflictLocations);
+    if (conflicts.isEmpty()) {
+      return; // No conflicts
     }
+
+    // Check for chains that affect conflicting files
+    ChainInfo chainInfo = detectChains(conflicts);
+
+    if (chainInfo.hasChains()) {
+      throw new ChainedCompactionMapsException(
+          chainInfo.chainedFiles, chainInfo.chainSnapshotIds, chainInfo.chainMaps);
+    }
+
+    // Single-level conflicts - throw regular exception
+    Map<String, String> conflictLocations = Maps.newHashMap();
+    for (String conflictFile : conflicts) {
+      conflictLocations.put(conflictFile, sourceFileToMapLocation.get(conflictFile));
+    }
+
+    throw new CompactionConflictException(
+        String.format(
+            "Cannot commit deletes: referenced data files were compacted: %s. "
+                + "Use compaction maps to remap deletes before retrying.",
+            conflicts),
+        conflicts,
+        conflictLocations);
   }
 
   /**
@@ -117,21 +148,62 @@ class CompactionMapValidator {
    * @return map from compacted file path to compaction map location
    */
   Map<String, String> findCompactionMaps() {
-    Map<String, String> compactionMaps = Maps.newHashMap();
+    loadCompactionMaps();
+    return buildSourceFileIndex();
+  }
+
+  /**
+   * Builds a compaction map chain for resolving conflicts with chained compactions.
+   *
+   * <p>This method loads all compaction maps and builds a chain that can compose mappings for files
+   * that were compacted through multiple sequential operations.
+   *
+   * @return a CompactionMapChain, or null if no compaction maps exist
+   */
+  CompactionMapChain findCompactionMapChain() {
+    loadCompactionMaps();
+
+    if (orderedMaps.isEmpty()) {
+      return null;
+    }
+
+    return CompactionMapChain.build(orderedMaps);
+  }
+
+  /**
+   * Returns the list of loaded compaction maps in snapshot order (oldest to newest).
+   *
+   * @return list of compaction maps
+   */
+  List<CompactionMap> getOrderedMaps() {
+    loadCompactionMaps();
+    return Lists.newArrayList(orderedMaps);
+  }
+
+  /**
+   * Loads all compaction maps from the snapshot history.
+   *
+   * <p>Maps are cached after first load.
+   */
+  private void loadCompactionMaps() {
+    if (loadedMaps != null) {
+      return; // Already loaded
+    }
+
+    loadedMaps = Maps.newHashMap();
+    List<CompactionMap> mapsInSnapshotOrder = Lists.newArrayList();
 
     // Traverse snapshot history from current back to starting snapshot
+    // Collect in reverse order (newest first), then reverse
     Snapshot snapshot = currentSnapshot;
     while (snapshot != null && snapshot.snapshotId() != startingSnapshotId) {
       // Check each manifest for compaction maps
       for (ManifestFile manifest : snapshot.dataManifests(io)) {
         String mapLocation = manifest.compactionMapLocation();
-        if (mapLocation != null) {
-          // Load compaction map and extract source file paths
+        if (mapLocation != null && !loadedMaps.containsKey(mapLocation)) {
           CompactionMap map = CompactionMaps.read(io.newInputFile(mapLocation));
-          for (CompactionMap.FileMapping mapping : map.fileMappings()) {
-            // Map each source file to its compaction map location
-            compactionMaps.put(mapping.sourceFile(), mapLocation);
-          }
+          loadedMaps.put(mapLocation, map);
+          mapsInSnapshotOrder.add(map);
         }
       }
 
@@ -140,7 +212,170 @@ class CompactionMapValidator {
       snapshot = parentId != null ? base.snapshot(parentId) : null;
     }
 
-    return compactionMaps;
+    // Reverse to get oldest-to-newest order
+    this.orderedMaps = Lists.reverse(mapsInSnapshotOrder);
+  }
+
+  /**
+   * Builds an index from source file paths to compaction map locations.
+   *
+   * @return map from source file path to compaction map location
+   */
+  private Map<String, String> buildSourceFileIndex() {
+    Map<String, String> index = Maps.newHashMap();
+
+    for (Map.Entry<String, CompactionMap> entry : loadedMaps.entrySet()) {
+      String mapLocation = entry.getKey();
+      CompactionMap map = entry.getValue();
+
+      for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+        index.put(mapping.sourceFile(), mapLocation);
+      }
+    }
+
+    return index;
+  }
+
+  /**
+   * Detects chains in the compaction maps that affect the given conflict files.
+   *
+   * <p>A chain exists when a file is compacted in one map (e.g., F1→F2) and the target file is then
+   * compacted in a subsequent map (e.g., F2→F3).
+   *
+   * @param conflictFiles the files that are in conflict
+   * @return chain information
+   */
+  private ChainInfo detectChains(Set<String> conflictFiles) {
+    // Build index: target file -> map that produces it
+    Map<String, CompactionMap> targetToMap = Maps.newHashMap();
+    for (CompactionMap map : orderedMaps) {
+      for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+        // Handle per-run targets for multi-target mappings
+        for (CompactionMap.Run run : mapping.runs()) {
+          String target = run.targetFile() != null ? run.targetFile() : mapping.targetFile();
+          targetToMap.put(target, map);
+        }
+        // Also index the mapping-level target (for backward compat)
+        targetToMap.put(mapping.targetFile(), map);
+      }
+    }
+
+    // Build index: source file -> map that consumes it
+    Map<String, CompactionMap> sourceToMap = Maps.newHashMap();
+    for (CompactionMap map : orderedMaps) {
+      for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+        sourceToMap.put(mapping.sourceFile(), map);
+      }
+    }
+
+    // Find files that require chain composition
+    Set<String> chainedFiles = Sets.newHashSet();
+    Set<CompactionMap> mapsInChain = Sets.newLinkedHashSet();
+    Set<Long> snapshotsInChain = Sets.newLinkedHashSet();
+
+    for (String conflictFile : conflictFiles) {
+      // Find the map that compacts this file
+      CompactionMap firstMap = sourceToMap.get(conflictFile);
+      if (firstMap == null) {
+        continue;
+      }
+
+      // Get target file(s) from this map
+      CompactionMap.FileMapping mapping = firstMap.mappingForFile(conflictFile);
+      if (mapping == null) {
+        continue;
+      }
+
+      // Check if any target is a source in a subsequent map
+      Set<String> targets = getTargetFiles(mapping);
+      for (String target : targets) {
+        CompactionMap nextMap = sourceToMap.get(target);
+        if (nextMap != null && nextMap != firstMap) {
+          // Found a chain!
+          chainedFiles.add(conflictFile);
+
+          // Collect all maps in this chain
+          collectChainMaps(conflictFile, mapsInChain, snapshotsInChain, sourceToMap);
+        }
+      }
+    }
+
+    if (chainedFiles.isEmpty()) {
+      return ChainInfo.noChains();
+    }
+
+    List<CompactionMap> orderedChainMaps = Lists.newArrayList();
+    for (CompactionMap map : orderedMaps) {
+      if (mapsInChain.contains(map)) {
+        orderedChainMaps.add(map);
+      }
+    }
+
+    List<Long> orderedSnapshots = Lists.newArrayList(snapshotsInChain);
+
+    return new ChainInfo(chainedFiles, orderedSnapshots, orderedChainMaps);
+  }
+
+  /**
+   * Collects all maps in a chain starting from the given source file.
+   *
+   * @param sourceFile the starting source file
+   * @param mapsInChain set to collect maps into
+   * @param snapshotsInChain set to collect snapshot IDs into
+   * @param sourceToMap index from source file to map
+   */
+  private void collectChainMaps(
+      String sourceFile,
+      Set<CompactionMap> mapsInChain,
+      Set<Long> snapshotsInChain,
+      Map<String, CompactionMap> sourceToMap) {
+
+    String currentFile = sourceFile;
+    while (currentFile != null) {
+      CompactionMap map = sourceToMap.get(currentFile);
+      if (map == null || mapsInChain.contains(map)) {
+        break;
+      }
+
+      mapsInChain.add(map);
+      snapshotsInChain.add(map.sourceSnapshotId());
+      snapshotsInChain.add(map.targetSnapshotId());
+
+      // Get targets and follow the chain
+      CompactionMap.FileMapping mapping = map.mappingForFile(currentFile);
+      if (mapping != null) {
+        Set<String> targets = getTargetFiles(mapping);
+        // Follow the first target that continues the chain
+        currentFile = null;
+        for (String target : targets) {
+          if (sourceToMap.containsKey(target)) {
+            currentFile = target;
+            break;
+          }
+        }
+      } else {
+        currentFile = null;
+      }
+    }
+  }
+
+  /**
+   * Gets all target files from a file mapping, including per-run targets.
+   *
+   * @param mapping the file mapping
+   * @return set of target file paths
+   */
+  private Set<String> getTargetFiles(CompactionMap.FileMapping mapping) {
+    Set<String> targets = Sets.newHashSet();
+    targets.add(mapping.targetFile());
+
+    for (CompactionMap.Run run : mapping.runs()) {
+      if (run.targetFile() != null) {
+        targets.add(run.targetFile());
+      }
+    }
+
+    return targets;
   }
 
   /**
@@ -201,5 +436,27 @@ class CompactionMapValidator {
     }
 
     return java.util.Collections.unmodifiableList(conflicting);
+  }
+
+  /** Internal class to hold chain detection results. */
+  private static class ChainInfo {
+    final Set<String> chainedFiles;
+    final List<Long> chainSnapshotIds;
+    final List<CompactionMap> chainMaps;
+
+    ChainInfo(
+        Set<String> chainedFiles, List<Long> chainSnapshotIds, List<CompactionMap> chainMaps) {
+      this.chainedFiles = chainedFiles;
+      this.chainSnapshotIds = chainSnapshotIds;
+      this.chainMaps = chainMaps;
+    }
+
+    static ChainInfo noChains() {
+      return new ChainInfo(Sets.newHashSet(), Lists.newArrayList(), Lists.newArrayList());
+    }
+
+    boolean hasChains() {
+      return !chainedFiles.isEmpty();
+    }
   }
 }
