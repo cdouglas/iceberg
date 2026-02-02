@@ -240,10 +240,10 @@ public class CompactionMaps {
   /**
    * Composes file mappings from m1 through m2.
    *
-   * <p>For each run in m1, this method finds overlapping runs in m2 and creates composed runs.
-   * Runs that have no overlap with any m2 run are preserved with the intermediate file as target
-   * (since those rows weren't part of the M2 compaction). Runs that have partial overlap will
-   * have only the overlapping portion composed; non-overlapping portions are dropped.
+   * <p>For each run in m1, this method finds overlapping runs in m2 and creates composed runs. Runs
+   * that have no overlap with any m2 run are preserved with the intermediate file as target (since
+   * those rows weren't part of the M2 compaction). Runs that have partial overlap will have only
+   * the overlapping portion composed; non-overlapping portions are dropped.
    *
    * @param builder the builder to add composed runs to
    * @param originalSourceFile the original source file in m1
