@@ -1,6 +1,14 @@
 # Remapping Microbenchmark
 
-This benchmark measures the cost of rebasing position deletes on top of a compaction commit, which occurs in conflict scenarios where:
+This benchmark measures the end-to-end cost of rebasing position deletes on top of a compaction commit, including storage I/O.
+
+**Purpose:** Measure realistic conflict resolution costs including read/write latency for position deletes and deletion vectors.
+
+**Related:** For pure algorithm benchmarks (CPU-bound, no I/O), see [`remapping-optimization`](../remapping-optimization/).
+
+## Use Cases
+
+This benchmark covers conflict scenarios where:
 
 1. A transaction with position deletes conflicts with a concurrent compaction
 2. A compaction needs to rebase concurrent transaction deletes onto its compacted state
