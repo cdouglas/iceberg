@@ -94,6 +94,7 @@ import org.apache.iceberg.util.SortedLongArraySet;
  */
 public class PositionDeleteRemapper {
   private final CompactionMap compactionMap;
+  private final CompactionMapChain chain;
   private final Map<String, FileMapping> fileMappingIndex;
 
   /**
@@ -103,7 +104,37 @@ public class PositionDeleteRemapper {
    */
   public PositionDeleteRemapper(CompactionMap compactionMap) {
     this.compactionMap = compactionMap;
+    this.chain = null;
     this.fileMappingIndex = buildFileMappingIndex(compactionMap);
+  }
+
+  /**
+   * Creates a new remapper for a chain of compaction maps.
+   *
+   * <p>Use this constructor when multiple sequential compactions have occurred and mappings need to
+   * be composed through the chain. The chain handles lazy composition of mappings on demand.
+   *
+   * <p><b>Example usage:</b>
+   *
+   * <pre>
+   * // Build chain from exception
+   * CompactionMapChain chain = CompactionMapChain.build(chainedException.compactionMaps());
+   * PositionDeleteRemapper remapper = new PositionDeleteRemapper(chain);
+   *
+   * // Remap deletes through the chain
+   * PositionDelete&lt;?&gt; remapped = remapper.remapDeleteOrNull(delete);
+   * </pre>
+   *
+   * @param chain the compaction map chain for multi-step remapping
+   */
+  public PositionDeleteRemapper(CompactionMapChain chain) {
+    Preconditions.checkNotNull(chain, "chain cannot be null");
+    Preconditions.checkArgument(chain.size() > 0, "chain cannot be empty");
+
+    this.compactionMap = null;
+    this.chain = chain;
+    // Build index from all source files across the chain
+    this.fileMappingIndex = buildFileMappingIndexFromChain(chain);
   }
 
   /**
@@ -188,7 +219,7 @@ public class PositionDeleteRemapper {
   public boolean needsRemapping(DeleteFile deleteFile) {
     // If delete file specifies a single referenced data file, check that
     if (deleteFile.referencedDataFile() != null) {
-      return fileMappingIndex.containsKey(deleteFile.referencedDataFile());
+      return isCompacted(deleteFile.referencedDataFile());
     }
 
     // For delete files that may reference multiple data files,
@@ -221,7 +252,7 @@ public class PositionDeleteRemapper {
 
     // File-scoped position deletes - check the referenced file
     if (deleteFile.referencedDataFile() != null) {
-      return fileMappingIndex.containsKey(deleteFile.referencedDataFile());
+      return isCompacted(deleteFile.referencedDataFile());
     }
 
     // Multi-file position deletes - may reference compacted files
@@ -236,6 +267,9 @@ public class PositionDeleteRemapper {
    * @return true if this file was compacted
    */
   public boolean isCompacted(String dataFilePath) {
+    if (chain != null) {
+      return chain.containsSource(dataFilePath);
+    }
     return fileMappingIndex.containsKey(dataFilePath);
   }
 
@@ -245,6 +279,9 @@ public class PositionDeleteRemapper {
    * @return set of source file paths in the compaction map
    */
   public Set<String> compactedFiles() {
+    if (chain != null) {
+      return chain.sourceFiles();
+    }
     return fileMappingIndex.keySet();
   }
 
@@ -302,7 +339,7 @@ public class PositionDeleteRemapper {
    */
   public PositionDelete<?> remapDeleteOrNull(PositionDelete<?> delete) {
     String path = delete.path().toString();
-    FileMapping mapping = fileMappingIndex.get(path);
+    FileMapping mapping = getMapping(path);
 
     if (mapping == null) {
       // File was not compacted, return original delete
@@ -360,7 +397,7 @@ public class PositionDeleteRemapper {
       throw new IllegalStateException("DV missing referencedDataFile: " + dvFile.location());
     }
 
-    FileMapping mapping = fileMappingIndex.get(sourceFile);
+    FileMapping mapping = getMapping(sourceFile);
 
     if (mapping == null) {
       // DV references non-compacted file, return original mapping
@@ -499,7 +536,7 @@ public class PositionDeleteRemapper {
       throw new IllegalStateException("DV missing referencedDataFile: " + dvFile.location());
     }
 
-    FileMapping mapping = fileMappingIndex.get(sourceFile);
+    FileMapping mapping = getMapping(sourceFile);
 
     if (mapping == null) {
       // DV references non-compacted file, return original mapping
@@ -541,12 +578,21 @@ public class PositionDeleteRemapper {
   }
 
   /**
-   * Returns the compaction map used by this remapper.
+   * Returns the compaction map used by this remapper, or null if using a chain.
    *
-   * @return the compaction map
+   * @return the compaction map, or null if using a chain
    */
   public CompactionMap compactionMap() {
     return compactionMap;
+  }
+
+  /**
+   * Returns the compaction map chain used by this remapper, or null if using a single map.
+   *
+   * @return the compaction map chain, or null if using a single map
+   */
+  public CompactionMapChain chain() {
+    return chain;
   }
 
   private static Map<String, FileMapping> buildFileMappingIndex(CompactionMap map) {
@@ -555,6 +601,31 @@ public class PositionDeleteRemapper {
       builder.put(mapping.sourceFile(), mapping);
     }
     return builder.build();
+  }
+
+  private static Map<String, FileMapping> buildFileMappingIndexFromChain(CompactionMapChain chain) {
+    // For chains, we start with a placeholder index that just tracks which files are in the chain
+    // Actual mappings are resolved lazily through the chain
+    Map<String, FileMapping> index = new HashMap<>();
+    for (String sourceFile : chain.sourceFiles()) {
+      // Put a placeholder - actual mapping will be fetched from chain when needed
+      index.put(sourceFile, null);
+    }
+    return index;
+  }
+
+  /**
+   * Gets the file mapping for a source file, using the chain if available.
+   *
+   * @param sourceFile the source file path
+   * @return the file mapping, or null if not found
+   */
+  private FileMapping getMapping(String sourceFile) {
+    if (chain != null) {
+      // Use chain to get composed mapping
+      return chain.mappingForFile(sourceFile);
+    }
+    return fileMappingIndex.get(sourceFile);
   }
 
   private Set<Long> readAllPositions(DeleteFile dvFile, FileIO fileIO) throws IOException {
