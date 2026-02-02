@@ -32,6 +32,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.CompactionConflictDetector;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMapBuilder;
+import org.apache.iceberg.CompactionMapChain;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteConflictInfo;
@@ -351,6 +352,154 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     // Data should be unchanged
     List<Object[]> actualRecords = currentData();
     assertEquals("Rows must match", expectedRecords, actualRecords);
+  }
+
+  @TestTemplate
+  public void testSequentialCompactionsWithDeletesBetween() {
+    // This test verifies that position deletes added between two compactions
+    // are correctly handled. The scenario is:
+    //   1. Start with original data files F1, F2, F3, F4
+    //   2. First compaction: F1, F2 -> F12
+    //   3. Add position deletes referencing F12
+    //   4. Second compaction: F12, F3 -> F123
+    //   5. Deletes should be remapped F12 -> F123
+
+    Table table = createTableWithData(4);
+    table
+        .updateProperties()
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .set(TableProperties.COMPACTION_RESOLVE_DELETE_CONFLICTS, "true")
+        .commit();
+
+    // Record initial data
+    List<Object[]> expectedRecords = currentData();
+    long initialRecordCount = expectedRecords.size();
+
+    // First compaction - compacts some files
+    RewriteDataFiles.Result result1 =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "2")
+            .option(SizeBasedFileRewritePlanner.MAX_FILE_GROUP_SIZE_BYTES, String.valueOf(SCALE * 100))
+            .execute();
+
+    // Add position delete referencing one of the compacted files
+    table.refresh();
+    List<DataFile> filesAfterFirstCompaction = TestHelpers.dataFiles(table);
+    assertThat(filesAfterFirstCompaction).isNotEmpty();
+
+    // Delete first row of first file
+    DeleteFile deleteFile = writePositionDelete(table, filesAfterFirstCompaction.get(0), 0);
+    table.newRowDelta().addDeletes(deleteFile).commit();
+
+    // Record expected data after delete
+    expectedRecords = currentData();
+    assertThat(expectedRecords.size()).isEqualTo(initialRecordCount - 1);
+
+    // Second compaction - may need to rebase deletes
+    RewriteDataFiles.Result result2 =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "1")
+            .execute();
+
+    // Verify data correctness after both compactions
+    List<Object[]> actualRecords = currentData();
+    assertEquals("Rows must match after sequential compactions", expectedRecords, actualRecords);
+  }
+
+  @TestTemplate
+  public void testDeletesAddedBeforeMultipleCompactions() {
+    // This test verifies that position deletes added before any compaction
+    // are correctly remapped through a chain of compactions:
+    //   1. Start with data files F1, F2, F3, F4
+    //   2. Add position deletes referencing F1
+    //   3. First compaction: F1, F2 -> F12 (creates M1: F1->F12)
+    //   4. Second compaction: F12, F3 -> F123 (creates M2: F12->F123)
+    //   5. Deletes need chain: F1 -> F12 -> F123
+
+    Table table = createTableWithData(4);
+    table
+        .updateProperties()
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .set(TableProperties.COMPACTION_RESOLVE_DELETE_CONFLICTS, "true")
+        .commit();
+
+    List<DataFile> originalDataFiles = TestHelpers.dataFiles(table);
+    long initialRecordCount = currentData().size();
+
+    // Add position delete BEFORE any compaction
+    DeleteFile deleteFile = writePositionDelete(table, originalDataFiles.get(0), 0);
+    table.newRowDelta().addDeletes(deleteFile).commit();
+
+    // Record expected data after delete
+    List<Object[]> expectedRecords = currentData();
+    assertThat(expectedRecords.size()).isEqualTo(initialRecordCount - 1);
+
+    // First compaction
+    RewriteDataFiles.Result result1 =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "2")
+            .option(SizeBasedFileRewritePlanner.MAX_FILE_GROUP_SIZE_BYTES, String.valueOf(SCALE * 100))
+            .execute();
+
+    // Verify data still correct after first compaction
+    List<Object[]> afterFirst = currentData();
+    assertEquals("Rows must match after first compaction", expectedRecords, afterFirst);
+
+    // Second compaction
+    RewriteDataFiles.Result result2 =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "1")
+            .execute();
+
+    // Verify data still correct after second compaction
+    List<Object[]> actualRecords = currentData();
+    assertEquals("Rows must match after chained compactions", expectedRecords, actualRecords);
+  }
+
+  @TestTemplate
+  public void testCompactionMapChainComposition() {
+    // Unit test for CompactionMapChain with the Spark resolver
+    // Tests that chains are correctly composed and position deletes remapped
+
+    Table table = createTableWithData(2);
+    List<DataFile> dataFiles = TestHelpers.dataFiles(table);
+
+    // Create a chain: F1 -> F2 -> F3
+    CompactionMapBuilder m1Builder = new CompactionMapBuilder(1L, 2L);
+    m1Builder
+        .addFileMapping(dataFiles.get(0).path().toString(), "intermediate.parquet")
+        .addRun(0, 0, dataFiles.get(0).recordCount());
+    CompactionMap m1 = m1Builder.build();
+
+    CompactionMapBuilder m2Builder = new CompactionMapBuilder(2L, 3L);
+    m2Builder
+        .addFileMapping("intermediate.parquet", "final.parquet")
+        .addRun(0, 100, dataFiles.get(0).recordCount()); // Offset by 100 in target
+    CompactionMap m2 = m2Builder.build();
+
+    // Build chain
+    CompactionMapChain chain = CompactionMapChain.build(java.util.List.of(m1, m2));
+
+    // Verify chain properties
+    assertThat(chain.size()).isEqualTo(2);
+    assertThat(chain.firstSourceSnapshotId()).isEqualTo(1L);
+    assertThat(chain.lastTargetSnapshotId()).isEqualTo(3L);
+
+    // Verify F1 maps through chain to final target
+    assertThat(chain.containsSource(dataFiles.get(0).path().toString())).isTrue();
+
+    CompactionMap.FileMapping mapping = chain.mappingForFile(dataFiles.get(0).path().toString());
+    assertThat(mapping).isNotNull();
+    assertThat(mapping.targetFile()).isEqualTo("final.parquet");
+
+    // Verify position mapping: position 50 in F1 -> 50 in intermediate -> 150 in final
+    CompactionMap.Run run = mapping.runForPosition(50);
+    assertThat(run).isNotNull();
+    assertThat(run.mapPosition(50)).isEqualTo(150);
   }
 
   // Helper methods
