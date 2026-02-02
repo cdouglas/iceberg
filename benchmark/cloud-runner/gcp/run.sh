@@ -31,7 +31,7 @@ init_project_root
 
 # Defaults
 DEFAULT_MACHINE_TYPE="n2-standard-4"
-DEFAULT_ZONE="${GCP_ZONE:-us-central1-a}"
+DEFAULT_ZONE="${GCP_ZONE:-us-west1-a}"
 DEFAULT_PROJECT="${GCP_PROJECT:-}"
 DEFAULT_NETWORK="${GCP_NETWORK:-default}"
 INSTANCE_NAME="iceberg-benchmark"
