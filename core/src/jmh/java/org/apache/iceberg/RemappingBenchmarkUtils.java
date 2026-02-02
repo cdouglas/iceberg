@@ -21,6 +21,7 @@ package org.apache.iceberg;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Random;
 import java.util.Set;
 import org.apache.iceberg.CompactionMap.Run;
@@ -68,10 +69,29 @@ public class RemappingBenchmarkUtils {
    * @param count number of positions to create
    * @param numRuns number of runs (used to determine range)
    * @return list of sorted positions
+   * @throws IllegalArgumentException if count is too large for the range to produce meaningful
+   *     sorted positions
    */
   public static List<Long> createSortedPositions(int count, int numRuns) {
-    List<Long> positions = new ArrayList<>(count);
     long maxPosition = numRuns * RUN_LENGTH * 2; // Account for potential gaps
+
+    // Average increment is ~10.5 per position (random 1-20)
+    // Need range > count * avgIncrement to avoid clamping most positions
+    long minRangeNeeded = (long) (count * 10.5);
+    if (maxPosition < minRangeNeeded) {
+      throw new IllegalArgumentException(
+          String.format(
+              Locale.ROOT,
+              "Cannot generate %d meaningful sorted positions in range of %d "
+                  + "(need at least %d to avoid clamping). "
+                  + "numRuns=%d. Reduce numPositions or increase numRuns.",
+              count,
+              maxPosition,
+              minRangeNeeded,
+              numRuns));
+    }
+
+    List<Long> positions = new ArrayList<>(count);
 
     long pos = 0;
     for (int i = 0; i < count; i++) {
@@ -116,6 +136,8 @@ public class RemappingBenchmarkUtils {
    * @param numRuns total number of runs
    * @param coverage fraction of run range to cover (0.0-1.0)
    * @return list of sorted positions within the covered range
+   * @throws IllegalArgumentException if count is too large for the covered range to produce
+   *     meaningful sorted positions (would clamp most to the end)
    */
   public static List<Long> createSortedPositionsWithCoverage(
       int count, int numRuns, double coverage) {
@@ -123,11 +145,28 @@ public class RemappingBenchmarkUtils {
       throw new IllegalArgumentException("Coverage must be in (0.0, 1.0], got: " + coverage);
     }
 
-    List<Long> positions = new ArrayList<>(count);
-
     // Calculate the range that positions should cover
     long totalRange = numRuns * RUN_LENGTH * 2; // Account for potential gaps
     long coveredRange = (long) (totalRange * coverage);
+
+    // Average increment is ~10.5 per position (random 1-20)
+    // Need range > count * avgIncrement to avoid clamping most positions
+    long minRangeNeeded = (long) (count * 10.5);
+    if (coveredRange < minRangeNeeded) {
+      throw new IllegalArgumentException(
+          String.format(
+              Locale.ROOT,
+              "Cannot generate %d meaningful sorted positions in covered range of %d "
+                  + "(need at least %d to avoid clamping). "
+                  + "numRuns=%d, coverage=%.1f. Reduce numPositions or increase numRuns/coverage.",
+              count,
+              coveredRange,
+              minRangeNeeded,
+              numRuns,
+              coverage));
+    }
+
+    List<Long> positions = new ArrayList<>(count);
 
     // Start positions at a random offset within the uncovered portion
     // This ensures positions don't always start at 0
@@ -156,6 +195,8 @@ public class RemappingBenchmarkUtils {
    * @param numRuns total number of runs
    * @param coverage fraction of run range to cover (0.0-1.0)
    * @return list of random positions within the covered range
+   * @throws IllegalArgumentException if count exceeds the covered range (impossible to generate
+   *     that many unique positions)
    */
   public static List<Long> createRandomPositionsWithCoverage(
       int count, int numRuns, double coverage) {
@@ -163,10 +204,36 @@ public class RemappingBenchmarkUtils {
       throw new IllegalArgumentException("Coverage must be in (0.0, 1.0], got: " + coverage);
     }
 
-    Set<Long> uniquePositions = new HashSet<>();
-
     long totalRange = numRuns * RUN_LENGTH * 2;
     long coveredRange = (long) (totalRange * coverage);
+
+    // Fail fast if impossible: can't generate more unique positions than the range allows
+    if (count > coveredRange) {
+      throw new IllegalArgumentException(
+          String.format(
+              Locale.ROOT,
+              "Cannot generate %d unique random positions in covered range of %d "
+                  + "(numRuns=%d, coverage=%.1f, totalRange=%d). "
+                  + "Reduce numPositions or increase numRuns/coverage.",
+              count,
+              coveredRange,
+              numRuns,
+              coverage,
+              totalRange));
+    }
+
+    // Warn if this will be slow (> 50% fill rate means many collisions)
+    if (count > coveredRange / 2) {
+      System.err.printf(
+          Locale.ROOT,
+          "WARNING: High fill rate (%d/%d = %.0f%%) will cause slow position generation%n",
+          count,
+          coveredRange,
+          100.0 * count / coveredRange);
+    }
+
+    Set<Long> uniquePositions = new HashSet<>();
+
     long maxOffset = totalRange - coveredRange;
     long startOffset = maxOffset > 0 ? (RANDOM.nextLong() & Long.MAX_VALUE) % maxOffset : 0;
 
