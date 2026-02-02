@@ -208,37 +208,71 @@ def plot_combined_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> N
 
 
 def plot_compact_cloud_comparison(raw_df: pd.DataFrame, output_dir: Path) -> None:
-    """Compact plot: both formats side-by-side grouped by cloud, using cloud colors."""
+    """Compact plot: grouped by delete count, then cloud, then format (DV first).
+
+    Bar order within each group: AWS_DV, AWS_DF, Azure_DV, Azure_DF, GCP_DV, GCP_DF
+    Single-column figure with narrower bars.
+    """
     df = raw_df[~raw_df['warmup']].copy()
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+    # Single-column figure (half width)
+    fig, ax = plt.subplots(figsize=(5, 5))
 
     clouds = sorted(df['cloud'].unique())
-    formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
-    format_labels = ['Pos Del', 'DV']
+    # DV first, then DF
+    formats = ['DELETION_VECTOR', 'POSITION_DELETE_FILE']
+    format_hatches = {'POSITION_DELETE_FILE': '///', 'DELETION_VECTOR': ''}
+    format_labels = {'POSITION_DELETE_FILE': 'DF', 'DELETION_VECTOR': 'DV'}
 
-    # Aggregate by cloud and format
-    agg = df.groupby(['cloud', 'format'])['latency_ms'].mean().unstack()
+    delete_counts = sorted(df['num-deletes'].unique())
 
-    x = np.arange(len(clouds))
-    width = 0.35
+    # Aggregate by cloud, format, and num_deletes
+    agg = df.groupby(['cloud', 'format', 'num-deletes'])['latency_ms'].mean()
 
-    for i, (fmt, label) in enumerate(zip(formats, format_labels)):
-        values = [agg.loc[cloud, fmt] if fmt in agg.columns else 0 for cloud in clouds]
-        bars = ax.bar(x + i * width, values, width, label=label)
+    # Number of bars per delete count group: 3 clouds × 2 formats = 6
+    n_clouds = len(clouds)
+    n_formats = len(formats)
+    n_bars = n_clouds * n_formats
+    width = 0.06  # Half the previous width for single-column figure
+    group_width = n_bars * width + 0.08  # Extra spacing between groups
 
-        # Color bars by cloud
-        for bar, cloud in zip(bars, clouds):
-            bar.set_color(COLORS.get(cloud, '#666'))
-            if i == 1:  # Add hatching to DV bars to distinguish
-                bar.set_hatch('//')
+    x = np.arange(len(delete_counts)) * group_width
 
-    ax.set_xlabel('Cloud Provider', fontsize=11)
-    ax.set_ylabel('Average Latency (ms)', fontsize=11)
-    ax.set_title('Remapping Latency: Position Deletes vs Deletion Vectors', fontsize=12, fontweight='bold')
-    ax.set_xticks(x + width / 2)
-    ax.set_xticklabels([c.upper() for c in clouds], fontsize=11)
-    ax.legend(title='Format', loc='upper right')
+    # Create bars: for each cloud, then each format (DV, DF)
+    # Order: AWS_DV, AWS_DF, Azure_DV, Azure_DF, GCP_DV, GCP_DF
+    for cloud_idx, cloud in enumerate(clouds):
+        for fmt_idx, fmt in enumerate(formats):
+            bar_offset = cloud_idx * n_formats + fmt_idx
+            positions = x + (bar_offset - n_bars/2 + 0.5) * width
+
+            values = []
+            for dc in delete_counts:
+                try:
+                    values.append(agg.loc[(cloud, fmt, dc)])
+                except KeyError:
+                    values.append(0)
+
+            bars = ax.bar(positions, values, width,
+                         color=COLORS.get(cloud, '#666'),
+                         hatch=format_hatches[fmt],
+                         edgecolor='white', linewidth=0.5)
+
+    # Custom legend: cloud colors and format patterns
+    from matplotlib.patches import Patch
+    cloud_legend = [Patch(facecolor=COLORS.get(c, '#666'), label=c.upper()) for c in clouds]
+    format_legend = [
+        Patch(facecolor='gray', hatch='', edgecolor='white', label='Deletion Vector'),
+        Patch(facecolor='gray', hatch='///', edgecolor='white', label='Position Delete'),
+    ]
+    leg1 = ax.legend(handles=cloud_legend, loc='upper left', title='Cloud', fontsize=8)
+    ax.add_artist(leg1)
+    ax.legend(handles=format_legend, loc='upper right', title='Format', fontsize=8)
+
+    ax.set_xlabel('Number of Deletes', fontsize=10)
+    ax.set_ylabel('Average Latency (ms)', fontsize=10)
+    ax.set_title('Remapping Latency by Delete Count', fontsize=11, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'{d//1000}K' if d >= 1000 else str(d) for d in delete_counts], fontsize=9)
     ax.grid(axis='y', alpha=0.3)
 
     plt.tight_layout()
@@ -250,10 +284,11 @@ def plot_compact_cloud_comparison(raw_df: pd.DataFrame, output_dir: Path) -> Non
 
 def plot_compact_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> None:
     """Compact plot: latency breakdown with both formats side-by-side, grouped by cloud.
-    Uses cloud colors with hatching patterns for read/remap/write phases."""
+    Uses cloud colors with hatching patterns for read/remap/write phases.
+    Optimized for single-column figure with larger text."""
     df = raw_df[~raw_df['warmup']].copy()
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+    fig, ax = plt.subplots(figsize=(8, 5))
 
     clouds = sorted(df['cloud'].unique())
     formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
@@ -305,7 +340,7 @@ def plot_compact_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> No
             ax.annotate(f'{total:.0f}',
                        xy=(positions[i], total + 5),
                        ha='center', va='bottom',
-                       fontsize=8, fontweight='bold')
+                       fontsize=12, fontweight='bold')
 
     # Custom legend for phases (using hatching)
     from matplotlib.patches import Patch
@@ -314,21 +349,22 @@ def plot_compact_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> No
         Patch(facecolor='gray', edgecolor='white', hatch='///', label='Remap'),
         Patch(facecolor='gray', edgecolor='white', hatch='...', label='Write'),
     ]
-    leg1 = ax.legend(handles=legend_elements, loc='upper right', title='Phase', fontsize=9)
+    leg1 = ax.legend(handles=legend_elements, loc='upper right', title='Phase', fontsize=12,
+                     title_fontsize=12)
     ax.add_artist(leg1)
 
     # Add format labels below x-axis
     ax.set_xticks(x)
-    ax.set_xticklabels([c.upper() for c in clouds], fontsize=11)
+    ax.set_xticklabels([c.upper() for c in clouds], fontsize=14, fontweight='bold')
 
     # Add format indicators
     for i, cloud in enumerate(clouds):
-        ax.text(x[i] - width/2, -max_height * 0.08, 'PD', ha='center', va='top', fontsize=8)
-        ax.text(x[i] + width/2, -max_height * 0.08, 'DV', ha='center', va='top', fontsize=8)
+        ax.text(x[i] - width/2, -max_height * 0.08, 'PD', ha='center', va='top', fontsize=11)
+        ax.text(x[i] + width/2, -max_height * 0.08, 'DV', ha='center', va='top', fontsize=11)
 
-    ax.set_xlabel('')
-    ax.set_ylabel('Latency (ms)', fontsize=11)
-    ax.set_title('Remapping Latency Breakdown by Cloud and Format', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Latency (ms)', fontsize=14)
+    ax.set_title('Remapping Latency Breakdown', fontsize=14, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=12)
     ax.grid(axis='y', alpha=0.3)
     ax.set_ylim(0, max_height * 1.15)
 
