@@ -2,8 +2,9 @@
 #
 # Run JMH benchmarks in parallel across multiple containers
 #
-# Partitions by strategy (6 containers), then merges results.
-# On a large machine, reduces ~11 hours to ~2 hours.
+# Partitions by strategy (8 containers), then merges results.
+# Includes NoPushdown variants for predicate pushdown ablation study.
+# On a large machine, reduces benchmark time significantly.
 #
 # REENTRANT: Safe to disconnect and reconnect. Running again while
 # containers are in progress will wait for the existing run.
@@ -24,6 +25,7 @@ RESULTS_DIR="${SCRIPT_DIR}/results"
 RUN_FILE="${SCRIPT_DIR}/.benchmark_run"
 
 # Strategies to benchmark (one container each)
+# Includes NoPushdown variants for predicate pushdown ablation study
 STRATEGIES=(
     "linearSearch"
     "binarySearch"
@@ -31,6 +33,8 @@ STRATEGIES=(
     "streamJoin"
     "rangeQuery"
     "smartSelector"
+    "streamJoinNoPushdown"
+    "rangeQueryNoPushdown"
 )
 
 # Container name prefix
@@ -322,7 +326,7 @@ with open(sys.argv[1]) as f:
 
 with open(sys.argv[2], 'w', newline='') as f:
     writer = csv.writer(f)
-    writer.writerow(['strategy', 'gap_ratio', 'num_positions', 'num_runs', 'sorted', 'avg_time_us', 'error_us'])
+    writer.writerow(['strategy', 'gap_ratio', 'num_positions', 'num_runs', 'sorted', 'position_coverage', 'avg_time_us', 'error_us'])
 
     for result in data:
         benchmark = result['benchmark'].split('.')[-1]  # e.g., "linearSearch"
@@ -336,6 +340,7 @@ with open(sys.argv[2], 'w', newline='') as f:
             params.get('numPositions', ''),
             params.get('numRuns', ''),
             params.get('sorted', ''),
+            params.get('positionCoverage', '1.0'),
             f"{score:.3f}",
             f"{error:.3f}"
         ])
