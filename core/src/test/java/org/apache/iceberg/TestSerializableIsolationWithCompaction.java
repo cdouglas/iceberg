@@ -639,7 +639,8 @@ public class TestSerializableIsolationWithCompaction {
     // for the transaction to succeed.
     //
     // This is a positive test confirming the validation logic iterates through
-    // all REPLACE operations and checks each one. The testSerializableIsolationWithChainedCompactions
+    // all REPLACE operations and checks each one. The
+    // testSerializableIsolationWithChainedCompactions
     // test above proves that when all compactions have maps, the transaction succeeds.
     //
     // Note: Testing the negative case (partial chain missing map causing failure) requires

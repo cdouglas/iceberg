@@ -36,9 +36,7 @@ public class TestChainedCompactionMapsDetection {
     // Create exception with test data
     ChainedCompactionMapsException exception =
         new ChainedCompactionMapsException(
-            java.util.Set.of("F1", "F2"),
-            java.util.List.of(1L, 2L, 3L),
-            java.util.List.of());
+            java.util.Set.of("F1", "F2"), java.util.List.of(1L, 2L, 3L), java.util.List.of());
 
     assertThat(exception.getMessage())
         .contains("2 file(s) require chained compaction map composition")
@@ -60,9 +58,7 @@ public class TestChainedCompactionMapsDetection {
 
     ChainedCompactionMapsException exception =
         new ChainedCompactionMapsException(
-            java.util.Set.of("F1"),
-            java.util.List.of(1L, 2L, 3L),
-            java.util.List.of(m1, m2));
+            java.util.Set.of("F1"), java.util.List.of(1L, 2L, 3L), java.util.List.of(m1, m2));
 
     assertThat(exception.compactionMaps()).hasSize(2);
     assertThat(exception.compactionMaps().get(0).sourceSnapshotId()).isEqualTo(1L);
@@ -80,8 +76,7 @@ public class TestChainedCompactionMapsDetection {
     m2Builder.addFileMapping("F2", "F3").addRun(0, 100, 100); // Offset by 100 in target
     CompactionMap m2 = m2Builder.build();
 
-    CompactionMapChain chain =
-        CompactionMapChain.build(java.util.List.of(m1, m2));
+    CompactionMapChain chain = CompactionMapChain.build(java.util.List.of(m1, m2));
 
     // Create remapper with chain
     PositionDeleteRemapper remapper = new PositionDeleteRemapper(chain);
@@ -115,8 +110,7 @@ public class TestChainedCompactionMapsDetection {
     m2Builder.addFileMapping("F2", "F3").addRun(0, 0, 50);
     CompactionMap m2 = m2Builder.build();
 
-    CompactionMapChain chain =
-        CompactionMapChain.build(java.util.List.of(m1, m2));
+    CompactionMapChain chain = CompactionMapChain.build(java.util.List.of(m1, m2));
 
     PositionDeleteRemapper remapper = new PositionDeleteRemapper(chain);
 

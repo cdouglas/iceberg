@@ -153,10 +153,7 @@ public class TestCompactionMapComposition {
     //   Rows 0-49 -> F2a[0-49]
     //   Rows 50-99 -> F2b[0-49]
     CompactionMapBuilder m1Builder = new CompactionMapBuilder(1L, 2L);
-    m1Builder
-        .addFileMapping("F1", "F2a")
-        .addRun(0, 0, 50, "F2a")
-        .addRun(50, 0, 50, "F2b");
+    m1Builder.addFileMapping("F1", "F2a").addRun(0, 0, 50, "F2a").addRun(50, 0, 50, "F2b");
     CompactionMap m1 = m1Builder.build();
 
     // M2: F2a -> F3 (rows 0-49 -> 100-149)
