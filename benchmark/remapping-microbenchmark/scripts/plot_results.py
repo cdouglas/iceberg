@@ -215,8 +215,8 @@ def plot_compact_cloud_comparison(raw_df: pd.DataFrame, output_dir: Path) -> Non
     """
     df = raw_df[~raw_df['warmup']].copy()
 
-    # Single-column figure (half width)
-    fig, ax = plt.subplots(figsize=(5, 5))
+    # Single-column figure with landscape aspect ratio
+    fig, ax = plt.subplots(figsize=(5, 3.5))
 
     clouds = sorted(df['cloud'].unique())
     # DV first, then DF
@@ -257,16 +257,19 @@ def plot_compact_cloud_comparison(raw_df: pd.DataFrame, output_dir: Path) -> Non
                          hatch=format_hatches[fmt],
                          edgecolor='white', linewidth=0.5)
 
-    # Custom legend: cloud colors and format patterns
+    # Custom legend: cloud colors and format patterns, both on left side
     from matplotlib.patches import Patch
     cloud_legend = [Patch(facecolor=COLORS.get(c, '#666'), label=c.upper()) for c in clouds]
     format_legend = [
         Patch(facecolor='gray', hatch='', edgecolor='white', label='Deletion Vector'),
         Patch(facecolor='gray', hatch='///', edgecolor='white', label='Position Delete'),
     ]
+    # Cloud legend at top-left
     leg1 = ax.legend(handles=cloud_legend, loc='upper left', title='Cloud', fontsize=8)
     ax.add_artist(leg1)
-    ax.legend(handles=format_legend, loc='upper right', title='Format', fontsize=8)
+    # Format legend below cloud legend (use bbox_to_anchor for positioning)
+    ax.legend(handles=format_legend, loc='upper left', title='Format', fontsize=8,
+              bbox_to_anchor=(0, 0.62))
 
     ax.set_xlabel('Number of Deletes', fontsize=10)
     ax.set_ylabel('Average Latency (ms)', fontsize=10)
@@ -373,6 +376,108 @@ def plot_compact_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> No
     plt.savefig(output_dir / 'latency_breakdown_compact.pdf', bbox_inches='tight')
     plt.close()
     print(f"Saved: latency_breakdown_compact.png/pdf")
+
+
+def plot_latency_breakdown_1m(raw_df: pd.DataFrame, output_dir: Path) -> None:
+    """Latency breakdown filtered to 1M deletes only.
+
+    Shows read/remap/write phases for the largest workload size,
+    which is more representative of production scenarios.
+    """
+    df = raw_df[~raw_df['warmup']].copy()
+
+    # Filter to 1M deletes only
+    df = df[df['num-deletes'] == 1000000]
+
+    if df.empty:
+        print("No 1M delete data found, skipping latency_breakdown_1m plot")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    clouds = sorted(df['cloud'].unique())
+    formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
+    format_labels = ['Pos Del', 'DV']
+
+    # Hatching patterns for phases
+    phase_hatches = {
+        'read': '',       # Solid
+        'remap': '///',   # Diagonal lines
+        'write': '...',   # Dots
+    }
+
+    x = np.arange(len(clouds))
+    width = 0.38
+    bar_positions = [x - width/2, x + width/2]
+
+    # Track max height for y-axis
+    max_height = 0
+
+    for fmt_idx, (fmt, label) in enumerate(zip(formats, format_labels)):
+        format_df = df[df['format'] == fmt]
+
+        agg_data = format_df.groupby('cloud').agg({
+            'read_ms': 'mean',
+            'remap_ms': 'mean',
+            'write_ms': 'mean',
+            'latency_ms': 'mean'
+        }).reindex(clouds)
+
+        positions = bar_positions[fmt_idx]
+        bottom = np.zeros(len(clouds))
+
+        for phase, hatch in phase_hatches.items():
+            phase_vals = agg_data[f'{phase}_ms'].values
+
+            bars = ax.bar(positions, phase_vals, width, bottom=bottom, hatch=hatch,
+                         edgecolor='white', linewidth=0.5)
+
+            # Color by cloud
+            for bar, cloud in zip(bars, clouds):
+                bar.set_facecolor(COLORS.get(cloud, '#666'))
+
+            bottom += phase_vals
+
+        # Add total labels
+        total_vals = agg_data['latency_ms'].values
+        max_height = max(max_height, max(total_vals))
+        for i, total in enumerate(total_vals):
+            ax.annotate(f'{total:.0f}',
+                       xy=(positions[i], total + 20),
+                       ha='center', va='bottom',
+                       fontsize=12, fontweight='bold')
+
+    # Custom legend for phases (using hatching)
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='gray', edgecolor='white', hatch='', label='Read'),
+        Patch(facecolor='gray', edgecolor='white', hatch='///', label='Remap'),
+        Patch(facecolor='gray', edgecolor='white', hatch='...', label='Write'),
+    ]
+    leg1 = ax.legend(handles=legend_elements, loc='upper right', title='Phase', fontsize=12,
+                     title_fontsize=12)
+    ax.add_artist(leg1)
+
+    # Add format labels below x-axis
+    ax.set_xticks(x)
+    ax.set_xticklabels([c.upper() for c in clouds], fontsize=14, fontweight='bold')
+
+    # Add format indicators
+    for i, cloud in enumerate(clouds):
+        ax.text(x[i] - width/2, -max_height * 0.08, 'PD', ha='center', va='top', fontsize=11)
+        ax.text(x[i] + width/2, -max_height * 0.08, 'DV', ha='center', va='top', fontsize=11)
+
+    ax.set_ylabel('Latency (ms)', fontsize=14)
+    ax.set_title('Remapping Latency Breakdown (1M Deletes)', fontsize=14, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=12)
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, max_height * 1.15)
+
+    plt.tight_layout()
+    plt.savefig(output_dir / 'latency_breakdown_1m.png', dpi=150, bbox_inches='tight')
+    plt.savefig(output_dir / 'latency_breakdown_1m.pdf', bbox_inches='tight')
+    plt.close()
+    print(f"Saved: latency_breakdown_1m.png/pdf")
 
 
 def plot_throughput_comparison(df: pd.DataFrame, output_dir: Path) -> None:
@@ -690,6 +795,7 @@ def main():
         plot_combined_latency_breakdown(raw_df, output_dir)
         plot_compact_cloud_comparison(raw_df, output_dir)
         plot_compact_latency_breakdown(raw_df, output_dir)
+        plot_latency_breakdown_1m(raw_df, output_dir)
 
     generate_summary_table(df, output_dir)
 
