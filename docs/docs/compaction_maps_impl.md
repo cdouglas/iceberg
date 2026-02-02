@@ -804,6 +804,57 @@ See `REMAPPING_BENCHMARKS.md` for detailed documentation on running and interpre
 - Bulk high fan-in: O(m log n) with range query
 - 5-10x speedup over repeated single-position calls
 
+### Phase 9: Chained Compaction Map Support (Completed)
+
+**Status:** ✅ Completed February 2, 2026
+
+**Overview:**
+
+When multiple compactions occur between a transaction's start and commit, compaction maps must be composed (chained) to correctly remap positions through the entire chain. For example, if F1 → F2 (via M1) and F2 → F3 (via M2), a transaction with deletes for F1 needs to remap F1 → F3.
+
+**Files:**
+
+- `core/src/main/java/org/apache/iceberg/CompactionMapChain.java` - Chain holder with lazy composition
+- `core/src/main/java/org/apache/iceberg/CompactionMaps.java` - Added `compose(m1, m2)` method
+- `api/src/main/java/org/apache/iceberg/exceptions/ChainedCompactionMapsException.java` - Exception for chain detection
+- `core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java` - Updated to accept chains
+
+**Composition Algorithm:**
+
+For runs r1 in M1 (F1→F2) and r2 in M2 (F2→F3):
+
+```
+r1: sourcePos=100, targetPos=0, length=50   (F1[100,150) → F2[0,50))
+r2: sourcePos=0, targetPos=200, length=100  (F2[0,100) → F3[200,300))
+
+Overlap in F2: [0,50) ∩ [0,100) = [0,50)
+
+Composed run:
+  sourcePos = 100 (from r1)
+  targetPos = 200 (r2.targetPos + offset where offset=0)
+  length = 50
+  → F1[100,150) → F3[200,250)
+```
+
+**Key Design Decisions:**
+
+1. **Lazy composition**: Chains are composed on-demand when a mapping is requested, with results cached
+2. **Per-file caching**: Each source file's composed mapping is cached separately
+3. **Validation**: Chain continuity verified via `m1.targetSnapshotId == m2.sourceSnapshotId`
+4. **Gap handling**: Positions in gaps (deleted during compaction) correctly return null
+
+**Test Coverage:**
+
+- `TestCompactionMapChain` - 9 tests for chain building and composition
+- `TestCompactionMapComposition` - 8 tests for the composition algorithm
+- `TestChainedCompactionMapsDetection` - 5 tests for chain detection
+- `TestSerializableIsolationWithCompaction` - SERIALIZABLE tests with chained compactions
+
+**Run tests:**
+```bash
+./gradlew :iceberg-core:test --tests "*Chain*" --tests "*Composition*"
+```
+
 ## Testing
 
 ### Unit Tests
@@ -932,17 +983,22 @@ See `REMAPPING_BENCHMARKS.md` for detailed documentation on running and interpre
 
 ### Test Coverage
 
-- **140+ test cases passing** across core compaction maps, DV support, remapping optimization, and Spark integration
-  - Core compaction map tests: ~20 tests
+- **250+ test cases passing** across core compaction maps, DV support, remapping optimization, chained maps, and Spark integration
+  - Core compaction map tests: ~60 tests (serialization, builder, storage, conflict detection/resolution)
   - DV remapping tests: 16 tests (10 unit + 6 integration)
-  - **Remapping optimization tests: 59 tests**
-    - TestRemappingStrategies: 44 comprehensive unit tests
+  - **Chained compaction map tests: 22 tests**
+    - TestCompactionMapChain: 9 tests
+    - TestCompactionMapComposition: 8 tests
+    - TestChainedCompactionMapsDetection: 5 tests
+  - **Remapping optimization tests: 78 tests**
+    - TestRemappingStrategies: 37 comprehensive unit tests
     - TestRemappingStrategiesIntegration: 4 integration tests
-    - TestRemappingAlgorithmSelector: 11 selector tests
-  - **Spark integration tests: 30 parameterized tests** (across format versions and file formats)
-    - TestSparkCompactionConflictResolution: 10 tests
-    - TestSparkBinPackWithPositionDeletes: 20 tests (5 test methods × 4 parameter combinations)
-  - **JMH benchmarks: 6 benchmarks × 54 scenarios = 324 benchmark configurations**
+    - TestRemappingAlgorithmSelector: 15 selector tests
+    - TestRemappingBenchmarkUtils: 22 tests
+  - **SERIALIZABLE isolation tests: 12 tests** (including chained compaction scenarios)
+  - **Spark integration tests: 36 parameterized tests** (across format versions and file formats)
+    - TestSparkCompactionConflictResolution: 18 tests per Spark version (Spark 3.5 and 4.0)
+  - **JMH benchmarks: 8 benchmarks × 54 scenarios = 324+ benchmark configurations**
   - 1 test disabled (TestCompactionConflictDetectionDV - manifest timing issue)
 - **All enabled tests passing**
 - Coverage includes:

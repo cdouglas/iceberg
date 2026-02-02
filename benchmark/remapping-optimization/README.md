@@ -2,6 +2,10 @@
 
 JMH benchmarks for comparing remapping algorithm strategies used in compaction map position remapping.
 
+**Purpose:** Measure pure algorithm performance (CPU-bound, no I/O) to tune strategy selection thresholds.
+
+**Related:** For end-to-end benchmarks including I/O costs, see [`remapping-microbenchmark`](../remapping-microbenchmark/).
+
 ## Quick Start
 
 ### Parallel Execution (Recommended for Large Machines)
@@ -118,6 +122,8 @@ The full benchmark suite tests 54 parameter combinations per strategy:
 | `sorted` | true, false | Whether positions are pre-sorted |
 
 **Total**: 6 strategies × 54 combinations = 324 benchmark configurations
+
+**Note:** Some parameter combinations are mathematically impossible (e.g., 100000 unique positions in a range of 2000). The benchmark automatically detects and skips these invalid combinations.
 
 ### Strategies
 

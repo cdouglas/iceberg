@@ -65,15 +65,15 @@ This is a **design boundary**, not a missing feature. Order-changing operations 
 
 ---
 
-## 2. Chained Compaction Maps Not Supported
+## 2. Chained Compaction Maps ✅ IMPLEMENTED
 
-### Issue
+**Status:** Implemented in commit 8cb1e6156 (February 2026)
 
-When multiple compactions occur between a transaction's start and commit, the current implementation does not compose (chain) compaction maps. This can result in **incorrect or incomplete remapping** when position deletes reference files that were compacted through multiple intermediate states.
+### Overview
+
+When multiple compactions occur between a transaction's start and commit, compaction maps are automatically composed (chained) to enable correct position remapping through the entire chain.
 
 ### Scenario
-
-Consider a transaction T1 that starts at snapshot S1 with position deletes for file F1:
 
 ```
 Timeline:
@@ -98,193 +98,62 @@ S3: Compaction C2 rewrites F2 → F3
 ─────────────────────────────────────────────────────────────────────────────
 
 Required remapping: F1 → F2 → F3 (chain M1 and M2)
-Current behavior: Only M1 is found (F1 is sourceFile in M1)
-                  Remapping produces deletes for F2, which no longer exists!
+Implementation: CompactionMapChain composes M1 and M2 lazily
+Result: Deletes correctly reference F3
 ```
 
-### Impact
+### Implementation
 
-**Severity: Data Correctness**
+The implementation uses **lazy composition at resolution time** (Option B from original analysis):
 
-When this scenario occurs:
+**Key Components:**
 
-1. **CompactionMapValidator** finds M1 because F1 appears as a source file
-2. **PositionDeleteRemapper** remaps F1 positions to F2 positions using M1
-3. The remapped deletes reference F2, but F2 was compacted to F3
-4. The commit may succeed with deletes pointing to a non-existent file, or fail validation
+- `CompactionMapChain` - Holds ordered list of maps and composes them on demand
+- `CompactionMaps.compose(m1, m2)` - Composes two maps with run overlap calculation
+- `PositionDeleteRemapper` - Now accepts `CompactionMapChain` for chained remapping
+- `CompactionMapValidator` - Builds chains when multiple maps are detected
 
-**When This Can Happen:**
+**Algorithm:**
 
-- High-frequency compaction schedules (multiple compactions between transaction retries)
-- Long-running transactions that span multiple compaction cycles
-- Batch jobs that retry after failures, encountering accumulated compactions
+For runs r1 in M1 (F1→F2) and r2 in M2 (F2→F3):
+1. Find overlap between r1's target range and r2's source range
+2. Create composed run mapping r1's source positions to r2's target positions
+3. Handle partial overlaps (only overlapping portion composed)
+4. Preserve non-overlapping runs with intermediate file as target
 
-**When This Cannot Happen:**
-
-- Single compaction between transaction start and commit (the common case)
-- Compactions that don't touch the same files (disjoint file sets)
-
-### Current Behavior
-
-The `CompactionMapValidator.findCompactionMaps()` method walks the snapshot history and finds all compaction maps, but:
-
-1. It indexes maps by **source file path** only
-2. When a file F1 is found in map M1, it returns M1's location
-3. It does **not** check if M1's target (F2) was subsequently compacted
-4. The `PositionDeleteRemapper` takes a single map—no composition logic exists
-
-```java
-// CompactionMapValidator.java:119-143
-Map<String, String> findCompactionMaps() {
-    Map<String, String> compactionMaps = Maps.newHashMap();
-    Snapshot snapshot = currentSnapshot;
-    while (snapshot != null && snapshot.snapshotId() != startingSnapshotId) {
-        for (ManifestFile manifest : snapshot.dataManifests(io)) {
-            String mapLocation = manifest.compactionMapLocation();
-            if (mapLocation != null) {
-                CompactionMap map = CompactionMaps.read(io.newInputFile(mapLocation));
-                for (CompactionMap.FileMapping mapping : map.fileMappings()) {
-                    // BUG: Only indexes by source, doesn't track chains
-                    compactionMaps.put(mapping.sourceFile(), mapLocation);
-                }
-            }
-        }
-        // ... walk to parent snapshot
-    }
-    return compactionMaps;
-}
-```
-
-### Source Snapshot ID Purpose
-
-The `source_snapshot_id` field in compaction maps exists precisely to enable chain detection:
-
-- **M1**: `source_snapshot_id = S1`, `target_snapshot_id = S2`
-- **M2**: `source_snapshot_id = S2`, `target_snapshot_id = S3`
-
-A correct implementation could use these to:
-1. Verify `M1.target_snapshot_id == M2.source_snapshot_id` (chain continuity)
-2. Compose the mappings: F1 → F2 (via M1) → F3 (via M2)
-
-Currently, these IDs are stored but **not used for validation or chaining**.
-
-### Possible Remediations
-
-#### Option A: Eager Map Composition at Commit Time
-
-When a new compaction commits, compose it with any existing maps that reference its source files.
-
-**Approach:**
-```
-When committing compaction C2 (F2 → F3):
-1. Find any existing maps where targetFile = F2
-2. For each such map M1 (F1 → F2):
-   - Create composed mapping: F1 → F3
-   - Store composed map alongside or instead of M2
-3. Transactions only ever need a single map lookup
-```
-
-**Pros:**
-- Simple consumer logic (no chaining needed at read time)
-- Single map lookup during conflict resolution
-
-**Cons:**
-- Increases commit complexity
-- Maps grow larger over time (accumulate all historical mappings)
-- Requires loading and modifying maps during commit
-
-#### Option B: Lazy Map Chaining at Resolution Time
-
-Compose maps on-demand when resolving conflicts.
-
-**Approach:**
-```
-When resolving conflict for T1 (deletes for F1):
-1. Find M1 where F1 is sourceFile → F1 maps to F2
-2. Check if F2 appears as sourceFile in any map
-3. If yes, find M2 where F2 is sourceFile → F2 maps to F3
-4. Compose: F1 → F3
-5. Repeat until target file exists in current snapshot
-```
-
-**Pros:**
-- No change to commit path
-- Maps stay small (only track immediate transformations)
-- Composition only done when needed
-
-**Cons:**
-- More complex resolution logic
-- Multiple map loads during resolution
-- Must handle cycles (detect infinite loops from corrupted maps)
-
-#### Option C: Limit Compaction Frequency
-
-Operational mitigation: ensure at most one compaction occurs between any transaction's start and commit.
-
-**Approach:**
-- Document the limitation clearly
-- Recommend compaction scheduling that avoids rapid successive compactions
-- Add validation that warns or fails if chained compactions are detected
-
-**Pros:**
-- No code changes required
-- Simple to understand
-
-**Cons:**
-- Limits operational flexibility
-- Doesn't fix the underlying issue
-- Hard to enforce in distributed systems
-
-#### Option D: Validate and Reject Chained Scenarios
-
-Detect when chaining would be required and fail fast with a clear error.
-
-**Approach:**
-```
-During conflict detection:
-1. Find map M1 for source file F1
-2. Check if M1's target file F2 was also compacted
-3. If yes, throw an error explaining the limitation
-4. User must manually resolve or wait for compaction to settle
-```
-
-**Pros:**
-- Prevents silent data corruption
-- Clear error message guides users
-- Minimal implementation effort
-
-**Cons:**
-- Degrades to failure instead of handling the case
-- May cause spurious failures in high-compaction environments
-
-### Recommended Approach
-
-**Short-term (Option D):** Add validation to detect and reject chained compaction scenarios with a clear error message. This prevents data corruption while we develop a complete solution.
-
-**Long-term (Option B):** Implement lazy map chaining at resolution time. This keeps the commit path simple and only adds complexity where needed. The `source_snapshot_id` and `target_snapshot_id` fields already support this—we just need to use them.
-
-### Code Locations
+**Code Locations:**
 
 ```
-core/src/main/java/org/apache/iceberg/CompactionMapValidator.java
-  findCompactionMaps() - Needs chain detection logic
-
-core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
-  - Needs to accept multiple maps or a composed map
+core/src/main/java/org/apache/iceberg/CompactionMapChain.java
+  - build() - Constructs chain from list of maps
+  - getComposedMapping() - Lazily composes chain for a source file
 
 core/src/main/java/org/apache/iceberg/CompactionMaps.java
-  - Add compose(map1, map2) method for map composition
+  - compose(m1, m2) - Composes two maps into one
 
-api/src/main/java/org/apache/iceberg/CompactionMap.java
-  - sourceSnapshotId() and targetSnapshotId() exist but unused
+core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
+  - Constructor accepts CompactionMapChain for chained remapping
 ```
 
-### Validation
+### Test Coverage
 
 ```bash
-# Once fixed, add test for chained compaction scenario
-./gradlew :iceberg-core:test --tests "TestCompactionMapChaining"
+# Run all chained compaction map tests
+./gradlew :iceberg-core:test --tests "*Chain*" --tests "*Composition*"
+
+# Specific test classes:
+# - TestCompactionMapChain (9 tests)
+# - TestCompactionMapComposition (8 tests)
+# - TestChainedCompactionMapsDetection (5 tests)
+# - TestSerializableIsolationWithCompaction (includes chain tests)
 ```
+
+### SERIALIZABLE Isolation with Chains
+
+SERIALIZABLE isolation correctly validates through chains:
+- Each REPLACE operation in the chain is checked independently
+- If ALL compactions have maps, transaction succeeds (structural changes only)
+- If ANY compaction lacks a map, transaction fails (potential data change)
 
 ---
 
@@ -397,10 +266,11 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 | # | Issue | Impact | Status | Priority |
 |---|-------|--------|--------|----------|
 | 1 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
-| 2 | Chained compaction maps not supported | Data correctness risk with multiple compactions | Not implemented | **High** |
+| 2 | Chained compaction maps | Multiple compactions between transaction start/commit | ✅ Implemented | - |
 | 3 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
 
 **Fixed Issues (Removed from Active List):**
+- ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)
 - ~~Source files spanning multiple targets~~ - ✅ FIXED: Per-run target files now supported (Jan 24, 2026)
 - ~~Normal scans vs staged scans~~ - ✅ FIXED: Staged scans now work with explicit metadata column selection
 - ~~V3 Deletion Vector conflict resolution~~ - ✅ FIXED: SparkCompactionConflictResolver now supports DVs

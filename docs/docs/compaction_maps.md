@@ -83,16 +83,17 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 
 ### Test Coverage
 
-✅ **Comprehensive Test Suite Complete (150+ tests passing)**
+✅ **Comprehensive Test Suite Complete (250+ tests passing)**
 
 The compaction maps feature has comprehensive test coverage across all components:
 - Core infrastructure (serialization, builder, storage, remapping)
 - Position delete remapping with both position delete files and deletion vectors
-- **Remapping algorithm optimization (59 tests)** - Binary search, interval tree, stream join, range query, smart selector
+- **Chained compaction maps (22 tests)** - Chain building, composition, detection
+- **Remapping algorithm optimization (78 tests)** - Binary search, interval tree, stream join, range query, smart selector
 - Conflict detection and resolution workflows (full V2/V3 parity)
-- SERIALIZABLE isolation with compaction awareness (full V2/V3 parity)
+- SERIALIZABLE isolation with compaction awareness including chained compactions
 - End-to-end Spark integration tests for conflict detection and resolution
-- **Compaction conflict resolution (6 tests)** - TestSparkCompactionConflictResolution
+- **Compaction conflict resolution (36 tests)** - TestSparkCompactionConflictResolution (Spark 3.5 and 4.0)
 - Format version compatibility (v2 position deletes, v3 deletion vectors)
 - File format support (Parquet, ORC, Puffin for DVs)
 - **JMH performance benchmarks (324 configurations)** - Empirical validation across 54 workload scenarios
@@ -106,8 +107,10 @@ Position tracking is fully functional in Spark 4.0 for both V2 and V3 format tab
 ### Implementation Shortcuts
 
 See [Compaction Maps Errata](compaction_maps_errata.md) for documented implementation shortcuts including:
-- Position tracking limited to bin-pack rewrites
+- Position tracking limited to bin-pack rewrites (order-preserving operations by design)
 - Automatic conflict resolution: compactions ✅, application transactions ❌
+
+✅ **Chained compaction maps** are now fully supported - multiple sequential compactions between a transaction's start and commit are handled via lazy map composition.
 
 ## Configuration
 
@@ -369,6 +372,7 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios (324
 
 - **[Implementation Details](compaction_maps_impl.md)** - Architecture, API usage, testing, and Spark implementation
 - **[Implementation Errata](compaction_maps_errata.md)** - Known shortcuts and technical debt
+- **[Benchmarking Guide](compaction_maps_bench.md)** - JMH and microbenchmark suites
 - [Iceberg Position Deletes Specification](https://iceberg.apache.org/spec/#position-delete-files)
 - [Iceberg Manifest Format](https://iceberg.apache.org/spec/#manifests)
 
@@ -376,3 +380,9 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios (324
 
 1. **Application Transaction Conflict Resolution** - Automatic remapping in BaseRowDelta for application-level position delete conflicts
 2. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
+
+## Benchmarking
+
+See [Benchmarking Guide](compaction_maps_bench.md) for:
+- **remapping-optimization**: JMH benchmarks for algorithm strategy comparison
+- **remapping-microbenchmark**: End-to-end benchmarks including I/O costs
