@@ -65,7 +65,230 @@ This is a **design boundary**, not a missing feature. Order-changing operations 
 
 ---
 
-## 2. Automatic Conflict Resolution (Partial)
+## 2. Chained Compaction Maps Not Supported
+
+### Issue
+
+When multiple compactions occur between a transaction's start and commit, the current implementation does not compose (chain) compaction maps. This can result in **incorrect or incomplete remapping** when position deletes reference files that were compacted through multiple intermediate states.
+
+### Scenario
+
+Consider a transaction T1 that starts at snapshot S1 with position deletes for file F1:
+
+```
+Timeline:
+─────────────────────────────────────────────────────────────────────────────
+S1: File F1 exists
+    │
+    │  Transaction T1 starts (base = S1)
+    │  T1 creates position deletes for F1
+    │
+    ▼
+S2: Compaction C1 rewrites F1 → F2
+    Compaction map M1: source=S1, target=S2
+    FileMapping: F1 → F2 with runs [(0,0,1000), ...]
+    │
+    ▼
+S3: Compaction C2 rewrites F2 → F3
+    Compaction map M2: source=S2, target=S3
+    FileMapping: F2 → F3 with runs [(0,0,1000), ...]
+    │
+    │  T1 attempts to commit at S3
+    │
+─────────────────────────────────────────────────────────────────────────────
+
+Required remapping: F1 → F2 → F3 (chain M1 and M2)
+Current behavior: Only M1 is found (F1 is sourceFile in M1)
+                  Remapping produces deletes for F2, which no longer exists!
+```
+
+### Impact
+
+**Severity: Data Correctness**
+
+When this scenario occurs:
+
+1. **CompactionMapValidator** finds M1 because F1 appears as a source file
+2. **PositionDeleteRemapper** remaps F1 positions to F2 positions using M1
+3. The remapped deletes reference F2, but F2 was compacted to F3
+4. The commit may succeed with deletes pointing to a non-existent file, or fail validation
+
+**When This Can Happen:**
+
+- High-frequency compaction schedules (multiple compactions between transaction retries)
+- Long-running transactions that span multiple compaction cycles
+- Batch jobs that retry after failures, encountering accumulated compactions
+
+**When This Cannot Happen:**
+
+- Single compaction between transaction start and commit (the common case)
+- Compactions that don't touch the same files (disjoint file sets)
+
+### Current Behavior
+
+The `CompactionMapValidator.findCompactionMaps()` method walks the snapshot history and finds all compaction maps, but:
+
+1. It indexes maps by **source file path** only
+2. When a file F1 is found in map M1, it returns M1's location
+3. It does **not** check if M1's target (F2) was subsequently compacted
+4. The `PositionDeleteRemapper` takes a single map—no composition logic exists
+
+```java
+// CompactionMapValidator.java:119-143
+Map<String, String> findCompactionMaps() {
+    Map<String, String> compactionMaps = Maps.newHashMap();
+    Snapshot snapshot = currentSnapshot;
+    while (snapshot != null && snapshot.snapshotId() != startingSnapshotId) {
+        for (ManifestFile manifest : snapshot.dataManifests(io)) {
+            String mapLocation = manifest.compactionMapLocation();
+            if (mapLocation != null) {
+                CompactionMap map = CompactionMaps.read(io.newInputFile(mapLocation));
+                for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+                    // BUG: Only indexes by source, doesn't track chains
+                    compactionMaps.put(mapping.sourceFile(), mapLocation);
+                }
+            }
+        }
+        // ... walk to parent snapshot
+    }
+    return compactionMaps;
+}
+```
+
+### Source Snapshot ID Purpose
+
+The `source_snapshot_id` field in compaction maps exists precisely to enable chain detection:
+
+- **M1**: `source_snapshot_id = S1`, `target_snapshot_id = S2`
+- **M2**: `source_snapshot_id = S2`, `target_snapshot_id = S3`
+
+A correct implementation could use these to:
+1. Verify `M1.target_snapshot_id == M2.source_snapshot_id` (chain continuity)
+2. Compose the mappings: F1 → F2 (via M1) → F3 (via M2)
+
+Currently, these IDs are stored but **not used for validation or chaining**.
+
+### Possible Remediations
+
+#### Option A: Eager Map Composition at Commit Time
+
+When a new compaction commits, compose it with any existing maps that reference its source files.
+
+**Approach:**
+```
+When committing compaction C2 (F2 → F3):
+1. Find any existing maps where targetFile = F2
+2. For each such map M1 (F1 → F2):
+   - Create composed mapping: F1 → F3
+   - Store composed map alongside or instead of M2
+3. Transactions only ever need a single map lookup
+```
+
+**Pros:**
+- Simple consumer logic (no chaining needed at read time)
+- Single map lookup during conflict resolution
+
+**Cons:**
+- Increases commit complexity
+- Maps grow larger over time (accumulate all historical mappings)
+- Requires loading and modifying maps during commit
+
+#### Option B: Lazy Map Chaining at Resolution Time
+
+Compose maps on-demand when resolving conflicts.
+
+**Approach:**
+```
+When resolving conflict for T1 (deletes for F1):
+1. Find M1 where F1 is sourceFile → F1 maps to F2
+2. Check if F2 appears as sourceFile in any map
+3. If yes, find M2 where F2 is sourceFile → F2 maps to F3
+4. Compose: F1 → F3
+5. Repeat until target file exists in current snapshot
+```
+
+**Pros:**
+- No change to commit path
+- Maps stay small (only track immediate transformations)
+- Composition only done when needed
+
+**Cons:**
+- More complex resolution logic
+- Multiple map loads during resolution
+- Must handle cycles (detect infinite loops from corrupted maps)
+
+#### Option C: Limit Compaction Frequency
+
+Operational mitigation: ensure at most one compaction occurs between any transaction's start and commit.
+
+**Approach:**
+- Document the limitation clearly
+- Recommend compaction scheduling that avoids rapid successive compactions
+- Add validation that warns or fails if chained compactions are detected
+
+**Pros:**
+- No code changes required
+- Simple to understand
+
+**Cons:**
+- Limits operational flexibility
+- Doesn't fix the underlying issue
+- Hard to enforce in distributed systems
+
+#### Option D: Validate and Reject Chained Scenarios
+
+Detect when chaining would be required and fail fast with a clear error.
+
+**Approach:**
+```
+During conflict detection:
+1. Find map M1 for source file F1
+2. Check if M1's target file F2 was also compacted
+3. If yes, throw an error explaining the limitation
+4. User must manually resolve or wait for compaction to settle
+```
+
+**Pros:**
+- Prevents silent data corruption
+- Clear error message guides users
+- Minimal implementation effort
+
+**Cons:**
+- Degrades to failure instead of handling the case
+- May cause spurious failures in high-compaction environments
+
+### Recommended Approach
+
+**Short-term (Option D):** Add validation to detect and reject chained compaction scenarios with a clear error message. This prevents data corruption while we develop a complete solution.
+
+**Long-term (Option B):** Implement lazy map chaining at resolution time. This keeps the commit path simple and only adds complexity where needed. The `source_snapshot_id` and `target_snapshot_id` fields already support this—we just need to use them.
+
+### Code Locations
+
+```
+core/src/main/java/org/apache/iceberg/CompactionMapValidator.java
+  findCompactionMaps() - Needs chain detection logic
+
+core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
+  - Needs to accept multiple maps or a composed map
+
+core/src/main/java/org/apache/iceberg/CompactionMaps.java
+  - Add compose(map1, map2) method for map composition
+
+api/src/main/java/org/apache/iceberg/CompactionMap.java
+  - sourceSnapshotId() and targetSnapshotId() exist but unused
+```
+
+### Validation
+
+```bash
+# Once fixed, add test for chained compaction scenario
+./gradlew :iceberg-core:test --tests "TestCompactionMapChaining"
+```
+
+---
+
+## 3. Automatic Conflict Resolution (Partial)
 
 ### Issue
 
@@ -174,7 +397,8 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 | # | Issue | Impact | Status | Priority |
 |---|-------|--------|--------|----------|
 | 1 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
-| 2 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
+| 2 | Chained compaction maps not supported | Data correctness risk with multiple compactions | Not implemented | **High** |
+| 3 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Source files spanning multiple targets~~ - ✅ FIXED: Per-run target files now supported (Jan 24, 2026)
@@ -189,9 +413,11 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 ## How to Contribute
 
-If you'd like to help address the remaining issue:
+If you'd like to help address the remaining issues:
 
-**Application Transaction Conflict Resolution:** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete for both Spark 3.5 and 4.0.
+**Chained Compaction Maps (Priority: High):** Implement detection and handling of chained compaction scenarios. Start with Option D (validation/rejection) for safety, then implement Option B (lazy chaining) for full support. Key files: `CompactionMapValidator.java`, `PositionDeleteRemapper.java`, `CompactionMaps.java`.
+
+**Application Transaction Conflict Resolution (Priority: Low):** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete for both Spark 3.5 and 4.0.
 
 ## References
 
