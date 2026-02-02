@@ -31,7 +31,7 @@ init_project_root
 
 # Defaults
 DEFAULT_VM_SIZE="Standard_D4s_v3"
-DEFAULT_LOCATION="${AZURE_LOCATION:-eastus}"
+DEFAULT_LOCATION="${AZURE_LOCATION:-westus2}"
 RESOURCE_GROUP="iceberg-benchmark-rg"
 VM_NAME="iceberg-benchmark"
 SSH_USER="azureuser"
