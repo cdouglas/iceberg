@@ -727,13 +727,29 @@ The `RemappingAlgorithmSelector` automatically chooses optimal strategy based on
 
 Selection overhead: ~5% average vs optimal strategy.
 
-**Example Usage:**
+**Primitive Array API (February 2026):**
+
+All remapping strategies now support primitive `long[]` arrays to eliminate boxing overhead:
 
 ```java
-// Automatic selection in PositionDeleteRemapper
+// Primitive API (recommended for high performance)
+long[] positions = new long[] {0, 10, 50, 100, 500};
 RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
 RemappingStrategy strategy = selector.selectOptimal(mapping, positions);
 Map<Long, CompactionMap.Run> mappedRuns = strategy.runForPositions(positions);
+
+// List<Long> API (deprecated but still supported)
+List<Long> positionList = Arrays.asList(0L, 10L, 50L, 100L, 500L);
+strategy.runForPositions(positionList);  // @Deprecated
+```
+
+**Performance benefit:** At 1M positions, primitive APIs eliminate ~16 bytes per position boxing overhead, reducing remap% from 29-33% to ~5-10%.
+
+**Example Usage:**
+
+```java
+// Automatic selection in PositionDeleteRemapper (uses primitive API internally)
+Map<String, long[]> result = remapper.remapPositionsBulkPrimitive(sourceFile, positions);
 
 // Manual strategy selection for specific workload
 if (n > m * 100) {
