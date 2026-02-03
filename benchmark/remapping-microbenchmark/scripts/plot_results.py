@@ -294,8 +294,8 @@ def plot_compact_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> No
     fig, ax = plt.subplots(figsize=(8, 5))
 
     clouds = sorted(df['cloud'].unique())
-    formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
-    format_labels = ['Pos Del', 'DV']
+    formats = ['DELETION_VECTOR', 'POSITION_DELETE_FILE']
+    format_labels = ['DV', 'Pos Del']
 
     # Hatching patterns for phases
     phase_hatches = {
@@ -362,8 +362,8 @@ def plot_compact_latency_breakdown(raw_df: pd.DataFrame, output_dir: Path) -> No
 
     # Add format indicators
     for i, cloud in enumerate(clouds):
-        ax.text(x[i] - width/2, -max_height * 0.08, 'PD', ha='center', va='top', fontsize=11)
-        ax.text(x[i] + width/2, -max_height * 0.08, 'DV', ha='center', va='top', fontsize=11)
+        ax.text(x[i] - width/2, -max_height * 0.08, 'DV', ha='center', va='top', fontsize=11)
+        ax.text(x[i] + width/2, -max_height * 0.08, 'PD', ha='center', va='top', fontsize=11)
 
     ax.set_ylabel('Latency (ms)', fontsize=14)
     ax.set_title('Remapping Latency Breakdown', fontsize=14, fontweight='bold')
@@ -396,8 +396,8 @@ def plot_latency_breakdown_1m(raw_df: pd.DataFrame, output_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
 
     clouds = sorted(df['cloud'].unique())
-    formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
-    format_labels = ['Pos Del', 'DV']
+    formats = ['DELETION_VECTOR', 'POSITION_DELETE_FILE']
+    format_labels = ['DV', 'Pos Del']
 
     # Hatching patterns for phases
     phase_hatches = {
@@ -464,8 +464,8 @@ def plot_latency_breakdown_1m(raw_df: pd.DataFrame, output_dir: Path) -> None:
 
     # Add format indicators
     for i, cloud in enumerate(clouds):
-        ax.text(x[i] - width/2, -max_height * 0.08, 'PD', ha='center', va='top', fontsize=11)
-        ax.text(x[i] + width/2, -max_height * 0.08, 'DV', ha='center', va='top', fontsize=11)
+        ax.text(x[i] - width/2, -max_height * 0.08, 'DV', ha='center', va='top', fontsize=11)
+        ax.text(x[i] + width/2, -max_height * 0.08, 'PD', ha='center', va='top', fontsize=11)
 
     ax.set_ylabel('Latency (ms)', fontsize=14)
     ax.set_title('Remapping Latency Breakdown (1M Deletes)', fontsize=14, fontweight='bold')
