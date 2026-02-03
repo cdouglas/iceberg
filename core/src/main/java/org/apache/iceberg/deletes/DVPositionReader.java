@@ -106,6 +106,74 @@ public class DVPositionReader {
   }
 
   /**
+   * Reads a deletion vector file and returns deleted positions as a primitive array.
+   *
+   * <p>This method avoids boxing overhead by collecting positions directly into a primitive long
+   * array. For large DVs with millions of positions, this is significantly faster than {@link
+   * #readDeletedPositions(DeleteFile)} which returns boxed Longs.
+   *
+   * @param dvFile the deletion vector file to read
+   * @return array of deleted positions (0-indexed) in ascending order
+   * @throws IllegalArgumentException if dvFile is not a deletion vector
+   * @throws IllegalStateException if DV is missing contentOffset or contentSizeInBytes
+   */
+  public long[] readDeletedPositionsPrimitive(DeleteFile dvFile) {
+    Preconditions.checkNotNull(dvFile, "dvFile is null");
+
+    // Validate this is a deletion vector
+    if (!ContentFileUtil.isDV(dvFile)) {
+      throw new IllegalArgumentException(
+          String.format(
+              "Not a deletion vector (expected format PUFFIN): %s (format: %s)",
+              dvFile.location(), dvFile.format()));
+    }
+
+    // Validate required fields are present
+    if (dvFile.contentOffset() == null) {
+      throw new IllegalStateException(
+          String.format("DV missing contentOffset: %s", dvFile.location()));
+    }
+
+    if (dvFile.contentSizeInBytes() == null) {
+      throw new IllegalStateException(
+          String.format("DV missing contentSizeInBytes: %s", dvFile.location()));
+    }
+
+    // Read DV blob bytes
+    try {
+      InputFile inputFile = fileIO.newInputFile(dvFile.location());
+      long offset = dvFile.contentOffset();
+      int length = dvFile.contentSizeInBytes().intValue();
+      byte[] bytes = readBytes(inputFile, offset, length);
+
+      // Deserialize to PositionDeleteIndex
+      PositionDeleteIndex index = PositionDeleteIndex.deserialize(bytes, dvFile);
+
+      // Pre-allocate primitive array using cardinality
+      long cardinality = index.cardinality();
+      if (cardinality > Integer.MAX_VALUE) {
+        throw new IllegalStateException(
+            String.format(
+                java.util.Locale.ROOT,
+                "DV cardinality exceeds max array size: %d (max: %d)",
+                cardinality,
+                Integer.MAX_VALUE));
+      }
+
+      long[] positions = new long[(int) cardinality];
+
+      // Fill array directly without boxing using a mutable index
+      int[] idx = {0};
+      index.forEach(pos -> positions[idx[0]++] = pos);
+
+      return positions;
+
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to read deletion vector: " + dvFile.location(), e);
+    }
+  }
+
+  /**
    * Returns the referenced data file path from the DV.
    *
    * @param dvFile the deletion vector file
