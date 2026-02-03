@@ -1,0 +1,29 @@
+---
+# Quick config for validating DV optimization
+# Focuses on deletion vectors at various scales
+storage-uri: "s3://iceberg-benchmark-1769730994/benchmark/dv_opt_test"
+cloud-provider: "AWS_S3"
+delete-counts:
+- 1000
+- 10000
+- 100000
+- 1000000
+run-counts:
+- 100
+- 1000
+densities:
+- "DENSE"
+formats:
+- "DELETION_VECTOR"
+- "POSITION_DELETE_FILE"
+strategies:
+- "SMART"
+warmup-iterations: 3
+measurement-iterations: 10
+output-dir: "results"
+random-seed: 20260203
+fanout-factors:
+- 10
+- 50
+split-factors:
+- 1

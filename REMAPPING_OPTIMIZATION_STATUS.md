@@ -93,13 +93,25 @@ Added `TestCoreApiCoupling.java` to ensure benchmark stays coupled with core:
 
 **Location:** `benchmark/remapping-microbenchmark/src/test/java/org/apache/iceberg/benchmark/remapping/TestCoreApiCoupling.java`
 
-### Expected Impact
+### Measured Impact (February 3, 2026)
 
-Based on the boxing overhead analysis:
-- Old path: 1M positions → 1M Long objects (16 bytes each) + HashSet hashing
-- New path: 1M positions → `long[]` (8 bytes each, contiguous) + direct RoaringBitmap add
+AWS benchmark results comparing pre-optimization baseline to optimized DV remapping:
 
-**Expected remap% reduction:** From 45-61% to ~5-10% (matching Position Delete performance)
+| Scale | DV Pre-Optimization | DV Optimized | Position Delete (Reference) |
+|-------|---------------------|--------------|----------------------------|
+| 1K deletes | 0.3-7.8% | **0.61-0.72%** | 0.07-0.08% |
+| 10K deletes | 1.2-7.8% | **0.66-0.94%** | 0.32-0.39% |
+| 100K deletes | 11-53% | **4.86-4.88%** | 1.58-1.64% |
+| 1M deletes | 45-78% | **29.5-32.7%** | 3.73-4.99% |
+
+**Key observations:**
+- **1K-10K scale**: DV remap% now comparable to Position Deletes (under 1%)
+- **100K scale**: Major improvement from 11-53% down to ~5% (55-91% reduction)
+- **1M scale**: Improved from 45-78% to 29-33% (40-57% reduction), still higher than PD
+
+**Remaining overhead at 1M scale**: The `RemappingStrategy` interface uses `List<Long>`, requiring boxing inside `remapPositionsBulkPrimitive()`. At 1M positions, this conversion adds measurable overhead. Further optimization would require refactoring the strategy interface to support primitive arrays.
+
+**Results location:** `/workspace/benchmark/remapping-microbenchmark/results/aws_20260203_183208/`
 
 ## Previous Work: Position Delete Optimization
 
@@ -117,9 +129,9 @@ Custom `Set<Long>` implementation optimized for remapping results:
 
 **Location:** `core/src/main/java/org/apache/iceberg/SortedLongArraySet.java`
 
-## Benchmark Results (February 3, 2026) - Pre-DV-Optimization
+## Benchmark Results (Pre-DV-Optimization Baseline)
 
-All three clouds (AWS us-west-2, GCP us-west1, Azure westus2) with co-located storage.
+Multi-cloud results (AWS us-west-2, GCP us-west1, Azure westus2) with co-located storage.
 
 ### Position Delete Files (optimized)
 
@@ -152,8 +164,8 @@ All three clouds (AWS us-west-2, GCP us-west1, Azure westus2) with co-located st
 
 ## Next Steps
 
-1. **Run cloud benchmarks** to validate DV optimization produces expected ~5-10% remap time
-2. Compare optimized DV results against Position Delete baseline
+1. ✅ **Cloud benchmarks validated** - DV optimization reduces remap% significantly at all scales
+2. **Optional further optimization**: Refactor `RemappingStrategy` interface to use primitive `long[]` arrays instead of `List<Long>` to eliminate remaining boxing at 1M scale
 
 ## Testing
 
@@ -173,5 +185,6 @@ Run benchmarks:
 ```bash
 cd benchmark/cloud-runner/aws
 source setup.conf
-./run.sh all --config ../remapping-microbenchmark/configs/quick.yaml
+export AWS_SSH_KEY_FILE="$HOME/.ssh/iceberg-benchmark-aws.pem"
+./run.sh all --config /workspace/benchmark/remapping-microbenchmark/src/main/resources/configs/quick_dv_test.yaml
 ```
