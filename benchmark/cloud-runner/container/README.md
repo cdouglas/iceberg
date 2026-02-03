@@ -137,9 +137,6 @@ Starts benchmarks on all configured clouds in parallel:
 # Run with default settings (quick.yaml config)
 ./run.sh run
 
-# Run specific benchmark
-./run.sh run --benchmark compaction-cloud
-
 # Run with specific config
 ./run.sh run --config configs/sigmod.yaml
 
