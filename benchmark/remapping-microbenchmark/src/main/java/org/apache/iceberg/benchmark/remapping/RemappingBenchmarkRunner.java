@@ -23,11 +23,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.PositionDeleteRemapper;
@@ -355,36 +353,38 @@ public class RemappingBenchmarkRunner {
   private List<DVEntry> remapDeletionVectors(
       List<DVEntry> entries, PositionDeleteRemapper remapper) {
 
-    // Group remapped positions by target file
-    Map<String, Set<Long>> remappedByTarget = new HashMap<>();
+    // Group remapped positions by target file using RoaringBitmap directly
+    // This avoids HashSet overhead and boxing/unboxing
+    Map<String, RoaringBitmap> remappedByTarget = new HashMap<>();
 
     for (DVEntry entry : entries) {
       String sourceFile = entry.referencedFile;
       RoaringBitmap sourceBitmap = entry.bitmap;
 
-      // Convert bitmap to list of positions for bulk API
-      List<Long> positions = new ArrayList<>(sourceBitmap.getCardinality());
+      // Extract positions as primitive array (no boxing)
+      long[] positions = new long[sourceBitmap.getCardinality()];
+      int idx = 0;
       for (int pos : sourceBitmap) {
-        positions.add((long) pos);
+        positions[idx++] = pos;
       }
 
-      // Use the optimized bulk remapping API
-      Map<String, Set<Long>> remapped = remapper.remapPositionsBulk(sourceFile, positions);
+      // Use the optimized primitive bulk remapping API
+      Map<String, long[]> remapped = remapper.remapPositionsBulkPrimitive(sourceFile, positions);
 
-      // Merge into result map
-      for (Map.Entry<String, Set<Long>> e : remapped.entrySet()) {
-        remappedByTarget.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
+      // Merge directly into RoaringBitmaps (no HashSet intermediate)
+      for (Map.Entry<String, long[]> e : remapped.entrySet()) {
+        RoaringBitmap targetBitmap =
+            remappedByTarget.computeIfAbsent(e.getKey(), k -> new RoaringBitmap());
+        for (long pos : e.getValue()) {
+          targetBitmap.add((int) pos);
+        }
       }
     }
 
-    // Convert back to DVEntry list
+    // Convert to DVEntry list
     List<DVEntry> result = new ArrayList<>();
-    for (Map.Entry<String, Set<Long>> e : remappedByTarget.entrySet()) {
-      RoaringBitmap bitmap = new RoaringBitmap();
-      for (Long pos : e.getValue()) {
-        bitmap.add(pos.intValue());
-      }
-      result.add(new DVEntry(e.getKey(), bitmap));
+    for (Map.Entry<String, RoaringBitmap> e : remappedByTarget.entrySet()) {
+      result.add(new DVEntry(e.getKey(), e.getValue()));
     }
 
     return result;

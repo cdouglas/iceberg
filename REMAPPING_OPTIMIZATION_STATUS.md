@@ -6,7 +6,44 @@
 
 ## Summary
 
-Position delete remapping optimization is **complete and validated**. Deletion Vector (DV) remapping still needs optimization.
+Position delete remapping optimization is **complete and validated**. Deletion Vector (DV) remapping optimization is now **implemented** (pending benchmark validation).
+
+## DV Optimization (Implemented Feb 3, 2026)
+
+Optimizations added to both the **production API** and **benchmark** to avoid boxing overhead:
+
+### Core Changes
+
+1. **`DVPositionReader.readDeletedPositionsPrimitive(DeleteFile)`** - Returns `long[]` instead of `CloseableIterable<Long>`
+   - Uses `PositionDeleteIndex.cardinality()` to pre-allocate array
+   - Fills array directly via `forEach(pos -> positions[idx[0]++] = pos)`
+   - **Location:** `core/src/main/java/org/apache/iceberg/deletes/DVPositionReader.java`
+
+2. **`PositionDeleteRemapper.remapPositionsBulkPrimitive(String, long[])`** - Returns `Map<String, long[]>`
+   - Avoids Set wrapper overhead
+   - Returns sorted arrays ready for RoaringBitmap construction
+   - **Location:** `core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java`
+
+3. **`PositionDeleteRemapper.remapDVBulk(DeleteFile, FileIO)`** - Updated to use primitive APIs
+   - Now calls `readDeletedPositionsPrimitive()` instead of boxed `readDeletedPositions()`
+   - Internally uses `remapPositionsBulkPrimitive()` for efficient remapping
+   - Wraps result in `SortedLongArraySet` for backward-compatible API
+   - **This is the production code path used by Spark conflict resolution**
+
+### Benchmark Changes
+
+- `RemappingBenchmarkRunner.remapDeletionVectors()` - Uses primitive APIs and `RoaringBitmap` aggregation
+  - Extracts positions as `long[]` directly from RoaringBitmap
+  - Calls `remapPositionsBulkPrimitive()`
+  - Aggregates into `RoaringBitmap` instead of `HashSet`
+
+### Expected Impact
+
+Based on the boxing overhead analysis:
+- Old path: 1M positions → 1M Long objects (16 bytes each) + HashSet hashing
+- New path: 1M positions → `long[]` (8 bytes each, contiguous) + direct RoaringBitmap add
+
+**Expected remap% reduction:** From 45-61% to ~5-10% (matching Position Delete performance)
 
 ## Completed Work
 
