@@ -1,5 +1,71 @@
 # Claude Code Session Notes: Compaction Maps Implementation
 
+## Quick Reference (Read This First)
+
+**Branch:** `cmpmap` | **Status:** Implementation complete, DV optimization pending
+
+### Current Work: Remapping Optimization
+
+**Completed:** Position Delete bulk remapping (1.3% avg remap time)
+**Pending:** Deletion Vector bulk remapping (currently 20%+ remap time)
+**Details:** See `/workspace/REMAPPING_OPTIMIZATION_STATUS.md`
+
+### Key Files for Common Tasks
+
+| Task | Files |
+|------|-------|
+| Remapping logic | `core/.../PositionDeleteRemapper.java` |
+| Algorithm selection | `core/.../RemappingAlgorithmSelector.java` |
+| DV index interface | `api/.../deletes/PositionDeleteIndex.java` |
+| Benchmarks | `benchmark/remapping-microbenchmark/` |
+| Cloud runner | `benchmark/cloud-runner/{aws,gcp,azure}/` |
+
+### Cloud Benchmark Quick Start
+
+```bash
+cd benchmark/cloud-runner/aws  # or gcp, azure
+./setup.sh                      # One-time (creates setup.conf)
+source setup.conf
+./run.sh all --config ../remapping-microbenchmark/configs/quick.yaml
+```
+
+### Common Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Azure 403 error | Missing RBAC | Run `./azure/setup.sh` or manually assign Storage Blob Data Contributor |
+| AWS "profile not found" | Missing IAM | Run `./aws/setup.sh` |
+| GCP network error | Wrong VPC | Set `GCP_NETWORK=your-vpc` |
+| "No JAR deployed" | Skipped deploy | Run `./run.sh deploy --config ...` first |
+
+## Token Conservation Guidelines
+
+When working on this codebase, prefer these approaches:
+
+1. **Use targeted reads** - Read specific line ranges, not full files:
+   ```
+   Read file_path with offset=150, limit=50  # Just the function you need
+   ```
+
+2. **Filter SSH output** - Use grep to extract key info:
+   ```bash
+   ssh host "grep 'Running scenario\|COMPLETED\|FAILED' ~/benchmark/benchmark.log | tail -5"
+   ```
+
+3. **Check status files first** - Before reading logs:
+   ```bash
+   ssh host "cat ~/benchmark/status.txt"  # Returns: STARTED|COMPLETED|FAILED
+   ```
+
+4. **Use summary endpoints** - For benchmark results:
+   ```bash
+   ssh host "cat ~/benchmark/benchmark-results/*/summary.json | jq '.[] | {scenario: .key, remap_pct: .\"avg-remap-pct\"}'"
+   ```
+
+5. **Parallel operations** - Run independent checks in one tool call
+
+6. **Reference this file** - Don't re-explore code structure; use file paths listed above
+
 ## Overview
 
 **Compaction Maps** enable concurrent transactions writing position deletes to coexist with compaction operations in Apache Iceberg. When files are compacted, position deletes become invalid because referenced files no longer exist and row positions change. Compaction maps track these transformations, enabling automatic remapping and conflict detection.
