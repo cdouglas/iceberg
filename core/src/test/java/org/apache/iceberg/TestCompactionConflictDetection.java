@@ -442,6 +442,276 @@ public class TestCompactionConflictDetection {
     }
   }
 
+  @Test
+  public void testChainedCompactionMapsDetected() throws IOException {
+    // Test that chained compaction maps are detected and throw ChainedCompactionMapsException
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_chain_detection");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    // Write initial file F1
+    DataFile f1 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newAppend().appendFile(f1).commit();
+    long snapshotS1 = table.currentSnapshot().snapshotId();
+
+    // Start transaction with deletes referencing F1 (don't commit yet)
+    RowDelta rowDelta = table.newRowDelta().validateFromSnapshot(snapshotS1);
+    DeleteFile deleteFile =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofPositionDeletes()
+            .withPath("/path/to/deletes.parquet")
+            .withFileSizeInBytes(100)
+            .withRecordCount(10)
+            .withReferencedDataFile(f1.path().toString())
+            .build();
+    rowDelta.addDeletes(deleteFile);
+
+    // First compaction: F1 -> F2 (S1 -> S2)
+    DataFile f2 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f2.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    RewriteFiles rewrite1 = table.newRewrite().validateFromSnapshot(snapshotS1);
+    rewrite1.deleteFile(f1);
+    rewrite1.addFile(f2);
+    rewrite1.commit();
+
+    // Second compaction: F2 -> F3 (S2 -> S3)
+    long snapshotS2 = table.currentSnapshot().snapshotId();
+    DataFile f3 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f3.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    RewriteFiles rewrite2 = table.newRewrite().validateFromSnapshot(snapshotS2);
+    rewrite2.deleteFile(f2);
+    rewrite2.addFile(f3);
+    rewrite2.commit();
+
+    // Try to commit - should detect chain F1 -> F2 -> F3
+    org.apache.iceberg.exceptions.ChainedCompactionMapsException chainedException =
+        assertThrows(
+            org.apache.iceberg.exceptions.ChainedCompactionMapsException.class,
+            () -> rowDelta.commit());
+
+    assertThat(chainedException.chainedFiles()).contains(f1.path().toString());
+    assertThat(chainedException.chainSnapshotIds()).hasSize(3); // S1, S2, S3
+    assertThat(chainedException.compactionMaps()).hasSize(2); // Two maps in the chain
+  }
+
+  @Test
+  public void testValidatorFindCompactionMapsApi() throws IOException {
+    // Test the findCompactionMaps() public API
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_find_maps_api");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    // Write and compact file
+    DataFile source =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/source.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newAppend().appendFile(source).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    DataFile target =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/target.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
+    rewrite.deleteFile(source);
+    rewrite.addFile(target);
+    rewrite.commit();
+
+    // Create validator and use findCompactionMaps()
+    TableMetadata metadata = ((BaseTable) table).operations().current();
+    CompactionMapValidator validator =
+        new CompactionMapValidator(table.io(), metadata, startingSnapshot, table.currentSnapshot());
+
+    java.util.Map<String, String> maps = validator.findCompactionMaps();
+    assertThat(maps).containsKey(source.path().toString());
+    assertThat(maps.get(source.path().toString())).isNotNull();
+  }
+
+  @Test
+  public void testValidatorFindCompactionMapChainApi() throws IOException {
+    // Test the findCompactionMapChain() public API
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_find_chain_api");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    DataFile f1 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newAppend().appendFile(f1).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // First compaction
+    DataFile f2 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f2.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newRewrite().validateFromSnapshot(startingSnapshot).deleteFile(f1).addFile(f2).commit();
+
+    // Second compaction
+    long snap2 = table.currentSnapshot().snapshotId();
+    DataFile f3 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f3.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newRewrite().validateFromSnapshot(snap2).deleteFile(f2).addFile(f3).commit();
+
+    // Create validator and use findCompactionMapChain()
+    TableMetadata metadata = ((BaseTable) table).operations().current();
+    CompactionMapValidator validator =
+        new CompactionMapValidator(table.io(), metadata, startingSnapshot, table.currentSnapshot());
+
+    CompactionMapChain chain = validator.findCompactionMapChain();
+    assertThat(chain).isNotNull();
+    assertThat(chain.size()).isEqualTo(2); // Two maps in the chain
+
+    java.util.List<CompactionMap> orderedMaps = validator.getOrderedMaps();
+    assertThat(orderedMaps).hasSize(2);
+  }
+
+  @Test
+  public void testValidatorWithEmptyDeleteFiles() throws IOException {
+    // Test edge case: empty delete files list
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_empty_deletes");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    DataFile source =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/source.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newAppend().appendFile(source).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    DataFile target =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/target.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table
+        .newRewrite()
+        .validateFromSnapshot(startingSnapshot)
+        .deleteFile(source)
+        .addFile(target)
+        .commit();
+
+    // Create validator and call with empty list
+    TableMetadata metadata = ((BaseTable) table).operations().current();
+    CompactionMapValidator validator =
+        new CompactionMapValidator(table.io(), metadata, startingSnapshot, table.currentSnapshot());
+
+    // Should not throw - early return for empty input
+    validator.validateNoCompactedReferences(java.util.Collections.emptyList());
+  }
+
+  @Test
+  public void testValidatorNoCompactionMaps() throws IOException {
+    // Test edge case: no compaction maps in history
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_no_maps");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "false") // Disabled
+        .commit();
+
+    DataFile source =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/source.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newAppend().appendFile(source).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Compact without maps (feature disabled)
+    DataFile target =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/target.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table
+        .newRewrite()
+        .validateFromSnapshot(startingSnapshot)
+        .deleteFile(source)
+        .addFile(target)
+        .commit();
+
+    // Create validator
+    TableMetadata metadata = ((BaseTable) table).operations().current();
+    CompactionMapValidator validator =
+        new CompactionMapValidator(table.io(), metadata, startingSnapshot, table.currentSnapshot());
+
+    // findCompactionMapChain should return null when no maps
+    CompactionMapChain chain = validator.findCompactionMapChain();
+    assertThat(chain).isNull();
+
+    // getOrderedMaps should return empty list
+    java.util.List<CompactionMap> orderedMaps = validator.getOrderedMaps();
+    assertThat(orderedMaps).isEmpty();
+  }
+
   /**
    * Helper method to write a deletion vector file.
    *
