@@ -237,4 +237,90 @@ public class TestPositionDeleteRemapper {
     // Should return false since we can't determine without reading the file
     assertThat(remapper.needsRemapping(deleteFileNoRef)).isFalse();
   }
+
+  @Test
+  public void testMayNeedRemappingConservative() {
+    // Create a compaction map for file1
+    Run run = new GenericRun(0L, 0L, 100L);
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/file1.parquet", "s3://bucket/file2.parquet", ImmutableList.of(run));
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // File-scoped delete referencing compacted file - should return true
+    DeleteFile deleteFileCompacted =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofPositionDeletes()
+            .withPath("s3://bucket/delete1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(10)
+            .withReferencedDataFile("s3://bucket/file1.parquet")
+            .build();
+    assertThat(remapper.mayNeedRemapping(deleteFileCompacted)).isTrue();
+
+    // File-scoped delete referencing non-compacted file - should return false
+    DeleteFile deleteFileNotCompacted =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofPositionDeletes()
+            .withPath("s3://bucket/delete2.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(10)
+            .withReferencedDataFile("s3://bucket/file3.parquet")
+            .build();
+    assertThat(remapper.mayNeedRemapping(deleteFileNotCompacted)).isFalse();
+
+    // Multi-file position delete (no referenced file) - should return true (conservative)
+    DeleteFile deleteFileNoRef =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofPositionDeletes()
+            .withPath("s3://bucket/delete3.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(10)
+            .build();
+    assertThat(remapper.mayNeedRemapping(deleteFileNoRef)).isTrue();
+
+    // Equality delete - should return false (not position-based)
+    DeleteFile equalityDelete =
+        FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+            .ofEqualityDeletes(1)
+            .withPath("s3://bucket/eq-delete.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(10)
+            .build();
+    assertThat(remapper.mayNeedRemapping(equalityDelete)).isFalse();
+  }
+
+  @Test
+  public void testCompactionMapAccessor() {
+    Run run = new GenericRun(0L, 0L, 100L);
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/file1.parquet", "s3://bucket/file2.parquet", ImmutableList.of(run));
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+
+    // Verify the compactionMap accessor returns the same map
+    assertThat(remapper.compactionMap()).isEqualTo(map);
+  }
+
+  @Test
+  public void testChainAccessor() {
+    Run run = new GenericRun(0L, 0L, 100L);
+    FileMapping mapping =
+        new GenericFileMapping(
+            "s3://bucket/file1.parquet", "s3://bucket/file2.parquet", ImmutableList.of(run));
+    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
+
+    // Remapper created from single map should have null chain
+    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
+    assertThat(remapper.chain()).isNull();
+
+    // Remapper created from chain should return the chain
+    CompactionMapChain chain = CompactionMapChain.build(ImmutableList.of(map));
+    PositionDeleteRemapper chainedRemapper = new PositionDeleteRemapper(chain);
+    assertThat(chainedRemapper.chain()).isEqualTo(chain);
+  }
 }
