@@ -52,6 +52,35 @@ interface RemappingStrategy {
   Run runForPosition(long sourcePosition);
 
   /**
+   * Finds runs for multiple source positions (bulk lookup) using primitive array.
+   *
+   * <p>Default implementation calls {@link #runForPosition(long)} for each position. Strategies can
+   * override this for better performance.
+   *
+   * <p><strong>Performance:</strong>
+   *
+   * <ul>
+   *   <li>Default: O(n * complexity of single lookup)
+   *   <li>Optimized: O(n + m) if positions are sorted (stream join)
+   * </ul>
+   *
+   * <p>This primitive version avoids boxing overhead and is preferred for high-performance paths.
+   *
+   * @param sourcePositions positions to look up as primitive array (sorted for best performance)
+   * @return map from position to containing run (missing entries = gaps)
+   */
+  default Map<Long, Run> runForPositions(long[] sourcePositions) {
+    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sourcePositions.length);
+    for (long position : sourcePositions) {
+      Run run = runForPosition(position);
+      if (run != null) {
+        results.put(position, run);
+      }
+    }
+    return results;
+  }
+
+  /**
    * Finds runs for multiple source positions (bulk lookup).
    *
    * <p>Default implementation calls {@link #runForPosition(long)} for each position. Strategies can
@@ -66,7 +95,9 @@ interface RemappingStrategy {
    *
    * @param sourcePositions positions to look up (sorted for best performance)
    * @return map from position to containing run (missing entries = gaps)
+   * @deprecated Use {@link #runForPositions(long[])} to avoid boxing overhead
    */
+  @Deprecated
   default Map<Long, Run> runForPositions(List<Long> sourcePositions) {
     Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sourcePositions.size());
     for (Long position : sourcePositions) {

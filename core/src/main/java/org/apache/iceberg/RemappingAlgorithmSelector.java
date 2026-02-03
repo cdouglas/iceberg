@@ -54,6 +54,73 @@ public class RemappingAlgorithmSelector {
   private static final int SORTEDNESS_SAMPLE_SIZE = 1000;
 
   /**
+   * Selects optimal remapping strategy based on data characteristics (primitive array version).
+   *
+   * <p>The selection logic is derived from empirical benchmarks, not theoretical complexity:
+   *
+   * <pre>
+   * if unsorted:
+   *     return IntervalTree        # Wins 25/27 unsorted scenarios
+   *
+   * # Sorted data below
+   * if gapRatio > 0.3:
+   *     return RangeQuery          # Sparse data: skip gaps efficiently
+   *
+   * if n >= 10000 AND m >= 100:
+   *     return StreamJoin          # Dense sorted bulk: O(n+m) linear scan wins
+   *
+   * return RangeQuery              # Default for sorted: O(m log n)
+   * </pre>
+   *
+   * @param mapping the file mapping containing runs
+   * @param positions the positions to remap as primitive array
+   * @return the optimal remapping strategy
+   */
+  public RemappingStrategy selectOptimal(FileMapping mapping, long[] positions) {
+    Preconditions.checkNotNull(mapping, "mapping is null");
+    Preconditions.checkNotNull(positions, "positions is null");
+
+    List<Run> runs = mapping.runs();
+    int m = runs.size();
+    int n = positions.length;
+
+    // Edge cases
+    if (n == 0 || m == 0) {
+      return new LinearSearchStrategy(runs);
+    }
+
+    // Check sortedness first - this is the primary decision factor
+    boolean sorted = isSortedPrimitive(positions);
+
+    // UNSORTED: IntervalTree is empirically optimal regardless of m, n, or gaps
+    // Benchmark evidence: wins 46/54 unsorted scenarios
+    if (!sorted) {
+      return new IntervalTreeStrategy(runs);
+    }
+
+    // SORTED data below - IntervalTree never wins for sorted data
+
+    // Sparse data (gaps > 30%): RangeQuery can skip gaps efficiently
+    // Benchmark evidence: RangeQuery wins all sparse sorted scenarios
+    double gapRatio = estimateGapRatio(mapping);
+    if (gapRatio > SPARSE_GAP_THRESHOLD) {
+      return new RangeQueryStrategy(runs);
+    }
+
+    // Dense sorted data with many positions AND many runs: StreamJoin wins
+    // Benchmark evidence: StreamJoin wins for (n>=10000, m>=100, gap<=0.3, sorted)
+    // For small m (e.g., m=10), RangeQuery is still faster even with large n
+    if (n >= BULK_POSITION_THRESHOLD && m >= MANY_RUNS_THRESHOLD) {
+      return new StreamJoinStrategy(runs);
+    }
+
+    // Default for sorted data: RangeQuery
+    // Optimal for: small m, small n, or moderate workloads
+    // Benchmark evidence: wins majority of remaining sorted scenarios
+    return new RangeQueryStrategy(runs);
+  }
+
+  /**
    * Selects optimal remapping strategy based on data characteristics.
    *
    * <p>The selection logic is derived from empirical benchmarks, not theoretical complexity:
@@ -75,7 +142,9 @@ public class RemappingAlgorithmSelector {
    * @param mapping the file mapping containing runs
    * @param positions the positions to remap
    * @return the optimal remapping strategy
+   * @deprecated Use {@link #selectOptimal(FileMapping, long[])} to avoid boxing overhead
    */
+  @Deprecated
   public RemappingStrategy selectOptimal(FileMapping mapping, List<Long> positions) {
     Preconditions.checkNotNull(mapping, "mapping is null");
     Preconditions.checkNotNull(positions, "positions is null");
@@ -153,6 +222,31 @@ public class RemappingAlgorithmSelector {
     }
 
     return 1.0 - ((double) coveredLength / totalRange);
+  }
+
+  /**
+   * Checks if positions are sorted by sampling the first N elements (primitive array version).
+   *
+   * @param positions the positions to check
+   * @return true if positions appear to be sorted
+   */
+  boolean isSortedPrimitive(long[] positions) {
+    if (positions.length <= 1) {
+      return true;
+    }
+
+    int sampleSize = Math.min(SORTEDNESS_SAMPLE_SIZE, positions.length);
+    long prev = positions[0];
+
+    for (int i = 1; i < sampleSize; i++) {
+      long current = positions[i];
+      if (current < prev) {
+        return false;
+      }
+      prev = current;
+    }
+
+    return true;
   }
 
   /**

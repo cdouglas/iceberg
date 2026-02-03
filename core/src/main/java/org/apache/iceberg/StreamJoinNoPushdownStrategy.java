@@ -100,6 +100,7 @@ class StreamJoinNoPushdownStrategy implements RemappingStrategy {
     return binarySearchFallback.runForPosition(sourcePosition);
   }
 
+  @SuppressWarnings("deprecation")
   @Override
   public Map<Long, Run> runForPositions(List<Long> sourcePositions) {
     if (sourcePositions == null || sourcePositions.isEmpty()) {
