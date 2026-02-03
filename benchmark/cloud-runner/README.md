@@ -8,155 +8,110 @@ Lightweight scripts for running Iceberg benchmarks on cloud VMs. Designed for si
 - **No Docker** - Runs directly on VM for minimal overhead
 - **Reentrant** - State persisted locally; benchmarks run via nohup
 - **Simple** - One script per cloud, minimal dependencies
+- **Separation of concerns** - One-time setup separate from per-run VM lifecycle
+
+## Script Organization
+
+Each cloud provider has three scripts:
+
+| Script | Purpose | When to Run |
+|--------|---------|-------------|
+| `setup.sh` | Create storage, IAM roles, permissions | Once per cloud account |
+| `run.sh` | VM lifecycle, deploy, run benchmarks | Each benchmark run |
+| `teardown.sh` | Remove all infrastructure | When done with benchmarks |
 
 ## Infrastructure Setup (One-Time)
 
-Before running benchmarks, set up the cloud infrastructure. This only needs to be done once per cloud account.
+Before running benchmarks, set up the cloud infrastructure using the `setup.sh` script. This only needs to be done once per cloud account.
 
-### AWS Setup
+### Prerequisites
 
-```bash
-# 1. Install AWS CLI
-brew install awscli  # macOS
-# or: sudo apt-get install awscli  # Ubuntu
-
-# 2. Configure credentials
-aws configure
-# Enter your AWS Access Key ID, Secret Access Key, and default region
-
-# 3. Create an EC2 key pair for SSH access
-aws ec2 create-key-pair \
-    --key-name iceberg-benchmark \
-    --query 'KeyMaterial' \
-    --output text > ~/.ssh/iceberg-benchmark.pem
-chmod 600 ~/.ssh/iceberg-benchmark.pem
-
-# 4. Create S3 bucket for benchmark data
-aws s3 mb s3://my-iceberg-benchmark --region us-west-2
-
-# 5. (Recommended) Create IAM instance profile for S3 access
-# This allows the VM to access S3 without embedding credentials
-
-# Create the trust policy
-cat > /tmp/trust-policy.json << 'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"Service": "ec2.amazonaws.com"},
-    "Action": "sts:AssumeRole"
-  }]
-}
-EOF
-
-# Create IAM role
-aws iam create-role \
-    --role-name iceberg-benchmark-role \
-    --assume-role-policy-document file:///tmp/trust-policy.json
-
-# Attach S3 access policy
-aws iam attach-role-policy \
-    --role-name iceberg-benchmark-role \
-    --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
-
-# Create instance profile
-aws iam create-instance-profile \
-    --instance-profile-name iceberg-benchmark-profile
-
-# Add role to instance profile
-aws iam add-role-to-instance-profile \
-    --instance-profile-name iceberg-benchmark-profile \
-    --role-name iceberg-benchmark-role
-
-# Wait for propagation
-sleep 10
-echo "AWS setup complete"
-```
-
-### GCP Setup
+Install the cloud CLI for your provider:
 
 ```bash
-# 1. Install gcloud CLI
-brew install google-cloud-sdk  # macOS
-# or: see https://cloud.google.com/sdk/docs/install
+# AWS
+brew install awscli && aws configure
 
-# 2. Authenticate and set project
-gcloud auth login
-gcloud config set project YOUR_PROJECT_ID
+# GCP
+brew install google-cloud-sdk && gcloud auth login && gcloud config set project YOUR_PROJECT
 
-# 3. Enable required APIs
-gcloud services enable compute.googleapis.com
-gcloud services enable storage.googleapis.com
-
-# 4. Create GCS bucket for benchmark data
-gsutil mb -l us-central1 gs://my-iceberg-benchmark
-
-# 5. Configure SSH (gcloud manages keys automatically)
-# Ensure OS Login is enabled or project-wide SSH keys are configured
-gcloud compute project-info add-metadata \
-    --metadata enable-oslogin=TRUE
-
-echo "GCP setup complete"
+# Azure
+brew install azure-cli && az login
 ```
 
-### Azure Setup
+### Using setup.sh (Recommended)
+
+Each cloud has an automated setup script that creates all required infrastructure:
 
 ```bash
-# 1. Install Azure CLI
-brew install azure-cli  # macOS
-# or: see https://docs.microsoft.com/cli/azure/install-azure-cli
+# AWS - creates S3 bucket, IAM role, instance profile, EC2 key pair
+./aws/setup.sh
+# Output: Configuration saved to aws/setup.conf
 
-# 2. Login
-az login
+# GCP - creates GCS bucket, service account, IAM bindings
+./gcp/setup.sh --project YOUR_PROJECT
+# Output: Configuration saved to gcp/setup.conf
 
-# 3. Set subscription (if you have multiple)
-az account set --subscription "Your Subscription Name"
-
-# 4. Create resource group
-az group create \
-    --name iceberg-benchmark-rg \
-    --location eastus
-
-# 5. Create storage account and container
-az storage account create \
-    --name icebergbenchmark$RANDOM \
-    --resource-group iceberg-benchmark-rg \
-    --location eastus \
-    --sku Standard_LRS \
-    --kind StorageV2 \
-    --hierarchical-namespace true  # Required for ADLS Gen2
-
-# Get the storage account name
-STORAGE_ACCOUNT=$(az storage account list \
-    --resource-group iceberg-benchmark-rg \
-    --query '[0].name' -o tsv)
-
-# Create container
-az storage container create \
-    --name benchmark \
-    --account-name $STORAGE_ACCOUNT
-
-echo "Azure setup complete. Storage account: $STORAGE_ACCOUNT"
+# Azure - creates resource group, storage account, container, RBAC
+./azure/setup.sh
+# Output: Configuration saved to azure/setup.conf
 ```
+
+The setup scripts are **idempotent** - safe to run multiple times. They create a `setup.conf` file that `run.sh` will automatically load.
+
+### Setup Options
+
+```bash
+# AWS
+./aws/setup.sh --region us-east-1 --bucket my-benchmark-bucket
+
+# GCP
+./gcp/setup.sh --project my-project --region us-central1
+
+# Azure
+./azure/setup.sh --location eastus2 --storage-account mybenchstore
+```
+
+### Manual Setup
+
+If you prefer manual setup or need customization, see the setup scripts for the exact resources created. Key requirements:
+
+- **AWS**: S3 bucket, IAM instance profile with S3 access, EC2 key pair
+- **GCP**: GCS bucket, service account with objectAdmin, firewall rule for SSH
+- **Azure**: Resource group, storage account (ADLS Gen2), container, RBAC for managed identity
 
 ## Running Benchmarks
 
 ### Quick Start (Full Automated Run)
 
 ```bash
+# Load configuration from setup.sh (or set env vars manually)
+source aws/setup.conf   # or gcp/setup.conf or azure/setup.conf
+
 # AWS
-export AWS_S3_BUCKET=my-iceberg-benchmark
-export AWS_SSH_KEY_NAME=iceberg-benchmark
 ./aws/run.sh all --config ../remapping-microbenchmark/configs/quick.yaml
 
 # GCP
-export GCP_GCS_BUCKET=my-iceberg-benchmark
 ./gcp/run.sh all --config ../remapping-microbenchmark/configs/quick.yaml
 
 # Azure
-export AZURE_STORAGE_ACCOUNT=icebergbenchmarkXXXX  # your account name
-export AZURE_STORAGE_CONTAINER=benchmark
 ./azure/run.sh all --config ../remapping-microbenchmark/configs/quick.yaml
+```
+
+If you didn't use `setup.sh`, set environment variables manually:
+
+```bash
+# AWS
+export AWS_S3_BUCKET=my-iceberg-benchmark
+export AWS_SSH_KEY_NAME=iceberg-benchmark
+
+# GCP
+export GCP_GCS_BUCKET=my-iceberg-benchmark
+export GCP_PROJECT=my-project
+
+# Azure
+export AZURE_STORAGE_ACCOUNT=icebergbenchmarkXXXX
+export AZURE_STORAGE_CONTAINER=benchmark
 ```
 
 The `all` command runs the complete workflow:
@@ -247,6 +202,15 @@ Use `--keep` to preserve the VM after benchmark completes (useful for debugging 
 ```
 
 ## Commands Reference
+
+### Infrastructure Scripts (run once)
+
+| Script | Description |
+|--------|-------------|
+| `setup.sh` | Create storage, IAM, permissions (idempotent) |
+| `teardown.sh` | Remove all infrastructure (destructive!) |
+
+### Benchmark Commands (run.sh)
 
 | Command | Description |
 |---------|-------------|
@@ -387,10 +351,28 @@ python3 ../remapping-microbenchmark/scripts/analyze-results.py \
 ### "No JAR deployed" error
 - Run `deploy` before `run`: `./aws/run.sh deploy --config <config>`
 
+## Teardown (Cleanup)
+
+When you're done with benchmarks, use `teardown.sh` to remove all infrastructure:
+
+```bash
+# Remove all AWS resources (bucket, IAM role, instance profile, key pair)
+./aws/teardown.sh --yes
+
+# Remove all GCP resources (bucket, service account, firewall rule)
+./gcp/teardown.sh --yes
+
+# Remove all Azure resources (entire resource group)
+./azure/teardown.sh --yes
+```
+
+**WARNING**: Teardown scripts delete storage buckets/accounts including all benchmark data!
+
 ## Cost Management
 
 - VMs are terminated after `all` completes (unless `--keep`)
-- Use `stop` to manually terminate
+- Use `stop` to manually terminate VMs
+- Use `teardown.sh` to remove all infrastructure when done
 - Check `status` to see if VMs are running
 - Use smaller instance types for quick tests (`--instance-type t3.medium`)
 - Consider spot/preemptible instances for long benchmarks (not yet implemented)

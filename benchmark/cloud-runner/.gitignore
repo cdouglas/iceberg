@@ -1,3 +1,7 @@
 # State directories (contain instance IDs, IPs, etc.)
 */state/
 state/
+
+# Setup configuration (contains account-specific values)
+*/setup.conf
+setup.conf
