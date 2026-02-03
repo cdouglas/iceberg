@@ -1043,7 +1043,7 @@ COMMANDS:
 
 OPTIONS:
     --clouds <list>     Comma-separated clouds: aws,gcp,azure (default: all available)
-    --benchmark <name>  Benchmark to run: remapping-microbenchmark, compaction-cloud
+    --benchmark <name>  Benchmark to run: remapping-microbenchmark
     --config <file>     Benchmark configuration YAML file
 
 ENVIRONMENT:

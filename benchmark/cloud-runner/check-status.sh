@@ -28,14 +28,28 @@ check_cloud() {
     local ip=$(cat "$ip_file")
     local ssh_opts="-o StrictHostKeyChecking=no -o ConnectTimeout=5 -o LogLevel=ERROR"
 
-    # Find SSH key
+    # Find SSH key based on cloud
     local key=""
-    for k in ~/.ssh/iceberg_benchmark_key ~/.ssh/iceberg-benchmark.pem ~/.ssh/id_rsa; do
-        [[ -f "$k" ]] && key="-i $k" && break
-    done
+    case "$cloud" in
+        aws)
+            for k in ~/.ssh/iceberg-benchmark-aws.pem ~/.ssh/iceberg_benchmark_key ~/.ssh/id_rsa; do
+                [[ -f "$k" ]] && key="-i $k" && break
+            done
+            ;;
+        gcp)
+            for k in ~/.ssh/google_compute_engine ~/.ssh/iceberg_benchmark_key ~/.ssh/id_rsa; do
+                [[ -f "$k" ]] && key="-i $k" && break
+            done
+            ;;
+        azure)
+            for k in ~/.ssh/iceberg_benchmark_key ~/.ssh/id_rsa; do
+                [[ -f "$k" ]] && key="-i $k" && break
+            done
+            ;;
+    esac
 
-    # Quick status check
-    local status=$(ssh $ssh_opts $key "$user@$ip" "cat ~/benchmark/status.txt 2>/dev/null || echo 'NOT_STARTED'" 2>/dev/null || echo "SSH_FAILED")
+    # Quick status check (status file is 'status' not 'status.txt')
+    local status=$(ssh $ssh_opts $key "$user@$ip" "cat ~/benchmark/status 2>/dev/null || echo 'NOT_STARTED'" 2>/dev/null || echo "SSH_FAILED")
 
     if [[ "$status" == "STARTED" ]]; then
         local scenario=$(ssh $ssh_opts $key "$user@$ip" "grep 'Running scenario' ~/benchmark/benchmark.log 2>/dev/null | tail -1 | sed 's/.*scenario: //' | cut -c1-60" 2>/dev/null || echo "unknown")

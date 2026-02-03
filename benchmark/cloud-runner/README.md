@@ -159,16 +159,6 @@ export AWS_SSH_KEY_NAME=iceberg-benchmark
 ./aws/run.sh stop
 ```
 
-### Running Different Benchmarks
-
-```bash
-# Run remapping-microbenchmark (default)
-./aws/run.sh all --benchmark remapping-microbenchmark --config ../remapping-microbenchmark/configs/quick.yaml
-
-# Run compaction-cloud benchmark
-./aws/run.sh all --benchmark compaction-cloud --config ../compaction-cloud/configs/default.yaml
-```
-
 ### Choosing Instance Types
 
 ```bash
@@ -228,7 +218,7 @@ Use `--keep` to preserve the VM after benchmark completes (useful for debugging 
 ```
 --instance-type TYPE   VM size (e.g., m5.xlarge, n2-standard-4)
 --config FILE          Benchmark config YAML
---benchmark NAME       Which benchmark (remapping-microbenchmark or compaction-cloud)
+--benchmark NAME       Which benchmark (remapping-microbenchmark)
 --keep                 Don't terminate VM after 'all'
 --force                Recreate VM even if exists
 ```

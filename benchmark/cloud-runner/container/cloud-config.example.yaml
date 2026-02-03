@@ -97,7 +97,6 @@ azure:
 # =============================================================================
 benchmark:
   # Which benchmark to run
-  # Options: remapping-microbenchmark, compaction-cloud
   name: remapping-microbenchmark
 
   # Configuration file for the benchmark

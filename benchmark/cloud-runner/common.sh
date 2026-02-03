@@ -298,7 +298,7 @@ init_project_root() {
 }
 
 build_benchmark_jar() {
-    local benchmark="$1"  # remapping-microbenchmark or compaction-cloud
+    local benchmark="$1"  # remapping-microbenchmark
 
     # Check if JAR already exists
     local jar=$(ls -t "$PROJECT_ROOT/benchmark/$benchmark/build/libs/"*".jar" 2>/dev/null | head -1)
@@ -341,7 +341,7 @@ Commands:
 Options:
   --instance-type TYPE   VM instance type (default: cloud-specific)
   --config FILE          Benchmark config file
-  --benchmark NAME       Benchmark to run (remapping-microbenchmark or compaction-cloud)
+  --benchmark NAME       Benchmark to run (remapping-microbenchmark)
   --keep                 Don't terminate VM after 'all' command
   --force                Force recreate VM even if exists
 EOF
