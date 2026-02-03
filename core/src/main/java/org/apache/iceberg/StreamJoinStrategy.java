@@ -98,6 +98,22 @@ class StreamJoinStrategy implements RemappingStrategy {
   }
 
   @Override
+  public Run[] runsForPositions(long[] sourcePositions) {
+    if (sourcePositions == null || sourcePositions.length == 0) {
+      return new Run[0];
+    }
+
+    // Check if positions are sorted
+    if (isSortedPrimitive(sourcePositions)) {
+      // Use optimized stream join returning parallel array
+      return streamJoinParallelArray(sourcePositions);
+    } else {
+      // Fall back to default implementation
+      return RemappingStrategy.super.runsForPositions(sourcePositions);
+    }
+  }
+
+  @Override
   public String name() {
     return "stream-join";
   }
@@ -157,6 +173,65 @@ class StreamJoinStrategy implements RemappingStrategy {
         results.put(position, currentRun);
       }
       // If position < runStart, it's in a gap, skip it
+    }
+
+    return results;
+  }
+
+  /**
+   * Performs stream join returning a parallel array (no boxing, no HashMap).
+   *
+   * <p>Same algorithm as streamJoinPrimitive but returns Run[] where result[i] is the run for
+   * sortedPositions[i], or null if position is in a gap.
+   *
+   * @param sortedPositions positions in ascending order
+   * @return parallel array of runs
+   */
+  private Run[] streamJoinParallelArray(long[] sortedPositions) {
+    Run[] results = new Run[sortedPositions.length];
+
+    if (runs == null || runs.isEmpty()) {
+      return results;
+    }
+
+    // Predicate pushdown: filter runs by min/max position bounds
+    long minPos = sortedPositions[0];
+    long maxPos = sortedPositions[sortedPositions.length - 1];
+
+    List<Run> relevantRuns = filterRunsByRange(runs, minPos, maxPos);
+
+    if (relevantRuns.isEmpty()) {
+      return results;
+    }
+
+    int runIndex = 0;
+    Run currentRun = relevantRuns.get(0);
+    long currentRunEnd = currentRun.sourcePosition() + currentRun.length();
+
+    for (int i = 0; i < sortedPositions.length; i++) {
+      long position = sortedPositions[i];
+
+      // Advance through runs until we find one that might contain this position
+      while (runIndex < relevantRuns.size() && position >= currentRunEnd) {
+        runIndex++;
+        if (runIndex < relevantRuns.size()) {
+          currentRun = relevantRuns.get(runIndex);
+          currentRunEnd = currentRun.sourcePosition() + currentRun.length();
+        }
+      }
+
+      // Check if we've exhausted all runs
+      if (runIndex >= relevantRuns.size()) {
+        // All remaining positions are beyond the last run - leave as null
+        break;
+      }
+
+      // Check if position is in current run
+      long runStart = currentRun.sourcePosition();
+      if (position >= runStart && position < currentRunEnd) {
+        results[i] = currentRun;
+      }
+      // If position < runStart, it's in a gap - leave results[i] as null
     }
 
     return results;

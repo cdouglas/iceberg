@@ -852,6 +852,204 @@ public class TestRemappingStrategies {
     assertThat(streamResults).isNotEmpty();
   }
 
+  // ========== Tests for runsForPositions parallel array API ==========
+
+  /** Test that runsForPositions returns parallel array matching runForPositions map. */
+  @Test
+  public void testRunsForPositionsParallelArrayBasic() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), // [0, 100)
+            new GenericRun(150, 100, 50), // [150, 200) - gap at [100, 150)
+            new GenericRun(300, 150, 100)); // [300, 400) - gap at [200, 300)
+
+    // Test with all strategy types
+    List<RemappingStrategy> strategies =
+        Arrays.asList(
+            new LinearSearchStrategy(runs),
+            new BinarySearchStrategy(runs),
+            new IntervalTreeStrategy(runs),
+            new StreamJoinStrategy(runs),
+            new RangeQueryStrategy(runs));
+
+    // Sorted positions including positions in runs, gaps, and out of bounds
+    long[] positions = {5L, 50L, 99L, 125L, 150L, 175L, 250L, 300L, 350L, 500L};
+
+    for (RemappingStrategy strategy : strategies) {
+      // Get results from both APIs
+      Map<Long, Run> mapResults = strategy.runForPositions(positions);
+      Run[] arrayResults = strategy.runsForPositions(positions);
+
+      // Verify array has same length as input
+      assertThat(arrayResults.length)
+          .as("Array length should match input for %s", strategy.name())
+          .isEqualTo(positions.length);
+
+      // Verify array results match map results
+      for (int i = 0; i < positions.length; i++) {
+        long pos = positions[i];
+        Run expected = mapResults.get(pos);
+        Run actual = arrayResults[i];
+
+        assertThat(actual)
+            .as("Result for position %s at index %s should match for %s", pos, i, strategy.name())
+            .isEqualTo(expected);
+      }
+    }
+  }
+
+  /** Test runsForPositions with empty input. */
+  @Test
+  public void testRunsForPositionsEmpty() {
+    List<Run> runs = Arrays.asList(new GenericRun(0, 0, 100));
+
+    List<RemappingStrategy> strategies =
+        Arrays.asList(
+            new LinearSearchStrategy(runs),
+            new BinarySearchStrategy(runs),
+            new IntervalTreeStrategy(runs),
+            new StreamJoinStrategy(runs),
+            new RangeQueryStrategy(runs));
+
+    long[] empty = new long[0];
+
+    for (RemappingStrategy strategy : strategies) {
+      Run[] results = strategy.runsForPositions(empty);
+      assertThat(results.length)
+          .as("Empty input should return empty array for %s", strategy.name())
+          .isEqualTo(0);
+    }
+  }
+
+  /** Test runsForPositions with all positions in gaps. */
+  @Test
+  public void testRunsForPositionsAllGaps() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), // [0, 100)
+            new GenericRun(200, 100, 100)); // [200, 300) - gap at [100, 200)
+
+    List<RemappingStrategy> strategies =
+        Arrays.asList(
+            new LinearSearchStrategy(runs),
+            new BinarySearchStrategy(runs),
+            new IntervalTreeStrategy(runs),
+            new StreamJoinStrategy(runs),
+            new RangeQueryStrategy(runs));
+
+    // All positions in the gap
+    long[] positions = {100L, 125L, 150L, 175L, 199L};
+
+    for (RemappingStrategy strategy : strategies) {
+      Run[] results = strategy.runsForPositions(positions);
+
+      assertThat(results.length).isEqualTo(positions.length);
+      for (int i = 0; i < results.length; i++) {
+        assertThat(results[i])
+            .as("Position %s should be null (in gap) for %s", positions[i], strategy.name())
+            .isNull();
+      }
+    }
+  }
+
+  /**
+   * Test runsForPositions with unsorted input falls back correctly for StreamJoin and RangeQuery.
+   */
+  @Test
+  public void testRunsForPositionsUnsortedFallback() {
+    List<Run> runs =
+        Arrays.asList(
+            new GenericRun(0, 0, 100), new GenericRun(150, 100, 50), new GenericRun(300, 150, 100));
+
+    // Unsorted positions
+    long[] unsortedPositions = {350L, 50L, 175L, 125L, 5L};
+
+    // All strategies should handle unsorted input correctly
+    List<RemappingStrategy> strategies =
+        Arrays.asList(
+            new LinearSearchStrategy(runs),
+            new BinarySearchStrategy(runs),
+            new IntervalTreeStrategy(runs),
+            new StreamJoinStrategy(runs),
+            new RangeQueryStrategy(runs));
+
+    for (RemappingStrategy strategy : strategies) {
+      Run[] results = strategy.runsForPositions(unsortedPositions);
+
+      // Verify array length matches input
+      assertThat(results.length).isEqualTo(unsortedPositions.length);
+
+      // Verify each result matches single-position lookup
+      for (int i = 0; i < unsortedPositions.length; i++) {
+        Run expected = strategy.runForPosition(unsortedPositions[i]);
+        assertThat(results[i])
+            .as(
+                "Result for unsorted position %s should match single lookup for %s",
+                unsortedPositions[i], strategy.name())
+            .isEqualTo(expected);
+      }
+    }
+  }
+
+  /** Test runsForPositions consistency with random data across all strategies. */
+  @Test
+  public void testRunsForPositionsConsistencyRandom() {
+    Random rand = new Random(12345);
+
+    for (int config = 0; config < 20; config++) {
+      int numRuns = 5 + rand.nextInt(45); // 5-50 runs
+      List<Run> runs = generateSortedRunsWithGaps(numRuns, rand);
+
+      List<RemappingStrategy> strategies =
+          Arrays.asList(
+              new LinearSearchStrategy(runs),
+              new BinarySearchStrategy(runs),
+              new IntervalTreeStrategy(runs),
+              new StreamJoinStrategy(runs),
+              new RangeQueryStrategy(runs));
+
+      // Generate sorted positions
+      long maxPos = runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
+      long[] sortedPositions = new long[100];
+      for (int i = 0; i < 100; i++) {
+        sortedPositions[i] = nextLong(rand, maxPos + 1000);
+      }
+      java.util.Arrays.sort(sortedPositions);
+
+      // Get baseline results from linear search
+      RemappingStrategy linear = strategies.get(0);
+      Run[] baselineArray = linear.runsForPositions(sortedPositions);
+      Map<Long, Run> baselineMap = linear.runForPositions(sortedPositions);
+
+      // Verify all strategies return same results
+      for (RemappingStrategy strategy : strategies) {
+        Run[] arrayResults = strategy.runsForPositions(sortedPositions);
+        Map<Long, Run> mapResults = strategy.runForPositions(sortedPositions);
+
+        // Array should match baseline
+        assertThat(arrayResults)
+            .as("Array results for %s should match baseline for config %s", strategy.name(), config)
+            .isEqualTo(baselineArray);
+
+        // Map should match baseline
+        assertThat(mapResults)
+            .as("Map results for %s should match baseline for config %s", strategy.name(), config)
+            .isEqualTo(baselineMap);
+
+        // Array and map should be consistent
+        for (int i = 0; i < sortedPositions.length; i++) {
+          long pos = sortedPositions[i];
+          Run fromArray = arrayResults[i];
+          Run fromMap = mapResults.get(pos);
+
+          assertThat(fromArray)
+              .as("Array and map results should match for %s, position %s", strategy.name(), pos)
+              .isEqualTo(fromMap);
+        }
+      }
+    }
+  }
+
   // Helper methods
 
   /**
