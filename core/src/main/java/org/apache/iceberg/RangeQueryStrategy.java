@@ -137,6 +137,26 @@ class RangeQueryStrategy implements RemappingStrategy {
   }
 
   @Override
+  public Run[] runsForPositions(long[] sourcePositions) {
+    if (sourcePositions == null || sourcePositions.length == 0) {
+      return new Run[0];
+    }
+
+    if (runs == null || runs.isEmpty()) {
+      return new Run[sourcePositions.length];
+    }
+
+    // Range query only works correctly with sorted input (result indices must match input indices)
+    // For unsorted input, fall back to default per-position lookup
+    if (!isSortedPrimitive(sourcePositions)) {
+      return RemappingStrategy.super.runsForPositions(sourcePositions);
+    }
+
+    // Use range query returning parallel array
+    return rangeQueryParallelArray(sourcePositions);
+  }
+
+  @Override
   public String name() {
     return "range-query";
   }
@@ -231,6 +251,50 @@ class RangeQueryStrategy implements RemappingStrategy {
       // All positions in [startIndex, endIndex) are within this run
       for (int i = startIndex; i < endIndex; i++) {
         results.put(sortedPositions[i], run);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Range query returning parallel array (no boxing, no HashMap).
+   *
+   * <p>Same algorithm as rangeQueryPrimitive but returns Run[] where result[i] is the run for
+   * sortedPositions[i], or null if position is in a gap.
+   *
+   * @param sortedPositions positions in ascending order
+   * @return parallel array of runs
+   */
+  private Run[] rangeQueryParallelArray(long[] sortedPositions) {
+    Run[] results = new Run[sortedPositions.length];
+
+    // Predicate pushdown: filter runs by min/max position bounds
+    long minPos = sortedPositions[0];
+    long maxPos = sortedPositions[sortedPositions.length - 1];
+
+    List<Run> relevantRuns = filterRunsByRange(runs, minPos, maxPos);
+
+    if (relevantRuns.isEmpty()) {
+      return results;
+    }
+
+    for (Run run : relevantRuns) {
+      long runStart = run.sourcePosition();
+      long runEnd = runStart + run.length();
+
+      // Find first position >= runStart
+      int startIndex = binarySearchLowerBoundPrimitive(sortedPositions, runStart);
+      if (startIndex >= sortedPositions.length) {
+        continue;
+      }
+
+      // Find first position >= runEnd (exclusive bound)
+      int endIndex = binarySearchLowerBoundPrimitive(sortedPositions, runEnd);
+
+      // All positions in [startIndex, endIndex) are within this run
+      for (int i = startIndex; i < endIndex; i++) {
+        results[i] = run;
       }
     }
 
