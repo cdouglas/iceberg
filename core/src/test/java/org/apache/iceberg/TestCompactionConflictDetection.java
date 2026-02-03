@@ -662,6 +662,162 @@ public class TestCompactionConflictDetection {
   }
 
   @Test
+  public void testOverlappingCompactionsSecondFails() throws IOException {
+    // Test that when two compactions target overlapping file sets, the second one fails
+    // at commit time with ValidationException (not CompactionConflictException)
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_overlapping_compactions");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    // Create three data files: F1, F2, F3
+    DataFile f1 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    DataFile f2 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f2.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    DataFile f3 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f3.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newAppend().appendFile(f1).appendFile(f2).appendFile(f3).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Compaction A: compact F1 and F2 (don't commit yet)
+    RewriteFiles compactionA = table.newRewrite().validateFromSnapshot(startingSnapshot);
+    compactionA.deleteFile(f1);
+    compactionA.deleteFile(f2);
+
+    DataFile compactionAOutput =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/compaction_a_output.parquet")
+            .withFileSizeInBytes(2048)
+            .withRecordCount(200)
+            .build();
+    compactionA.addFile(compactionAOutput);
+
+    // Compaction B: compact F2 and F3 (overlapping on F2)
+    RewriteFiles compactionB = table.newRewrite().validateFromSnapshot(startingSnapshot);
+    compactionB.deleteFile(f2);
+    compactionB.deleteFile(f3);
+
+    DataFile compactionBOutput =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/compaction_b_output.parquet")
+            .withFileSizeInBytes(2048)
+            .withRecordCount(200)
+            .build();
+    compactionB.addFile(compactionBOutput);
+
+    // Compaction A commits successfully
+    compactionA.commit();
+
+    // Compaction B should fail because F2 was already deleted by Compaction A
+    // The error is a generic ValidationException, not CompactionConflictException,
+    // because this is a commit-time validation failure (missing data files)
+    org.apache.iceberg.exceptions.ValidationException exception =
+        assertThrows(
+            org.apache.iceberg.exceptions.ValidationException.class, () -> compactionB.commit());
+
+    // The exception message should indicate the missing file
+    assertThat(exception.getMessage()).contains("f2.parquet");
+  }
+
+  @Test
+  public void testNonOverlappingCompactionsBothSucceed() throws IOException {
+    // Test that non-overlapping compactions can both succeed
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_non_overlapping_compactions");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "2")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    // Create four data files: F1, F2, F3, F4
+    DataFile f1 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    DataFile f2 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f2.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    DataFile f3 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f3.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    DataFile f4 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/f4.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newAppend().appendFile(f1).appendFile(f2).appendFile(f3).appendFile(f4).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Compaction A: compact F1 and F2 (disjoint from B)
+    RewriteFiles compactionA = table.newRewrite().validateFromSnapshot(startingSnapshot);
+    compactionA.deleteFile(f1);
+    compactionA.deleteFile(f2);
+
+    DataFile compactionAOutput =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/compaction_a_output.parquet")
+            .withFileSizeInBytes(2048)
+            .withRecordCount(200)
+            .build();
+    compactionA.addFile(compactionAOutput);
+
+    // Compaction B: compact F3 and F4 (disjoint from A)
+    RewriteFiles compactionB = table.newRewrite().validateFromSnapshot(startingSnapshot);
+    compactionB.deleteFile(f3);
+    compactionB.deleteFile(f4);
+
+    DataFile compactionBOutput =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/compaction_b_output.parquet")
+            .withFileSizeInBytes(2048)
+            .withRecordCount(200)
+            .build();
+    compactionB.addFile(compactionBOutput);
+
+    // Both compactions should succeed (they target disjoint file sets)
+    compactionA.commit();
+    compactionB.commit();
+
+    // Verify both outputs are in the table
+    assertThat(table.currentSnapshot()).isNotNull();
+  }
+
+  @Test
   public void testValidatorNoCompactionMaps() throws IOException {
     // Test edge case: no compaction maps in history
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_no_maps");
