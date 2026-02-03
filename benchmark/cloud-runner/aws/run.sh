@@ -29,16 +29,22 @@ source "$SCRIPT_DIR/../common.sh"
 init_state_dir "aws"
 init_project_root
 
+# Load setup configuration if available
+SETUP_CONF="$SCRIPT_DIR/setup.conf"
+if [[ -f "$SETUP_CONF" ]]; then
+    source "$SETUP_CONF"
+fi
+
 # Defaults
 DEFAULT_INSTANCE_TYPE="m5.xlarge"
 DEFAULT_REGION="${AWS_REGION:-us-west-2}"
 DEFAULT_AMI=""  # Will be looked up
 SSH_USER="ubuntu"
-SSH_KEY_NAME="${AWS_SSH_KEY_NAME:-}"
+SSH_KEY_NAME="${AWS_SSH_KEY_NAME:-iceberg-benchmark}"
 # Look for SSH key in common locations
 SSH_KEY_FILE="${AWS_SSH_KEY_FILE:-}"
 if [[ -z "$SSH_KEY_FILE" ]]; then
-    for keypath in "/output/ssh/${SSH_KEY_NAME}.pem" "${HOME}/.ssh/${SSH_KEY_NAME}.pem" "${HOME}/.ssh/id_rsa"; do
+    for keypath in "/output/ssh/${SSH_KEY_NAME}.pem" "${HOME}/.ssh/${SSH_KEY_NAME}.pem" "${HOME}/.ssh/${SSH_KEY_NAME}" "${HOME}/.ssh/iceberg_benchmark_key" "${HOME}/.ssh/id_rsa"; do
         if [[ -f "$keypath" ]]; then
             SSH_KEY_FILE="$keypath"
             break
@@ -50,8 +56,18 @@ CONFIG_FILE=""
 KEEP_VM=false
 FORCE=false
 
-# Required environment
-: "${AWS_S3_BUCKET:?Set AWS_S3_BUCKET to your benchmark bucket}"
+# Check for required environment (with helpful message if setup not run)
+if [[ -z "${AWS_S3_BUCKET:-}" ]]; then
+    log_error "Missing required environment variable: AWS_S3_BUCKET"
+    if [[ ! -f "$SETUP_CONF" ]]; then
+        log_error "Run setup.sh first to create infrastructure:"
+        log_error "  $SCRIPT_DIR/setup.sh"
+    else
+        log_error "Source the setup configuration:"
+        log_error "  source $SETUP_CONF"
+    fi
+    exit 1
+fi
 
 usage() {
     echo "Usage: $0 <command> [options]"

@@ -29,10 +29,16 @@ source "$SCRIPT_DIR/../common.sh"
 init_state_dir "azure"
 init_project_root
 
+# Load setup configuration if available
+SETUP_CONF="$SCRIPT_DIR/setup.conf"
+if [[ -f "$SETUP_CONF" ]]; then
+    source "$SETUP_CONF"
+fi
+
 # Defaults
 DEFAULT_VM_SIZE="Standard_D4s_v3"
 DEFAULT_LOCATION="${AZURE_LOCATION:-westus2}"
-RESOURCE_GROUP="iceberg-benchmark-rg"
+RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-iceberg-benchmark-rg}"
 VM_NAME="iceberg-benchmark"
 SSH_USER="azureuser"
 BENCHMARK="remapping-microbenchmark"
@@ -40,9 +46,18 @@ CONFIG_FILE=""
 KEEP_VM=false
 FORCE=false
 
-# Required environment
-: "${AZURE_STORAGE_ACCOUNT:?Set AZURE_STORAGE_ACCOUNT to your storage account}"
-: "${AZURE_STORAGE_CONTAINER:?Set AZURE_STORAGE_CONTAINER to your container}"
+# Check for required environment (with helpful message if setup not run)
+if [[ -z "${AZURE_STORAGE_ACCOUNT:-}" || -z "${AZURE_STORAGE_CONTAINER:-}" ]]; then
+    log_error "Missing required environment variables."
+    if [[ ! -f "$SETUP_CONF" ]]; then
+        log_error "Run setup.sh first to create infrastructure:"
+        log_error "  $SCRIPT_DIR/setup.sh"
+    else
+        log_error "Source the setup configuration:"
+        log_error "  source $SETUP_CONF"
+    fi
+    exit 1
+fi
 
 usage() {
     echo "Usage: $0 <command> [options]"
@@ -149,6 +164,8 @@ CLOUDINIT
     log_info "VM created: $VM_NAME ($ip)"
 
     # Assign Storage Blob Data Contributor role to VM's managed identity
+    # Note: This is also done by setup.sh, but we do it here for safety in case
+    # the VM is created before setup or in a different resource group
     log_info "Assigning storage permissions..."
     local identity_id=$(az vm show \
         --resource-group "$RESOURCE_GROUP" \
@@ -158,15 +175,24 @@ CLOUDINIT
 
     local storage_id=$(az storage account show \
         --name "$AZURE_STORAGE_ACCOUNT" \
+        --resource-group "$RESOURCE_GROUP" \
         --query id \
-        --output tsv)
+        --output tsv 2>/dev/null || \
+        az storage account show \
+            --name "$AZURE_STORAGE_ACCOUNT" \
+            --query id \
+            --output tsv)
 
-    az role assignment create \
-        --assignee-object-id "$identity_id" \
-        --assignee-principal-type ServicePrincipal \
-        --role "Storage Blob Data Contributor" \
-        --scope "$storage_id" \
-        --output none 2>/dev/null || log_warn "Role assignment may already exist"
+    if [[ -n "$identity_id" && -n "$storage_id" ]]; then
+        az role assignment create \
+            --assignee-object-id "$identity_id" \
+            --assignee-principal-type ServicePrincipal \
+            --role "Storage Blob Data Contributor" \
+            --scope "$storage_id" \
+            --output none 2>/dev/null || log_info "Role assignment exists or created"
+    else
+        log_warn "Could not assign storage role - ensure setup.sh was run"
+    fi
 
     # Wait for SSH
     wait_for_ssh "$ip" "$SSH_USER"

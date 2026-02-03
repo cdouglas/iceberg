@@ -29,10 +29,16 @@ source "$SCRIPT_DIR/../common.sh"
 init_state_dir "gcp"
 init_project_root
 
+# Load setup configuration if available
+SETUP_CONF="$SCRIPT_DIR/setup.conf"
+if [[ -f "$SETUP_CONF" ]]; then
+    source "$SETUP_CONF"
+fi
+
 # Defaults
 DEFAULT_MACHINE_TYPE="n2-standard-4"
 DEFAULT_ZONE="${GCP_ZONE:-us-west1-a}"
-DEFAULT_PROJECT="${GCP_PROJECT:-}"
+DEFAULT_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}"
 DEFAULT_NETWORK="${GCP_NETWORK:-default}"
 INSTANCE_NAME="iceberg-benchmark"
 SSH_USER="${USER}"
@@ -41,8 +47,18 @@ CONFIG_FILE=""
 KEEP_VM=false
 FORCE=false
 
-# Required environment
-: "${GCP_GCS_BUCKET:?Set GCP_GCS_BUCKET to your benchmark bucket}"
+# Check for required environment (with helpful message if setup not run)
+if [[ -z "${GCP_GCS_BUCKET:-}" ]]; then
+    log_error "Missing required environment variable: GCP_GCS_BUCKET"
+    if [[ ! -f "$SETUP_CONF" ]]; then
+        log_error "Run setup.sh first to create infrastructure:"
+        log_error "  $SCRIPT_DIR/setup.sh"
+    else
+        log_error "Source the setup configuration:"
+        log_error "  source $SETUP_CONF"
+    fi
+    exit 1
+fi
 
 usage() {
     echo "Usage: $0 <command> [options]"
