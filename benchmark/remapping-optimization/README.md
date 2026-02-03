@@ -32,10 +32,40 @@ cd benchmark/remapping-optimization
 ```
 
 **Features:**
-- Launches 6 containers simultaneously (one per strategy)
+- Launches 8 containers simultaneously (one per strategy)
 - Reduces full benchmark from ~11 hours to ~2 hours
 - **Reentrant**: Safe to disconnect and reconnect - running again waits for existing containers
 - Automatically merges results, runs analysis, and generates visualizations
+
+### Hyper-Parallel Execution (100+ Core Machines)
+
+For very large machines (100+ cores, 1TB+ RAM), maximize parallelization by partitioning each strategy by JMH parameters:
+
+```bash
+cd benchmark/remapping-optimization
+
+# Default settings (~30 min with 36 parallel containers)
+./run_hyperparallel_benchmark.sh
+
+# Quick test (~10 min)
+./run_hyperparallel_benchmark.sh quick
+
+# Full suite (~1-2 hours instead of 7-14 hours)
+./run_hyperparallel_benchmark.sh full
+
+# Check status
+./run_hyperparallel_benchmark.sh status
+
+# Cancel
+./run_hyperparallel_benchmark.sh cancel
+```
+
+**Partitioning:**
+- Heavy strategies (streamJoin, rangeQuery): 6 containers each (by sorted × numPositions)
+- Light strategies (6 others): 4 containers each (by sorted × numPositions groups)
+- Total: 36 containers
+
+**Speedup:** ~6x over parallel, ~36x over serial for full suite.
 
 ### Single Container Execution
 
