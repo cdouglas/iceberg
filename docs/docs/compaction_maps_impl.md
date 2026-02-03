@@ -871,6 +871,107 @@ Composed run:
 ./gradlew :iceberg-core:test --tests "*Chain*" --tests "*Composition*"
 ```
 
+### Overlapping Compactions
+
+**Behavior:** When two compactions target overlapping file sets (e.g., Compaction A compacts {F1, F2} while Compaction B compacts {F2, F3}), the first to commit wins and the second fails.
+
+**Detection Mechanism:**
+
+Overlapping compactions are detected at commit time via `validateDataFilesExist()` in `MergingSnapshotProducer`:
+
+```
+Compaction A starts (files: [F1, F2])
+    ↓
+Compaction B starts (files: [F2, F3])  ← overlapping F2
+    ↓
+Compaction A commits → Snapshot S2
+    - Deletes F1, F2
+    - Adds A_output.parquet
+    ↓
+Compaction B attempts commit
+    - validateDataFilesExist() scans S1→S2
+    - Finds F2 was DELETED in REPLACE operation at S2
+    - THROWS: ValidationException("Cannot commit, missing data files: F2")
+```
+
+**Validation Logic** (`MergingSnapshotProducer.java:869-918`):
+
+The validation scans manifest history for DELETED entries between the starting snapshot and current snapshot:
+
+```java
+// Simplified logic
+entry.status() != ManifestEntry.Status.ADDED     // Not additions
+&& newSnapshots.contains(entry.snapshotId())      // In relevant snapshot range
+&& requiredDataFiles.contains(entry.file().location())  // Our source files
+```
+
+**Key Distinctions:**
+
+| Scenario | Error Type | Can Retry? |
+|----------|-----------|------------|
+| Overlapping compactions | `ValidationException` | Must re-plan with new files |
+| Position deletes on compacted files | `CompactionConflictException` | Yes, with remapping |
+| Chained compactions (sequential) | Works correctly | N/A |
+
+**Why No Automatic Rebasing:**
+
+Unlike chained compactions (which compose maps sequentially), overlapping compactions cannot be automatically rebased because:
+
+1. **Source files are gone:** The overlapping file (F2) no longer exists, so there's nothing to compact
+2. **No semantic merge:** Compaction maps only track position transformations, not file content merging
+3. **Output collision:** Both compactions would claim to produce "the" compacted version of F2's data
+
+**Recovery:**
+
+When a compaction fails due to overlap:
+
+1. The partial commit is rejected (no data corruption)
+2. Output files from the failed compaction should be cleaned up
+3. Re-plan the compaction with the current table state (which now includes A's output)
+
+```java
+// Example recovery flow
+try {
+    compactionB.commit();
+} catch (ValidationException e) {
+    if (e.getMessage().contains("missing data files")) {
+        // Clean up orphan files from failed compaction
+        cleanupOrphanFiles(compactionBOutputFiles);
+
+        // Re-plan with current table state
+        table.refresh();
+        Set<DataFile> newFilesToCompact = planCompaction(table);
+        // newFilesToCompact now includes A_output.parquet instead of F1, F2
+        executeCompaction(newFilesToCompact);
+    }
+}
+```
+
+**Retry Mechanism:**
+
+Iceberg includes built-in retry logic (`SnapshotProducer.java:424-467`):
+
+```java
+Tasks.foreach(ops)
+    .retry(COMMIT_NUM_RETRIES)
+    .exponentialBackoff(...)
+    .onlyRetryOn(CommitFailedException.class)
+    .run(taskOps -> {
+        Snapshot newSnapshot = apply();  // Re-validates against fresh metadata
+        taskOps.commit(base, updated);
+    });
+```
+
+However, retrying an overlapping compaction will fail repeatedly because `refresh()` gets the latest metadata but doesn't re-plan the compaction. The source files remain in the operation's delete set even though they no longer exist.
+
+**Test Coverage:**
+
+```bash
+# Run overlapping compaction tests
+./gradlew :iceberg-core:test --tests "TestCompactionConflictDetection.testOverlappingCompactionsSecondFails"
+./gradlew :iceberg-core:test --tests "TestCompactionConflictDetection.testNonOverlappingCompactionsBothSucceed"
+```
+
 ## Testing
 
 ### Unit Tests
