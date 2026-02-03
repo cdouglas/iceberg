@@ -20,6 +20,8 @@ STRATEGIES = [
     "streamJoin",
     "rangeQuery",
     "smartSelector",
+    "streamJoinNoPushdown",
+    "rangeQueryNoPushdown",
 ]
 
 CONTAINER_PREFIX = "jmh-bench"
@@ -161,9 +163,9 @@ def monitor_progress(timestamp, once=False):
 
         overall = total_progress // total
 
-        # Clear previous output (8 lines: header + blank + 6 strategies)
+        # Clear previous output (10 lines: header + blank + 8 strategies)
         if not first_display:
-            clear_lines(8)
+            clear_lines(10)
         first_display = False
 
         # Calculate overall ETA (use max of individual ETAs)
@@ -186,13 +188,13 @@ def monitor_progress(timestamp, once=False):
         # Draw per-strategy progress
         for strategy, pct, status, eta in progress_data:
             if status == "done":
-                print(f"  {strategy:14s} [done]")
+                print(f"  {strategy:22s} [done]")
             elif status.startswith("failed"):
                 exit_code = status.split(":")[1]
-                print(f"  {strategy:14s} [FAILED exit {exit_code}]")
+                print(f"  {strategy:22s} [FAILED exit {exit_code}]")
             else:
                 eta_str = format_eta(eta) if eta is not None else "--:--"
-                print(f"  {strategy:14s} {pct:3d}%  ETA: {eta_str}")
+                print(f"  {strategy:22s} {pct:3d}%  ETA: {eta_str}")
 
         # Check if done
         if completed >= total:
