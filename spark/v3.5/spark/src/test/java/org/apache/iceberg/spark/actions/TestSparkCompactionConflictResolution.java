@@ -380,7 +380,8 @@ public class TestSparkCompactionConflictResolution extends TestBase {
         SparkActions.get(spark)
             .rewriteDataFiles(table)
             .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "2")
-            .option(SizeBasedFileRewritePlanner.MAX_FILE_GROUP_SIZE_BYTES, String.valueOf(SCALE * 100))
+            .option(
+                SizeBasedFileRewritePlanner.MAX_FILE_GROUP_SIZE_BYTES, String.valueOf(SCALE * 100))
             .execute();
 
     // Add position delete referencing one of the compacted files
@@ -441,7 +442,8 @@ public class TestSparkCompactionConflictResolution extends TestBase {
         SparkActions.get(spark)
             .rewriteDataFiles(table)
             .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "2")
-            .option(SizeBasedFileRewritePlanner.MAX_FILE_GROUP_SIZE_BYTES, String.valueOf(SCALE * 100))
+            .option(
+                SizeBasedFileRewritePlanner.MAX_FILE_GROUP_SIZE_BYTES, String.valueOf(SCALE * 100))
             .execute();
 
     // Verify data still correct after first compaction

@@ -144,10 +144,8 @@ public class TestCoreApiCoupling {
     long[] positions1 = {0, 100, 500};
     long[] positions2 = {0, 100, 500};
 
-    Map<String, long[]> remapped1 =
-        remapper.remapPositionsBulkPrimitive(SOURCE_FILE_1, positions1);
-    Map<String, long[]> remapped2 =
-        remapper.remapPositionsBulkPrimitive(SOURCE_FILE_2, positions2);
+    Map<String, long[]> remapped1 = remapper.remapPositionsBulkPrimitive(SOURCE_FILE_1, positions1);
+    Map<String, long[]> remapped2 = remapper.remapPositionsBulkPrimitive(SOURCE_FILE_2, positions2);
 
     // Aggregate into RoaringBitmap the way the benchmark does
     RoaringBitmap aggregated = new RoaringBitmap();
@@ -180,16 +178,13 @@ public class TestCoreApiCoupling {
     long[] positions = {0, 10, 20};
 
     // The primitive API should return original positions for non-compacted files
-    Map<String, long[]> result =
-        remapper.remapPositionsBulkPrimitive(nonCompactedFile, positions);
+    Map<String, long[]> result = remapper.remapPositionsBulkPrimitive(nonCompactedFile, positions);
 
     assertThat(result).containsKey(nonCompactedFile);
     assertThat(result.get(nonCompactedFile)).containsExactly(0L, 10L, 20L);
   }
 
-  /**
-   * Verifies that empty position arrays are handled correctly (edge case).
-   */
+  /** Verifies that empty position arrays are handled correctly (edge case). */
   @Test
   public void testEmptyPositionsHandling() {
     long[] emptyPositions = {};
@@ -228,9 +223,7 @@ public class TestCoreApiCoupling {
     // Position 250 (source) maps to 150 (target) via the second run
   }
 
-  /**
-   * Verifies that large position counts are handled efficiently without overflow.
-   */
+  /** Verifies that large position counts are handled efficiently without overflow. */
   @Test
   public void testLargePositionCount() {
     // Create positions near int max to test for overflow issues
