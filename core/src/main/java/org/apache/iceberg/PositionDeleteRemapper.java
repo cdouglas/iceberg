@@ -444,6 +444,7 @@ public class PositionDeleteRemapper {
    * @param positions the positions to remap (should be from the source file)
    * @return map from target file path to set of remapped positions in that file
    */
+  @SuppressWarnings("deprecation")
   public Map<String, Set<Long>> remapPositionsBulk(String sourceFile, Iterable<Long> positions) {
     Preconditions.checkNotNull(sourceFile, "sourceFile is null");
     Preconditions.checkNotNull(positions, "positions is null");
@@ -525,16 +526,10 @@ public class PositionDeleteRemapper {
       return Collections.singletonMap(sourceFile, sorted);
     }
 
-    // Convert to boxed list for strategy selection (boxing happens here, but only once)
-    List<Long> positionList = new java.util.ArrayList<>(positions.length);
-    for (long pos : positions) {
-      positionList.add(pos);
-    }
-
-    // Use smart selector to choose optimal strategy
+    // Use smart selector to choose optimal strategy (primitive API - no boxing)
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
-    RemappingStrategy strategy = selector.selectOptimal(mapping, positionList);
-    Map<Long, CompactionMap.Run> mappedRuns = strategy.runForPositions(positionList);
+    RemappingStrategy strategy = selector.selectOptimal(mapping, positions);
+    Map<Long, CompactionMap.Run> mappedRuns = strategy.runForPositions(positions);
 
     return remapPositionsBulkInternalPrimitive(mappedRuns, mapping);
   }

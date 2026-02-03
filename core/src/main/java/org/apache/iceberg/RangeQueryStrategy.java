@@ -121,6 +121,24 @@ class RangeQueryStrategy implements RemappingStrategy {
   }
 
   @Override
+  public Map<Long, Run> runForPositions(long[] sourcePositions) {
+    if (sourcePositions == null || sourcePositions.length == 0) {
+      return Maps.newHashMap();
+    }
+
+    if (runs == null || runs.isEmpty()) {
+      return Maps.newHashMap();
+    }
+
+    // Get sorted positions (sort copy if needed)
+    long[] sortedPositions = getSortedPositionsPrimitive(sourcePositions);
+
+    // Use range query: for each run, find positions in range
+    return rangeQueryPrimitive(sortedPositions);
+  }
+
+  @SuppressWarnings("deprecation")
+  @Override
   public Map<Long, Run> runForPositions(List<Long> sourcePositions) {
     if (sourcePositions == null || sourcePositions.isEmpty()) {
       return Maps.newHashMap();
@@ -143,6 +161,23 @@ class RangeQueryStrategy implements RemappingStrategy {
   }
 
   /**
+   * Gets sorted positions (primitive array), creating a sorted copy if needed.
+   *
+   * @param positions positions to sort
+   * @return sorted positions (may be original array or copy)
+   */
+  private long[] getSortedPositionsPrimitive(long[] positions) {
+    if (isSortedPrimitive(positions)) {
+      return positions;
+    }
+
+    // Create sorted copy
+    long[] sorted = positions.clone();
+    java.util.Arrays.sort(sorted);
+    return sorted;
+  }
+
+  /**
    * Gets sorted positions, creating a sorted copy if needed.
    *
    * @param positions positions to sort
@@ -157,6 +192,28 @@ class RangeQueryStrategy implements RemappingStrategy {
     List<Long> sorted = new ArrayList<>(positions);
     Collections.sort(sorted);
     return sorted;
+  }
+
+  /**
+   * Checks if positions are sorted in ascending order (primitive array version).
+   *
+   * @param positions positions to check
+   * @return true if sorted ascending, false otherwise
+   */
+  private boolean isSortedPrimitive(long[] positions) {
+    if (positions.length <= 1) {
+      return true;
+    }
+
+    long prev = positions[0];
+    for (int i = 1; i < positions.length; i++) {
+      long current = positions[i];
+      if (current < prev) {
+        return false;
+      }
+      prev = current;
+    }
+    return true;
   }
 
   /**
@@ -179,6 +236,63 @@ class RangeQueryStrategy implements RemappingStrategy {
       prev = current;
     }
     return true;
+  }
+
+  /**
+   * Performs range query using primitive array: for each run, find positions in that run's range.
+   *
+   * <p>Algorithm: For each run [start, end):
+   *
+   * <ol>
+   *   <li>Binary search for first position >= start
+   *   <li>Binary search for first position >= end
+   *   <li>All positions in [firstIndex, endIndex) fall within run
+   *   <li>Map those positions to this run
+   * </ol>
+   *
+   * <p>Includes predicate pushdown optimization: filters runs to only those overlapping the
+   * position range [min, max], reducing work by 50-90% for sparse position sets.
+   *
+   * <p>Complexity: O(m log n + k) where m = runs, n = positions, k = matches
+   *
+   * @param sortedPositions positions in ascending order (primitive array)
+   * @return map from position to containing run
+   */
+  private Map<Long, Run> rangeQueryPrimitive(long[] sortedPositions) {
+    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sortedPositions.length);
+
+    // Predicate pushdown: filter runs by min/max position bounds
+    long minPos = sortedPositions[0];
+    long maxPos = sortedPositions[sortedPositions.length - 1];
+
+    List<Run> relevantRuns = filterRunsByRange(runs, minPos, maxPos);
+
+    if (relevantRuns.isEmpty()) {
+      // No runs overlap the position range
+      return results;
+    }
+
+    for (Run run : relevantRuns) {
+      long runStart = run.sourcePosition();
+      long runEnd = runStart + run.length();
+
+      // Find first position >= runStart
+      int startIndex = binarySearchLowerBoundPrimitive(sortedPositions, runStart);
+      if (startIndex >= sortedPositions.length) {
+        // All remaining positions are before this run
+        continue;
+      }
+
+      // Find first position >= runEnd (exclusive bound)
+      int endIndex = binarySearchLowerBoundPrimitive(sortedPositions, runEnd);
+
+      // All positions in [startIndex, endIndex) are within this run
+      for (int i = startIndex; i < endIndex; i++) {
+        results.put(sortedPositions[i], run);
+      }
+    }
+
+    return results;
   }
 
   /**
@@ -266,6 +380,34 @@ class RangeQueryStrategy implements RemappingStrategy {
     }
 
     return filtered;
+  }
+
+  /**
+   * Binary search for the first position >= target (lower bound) in primitive array.
+   *
+   * <p>Returns the index of the first element >= target, or array.length if all elements are &lt;
+   * target.
+   *
+   * @param sortedArray sorted array to search
+   * @param target target value
+   * @return index of first element >= target
+   */
+  private int binarySearchLowerBoundPrimitive(long[] sortedArray, long target) {
+    int left = 0;
+    int right = sortedArray.length;
+
+    while (left < right) {
+      int mid = left + (right - left) / 2;
+      long midValue = sortedArray[mid];
+
+      if (midValue < target) {
+        left = mid + 1; // Search right half
+      } else {
+        right = mid; // Could be the answer, search left half
+      }
+    }
+
+    return left;
   }
 
   /**

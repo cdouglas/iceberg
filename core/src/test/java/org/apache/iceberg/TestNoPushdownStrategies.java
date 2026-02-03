@@ -151,7 +151,7 @@ public class TestNoPushdownStrategies {
 
     // Empty positions
     assertThat(strategy.runForPositions(Collections.emptyList())).isEmpty();
-    assertThat(strategy.runForPositions(null)).isEmpty();
+    assertThat(strategy.runForPositions((List<Long>) null)).isEmpty();
   }
 
   @Test
@@ -266,7 +266,7 @@ public class TestNoPushdownStrategies {
 
     // Empty positions
     assertThat(strategy.runForPositions(Collections.emptyList())).isEmpty();
-    assertThat(strategy.runForPositions(null)).isEmpty();
+    assertThat(strategy.runForPositions((List<Long>) null)).isEmpty();
   }
 
   @Test
