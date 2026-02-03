@@ -412,6 +412,107 @@ public class TestCompactionConflictResolution {
     // 4. Retry with remapped delete1 + original delete2
   }
 
+  @TestTemplate
+  public void testFromConflictFactoryMethod() throws IOException {
+    // Test the PositionDeleteRemapper.fromConflict() convenience method
+    TableIdentifier tableIdent = TableIdentifier.of("db", "test_from_conflict_v" + formatVersion);
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    // Create multiple source files
+    DataFile file1 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/source1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    DataFile file2 =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/source2.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    table.newAppend().appendFile(file1).appendFile(file2).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Start a transaction with deletes
+    RowDelta rowDelta = table.newRowDelta().validateFromSnapshot(startingSnapshot);
+
+    DeleteFile deleteFile;
+    if (formatVersion == 3) {
+      deleteFile = writeDV(table, file1.path().toString(), 10L, 20L);
+    } else {
+      deleteFile =
+          FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+              .ofPositionDeletes()
+              .withPath("/path/to/deletes.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(2)
+              .withReferencedDataFile(file1.path().toString())
+              .build();
+    }
+    rowDelta.addDeletes(deleteFile);
+
+    // Compact both files into one
+    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
+    rewrite.deleteFile(file1);
+    rewrite.deleteFile(file2);
+
+    DataFile targetFile =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/target.parquet")
+            .withFileSizeInBytes(2048)
+            .withRecordCount(200)
+            .build();
+    rewrite.addFile(targetFile);
+    rewrite.commit();
+
+    // Catch the conflict
+    CompactionConflictException conflict = null;
+    try {
+      rowDelta.commit();
+    } catch (CompactionConflictException e) {
+      conflict = e;
+    }
+
+    assertThat(conflict).isNotNull();
+
+    // Use the fromConflict factory method to create remappers
+    Map<String, PositionDeleteRemapper> remappers =
+        PositionDeleteRemapper.fromConflict(conflict, table.io());
+
+    // Should have remapper for file1 (the file referenced by the delete)
+    // file2 is not in the conflict since no deletes reference it
+    assertThat(remappers).containsKey(file1.path().toString());
+
+    // Verify remapper works correctly
+    PositionDeleteRemapper remapper = remappers.get(file1.path().toString());
+    assertThat(remapper).isNotNull();
+    assertThat(remapper.isCompacted(file1.path().toString())).isTrue();
+
+    // The remapper should be able to remap deletes to the target file
+    PositionDelete<?> delete = PositionDelete.create().set(file1.path().toString(), 50L);
+    PositionDelete<?> remapped = remapper.remapDelete(delete);
+    assertThat(remapped.path().toString()).isEqualTo(targetFile.path().toString());
+
+    // The remapper also knows about file2 (same compaction map covers both)
+    assertThat(remapper.isCompacted(file2.path().toString())).isTrue();
+
+    // And can remap deletes for file2 even though file2 wasn't in the exception
+    PositionDelete<?> delete2 = PositionDelete.create().set(file2.path().toString(), 50L);
+    PositionDelete<?> remapped2 = remapper.remapDelete(delete2);
+    assertThat(remapped2.path().toString()).isEqualTo(targetFile.path().toString());
+    // File2's position 50 should map to 150 in target (100 offset from file1's rows)
+    assertThat(remapped2.pos()).isEqualTo(150L);
+  }
+
   /** Helper method to write a deletion vector file (for V3 tests). */
   private DeleteFile writeDV(Table table, String dataFilePath, Long... positions)
       throws IOException {
