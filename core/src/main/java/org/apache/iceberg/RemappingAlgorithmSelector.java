@@ -121,75 +121,6 @@ public class RemappingAlgorithmSelector {
   }
 
   /**
-   * Selects optimal remapping strategy based on data characteristics.
-   *
-   * <p>The selection logic is derived from empirical benchmarks, not theoretical complexity:
-   *
-   * <pre>
-   * if unsorted:
-   *     return IntervalTree        # Wins 25/27 unsorted scenarios
-   *
-   * # Sorted data below
-   * if gapRatio > 0.3:
-   *     return RangeQuery          # Sparse data: skip gaps efficiently
-   *
-   * if n >= 10000 AND m >= 100:
-   *     return StreamJoin          # Dense sorted bulk: O(n+m) linear scan wins
-   *
-   * return RangeQuery              # Default for sorted: O(m log n)
-   * </pre>
-   *
-   * @param mapping the file mapping containing runs
-   * @param positions the positions to remap
-   * @return the optimal remapping strategy
-   * @deprecated Use {@link #selectOptimal(FileMapping, long[])} to avoid boxing overhead
-   */
-  @Deprecated
-  public RemappingStrategy selectOptimal(FileMapping mapping, List<Long> positions) {
-    Preconditions.checkNotNull(mapping, "mapping is null");
-    Preconditions.checkNotNull(positions, "positions is null");
-
-    List<Run> runs = mapping.runs();
-    int m = runs.size();
-    int n = positions.size();
-
-    // Edge cases
-    if (n == 0 || m == 0) {
-      return new LinearSearchStrategy(runs);
-    }
-
-    // Check sortedness first - this is the primary decision factor
-    boolean sorted = isSorted(positions);
-
-    // UNSORTED: IntervalTree is empirically optimal regardless of m, n, or gaps
-    // Benchmark evidence: wins 46/54 unsorted scenarios
-    if (!sorted) {
-      return new IntervalTreeStrategy(runs);
-    }
-
-    // SORTED data below - IntervalTree never wins for sorted data
-
-    // Sparse data (gaps > 30%): RangeQuery can skip gaps efficiently
-    // Benchmark evidence: RangeQuery wins all sparse sorted scenarios
-    double gapRatio = estimateGapRatio(mapping);
-    if (gapRatio > SPARSE_GAP_THRESHOLD) {
-      return new RangeQueryStrategy(runs);
-    }
-
-    // Dense sorted data with many positions AND many runs: StreamJoin wins
-    // Benchmark evidence: StreamJoin wins for (n>=10000, m>=100, gap<=0.3, sorted)
-    // For small m (e.g., m=10), RangeQuery is still faster even with large n
-    if (n >= BULK_POSITION_THRESHOLD && m >= MANY_RUNS_THRESHOLD) {
-      return new StreamJoinStrategy(runs);
-    }
-
-    // Default for sorted data: RangeQuery
-    // Optimal for: small m, small n, or moderate workloads
-    // Benchmark evidence: wins majority of remaining sorted scenarios
-    return new RangeQueryStrategy(runs);
-  }
-
-  /**
    * Estimates what percentage of the source range is NOT covered by runs.
    *
    * @param mapping the file mapping
@@ -225,7 +156,7 @@ public class RemappingAlgorithmSelector {
   }
 
   /**
-   * Checks if positions are sorted by sampling the first N elements (primitive array version).
+   * Checks if positions are sorted by sampling the first N elements.
    *
    * @param positions the positions to check
    * @return true if positions appear to be sorted
@@ -250,27 +181,51 @@ public class RemappingAlgorithmSelector {
   }
 
   /**
-   * Checks if positions are sorted by sampling the first N elements.
+   * Convenience method for selecting strategy with boxed positions.
+   *
+   * <p>This method converts the List to a primitive array and delegates to {@link
+   * #selectOptimal(FileMapping, long[])}. It incurs boxing overhead and should only be used in
+   * tests or other non-performance-critical code.
+   *
+   * @param mapping the file mapping containing runs
+   * @param positions the positions to remap
+   * @return the optimal remapping strategy
+   */
+  public RemappingStrategy selectOptimal(FileMapping mapping, List<Long> positions) {
+    Preconditions.checkNotNull(mapping, "mapping is null");
+    Preconditions.checkNotNull(positions, "positions is null");
+
+    if (positions.isEmpty()) {
+      return new LinearSearchStrategy(mapping.runs());
+    }
+
+    long[] primitivePositions = new long[positions.size()];
+    for (int i = 0; i < positions.size(); i++) {
+      primitivePositions[i] = positions.get(i);
+    }
+
+    return selectOptimal(mapping, primitivePositions);
+  }
+
+  /**
+   * Convenience method for checking sortedness with boxed positions.
+   *
+   * <p>This method converts the List to a primitive array and delegates to {@link
+   * #isSortedPrimitive(long[])}. It incurs boxing overhead and should only be used in tests.
    *
    * @param positions the positions to check
    * @return true if positions appear to be sorted
    */
-  boolean isSorted(List<Long> positions) {
-    if (positions.size() <= 1) {
+  public boolean isSorted(List<Long> positions) {
+    if (positions == null || positions.isEmpty()) {
       return true;
     }
 
-    int sampleSize = Math.min(SORTEDNESS_SAMPLE_SIZE, positions.size());
-    long prev = positions.get(0);
-
-    for (int i = 1; i < sampleSize; i++) {
-      long current = positions.get(i);
-      if (current < prev) {
-        return false;
-      }
-      prev = current;
+    long[] primitivePositions = new long[positions.size()];
+    for (int i = 0; i < positions.size(); i++) {
+      primitivePositions[i] = positions.get(i);
     }
 
-    return true;
+    return isSortedPrimitive(primitivePositions);
   }
 }

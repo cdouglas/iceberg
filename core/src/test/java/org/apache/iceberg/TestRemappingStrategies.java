@@ -367,7 +367,7 @@ public class TestRemappingStrategies {
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
     // Sorted positions including positions in runs, gaps, and out of bounds
-    List<Long> positions = Arrays.asList(5L, 50L, 99L, 125L, 150L, 175L, 250L, 300L, 350L, 500L);
+    long[] positions = {5L, 50L, 99L, 125L, 150L, 175L, 250L, 300L, 350L, 500L};
 
     Map<Long, Run> results = strategy.runForPositions(positions);
 
@@ -396,7 +396,7 @@ public class TestRemappingStrategies {
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
     // Unsorted positions
-    List<Long> positions = Arrays.asList(350L, 50L, 175L, 125L, 5L);
+    long[] positions = {350L, 50L, 175L, 125L, 5L};
 
     Map<Long, Run> results = strategy.runForPositions(positions);
 
@@ -435,7 +435,7 @@ public class TestRemappingStrategies {
     List<Run> runs = Arrays.asList(new GenericRun(0, 0, 100));
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
-    List<Long> empty = new ArrayList<>();
+    long[] empty = new long[0];
     Map<Long, Run> results = strategy.runForPositions(empty);
 
     assertThat(results).isEmpty();
@@ -447,7 +447,7 @@ public class TestRemappingStrategies {
     List<Run> empty = new ArrayList<>();
     StreamJoinStrategy strategy = new StreamJoinStrategy(empty);
 
-    List<Long> positions = Arrays.asList(0L, 50L, 100L);
+    long[] positions = {0L, 50L, 100L};
     Map<Long, Run> results = strategy.runForPositions(positions);
 
     assertThat(results).isEmpty();
@@ -464,7 +464,7 @@ public class TestRemappingStrategies {
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
     // All positions in the gap
-    List<Long> positions = Arrays.asList(100L, 125L, 150L, 175L, 199L);
+    long[] positions = {100L, 125L, 150L, 175L, 199L};
     Map<Long, Run> results = strategy.runForPositions(positions);
 
     assertThat(results).isEmpty();
@@ -478,7 +478,7 @@ public class TestRemappingStrategies {
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
     // All positions before first run
-    List<Long> positions = Arrays.asList(0L, 25L, 50L, 75L, 99L);
+    long[] positions = {0L, 25L, 50L, 75L, 99L};
     Map<Long, Run> results = strategy.runForPositions(positions);
 
     assertThat(results).isEmpty();
@@ -492,7 +492,7 @@ public class TestRemappingStrategies {
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
     // All positions after last run
-    List<Long> positions = Arrays.asList(100L, 200L, 300L, 400L, 500L);
+    long[] positions = {100L, 200L, 300L, 400L, 500L};
     Map<Long, Run> results = strategy.runForPositions(positions);
 
     assertThat(results).isEmpty();
@@ -516,11 +516,11 @@ public class TestRemappingStrategies {
 
       // Generate sorted positions
       long maxPos = runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
-      List<Long> sortedPositions = new ArrayList<>();
+      long[] sortedPositions = new long[50];
       for (int i = 0; i < 50; i++) {
-        sortedPositions.add(nextLong(rand, maxPos + 1000));
+        sortedPositions[i] = nextLong(rand, maxPos + 1000);
       }
-      sortedPositions.sort(Long::compareTo);
+      java.util.Arrays.sort(sortedPositions);
 
       // Test bulk lookup
       Map<Long, Run> linearResults = linear.runForPositions(sortedPositions);
@@ -536,7 +536,7 @@ public class TestRemappingStrategies {
           .isEqualTo(linearResults);
 
       // Also test single-position lookups
-      for (Long pos : sortedPositions) {
+      for (long pos : sortedPositions) {
         Run linearResult = linear.runForPosition(pos);
         Run streamJoinResult = streamJoin.runForPosition(pos);
         assertThat(streamJoinResult)
@@ -571,7 +571,7 @@ public class TestRemappingStrategies {
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
     // Sorted positions including positions in runs, gaps, and out of bounds
-    List<Long> positions = Arrays.asList(5L, 50L, 99L, 125L, 150L, 175L, 250L, 300L, 350L, 500L);
+    long[] positions = {5L, 50L, 99L, 125L, 150L, 175L, 250L, 300L, 350L, 500L};
 
     Map<Long, Run> results = strategy.runForPositions(positions);
 
@@ -600,7 +600,7 @@ public class TestRemappingStrategies {
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
     // Unsorted positions
-    List<Long> positions = Arrays.asList(350L, 50L, 175L, 125L, 5L);
+    long[] positions = {350L, 50L, 175L, 125L, 5L};
 
     Map<Long, Run> results = strategy.runForPositions(positions);
 
@@ -639,7 +639,7 @@ public class TestRemappingStrategies {
     List<Run> runs = Arrays.asList(new GenericRun(0, 0, 100));
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
-    List<Long> empty = new ArrayList<>();
+    long[] empty = new long[0];
     Map<Long, Run> results = strategy.runForPositions(empty);
 
     assertThat(results).isEmpty();
@@ -651,7 +651,7 @@ public class TestRemappingStrategies {
     List<Run> empty = new ArrayList<>();
     RangeQueryStrategy strategy = new RangeQueryStrategy(empty);
 
-    List<Long> positions = Arrays.asList(0L, 50L, 100L);
+    long[] positions = {0L, 50L, 100L};
     Map<Long, Run> results = strategy.runForPositions(positions);
 
     assertThat(results).isEmpty();
@@ -668,7 +668,7 @@ public class TestRemappingStrategies {
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
     // All positions in the gap
-    List<Long> positions = Arrays.asList(100L, 125L, 150L, 175L, 199L);
+    long[] positions = {100L, 125L, 150L, 175L, 199L};
     Map<Long, Run> results = strategy.runForPositions(positions);
 
     assertThat(results).isEmpty();
@@ -682,7 +682,7 @@ public class TestRemappingStrategies {
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
     // All positions before first run
-    List<Long> positions = Arrays.asList(0L, 25L, 50L, 75L, 99L);
+    long[] positions = {0L, 25L, 50L, 75L, 99L};
     Map<Long, Run> results = strategy.runForPositions(positions);
 
     assertThat(results).isEmpty();
@@ -696,7 +696,7 @@ public class TestRemappingStrategies {
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
     // All positions after last run
-    List<Long> positions = Arrays.asList(100L, 200L, 300L, 400L, 500L);
+    long[] positions = {100L, 200L, 300L, 400L, 500L};
     Map<Long, Run> results = strategy.runForPositions(positions);
 
     assertThat(results).isEmpty();
@@ -714,12 +714,12 @@ public class TestRemappingStrategies {
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
     // Many positions (100 in first run, 100 in second run)
-    List<Long> positions = new ArrayList<>();
-    for (long i = 0; i < 100; i++) {
-      positions.add(i * 10); // 0, 10, 20, ..., 990
+    long[] positions = new long[200];
+    for (int i = 0; i < 100; i++) {
+      positions[i] = i * 10L; // 0, 10, 20, ..., 990
     }
-    for (long i = 0; i < 100; i++) {
-      positions.add(2000 + i * 10); // 2000, 2010, 2020, ..., 2990
+    for (int i = 0; i < 100; i++) {
+      positions[100 + i] = 2000 + i * 10L; // 2000, 2010, 2020, ..., 2990
     }
 
     Map<Long, Run> results = strategy.runForPositions(positions);
@@ -757,11 +757,11 @@ public class TestRemappingStrategies {
 
       // Generate positions (both sorted and unsorted)
       long maxPos = runs.get(runs.size() - 1).sourcePosition() + runs.get(runs.size() - 1).length();
-      List<Long> sortedPositions = new ArrayList<>();
+      long[] sortedPositions = new long[50];
       for (int i = 0; i < 50; i++) {
-        sortedPositions.add(nextLong(rand, maxPos + 1000));
+        sortedPositions[i] = nextLong(rand, maxPos + 1000);
       }
-      sortedPositions.sort(Long::compareTo);
+      java.util.Arrays.sort(sortedPositions);
 
       // Test bulk lookup
       Map<Long, Run> linearResults = linear.runForPositions(sortedPositions);
@@ -779,7 +779,7 @@ public class TestRemappingStrategies {
           .isEqualTo(linearResults);
 
       // Also test single-position lookups
-      for (Long pos : sortedPositions) {
+      for (long pos : sortedPositions) {
         Run linearResult = linear.runForPosition(pos);
         Run rangeQueryResult = rangeQuery.runForPosition(pos);
         assertThat(rangeQueryResult)
@@ -815,9 +815,10 @@ public class TestRemappingStrategies {
     List<Run> runs = generateSortedRunsWithGaps(100, rand);
 
     // Positions clustered in small range [5000-6000)
-    List<Long> clusteredPositions = new ArrayList<>();
+    long[] clusteredPositions = new long[100];
+    int idx = 0;
     for (long pos = 5000; pos < 6000; pos += 10) {
-      clusteredPositions.add(pos);
+      clusteredPositions[idx++] = pos;
     }
 
     // Test all bulk strategies

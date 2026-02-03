@@ -19,7 +19,6 @@
 package org.apache.iceberg;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.CompactionMap.Run;
@@ -137,24 +136,6 @@ class RangeQueryStrategy implements RemappingStrategy {
     return rangeQueryPrimitive(sortedPositions);
   }
 
-  @SuppressWarnings("deprecation")
-  @Override
-  public Map<Long, Run> runForPositions(List<Long> sourcePositions) {
-    if (sourcePositions == null || sourcePositions.isEmpty()) {
-      return Maps.newHashMap();
-    }
-
-    if (runs == null || runs.isEmpty()) {
-      return Maps.newHashMap();
-    }
-
-    // Get sorted positions (sort copy if needed)
-    List<Long> sortedPositions = getSortedPositions(sourcePositions);
-
-    // Use range query: for each run, find positions in range
-    return rangeQuery(sortedPositions);
-  }
-
   @Override
   public String name() {
     return "range-query";
@@ -178,24 +159,7 @@ class RangeQueryStrategy implements RemappingStrategy {
   }
 
   /**
-   * Gets sorted positions, creating a sorted copy if needed.
-   *
-   * @param positions positions to sort
-   * @return sorted positions (may be original list or copy)
-   */
-  private List<Long> getSortedPositions(List<Long> positions) {
-    if (isSorted(positions)) {
-      return positions;
-    }
-
-    // Create sorted copy
-    List<Long> sorted = new ArrayList<>(positions);
-    Collections.sort(sorted);
-    return sorted;
-  }
-
-  /**
-   * Checks if positions are sorted in ascending order (primitive array version).
+   * Checks if positions are sorted in ascending order.
    *
    * @param positions positions to check
    * @return true if sorted ascending, false otherwise
@@ -208,28 +172,6 @@ class RangeQueryStrategy implements RemappingStrategy {
     long prev = positions[0];
     for (int i = 1; i < positions.length; i++) {
       long current = positions[i];
-      if (current < prev) {
-        return false;
-      }
-      prev = current;
-    }
-    return true;
-  }
-
-  /**
-   * Checks if positions are sorted in ascending order.
-   *
-   * @param positions positions to check
-   * @return true if sorted ascending, false otherwise
-   */
-  private boolean isSorted(List<Long> positions) {
-    if (positions.size() <= 1) {
-      return true;
-    }
-
-    long prev = positions.get(0);
-    for (int i = 1; i < positions.size(); i++) {
-      long current = positions.get(i);
       if (current < prev) {
         return false;
       }
@@ -296,63 +238,6 @@ class RangeQueryStrategy implements RemappingStrategy {
   }
 
   /**
-   * Performs range query: for each run, find positions in that run's range.
-   *
-   * <p>Algorithm: For each run [start, end):
-   *
-   * <ol>
-   *   <li>Binary search for first position >= start
-   *   <li>Binary search for first position >= end
-   *   <li>All positions in [firstIndex, endIndex) fall within run
-   *   <li>Map those positions to this run
-   * </ol>
-   *
-   * <p>Includes predicate pushdown optimization: filters runs to only those overlapping the
-   * position range [min, max], reducing work by 50-90% for sparse position sets.
-   *
-   * <p>Complexity: O(m log n + k) where m = runs, n = positions, k = matches
-   *
-   * @param sortedPositions positions in ascending order
-   * @return map from position to containing run
-   */
-  private Map<Long, Run> rangeQuery(List<Long> sortedPositions) {
-    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sortedPositions.size());
-
-    // Predicate pushdown: filter runs by min/max position bounds
-    long minPos = sortedPositions.get(0);
-    long maxPos = sortedPositions.get(sortedPositions.size() - 1);
-
-    List<Run> relevantRuns = filterRunsByRange(runs, minPos, maxPos);
-
-    if (relevantRuns.isEmpty()) {
-      // No runs overlap the position range
-      return results;
-    }
-
-    for (Run run : relevantRuns) {
-      long runStart = run.sourcePosition();
-      long runEnd = runStart + run.length();
-
-      // Find first position >= runStart
-      int startIndex = binarySearchLowerBound(sortedPositions, runStart);
-      if (startIndex >= sortedPositions.size()) {
-        // All remaining positions are before this run
-        continue;
-      }
-
-      // Find first position >= runEnd (exclusive bound)
-      int endIndex = binarySearchLowerBound(sortedPositions, runEnd);
-
-      // All positions in [startIndex, endIndex) are within this run
-      for (int i = startIndex; i < endIndex; i++) {
-        results.put(sortedPositions.get(i), run);
-      }
-    }
-
-    return results;
-  }
-
-  /**
    * Filters runs to only those that overlap the given position range [minPos, maxPos].
    *
    * <p>A run overlaps if its range [sourcePosition, sourcePosition+length) intersects with [minPos,
@@ -383,7 +268,7 @@ class RangeQueryStrategy implements RemappingStrategy {
   }
 
   /**
-   * Binary search for the first position >= target (lower bound) in primitive array.
+   * Binary search for the first position >= target (lower bound).
    *
    * <p>Returns the index of the first element >= target, or array.length if all elements are &lt;
    * target.
@@ -399,34 +284,6 @@ class RangeQueryStrategy implements RemappingStrategy {
     while (left < right) {
       int mid = left + (right - left) / 2;
       long midValue = sortedArray[mid];
-
-      if (midValue < target) {
-        left = mid + 1; // Search right half
-      } else {
-        right = mid; // Could be the answer, search left half
-      }
-    }
-
-    return left;
-  }
-
-  /**
-   * Binary search for the first position >= target (lower bound).
-   *
-   * <p>Returns the index of the first element >= target, or list.size() if all elements are &lt;
-   * target.
-   *
-   * @param sortedList sorted list to search
-   * @param target target value
-   * @return index of first element >= target
-   */
-  private int binarySearchLowerBound(List<Long> sortedList, long target) {
-    int left = 0;
-    int right = sortedList.size();
-
-    while (left < right) {
-      int mid = left + (right - left) / 2;
-      long midValue = sortedList.get(mid);
 
       if (midValue < target) {
         left = mid + 1; // Search right half

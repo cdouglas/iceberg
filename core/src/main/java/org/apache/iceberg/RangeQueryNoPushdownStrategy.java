@@ -18,8 +18,6 @@
  */
 package org.apache.iceberg;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -102,10 +100,9 @@ class RangeQueryNoPushdownStrategy implements RemappingStrategy {
     return binarySearchFallback.runForPosition(sourcePosition);
   }
 
-  @SuppressWarnings("deprecation")
   @Override
-  public Map<Long, Run> runForPositions(List<Long> sourcePositions) {
-    if (sourcePositions == null || sourcePositions.isEmpty()) {
+  public Map<Long, Run> runForPositions(long[] sourcePositions) {
+    if (sourcePositions == null || sourcePositions.length == 0) {
       return Maps.newHashMap();
     }
 
@@ -113,7 +110,7 @@ class RangeQueryNoPushdownStrategy implements RemappingStrategy {
       return Maps.newHashMap();
     }
 
-    List<Long> sortedPositions = getSortedPositions(sourcePositions);
+    long[] sortedPositions = getSortedPositions(sourcePositions);
     return rangeQueryNoPushdown(sortedPositions);
   }
 
@@ -122,24 +119,24 @@ class RangeQueryNoPushdownStrategy implements RemappingStrategy {
     return "range-query-no-pushdown";
   }
 
-  private List<Long> getSortedPositions(List<Long> positions) {
+  private long[] getSortedPositions(long[] positions) {
     if (isSorted(positions)) {
       return positions;
     }
 
-    List<Long> sorted = new ArrayList<>(positions);
-    Collections.sort(sorted);
+    long[] sorted = positions.clone();
+    java.util.Arrays.sort(sorted);
     return sorted;
   }
 
-  private boolean isSorted(List<Long> positions) {
-    if (positions.size() <= 1) {
+  private boolean isSorted(long[] positions) {
+    if (positions.length <= 1) {
       return true;
     }
 
-    long prev = positions.get(0);
-    for (int i = 1; i < positions.size(); i++) {
-      long current = positions.get(i);
+    long prev = positions[0];
+    for (int i = 1; i < positions.length; i++) {
+      long current = positions[i];
       if (current < prev) {
         return false;
       }
@@ -158,8 +155,8 @@ class RangeQueryNoPushdownStrategy implements RemappingStrategy {
    * @param sortedPositions positions in ascending order
    * @return map from position to containing run
    */
-  private Map<Long, Run> rangeQueryNoPushdown(List<Long> sortedPositions) {
-    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sortedPositions.size());
+  private Map<Long, Run> rangeQueryNoPushdown(long[] sortedPositions) {
+    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sortedPositions.length);
 
     // NO PREDICATE PUSHDOWN: Process all runs, not just relevant ones
     for (Run run : runs) {
@@ -167,27 +164,27 @@ class RangeQueryNoPushdownStrategy implements RemappingStrategy {
       long runEnd = runStart + run.length();
 
       int startIndex = binarySearchLowerBound(sortedPositions, runStart);
-      if (startIndex >= sortedPositions.size()) {
+      if (startIndex >= sortedPositions.length) {
         continue;
       }
 
       int endIndex = binarySearchLowerBound(sortedPositions, runEnd);
 
       for (int i = startIndex; i < endIndex; i++) {
-        results.put(sortedPositions.get(i), run);
+        results.put(sortedPositions[i], run);
       }
     }
 
     return results;
   }
 
-  private int binarySearchLowerBound(List<Long> sortedList, long target) {
+  private int binarySearchLowerBound(long[] sortedArray, long target) {
     int left = 0;
-    int right = sortedList.size();
+    int right = sortedArray.length;
 
     while (left < right) {
       int mid = left + (right - left) / 2;
-      long midValue = sortedList.get(mid);
+      long midValue = sortedArray[mid];
 
       if (midValue < target) {
         left = mid + 1;
