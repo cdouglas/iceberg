@@ -329,20 +329,56 @@ python3 ../remapping-microbenchmark/scripts/analyze-results.py \
 
 ## Troubleshooting
 
+### Quick Diagnostic Commands
+
+```bash
+# Check VM status without full logs
+./aws/run.sh status 2>&1 | grep -E "State:|IP:|status:"
+
+# Check benchmark status (minimal output)
+ssh -o StrictHostKeyChecking=no user@IP "cat ~/benchmark/status.txt"
+
+# Get last scenario being run
+ssh user@IP "grep 'Running scenario' ~/benchmark/benchmark.log | tail -1"
+
+# Check if Java process is running
+ssh user@IP "pgrep -f 'java.*benchmark' && echo RUNNING || echo STOPPED"
+```
+
 ### SSH connection refused
 - Wait longer for VM startup (cloud-init takes 30-60 seconds)
 - Check security group/firewall rules allow SSH (port 22)
-- Verify SSH key is correct: `ssh -i ~/.ssh/iceberg-benchmark.pem ubuntu@<ip>`
+- Verify SSH key: `ssh -i ~/.ssh/iceberg_benchmark_key ubuntu@<ip>` (AWS) or `azureuser@` (Azure)
 
 ### Benchmark fails immediately
-- Check `benchmark.log` via `tail` command or after `results`
-- Verify Java is installed: `./aws/run.sh status` then SSH and run `java -version`
-- Check cloud storage permissions
+- Check status: `ssh user@IP "cat ~/benchmark/status.txt"`
+- Check last error: `ssh user@IP "tail -20 ~/benchmark/benchmark.log | grep -i error"`
+- Verify Java: `ssh user@IP "java -version"`
 
-### Permission denied on cloud storage
-- **AWS**: Verify IAM instance profile is attached and has S3 permissions
-- **GCP**: Verify VM service account has `storage.objectAdmin` role
-- **Azure**: Verify managed identity has `Storage Blob Data Contributor` role
+### Permission denied on cloud storage (403 errors)
+
+**Root cause**: VM doesn't have storage access permissions.
+
+**Quick fix**: Run `setup.sh` which configures permissions automatically:
+```bash
+./aws/setup.sh    # Creates IAM instance profile with S3 access
+./gcp/setup.sh    # Creates service account with GCS objectAdmin
+./azure/setup.sh  # Assigns Storage Blob Data Contributor to managed identity
+```
+
+**Manual fix by cloud**:
+- **AWS**: Attach `iceberg-benchmark-profile` instance profile to EC2
+- **GCP**: Ensure VM uses `iceberg-benchmark` service account
+- **Azure**: Assign role manually:
+  ```bash
+  PRINCIPAL_ID=$(az vm identity show -g iceberg-benchmark-rg -n iceberg-benchmark --query principalId -o tsv)
+  STORAGE_ID=$(az storage account show -n YOUR_STORAGE_ACCOUNT --query id -o tsv)
+  az role assignment create --assignee "$PRINCIPAL_ID" --role "Storage Blob Data Contributor" --scope "$STORAGE_ID"
+  ```
+
+### GCP network not found
+- Set network explicitly: `export GCP_NETWORK=your-vpc-name`
+- Or use default: `gcloud compute networks create default --subnet-mode=auto`
 
 ### VM already exists error
 - Use `--force` to recreate: `./aws/run.sh start --force`
@@ -350,6 +386,12 @@ python3 ../remapping-microbenchmark/scripts/analyze-results.py \
 
 ### "No JAR deployed" error
 - Run `deploy` before `run`: `./aws/run.sh deploy --config <config>`
+
+### Config enum errors (e.g., "Cannot deserialize CloudProvider")
+- Use correct enum values in config YAML:
+  - AWS: `cloud-provider: AWS_S3` (not `AWS`)
+  - GCP: `cloud-provider: GCP_GCS` (not `GCP`)
+  - Azure: `cloud-provider: AZURE_BLOB` (not `AZURE`)
 
 ## Teardown (Cleanup)
 
