@@ -353,6 +353,15 @@ public class RemappingBenchmarkRunner {
   private List<DVEntry> remapDeletionVectors(
       List<DVEntry> entries, PositionDeleteRemapper remapper) {
 
+    // This method uses the same core remapping API as production:
+    //   Production: remapDVBulk() -> DVPositionReader.readDeletedPositionsPrimitive() -> long[]
+    //                             -> remapPositionsBulkPrimitive(sourceFile, long[])
+    //   Benchmark:  RoaringBitmap -> long[] -> remapPositionsBulkPrimitive(sourceFile, long[])
+    //
+    // Both paths converge on remapPositionsBulkPrimitive(), ensuring the benchmark measures
+    // the same algorithm used in production. The benchmark extracts positions directly from
+    // RoaringBitmap to avoid I/O overhead, which would obscure remapping performance.
+
     // Group remapped positions by target file using RoaringBitmap directly
     // This avoids HashSet overhead and boxing/unboxing
     Map<String, RoaringBitmap> remappedByTarget = new HashMap<>();

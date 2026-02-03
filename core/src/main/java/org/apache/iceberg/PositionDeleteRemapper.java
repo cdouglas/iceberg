@@ -540,6 +540,47 @@ public class PositionDeleteRemapper {
   }
 
   /**
+   * Remaps positions from a PositionDeleteIndex using the compaction map.
+   *
+   * <p>This overload accepts a {@link PositionDeleteIndex}, which is the same interface used
+   * internally by {@link #remapDVBulk(DeleteFile, FileIO)}. Use this when you have positions in a
+   * PositionDeleteIndex (e.g., from a BitmapPositionDeleteIndex) but don't have a full DeleteFile.
+   *
+   * <p>This is useful for benchmarks that want to test the remapping algorithm using the same
+   * interface as production code, without the I/O overhead of reading from storage.
+   *
+   * @param sourceFile the path of the source data file that was compacted
+   * @param positions the position delete index containing positions to remap
+   * @return map from target file path to sorted array of remapped positions
+   */
+  public Map<String, long[]> remapPositionsBulkPrimitive(
+      String sourceFile, org.apache.iceberg.deletes.PositionDeleteIndex positions) {
+    Preconditions.checkNotNull(sourceFile, "sourceFile is null");
+    Preconditions.checkNotNull(positions, "positions is null");
+
+    // Extract positions from index
+    long cardinality = positions.cardinality();
+    if (cardinality == 0) {
+      return Collections.emptyMap();
+    }
+
+    if (cardinality > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException(
+          String.format(
+              Locale.ROOT,
+              "Position count exceeds max array size: %d (max: %d)",
+              cardinality,
+              Integer.MAX_VALUE));
+    }
+
+    long[] positionArray = new long[(int) cardinality];
+    int[] idx = {0};
+    positions.forEach(pos -> positionArray[idx[0]++] = pos);
+
+    return remapPositionsBulkPrimitive(sourceFile, positionArray);
+  }
+
+  /**
    * Internal primitive bulk remapping implementation.
    *
    * <p>Same as {@link #remapPositionsBulkInternal} but returns raw arrays instead of Sets.
