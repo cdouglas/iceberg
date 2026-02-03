@@ -38,6 +38,16 @@ source setup.conf
 | GCP network error | Wrong VPC | Set `GCP_NETWORK=your-vpc` |
 | "No JAR deployed" | Skipped deploy | Run `./run.sh deploy --config ...` first |
 
+### Benchmark Inventory
+
+| Directory | Purpose | Value |
+|-----------|---------|-------|
+| `benchmark/remapping-microbenchmark/` | JMH benchmarks for remapping algorithms | **High** - 324 real configurations, measures actual code |
+| `benchmark/remapping-optimization/` | Analysis scripts, result plotting | **High** - understands benchmark output |
+| `benchmark/cloud-runner/` | VM orchestration for AWS/GCP/Azure | **Medium** - infrastructure only |
+
+**Removed** (Feb 2026): `benchmark/compaction-cloud/` - synthetic benchmark with fake timing (`Thread.sleep`) and invented workloads. Provided no data not available from JMH benchmarks and integration tests.
+
 ## Token Conservation Guidelines
 
 When working on this codebase, prefer these approaches:
@@ -66,6 +76,23 @@ When working on this codebase, prefer these approaches:
 
 6. **Reference this file** - Don't re-explore code structure; use file paths listed above
 
+7. **Assess code value quickly** - For "should we keep this?" questions:
+   ```bash
+   # Check if code uses real APIs or fakes
+   grep -r "Thread.sleep\|random.nextInt\|simulate" path/  # Fake timing?
+   grep -r "PositionDeleteRemapper\|CompactionMap" path/   # Real APIs?
+   ```
+
+8. **Use Explore agent sparingly** - Ask specific questions, not "analyze everything":
+   - Bad: "Examine all Spark conflict resolution code"
+   - Good: "Does TestSparkCompactionConflictResolution test chained compactions?"
+
+9. **For concurrent/overlapping scenarios** - Key validation methods:
+   - `MergingSnapshotProducer.validateDataFilesExist()` - detects deleted source files
+   - `CompactionMapValidator.validateNoCompactedReferences()` - detects compacted references
+   - Overlapping compactions: second committer fails with `ValidationException`
+   - Chained compactions: handled via `CompactionMapChain` composition
+
 ## Overview
 
 **Compaction Maps** enable concurrent transactions writing position deletes to coexist with compaction operations in Apache Iceberg. When files are compacted, position deletes become invalid because referenced files no longer exist and row positions change. Compaction maps track these transformations, enabling automatic remapping and conflict detection.
@@ -73,7 +100,7 @@ When working on this codebase, prefer these approaches:
 **Key Achievements**:
 - Full infrastructure for compaction-aware transactions (~18k lines)
 - Advanced remapping optimization (1.1-32x speedup via smart algorithm selection)
-- Comprehensive test coverage (150+ tests) and empirical validation (324 JMH benchmarks)
+- Comprehensive test coverage (256 tests) and empirical validation (324 JMH benchmarks)
 - SERIALIZABLE isolation enhancements
 - **Compaction conflict resolution** - Automatic remapping of concurrent position deletes during compaction
 - **Staged scan optimization** - Position tracking now uses efficient staged scans with explicit metadata column selection
@@ -567,7 +594,7 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 **Branch**: `cmpmap` (NOT `vldb` - that's separate prototype)
 **Status**: Implementation complete, full conflict resolution for Spark 3.5 and 4.0
-**Test Status**: 150+ tests passing ✅
+**Test Status**: 256 tests passing ✅
 **Documentation Status**: Current ✅
 
 **Recent Additions**:
