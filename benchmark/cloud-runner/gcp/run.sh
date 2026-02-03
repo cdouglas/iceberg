@@ -113,9 +113,7 @@ set -ex
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y --no-install-recommends \\
-    openjdk-17-jdk-headless \\
-    jq
+apt-get install -y --no-install-recommends openjdk-17-jdk-headless jq
 
 # Create benchmark directory for SSH user
 mkdir -p /home/${SSH_USER}/benchmark
