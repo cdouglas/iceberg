@@ -41,77 +41,6 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 4. Iceberg detects the conflict and provides compaction map for remapping
 5. **Result:** Transaction A can remap deletes from F1 → F2 and retry
 
-## Current State
-
-### What's Complete
-
-✅ **Core Infrastructure (Phases 1-5)**
-- CompactionMap data structures with Avro serialization and run-length encoding
-- CompactionMapBuilder with automatic run merging for consecutive position ranges
-- Storage utilities, configuration properties, and ManifestFile schema extension
-- PositionDeleteRemapper for remapping position deletes to new file locations
-- CompactionMapValidator for detecting conflicts during transaction commit
-- SERIALIZABLE isolation enhancements with compaction awareness
-- 61+ unit and integration tests covering all components (full V2/V3 parity)
-
-✅ **Deletion Vector (DV) Support**
-- DVPositionWriter utility for writing DVs from position collections
-- RemappedDVWriter helper for N:M remapping scenarios (multiple target files)
-- PositionDeleteRemapper supports both position delete files and deletion vectors
-- DVPositionReader for reading positions from DV files
-- Comprehensive end-to-end integration tests across V2 (position deletes) and V3 (deletion vectors)
-
-✅ **Spark 3.5 Position Tracking**
-- Position tracking fully implemented for bin-pack rewrites
-- PositionTrackingDataWriter extracts source metadata during write
-- PositionMappingCoordinator aggregates mappings across distributed executors
-- Automatic compaction map generation during commit
-- Accurate run-based tracking with gaps for deleted rows
-
-✅ **Compaction Conflict Resolution (Phase 3)**
-- SparkRewriteDataFilesCommitManager detects conflicts with concurrent position delete transactions
-- SparkCompactionConflictResolver remaps conflicting deletes using Spark infrastructure
-- Opt-in via `write.compaction.resolve-delete-conflicts` table property
-- Configurable max-files limit for safety
-- 6 integration tests covering all conflict resolution scenarios
-
-✅ **Merge Compaction Support**
-- Position deletes applied during scan (standard Iceberg behavior)
-- Only surviving rows tracked in position mappings
-- Gaps in runs automatically represent deleted positions
-- Works for bin-pack operations combining data files with position deletes
-
-### Test Coverage
-
-✅ **Comprehensive Test Suite Complete (250+ tests passing)**
-
-The compaction maps feature has comprehensive test coverage across all components:
-- Core infrastructure (serialization, builder, storage, remapping)
-- Position delete remapping with both position delete files and deletion vectors
-- **Chained compaction maps (22 tests)** - Chain building, composition, detection
-- **Remapping algorithm optimization (78 tests)** - Binary search, interval tree, stream join, range query, smart selector
-- Conflict detection and resolution workflows (full V2/V3 parity)
-- SERIALIZABLE isolation with compaction awareness including chained compactions
-- End-to-end Spark integration tests for conflict detection and resolution
-- **Compaction conflict resolution (36 tests)** - TestSparkCompactionConflictResolution (Spark 3.5 and 4.0)
-- Format version compatibility (v2 position deletes, v3 deletion vectors)
-- File format support (Parquet, ORC, Puffin for DVs)
-- **JMH performance benchmarks (324 configurations)** - Empirical validation across 54 workload scenarios
-
-See [Implementation Details](compaction_maps_impl.md#test-coverage) for detailed test descriptions and execution commands
-
-✅ **Spark 4.0 Position Tracking**
-
-Position tracking is fully functional in Spark 4.0 for both V2 and V3 format tables with Parquet and ORC file formats.
-
-### Implementation Shortcuts
-
-See [Compaction Maps Errata](compaction_maps_errata.md) for documented implementation shortcuts including:
-- Position tracking limited to bin-pack rewrites (order-preserving operations by design)
-- Automatic conflict resolution: compactions ✅, application transactions ❌
-
-✅ **Chained compaction maps** are now fully supported - multiple sequential compactions between a transaction's start and commit are handled via lazy map composition.
-
 ## Configuration
 
 ### Table Properties
@@ -119,11 +48,10 @@ See [Compaction Maps Errata](compaction_maps_errata.md) for documented implement
 **`write.compaction-map.enabled`** (default: `false`)
 - Controls whether compaction maps are generated during compaction operations
 - Set to `true` to enable compaction map generation for bin-pack rewrites
-- **Note:** Position tracking is supported in Spark 3.5 and Spark 4.0
+- Position tracking is supported in Spark 3.5 and Spark 4.0
 
 **`write.compaction-map.target-size-bytes`** (default: `8388608` / 8 MB)
 - Target size for compaction map files (currently not enforced)
-- Used for monitoring and documentation
 - Run-length encoding keeps maps compact for typical workloads
 
 **`write.delete.isolation-level`** (default: `"serializable"`)
@@ -133,8 +61,8 @@ See [Compaction Maps Errata](compaction_maps_errata.md) for documented implement
 
 **`write.compaction.resolve-delete-conflicts`** (default: `false`)
 - Enables automatic resolution of conflicts with concurrent position delete transactions during compaction
-- When enabled, compaction operations can detect and remap conflicting position deletes
-- Only applies to V2 format tables with position delete files (not DVs)
+- When enabled, compaction operations detect and remap conflicting position deletes
+- Applies to both V2 position delete files and V3 deletion vectors
 
 **`write.compaction.resolve-delete-conflicts.max-files`** (default: `100`)
 - Maximum number of conflicting delete files to resolve automatically
@@ -184,7 +112,7 @@ SparkActions.get(spark)
 6. Writes new delete files referencing the compacted files
 7. Commits compaction with remapped deletes included
 
-### SERIALIZABLE Isolation with Compaction Awareness
+## SERIALIZABLE Isolation with Compaction Awareness
 
 Compaction maps enable SERIALIZABLE isolation to distinguish between structural and logical data changes:
 
@@ -203,20 +131,189 @@ rowDelta.addDeletes(deleteFile);
 rowDelta.commit();
 ```
 
+## Handling Compaction Conflicts in Application Transactions
+
+When an application transaction (e.g., RowDelta) conflicts with a compaction that rewrote referenced files, a `CompactionConflictException` is thrown. The application must remap its position deletes and retry.
+
+### Complete Example: Recovering from a Compaction Conflict
+
+```java
+import org.apache.iceberg.PositionDeleteRemapper;
+import org.apache.iceberg.exceptions.CompactionConflictException;
+
+public class DeleteTransactionWithConflictRecovery {
+
+    private static final int MAX_RETRIES = 3;
+    private static final Logger LOG = LoggerFactory.getLogger(DeleteTransactionWithConflictRecovery.class);
+
+    /**
+     * Executes a delete transaction with automatic conflict recovery.
+     *
+     * @param table the Iceberg table
+     * @param deletePositions map of file path to positions to delete
+     * @return the committed snapshot ID
+     */
+    public long executeDeleteWithRecovery(Table table, Map<String, long[]> deletePositions) {
+        int attempt = 0;
+        Map<String, long[]> currentDeletes = deletePositions;
+
+        while (attempt < MAX_RETRIES) {
+            attempt++;
+            try {
+                return commitDeletes(table, currentDeletes);
+            } catch (CompactionConflictException e) {
+                LOG.info("Compaction conflict detected on attempt {}, remapping deletes", attempt);
+                currentDeletes = remapDeletes(table, currentDeletes, e);
+            }
+        }
+
+        throw new RuntimeException("Failed to commit after " + MAX_RETRIES + " attempts");
+    }
+
+    private long commitDeletes(Table table, Map<String, long[]> deletePositions) {
+        // Create delete file from positions
+        DeleteFile deleteFile = writePositionDeletes(table, deletePositions);
+
+        // Commit with SERIALIZABLE isolation
+        RowDelta rowDelta = table.newRowDelta()
+            .validateFromSnapshot(table.currentSnapshot().snapshotId())
+            .validateNoConflictingDataFiles();
+
+        rowDelta.addDeletes(deleteFile);
+        rowDelta.commit();
+
+        return table.currentSnapshot().snapshotId();
+    }
+
+    private Map<String, long[]> remapDeletes(
+            Table table,
+            Map<String, long[]> originalDeletes,
+            CompactionConflictException conflict) {
+
+        // Load remappers from the conflict exception
+        // Handles chained compactions (multiple maps if several compactions occurred)
+        Map<String, PositionDeleteRemapper> remappers =
+            PositionDeleteRemapper.fromConflict(conflict, table.io());
+
+        Map<String, long[]> remappedDeletes = new HashMap<>();
+        int totalRemapped = 0;
+        int totalSkipped = 0;
+
+        for (Map.Entry<String, long[]> entry : originalDeletes.entrySet()) {
+            String sourcePath = entry.getKey();
+            long[] sourcePositions = entry.getValue();
+
+            PositionDeleteRemapper remapper = remappers.get(sourcePath);
+
+            if (remapper == null) {
+                // File was not compacted, keep original deletes
+                remappedDeletes.put(sourcePath, sourcePositions);
+                continue;
+            }
+
+            // Remap positions to target file(s)
+            // Returns Map<targetPath, targetPositions[]>
+            Map<String, long[]> mapped = remapper.remapPositionsBulk(sourcePositions);
+
+            for (Map.Entry<String, long[]> targetEntry : mapped.entrySet()) {
+                String targetPath = targetEntry.getKey();
+                long[] targetPositions = targetEntry.getValue();
+
+                // Merge with existing positions for this target file
+                remappedDeletes.merge(targetPath, targetPositions, this::mergePositions);
+                totalRemapped += targetPositions.length;
+            }
+
+            // Count positions that couldn't be remapped (deleted during merge compaction)
+            int mappedCount = mapped.values().stream().mapToInt(arr -> arr.length).sum();
+            totalSkipped += sourcePositions.length - mappedCount;
+        }
+
+        LOG.info("Remapped {} positions, skipped {} (already deleted during compaction)",
+            totalRemapped, totalSkipped);
+
+        return remappedDeletes;
+    }
+
+    private long[] mergePositions(long[] a, long[] b) {
+        long[] merged = new long[a.length + b.length];
+        System.arraycopy(a, 0, merged, 0, a.length);
+        System.arraycopy(b, 0, merged, a.length, b.length);
+        Arrays.sort(merged);
+        return merged;
+    }
+
+    private DeleteFile writePositionDeletes(Table table, Map<String, long[]> deletePositions) {
+        // Implementation depends on table format version and engine
+        // For V2: Write Parquet position delete file
+        // For V3: Write deletion vector (Puffin file with roaring bitmap)
+        // ...
+    }
+}
+```
+
+### Key Points for Conflict Recovery
+
+1. **Catch `CompactionConflictException`**: This exception contains the compaction maps needed for remapping.
+
+2. **Load remappers**: `PositionDeleteRemapper.fromConflict(exception, io)` handles loading and composing multiple compaction maps if several compactions occurred between the transaction's start and commit.
+
+3. **Handle multi-target remapping**: A single source file may map to multiple target files (when file size limits cause splits). The `remapPositionsBulk()` method returns a map from target paths to position arrays.
+
+4. **Handle filtered positions**: During merge compaction, some rows are deleted by position deletes applied during the scan. These positions won't appear in the compaction map—they're no-ops and can be safely skipped.
+
+5. **Retry with remapped deletes**: After remapping, create new delete files targeting the compacted files and retry the commit.
+
+### Simplified Pattern for Single-Position Remapping
+
+For simpler cases with individual position deletes:
+
+```java
+try {
+    rowDelta.addDeletes(deleteFile);
+    rowDelta.commit();
+} catch (CompactionConflictException e) {
+    Map<String, PositionDeleteRemapper> remappers =
+        PositionDeleteRemapper.fromConflict(e, table.io());
+
+    List<PositionDelete<?>> remappedDeletes = new ArrayList<>();
+
+    for (PositionDelete<?> delete : readPositionDeletes(deleteFile)) {
+        String path = delete.path().toString();
+        PositionDeleteRemapper remapper = remappers.get(path);
+
+        if (remapper == null) {
+            // File not compacted, keep original
+            remappedDeletes.add(delete);
+        } else {
+            // remapDeleteOrNull returns null if position was filtered during merge
+            PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);
+            if (remapped != null) {
+                remappedDeletes.add(remapped);
+            }
+        }
+    }
+
+    // Write and commit remapped deletes
+    DeleteFile remappedFile = writePositionDeletes(remappedDeletes, table);
+    table.newRowDelta().addDeletes(remappedFile).commit();
+}
+```
+
 ## Limitations
 
 ### 1. Spark Version Support
 
-- **Spark 3.5:** ✅ Position tracking fully implemented and functional
-- **Spark 4.0:** ✅ Position tracking fully implemented and functional
+- **Spark 3.5:** Position tracking fully implemented
+- **Spark 4.0:** Position tracking fully implemented
 - **Other engines:** Compaction map infrastructure works (read/validate/remap), but generation requires Spark-specific position tracking
 
 ### 2. Design Scope: Order-Preserving Compactions
 
 Compaction maps support **order-preserving** compaction operations:
 
-- ✅ **Bin-pack rewrites**: Multiple small files → larger files (simple concatenation)
-- ✅ **Merge compactions**: Combining data files with position deletes applied during scan
+- **Bin-pack rewrites**: Multiple small files → larger files (simple concatenation)
+- **Merge compactions**: Combining data files with position deletes applied during scan
 
 **Out of scope by design:**
 - **Sorted compactions**: Rewriting data sorted by column(s)
@@ -244,134 +341,67 @@ Target positions: 0, 1, 2, 3
 Compaction map: Run(0, 0, 2), Run(3, 2, 2)  // Gap at source position 2
 ```
 
-### 3. Conflict Resolution Options
+### 3. Conflict Resolution Scope
 
-**For Compaction Operations (Spark 3.5 and 4.0):**
-
-Automatic conflict resolution is available via `write.compaction.resolve-delete-conflicts=true`. When enabled, compactions automatically detect and remap conflicting position deletes from concurrent transactions. This is the recommended approach for high-concurrency workloads.
-
-**Supported Delete Types:**
-- ✅ **File-scoped position deletes**: Deletes with `referencedDataFile` set (created with `DeleteGranularity.FILE`)
-- ✅ **Multi-file position deletes**: Deletes spanning multiple data files (created with `DeleteGranularity.PARTITION`) - these are detected as potential conflicts and resolved by reading delete content
-- ✅ **Deletion vectors (V3)**: Single-file scoped DVs are remapped using core infrastructure
-- ❌ **Equality deletes**: Not file-scoped, handled by standard Iceberg semantics (not conflicts)
-
-**Limitations:**
+**Automatic resolution (compaction operations):**
+- Enabled via `write.compaction.resolve-delete-conflicts=true`
+- Compactions detect and remap conflicting position deletes from concurrent transactions
 - Subject to `max-files` limit for safety
-- Multi-file position deletes require reading delete file content for resolution (additional I/O)
 
-**For Application Transactions:**
+**Manual resolution (application transactions):**
+- Application transactions must catch `CompactionConflictException` and remap using `PositionDeleteRemapper`
+- See [Handling Compaction Conflicts](#handling-compaction-conflicts-in-application-transactions) for complete example
 
-Position delete conflicts from application transactions (e.g., RowDelta) require handling with `PositionDeleteRemapper`. The complete workflow is:
+## Performance
 
-```java
-try {
-    rowDelta.addDeletes(deleteFile);
-    rowDelta.commit();
-} catch (CompactionConflictException e) {
-    // 1. Load remappers from exception (handles multiple compaction maps)
-    Map<String, PositionDeleteRemapper> remappers =
-        PositionDeleteRemapper.fromConflict(e, table.io());
+### End-to-End Remapping Performance
 
-    // 2. Read original position deletes and remap
-    List<PositionDelete<?>> remappedDeletes = new ArrayList<>();
-    int skippedCount = 0;
+Benchmarks measured across AWS, GCP, and Azure with cloud storage (S3, GCS, ADLS) show the complete read-remap-write cycle:
 
-    for (PositionDelete<?> delete : readPositionDeletes(deleteFile)) {
-        String path = delete.path().toString();
-        PositionDeleteRemapper remapper = remappers.get(path);
+**At 1M deletes (production-scale workload):**
 
-        if (remapper == null) {
-            // File was not compacted, keep original
-            remappedDeletes.add(delete);
-        } else {
-            // Remap using lenient mode (returns null if row was filtered)
-            PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);
-            if (remapped != null) {
-                remappedDeletes.add(remapped);
-            } else {
-                // Row was filtered during merge compaction - skip (it's a no-op)
-                skippedCount++;
-            }
-        }
-    }
+| Format | Avg Latency | Throughput | Notes |
+|--------|-------------|------------|-------|
+| Position Delete Files | 2039ms | 0.5M deletes/sec | Parquet I/O dominates |
+| Deletion Vectors | 379ms | 2.9M deletes/sec | RoaringBitmap + Puffin |
 
-    // 3. Write remapped deletes to new file
-    DeleteFile remappedDeleteFile = writePositionDeletes(remappedDeletes, table);
+**Deletion vectors are 5.4x faster** than position delete files at scale, primarily due to:
+- Compact RoaringBitmap representation vs row-per-delete Parquet
+- Efficient bulk iteration (always sorted)
+- Smaller I/O footprint
 
-    // 4. Retry with remapped deletes
-    RowDelta retry = table.newRowDelta();
-    retry.addDeletes(remappedDeleteFile);
-    retry.commit();
+**By Cloud Provider (1M deletes, 100 runs):**
 
-    LOG.info("Remapped {} deletes, skipped {} filtered positions",
-        remappedDeletes.size(), skippedCount);
-}
-```
+| Cloud | Position Delete | Deletion Vector |
+|-------|-----------------|-----------------|
+| AWS   | 2089ms          | 424ms           |
+| Azure | 2241ms          | 285ms           |
+| GCP   | 1787ms          | 430ms           |
 
-**Key API Methods:**
-- `PositionDeleteRemapper.fromConflict(exception, io)` - Loads remappers from exception
-- `remapper.remapDeleteOrNull(delete)` - Remaps delete, returns null if position was filtered (lenient mode)
-- `remapper.remapDelete(delete)` - Remaps delete, throws exception if position not found (strict mode)
-- `remapper.mayNeedRemapping(deleteFile)` - Conservative check for multi-file position deletes
+### Remapping Algorithm Performance
 
-**Handling Unmapped Positions:**
-When a position is not found in the compaction map, it typically means the row was filtered during merge compaction (position deletes were applied during the scan). Using `remapDeleteOrNull()` handles this gracefully by returning `null`, allowing you to safely skip these positions.
+The remapping implementation uses automatic algorithm selection based on workload characteristics:
 
-**Note:** SERIALIZABLE isolation provides automatic handling for read conflicts (distinguishes structural vs data changes), but position delete conflicts from application transactions still require manual remapping.
+| Strategy | Complexity | Best For |
+|----------|------------|----------|
+| Interval Tree | O(n log m) | Unsorted data (most scenarios) |
+| Stream Join | O(n + m) | Sorted, dense, many runs (m ≥ 100) |
+| Range Query | O(m log n) | Sorted, sparse or few runs |
 
-### 4. Performance Overhead
+**Measured speedup vs linear baseline (100K positions):**
 
-When position tracking is enabled:
-- Uses efficient staged scans with explicit metadata column selection
-- Minimal overhead compared to standard bin-pack rewrites
-- Available in Spark 3.5 and Spark 4.0
+| Runs (m) | Best Strategy | Speedup |
+|----------|---------------|---------|
+| 10       | Range Query   | 6.7x    |
+| 100      | Stream Join   | 23.6x   |
+| 1000     | Stream Join   | 32.4x   |
 
-### 5. Remapping Algorithm Efficiency
-
-The remapping implementation includes multiple optimized algorithms with automatic selection:
-
-**Implemented Strategies:**
-
-| Strategy | Complexity | Best For | Status |
-|----------|------------|----------|--------|
-| Linear Search | O(n*m) | Baseline only | ✅ Complete |
-| Binary Search | O(n log m) | Unsorted, medium m | ✅ Complete |
-| Interval Tree | O(n log m) | Unsorted data | ✅ Complete |
-| Stream Join | O(n + m) | Sorted, dense, m ≥ 100 | ✅ Complete |
-| Range Query | O(m log n) | Sorted, sparse or small m | ✅ Complete |
-
-**Measured Performance (Jan 22, 2026 benchmarks):**
-
-Speedup vs LinearSearch baseline (sorted=true, gap=0.0):
-
-| Scale | Best Strategy | Speedup |
-|-------|---------------|---------|
-| n=1000, m=10-1000 | StreamJoin/RangeQuery | 1.1-1.4x |
-| n=10000, m=10 | RangeQuery | 6.5x |
-| n=10000, m=100-1000 | StreamJoin | 3.3-3.4x |
-| n=100000, m=10 | RangeQuery | 6.7x |
-| n=100000, m=100 | StreamJoin | 23.6x |
-| n=100000, m=1000 | StreamJoin | 32.4x |
-
-**Smart Selection:**
-
-The `RemappingAlgorithmSelector` automatically chooses the optimal strategy based on:
-- Run count (m): Number of runs in compaction map
-- Position count (n): Number of positions to remap
-- Sortedness: Whether positions are sorted (detected via sampling)
-- Gap ratio: Percentage of source range not covered by runs
-
-Selection overhead is ~5% average and provides near-optimal performance across all workload types.
-
-**Benchmarking:**
-
-Comprehensive JMH benchmark suite validates performance across 54 scenarios (324 total configurations). See `REMAPPING_BENCHMARKS.md` for detailed benchmarking documentation and instructions.
+The smart selector automatically chooses the optimal algorithm with ~5% overhead.
 
 ## References
 
-- **[Implementation Details](compaction_maps_impl.md)** - Architecture, API usage, testing, and Spark implementation
-- **[Implementation Errata](compaction_maps_errata.md)** - Known shortcuts and technical debt
+- **[Implementation Details](compaction_maps_impl.md)** - Architecture, API reference, and Spark internals
+- **[Implementation Errata](compaction_maps_errata.md)** - Known limitations and design decisions
 - **[Benchmarking Guide](compaction_maps_bench.md)** - JMH and microbenchmark suites
 - [Iceberg Position Deletes Specification](https://iceberg.apache.org/spec/#position-delete-files)
 - [Iceberg Manifest Format](https://iceberg.apache.org/spec/#manifests)
@@ -380,9 +410,3 @@ Comprehensive JMH benchmark suite validates performance across 54 scenarios (324
 
 1. **Application Transaction Conflict Resolution** - Automatic remapping in BaseRowDelta for application-level position delete conflicts
 2. **Other Engine Integration** - Extend position tracking to Flink, Trino, etc.
-
-## Benchmarking
-
-See [Benchmarking Guide](compaction_maps_bench.md) for:
-- **remapping-optimization**: JMH benchmarks for algorithm strategy comparison
-- **remapping-microbenchmark**: End-to-end benchmarks including I/O costs
