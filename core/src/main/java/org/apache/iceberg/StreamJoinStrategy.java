@@ -97,23 +97,6 @@ class StreamJoinStrategy implements RemappingStrategy {
     }
   }
 
-  @SuppressWarnings("deprecation")
-  @Override
-  public Map<Long, Run> runForPositions(List<Long> sourcePositions) {
-    if (sourcePositions == null || sourcePositions.isEmpty()) {
-      return Maps.newHashMap();
-    }
-
-    // Check if positions are sorted
-    if (isSorted(sourcePositions)) {
-      // Use stream join for O(n + m) performance
-      return streamJoin(sourcePositions);
-    } else {
-      // Fall back to binary search for each position: O(n log m)
-      return RemappingStrategy.super.runForPositions(sourcePositions);
-    }
-  }
-
   @Override
   public String name() {
     return "stream-join";
@@ -180,80 +163,6 @@ class StreamJoinStrategy implements RemappingStrategy {
   }
 
   /**
-   * Performs stream join between sorted positions and sorted runs.
-   *
-   * <p>Algorithm: Advance through both lists in tandem, matching positions to runs.
-   *
-   * <p>Includes predicate pushdown optimization: filters runs to only those overlapping the
-   * position range [min, max], reducing work by 50-90% for sparse position sets.
-   *
-   * <pre>
-   * positions: [5, 12, 50, 175, 250, 350]
-   * runs:      [0-100), [150-200), [300-400)
-   *
-   * Step 1: pos=5,   run=[0-100)   → match (5 in [0-100))
-   * Step 2: pos=12,  run=[0-100)   → match (12 in [0-100))
-   * Step 3: pos=50,  run=[0-100)   → match (50 in [0-100))
-   * Step 4: pos=175, run=[0-100)   → advance run
-   * Step 5: pos=175, run=[150-200) → match (175 in [150-200))
-   * Step 6: pos=250, run=[150-200) → advance run
-   * Step 7: pos=250, run=[300-400) → skip (250 in gap)
-   * Step 8: pos=350, run=[300-400) → match (350 in [300-400))
-   * </pre>
-   *
-   * @param sortedPositions positions in ascending order
-   * @return map from position to containing run
-   */
-  private Map<Long, Run> streamJoin(List<Long> sortedPositions) {
-    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sortedPositions.size());
-
-    if (runs == null || runs.isEmpty()) {
-      return results;
-    }
-
-    // Predicate pushdown: filter runs by min/max position bounds
-    long minPos = sortedPositions.get(0);
-    long maxPos = sortedPositions.get(sortedPositions.size() - 1);
-
-    List<Run> relevantRuns = filterRunsByRange(runs, minPos, maxPos);
-
-    if (relevantRuns.isEmpty()) {
-      // No runs overlap the position range
-      return results;
-    }
-
-    int runIndex = 0;
-    Run currentRun = relevantRuns.get(0);
-    long currentRunEnd = currentRun.sourcePosition() + currentRun.length();
-
-    for (Long position : sortedPositions) {
-      // Advance through runs until we find one that might contain this position
-      while (runIndex < relevantRuns.size() && position >= currentRunEnd) {
-        runIndex++;
-        if (runIndex < relevantRuns.size()) {
-          currentRun = relevantRuns.get(runIndex);
-          currentRunEnd = currentRun.sourcePosition() + currentRun.length();
-        }
-      }
-
-      // Check if we've exhausted all runs
-      if (runIndex >= relevantRuns.size()) {
-        // All remaining positions are beyond the last run
-        break;
-      }
-
-      // Check if position is in current run
-      long runStart = currentRun.sourcePosition();
-      if (position >= runStart && position < currentRunEnd) {
-        results.put(position, currentRun);
-      }
-      // If position < runStart, it's in a gap, skip it
-    }
-
-    return results;
-  }
-
-  /**
    * Filters runs to only those that overlap the given position range [minPos, maxPos].
    *
    * <p>A run overlaps if its range [sourcePosition, sourcePosition+length) intersects with [minPos,
@@ -284,7 +193,7 @@ class StreamJoinStrategy implements RemappingStrategy {
   }
 
   /**
-   * Checks if positions are sorted in ascending order (primitive array version).
+   * Checks if positions are sorted in ascending order.
    *
    * @param positions positions to check
    * @return true if sorted ascending, false otherwise
@@ -297,28 +206,6 @@ class StreamJoinStrategy implements RemappingStrategy {
     long prev = positions[0];
     for (int i = 1; i < positions.length; i++) {
       long current = positions[i];
-      if (current < prev) {
-        return false;
-      }
-      prev = current;
-    }
-    return true;
-  }
-
-  /**
-   * Checks if positions are sorted in ascending order.
-   *
-   * @param positions positions to check
-   * @return true if sorted ascending, false otherwise
-   */
-  private boolean isSorted(List<Long> positions) {
-    if (positions.size() <= 1) {
-      return true;
-    }
-
-    long prev = positions.get(0);
-    for (int i = 1; i < positions.size(); i++) {
-      long current = positions.get(i);
       if (current < prev) {
         return false;
       }

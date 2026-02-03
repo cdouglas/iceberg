@@ -64,8 +64,6 @@ interface RemappingStrategy {
    *   <li>Optimized: O(n + m) if positions are sorted (stream join)
    * </ul>
    *
-   * <p>This primitive version avoids boxing overhead and is preferred for high-performance paths.
-   *
    * @param sourcePositions positions to look up as primitive array (sorted for best performance)
    * @return map from position to containing run (missing entries = gaps)
    */
@@ -81,32 +79,24 @@ interface RemappingStrategy {
   }
 
   /**
-   * Finds runs for multiple source positions (bulk lookup).
+   * Convenience method for bulk lookup with boxed positions.
    *
-   * <p>Default implementation calls {@link #runForPosition(long)} for each position. Strategies can
-   * override this for better performance.
-   *
-   * <p><strong>Performance:</strong>
-   *
-   * <ul>
-   *   <li>Default: O(n * complexity of single lookup)
-   *   <li>Optimized: O(n + m) if positions are sorted (stream join)
-   * </ul>
+   * <p>This method converts the List to a primitive array and delegates to {@link
+   * #runForPositions(long[])}. It incurs boxing overhead and should only be used in tests or other
+   * non-performance-critical code.
    *
    * @param sourcePositions positions to look up (sorted for best performance)
    * @return map from position to containing run (missing entries = gaps)
-   * @deprecated Use {@link #runForPositions(long[])} to avoid boxing overhead
    */
-  @Deprecated
   default Map<Long, Run> runForPositions(List<Long> sourcePositions) {
-    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sourcePositions.size());
-    for (Long position : sourcePositions) {
-      Run run = runForPosition(position);
-      if (run != null) {
-        results.put(position, run);
-      }
+    if (sourcePositions == null || sourcePositions.isEmpty()) {
+      return Maps.newHashMap();
     }
-    return results;
+    long[] primitivePositions = new long[sourcePositions.size()];
+    for (int i = 0; i < sourcePositions.size(); i++) {
+      primitivePositions[i] = sourcePositions.get(i);
+    }
+    return runForPositions(primitivePositions);
   }
 
   /**

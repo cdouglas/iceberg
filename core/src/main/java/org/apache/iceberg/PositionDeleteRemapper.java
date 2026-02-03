@@ -444,33 +444,11 @@ public class PositionDeleteRemapper {
    * @param positions the positions to remap (should be from the source file)
    * @return map from target file path to set of remapped positions in that file
    */
-  @SuppressWarnings("deprecation")
   public Map<String, Set<Long>> remapPositionsBulk(String sourceFile, Iterable<Long> positions) {
     Preconditions.checkNotNull(sourceFile, "sourceFile is null");
     Preconditions.checkNotNull(positions, "positions is null");
 
-    FileMapping mapping = getMapping(sourceFile);
-
-    if (mapping == null) {
-      // File wasn't compacted, return original positions
-      List<Long> positionList = new java.util.ArrayList<>();
-      positions.forEach(positionList::add);
-
-      if (positionList.isEmpty()) {
-        return Collections.emptyMap();
-      }
-
-      // Convert to sorted array and wrap in SortedLongArraySet
-      long[] sortedPositions = new long[positionList.size()];
-      for (int i = 0; i < positionList.size(); i++) {
-        sortedPositions[i] = positionList.get(i);
-      }
-      java.util.Arrays.sort(sortedPositions);
-
-      return Collections.singletonMap(sourceFile, new SortedLongArraySet(sortedPositions));
-    }
-
-    // Collect positions into list for strategy selection
+    // Collect positions into list for size calculation
     List<Long> positionList = new java.util.ArrayList<>();
     positions.forEach(positionList::add);
 
@@ -478,10 +456,24 @@ public class PositionDeleteRemapper {
       return Collections.emptyMap();
     }
 
-    // Use smart selector to choose optimal strategy
+    // Convert to primitive array
+    long[] primitivePositions = new long[positionList.size()];
+    for (int i = 0; i < positionList.size(); i++) {
+      primitivePositions[i] = positionList.get(i);
+    }
+
+    FileMapping mapping = getMapping(sourceFile);
+
+    if (mapping == null) {
+      // File wasn't compacted, return original positions (sorted)
+      java.util.Arrays.sort(primitivePositions);
+      return Collections.singletonMap(sourceFile, new SortedLongArraySet(primitivePositions));
+    }
+
+    // Use smart selector to choose optimal strategy (primitive API)
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
-    RemappingStrategy strategy = selector.selectOptimal(mapping, positionList);
-    Map<Long, CompactionMap.Run> mappedRuns = strategy.runForPositions(positionList);
+    RemappingStrategy strategy = selector.selectOptimal(mapping, primitivePositions);
+    Map<Long, CompactionMap.Run> mappedRuns = strategy.runForPositions(primitivePositions);
 
     return remapPositionsBulkInternal(mappedRuns, mapping);
   }

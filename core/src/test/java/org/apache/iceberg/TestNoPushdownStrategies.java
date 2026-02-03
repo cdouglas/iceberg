@@ -22,8 +22,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.CompactionMap.Run;
@@ -94,7 +92,7 @@ public class TestNoPushdownStrategies {
   @Test
   public void testStreamJoinNoPushdownProducesSameResultsAsOptimized() {
     List<Run> runs = createSimpleRuns();
-    List<Long> positions = Arrays.asList(5L, 50L, 150L, 250L, 350L);
+    long[] positions = {5L, 50L, 150L, 250L, 350L};
 
     StreamJoinStrategy optimized = new StreamJoinStrategy(runs);
     StreamJoinNoPushdownStrategy noPushdown = new StreamJoinNoPushdownStrategy(runs);
@@ -114,7 +112,7 @@ public class TestNoPushdownStrategies {
     }
 
     // Positions only in first 10% of range (0-1000)
-    List<Long> positions = Arrays.asList(100L, 200L, 300L, 500L, 800L);
+    long[] positions = {100L, 200L, 300L, 500L, 800L};
 
     StreamJoinStrategy optimized = new StreamJoinStrategy(runs);
     StreamJoinNoPushdownStrategy noPushdown = new StreamJoinNoPushdownStrategy(runs);
@@ -127,7 +125,7 @@ public class TestNoPushdownStrategies {
     assertThat(noPushdownResult).hasSize(5);
 
     // All positions should map to the first run [0-1000)
-    for (Long pos : positions) {
+    for (long pos : positions) {
       assertThat(noPushdownResult.get(pos).sourcePosition()).isEqualTo(0L);
     }
   }
@@ -150,14 +148,14 @@ public class TestNoPushdownStrategies {
     StreamJoinNoPushdownStrategy strategy = new StreamJoinNoPushdownStrategy(runs);
 
     // Empty positions
-    assertThat(strategy.runForPositions(Collections.emptyList())).isEmpty();
-    assertThat(strategy.runForPositions((List<Long>) null)).isEmpty();
+    assertThat(strategy.runForPositions(new long[0])).isEmpty();
+    assertThat(strategy.runForPositions((long[]) null)).isEmpty();
   }
 
   @Test
   public void testStreamJoinNoPushdownUnsortedPositions() {
     List<Run> runs = createSimpleRuns();
-    List<Long> unsortedPositions = Arrays.asList(350L, 50L, 250L, 150L);
+    long[] unsortedPositions = {350L, 50L, 250L, 150L};
 
     StreamJoinStrategy optimized = new StreamJoinStrategy(runs);
     StreamJoinNoPushdownStrategy noPushdown = new StreamJoinNoPushdownStrategy(runs);
@@ -209,7 +207,7 @@ public class TestNoPushdownStrategies {
   @Test
   public void testRangeQueryNoPushdownProducesSameResultsAsOptimized() {
     List<Run> runs = createSimpleRuns();
-    List<Long> positions = Arrays.asList(5L, 50L, 150L, 250L, 350L);
+    long[] positions = {5L, 50L, 150L, 250L, 350L};
 
     RangeQueryStrategy optimized = new RangeQueryStrategy(runs);
     RangeQueryNoPushdownStrategy noPushdown = new RangeQueryNoPushdownStrategy(runs);
@@ -229,7 +227,7 @@ public class TestNoPushdownStrategies {
     }
 
     // Positions only in last 10% of range (9000-10000)
-    List<Long> positions = Arrays.asList(9100L, 9200L, 9500L, 9800L, 9900L);
+    long[] positions = {9100L, 9200L, 9500L, 9800L, 9900L};
 
     RangeQueryStrategy optimized = new RangeQueryStrategy(runs);
     RangeQueryNoPushdownStrategy noPushdown = new RangeQueryNoPushdownStrategy(runs);
@@ -242,7 +240,7 @@ public class TestNoPushdownStrategies {
     assertThat(noPushdownResult).hasSize(5);
 
     // All positions should map to the last run [9000-10000)
-    for (Long pos : positions) {
+    for (long pos : positions) {
       assertThat(noPushdownResult.get(pos).sourcePosition()).isEqualTo(9000L);
     }
   }
@@ -265,14 +263,14 @@ public class TestNoPushdownStrategies {
     RangeQueryNoPushdownStrategy strategy = new RangeQueryNoPushdownStrategy(runs);
 
     // Empty positions
-    assertThat(strategy.runForPositions(Collections.emptyList())).isEmpty();
-    assertThat(strategy.runForPositions((List<Long>) null)).isEmpty();
+    assertThat(strategy.runForPositions(new long[0])).isEmpty();
+    assertThat(strategy.runForPositions((long[]) null)).isEmpty();
   }
 
   @Test
   public void testRangeQueryNoPushdownUnsortedPositions() {
     List<Run> runs = createSimpleRuns();
-    List<Long> unsortedPositions = Arrays.asList(350L, 50L, 250L, 150L);
+    long[] unsortedPositions = {350L, 50L, 250L, 150L};
 
     RangeQueryStrategy optimized = new RangeQueryStrategy(runs);
     RangeQueryNoPushdownStrategy noPushdown = new RangeQueryNoPushdownStrategy(runs);
@@ -291,7 +289,7 @@ public class TestNoPushdownStrategies {
   @Test
   public void testAllStrategiesProduceSameResults() {
     List<Run> runs = createSimpleRuns();
-    List<Long> positions = Arrays.asList(5L, 50L, 99L, 150L, 199L, 250L, 350L, 399L);
+    long[] positions = {5L, 50L, 99L, 150L, 199L, 250L, 350L, 399L};
 
     // All strategies should produce identical results
     LinearSearchStrategy linear = new LinearSearchStrategy(runs);
@@ -316,7 +314,7 @@ public class TestNoPushdownStrategies {
   public void testAllStrategiesHandleGaps() {
     List<Run> runs = createSimpleRuns();
     // Position 125 is in a gap between runs [0-100) and [200-300)
-    List<Long> positions = Arrays.asList(50L, 125L, 250L);
+    long[] positions = {50L, 125L, 250L};
 
     LinearSearchStrategy linear = new LinearSearchStrategy(runs);
     StreamJoinNoPushdownStrategy streamJoinNoPushdown = new StreamJoinNoPushdownStrategy(runs);
@@ -343,9 +341,9 @@ public class TestNoPushdownStrategies {
     }
 
     // Positions only in first 10 runs (1% of range)
-    List<Long> positions = new ArrayList<>();
+    long[] positions = new long[100];
     for (int i = 0; i < 100; i++) {
-      positions.add((long) (i * 10));
+      positions[i] = i * 10L;
     }
 
     StreamJoinStrategy streamJoin = new StreamJoinStrategy(runs);

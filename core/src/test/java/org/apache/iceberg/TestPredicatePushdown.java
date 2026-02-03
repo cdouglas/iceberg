@@ -41,7 +41,7 @@ public class TestPredicatePushdown {
     StreamJoinStrategy strategy = new StreamJoinStrategy(runs);
 
     // Positions only in middle range [200-300)
-    List<Long> positions = Arrays.asList(210L, 220L, 230L, 240L, 250L);
+    long[] positions = {210L, 220L, 230L, 240L, 250L};
 
     Map<Long, Run> results = strategy.runForPositions(positions);
 
@@ -62,7 +62,7 @@ public class TestPredicatePushdown {
     RangeQueryStrategy strategy = new RangeQueryStrategy(runs);
 
     // Positions only in middle range [200-300)
-    List<Long> positions = Arrays.asList(210L, 220L, 230L, 240L, 250L);
+    long[] positions = {210L, 220L, 230L, 240L, 250L};
 
     Map<Long, Run> results = strategy.runForPositions(positions);
 
@@ -77,7 +77,7 @@ public class TestPredicatePushdown {
     List<Run> runs = Arrays.asList(new GenericRun(200, 0, 100), new GenericRun(400, 100, 100));
 
     // Positions in range [50-100) don't overlap any runs
-    List<Long> positions = Arrays.asList(50L, 60L, 70L, 80L, 90L);
+    long[] positions = {50L, 60L, 70L, 80L, 90L};
 
     // Test both strategies
     StreamJoinStrategy streamJoin = new StreamJoinStrategy(runs);
@@ -104,9 +104,10 @@ public class TestPredicatePushdown {
 
     // Positions clustered in small range [4000-5000)
     // This overlaps runs at indices 20-24 (5 runs out of 100)
-    List<Long> positions = new java.util.ArrayList<>();
+    long[] positions = new long[100];
+    int idx = 0;
     for (long pos = 4000; pos < 5000; pos += 10) {
-      positions.add(pos);
+      positions[idx++] = pos;
     }
 
     // Test both strategies
@@ -139,7 +140,7 @@ public class TestPredicatePushdown {
     RangeQueryStrategy rangeQuery = new RangeQueryStrategy(runs);
 
     // Test 1: Positions exactly at run boundaries
-    List<Long> boundaryPositions = Arrays.asList(0L, 100L, 200L);
+    long[] boundaryPositions = {0L, 100L, 200L};
     Map<Long, Run> streamBoundary = streamJoin.runForPositions(boundaryPositions);
     Map<Long, Run> rangeBoundary = rangeQuery.runForPositions(boundaryPositions);
 
@@ -147,7 +148,7 @@ public class TestPredicatePushdown {
     assertThat(streamBoundary).isEqualTo(rangeBoundary);
 
     // Test 2: Positions spanning first and last run only
-    List<Long> edgePositions = Arrays.asList(50L, 250L);
+    long[] edgePositions = {50L, 250L};
     Map<Long, Run> streamEdge = streamJoin.runForPositions(edgePositions);
     Map<Long, Run> rangeEdge = rangeQuery.runForPositions(edgePositions);
 
@@ -169,7 +170,7 @@ public class TestPredicatePushdown {
             new GenericRun(4000, 400, 100));
 
     // Positions clustered at start and end only
-    List<Long> sparsePositions = Arrays.asList(10L, 20L, 30L, 4010L, 4020L, 4030L);
+    long[] sparsePositions = {10L, 20L, 30L, 4010L, 4020L, 4030L};
 
     StreamJoinStrategy streamJoin = new StreamJoinStrategy(runs);
     RangeQueryStrategy rangeQuery = new RangeQueryStrategy(runs);

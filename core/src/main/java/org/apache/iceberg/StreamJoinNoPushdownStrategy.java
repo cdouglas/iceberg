@@ -100,10 +100,9 @@ class StreamJoinNoPushdownStrategy implements RemappingStrategy {
     return binarySearchFallback.runForPosition(sourcePosition);
   }
 
-  @SuppressWarnings("deprecation")
   @Override
-  public Map<Long, Run> runForPositions(List<Long> sourcePositions) {
-    if (sourcePositions == null || sourcePositions.isEmpty()) {
+  public Map<Long, Run> runForPositions(long[] sourcePositions) {
+    if (sourcePositions == null || sourcePositions.length == 0) {
       return Maps.newHashMap();
     }
 
@@ -129,8 +128,8 @@ class StreamJoinNoPushdownStrategy implements RemappingStrategy {
    * @param sortedPositions positions in ascending order
    * @return map from position to containing run
    */
-  private Map<Long, Run> streamJoinNoPushdown(List<Long> sortedPositions) {
-    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sortedPositions.size());
+  private Map<Long, Run> streamJoinNoPushdown(long[] sortedPositions) {
+    Map<Long, Run> results = Maps.newHashMapWithExpectedSize(sortedPositions.length);
 
     if (runs == null || runs.isEmpty()) {
       return results;
@@ -141,7 +140,7 @@ class StreamJoinNoPushdownStrategy implements RemappingStrategy {
     Run currentRun = runs.get(0);
     long currentRunEnd = currentRun.sourcePosition() + currentRun.length();
 
-    for (Long position : sortedPositions) {
+    for (long position : sortedPositions) {
       while (runIndex < runs.size() && position >= currentRunEnd) {
         runIndex++;
         if (runIndex < runs.size()) {
@@ -163,14 +162,14 @@ class StreamJoinNoPushdownStrategy implements RemappingStrategy {
     return results;
   }
 
-  private boolean isSorted(List<Long> positions) {
-    if (positions.size() <= 1) {
+  private boolean isSorted(long[] positions) {
+    if (positions.length <= 1) {
       return true;
     }
 
-    long prev = positions.get(0);
-    for (int i = 1; i < positions.size(); i++) {
-      long current = positions.get(i);
+    long prev = positions[0];
+    for (int i = 1; i < positions.length; i++) {
+      long current = positions[i];
       if (current < prev) {
         return false;
       }
