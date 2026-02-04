@@ -35,11 +35,12 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for RemappingAlgorithmSelector.
  *
- * <p>The selector logic is based on empirical JMH benchmark data (January 2026), not theoretical
- * complexity analysis. Key findings:
+ * <p>The selector logic is based on empirical JMH benchmark data (January-February 2026), not
+ * theoretical complexity analysis. Key findings:
  *
  * <ul>
- *   <li>UNSORTED: IntervalTree wins regardless of m, n, or gaps
+ *   <li>UNSORTED: IntervalTree wins in most scenarios, but StreamJoin wins when m >> n
+ *   <li>Very high m (>= 5000) with small n (<= 2000): StreamJoin wins regardless of sorted/gaps
  *   <li>SORTED + sparse (gap > 0.3): RangeQuery wins (can skip gaps)
  *   <li>SORTED + dense + bulk (m >= 100, n >= 10000): StreamJoin wins
  *   <li>SORTED + small m (m < 100): RangeQuery wins even for large n
@@ -62,7 +63,8 @@ public class TestRemappingAlgorithmSelector {
 
   @Test
   public void testSelectsIntervalTreeForUnsortedData() {
-    // Unsorted data always uses IntervalTree (benchmark evidence: wins 46/54 unsorted scenarios)
+    // Unsorted data with typical m values uses IntervalTree (wins 29/36 unsorted scenarios)
+    // Exception: very high m (>= 5000) with small n (<= 2000) uses StreamJoin
     FileMapping mapping = createMapping(5);
     List<Long> unsortedPositions = createUnsortedPositions(1000);
 
@@ -229,11 +231,11 @@ public class TestRemappingAlgorithmSelector {
   }
 
   @Test
-  public void testUnsortedAlwaysUsesIntervalTree() {
+  public void testUnsortedUsesIntervalTreeForTypicalScenarios() {
     RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
     List<Long> unsortedPositions = createUnsortedPositions(10000);
 
-    // All unsorted scenarios should use IntervalTree
+    // Typical unsorted scenarios (m < 5000) should use IntervalTree
     assertThat(selector.selectOptimal(createMapping(5), unsortedPositions))
         .isInstanceOf(IntervalTreeStrategy.class);
     assertThat(selector.selectOptimal(createMapping(50), unsortedPositions))
@@ -241,6 +243,70 @@ public class TestRemappingAlgorithmSelector {
     assertThat(selector.selectOptimal(createMapping(500), unsortedPositions))
         .isInstanceOf(IntervalTreeStrategy.class);
     assertThat(selector.selectOptimal(createMappingWithGaps(50, 0.5), unsortedPositions))
+        .isInstanceOf(IntervalTreeStrategy.class);
+  }
+
+  @Test
+  public void testVeryHighRunsWithSmallPositionsUsesStreamJoin() {
+    // Feb 2026 benchmark finding: when m >= 5000 and n <= 2000,
+    // StreamJoin's O(n+m) beats IntervalTree because the scan through runs dominates
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+
+    // m = 5000, n = 1000, unsorted -> StreamJoin (very high m, small n)
+    FileMapping highM = createDenseMapping(5000);
+    List<Long> smallUnsorted = createUnsortedPositions(1000);
+    assertThat(selector.selectOptimal(highM, smallUnsorted)).isInstanceOf(StreamJoinStrategy.class);
+
+    // m = 5000, n = 1000, sorted -> StreamJoin (very high m, small n)
+    List<Long> smallSorted = createSortedPositions(1000);
+    assertThat(selector.selectOptimal(highM, smallSorted)).isInstanceOf(StreamJoinStrategy.class);
+
+    // m = 10000, n = 2000, unsorted -> StreamJoin
+    FileMapping veryHighM = createDenseMapping(10000);
+    List<Long> mediumUnsorted = createUnsortedPositions(2000);
+    assertThat(selector.selectOptimal(veryHighM, mediumUnsorted))
+        .isInstanceOf(StreamJoinStrategy.class);
+
+    // m = 10000, n = 2000, sorted -> StreamJoin
+    List<Long> mediumSorted = createSortedPositions(2000);
+    assertThat(selector.selectOptimal(veryHighM, mediumSorted)).isInstanceOf(StreamJoinStrategy.class);
+  }
+
+  @Test
+  public void testVeryHighRunsWithLargePositionsUsesIntervalTree() {
+    // When n is large (> 2000), even with very high m, IntervalTree is better for unsorted
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+
+    // m = 5000, n = 3000, unsorted -> IntervalTree (n > 2000, so normal rules apply)
+    FileMapping highM = createDenseMapping(5000);
+    List<Long> largeUnsorted = createUnsortedPositions(3000);
+    assertThat(selector.selectOptimal(highM, largeUnsorted)).isInstanceOf(IntervalTreeStrategy.class);
+
+    // m = 5000, n = 10000, unsorted -> IntervalTree
+    List<Long> veryLargeUnsorted = createUnsortedPositions(10000);
+    assertThat(selector.selectOptimal(highM, veryLargeUnsorted))
+        .isInstanceOf(IntervalTreeStrategy.class);
+  }
+
+  @Test
+  public void testVeryHighRunsThresholdBoundary() {
+    // Test the exact boundary at m=5000, n=2000
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+
+    // m = 4999, n = 2000, unsorted -> IntervalTree (below m threshold)
+    FileMapping belowThreshold = createDenseMapping(4999);
+    List<Long> positions2000 = createUnsortedPositions(2000);
+    assertThat(selector.selectOptimal(belowThreshold, positions2000))
+        .isInstanceOf(IntervalTreeStrategy.class);
+
+    // m = 5000, n = 2000, unsorted -> StreamJoin (at threshold)
+    FileMapping atThreshold = createDenseMapping(5000);
+    assertThat(selector.selectOptimal(atThreshold, positions2000))
+        .isInstanceOf(StreamJoinStrategy.class);
+
+    // m = 5000, n = 2001, unsorted -> IntervalTree (above n threshold)
+    List<Long> positions2001 = createUnsortedPositions(2001);
+    assertThat(selector.selectOptimal(atThreshold, positions2001))
         .isInstanceOf(IntervalTreeStrategy.class);
   }
 

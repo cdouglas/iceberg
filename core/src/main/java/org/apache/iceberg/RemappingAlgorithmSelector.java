@@ -26,11 +26,11 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 /**
  * Selects optimal remapping strategy based on empirical benchmark data.
  *
- * <p>Selection is based on JMH benchmarks run January 2026 across 324 configurations testing all
- * combinations of:
+ * <p>Selection is based on JMH benchmarks run January-February 2026 across 324+ configurations
+ * testing all combinations of:
  *
  * <ul>
- *   <li>m (runs): 10, 100, 1000
+ *   <li>m (runs): 10, 100, 1000, 10000
  *   <li>n (positions): 1000, 10000, 100000
  *   <li>gapRatio: 0.0, 0.3, 0.5
  *   <li>sorted: true, false
@@ -39,11 +39,12 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
  * <p>Key empirical findings:
  *
  * <ul>
- *   <li>UNSORTED data: IntervalTree wins in 25/27 scenarios regardless of m, n, or gaps
+ *   <li>UNSORTED data: IntervalTree wins 29/36 scenarios, but StreamJoin wins when m >> n
  *   <li>SORTED data: RangeQuery or StreamJoin win; IntervalTree never wins
  *   <li>SORTED + sparse (gap > 0.3): RangeQuery optimal (can skip gaps)
  *   <li>SORTED + dense (gap <= 0.3) + n >= 10000 + m >= 100: StreamJoin optimal
- *   <li>BinarySearch rarely wins (only 2 edge cases, not worth selecting)
+ *   <li>Very high m (>=5000) with small n (<=2000): StreamJoin optimal regardless of sorted/gaps
+ *   <li>BinarySearch rarely wins (edge cases only, not worth selecting)
  * </ul>
  */
 public class RemappingAlgorithmSelector {
@@ -53,6 +54,10 @@ public class RemappingAlgorithmSelector {
   private static final int MANY_RUNS_THRESHOLD = 100;
   private static final int SORTEDNESS_SAMPLE_SIZE = 1000;
 
+  // Thresholds for very high m scenarios (Feb 2026 hyperparallel benchmarks)
+  private static final int VERY_HIGH_RUNS_THRESHOLD = 5000;
+  private static final int SMALL_POSITIONS_THRESHOLD = 2000;
+
   /**
    * Selects optimal remapping strategy based on data characteristics (primitive array version).
    *
@@ -60,9 +65,14 @@ public class RemappingAlgorithmSelector {
    *
    * <pre>
    * if unsorted:
-   *     return IntervalTree        # Wins 25/27 unsorted scenarios
+   *     if m >= 5000 AND n <= 2000:
+   *         return StreamJoin      # Very high m: O(n+m) beats tree lookups
+   *     return IntervalTree        # Wins 29/36 unsorted scenarios
    *
    * # Sorted data below
+   * if m >= 5000 AND n <= 2000:
+   *     return StreamJoin          # Very high m with small n
+   *
    * if gapRatio > 0.3:
    *     return RangeQuery          # Sparse data: skip gaps efficiently
    *
@@ -92,16 +102,30 @@ public class RemappingAlgorithmSelector {
     // Check sortedness first - this is the primary decision factor
     boolean sorted = isSortedPrimitive(positions);
 
-    // UNSORTED: IntervalTree is empirically optimal regardless of m, n, or gaps
-    // Benchmark evidence: wins 46/54 unsorted scenarios
+    // UNSORTED handling
+    // Benchmark evidence (Feb 2026): IntervalTree wins 29/36 unsorted scenarios,
+    // but StreamJoin wins when m is very high and n is small (m >> n)
     if (!sorted) {
+      // When m >> n (very high runs, small positions), StreamJoin's O(n+m) beats
+      // IntervalTree's O(n log m) because the linear scan through runs dominates
+      // Benchmark: n=1000, m=10000, unsorted → StreamJoin 165us vs IntervalTree 465us
+      if (m >= VERY_HIGH_RUNS_THRESHOLD && n <= SMALL_POSITIONS_THRESHOLD) {
+        return new StreamJoinStrategy(runs);
+      }
       return new IntervalTreeStrategy(runs);
     }
 
     // SORTED data below - IntervalTree never wins for sorted data
 
+    // Very high m with small n: StreamJoin is safest choice
+    // Benchmark (Feb 2026): n=1000, m=10000, sorted → StreamJoin within 37% of optimal
+    // vs RangeQuery up to 63% overhead. StreamJoin's O(n+m) handles high m well.
+    if (m >= VERY_HIGH_RUNS_THRESHOLD && n <= SMALL_POSITIONS_THRESHOLD) {
+      return new StreamJoinStrategy(runs);
+    }
+
     // Sparse data (gaps > 30%): RangeQuery can skip gaps efficiently
-    // Benchmark evidence: RangeQuery wins all sparse sorted scenarios
+    // Benchmark evidence: RangeQuery wins all sparse sorted scenarios (except high m above)
     double gapRatio = estimateGapRatio(mapping);
     if (gapRatio > SPARSE_GAP_THRESHOLD) {
       return new RangeQueryStrategy(runs);
