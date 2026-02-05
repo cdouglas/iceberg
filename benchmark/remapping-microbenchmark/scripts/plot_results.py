@@ -138,7 +138,7 @@ def plot_cloud_comparison_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> Non
         plt.tight_layout()
 
         # Filename includes run count
-        run_suffix = f'{num_runs//1000}k' if num_runs >= 1000 else str(num_runs)
+        run_suffix = str(num_runs)
         plt.savefig(output_dir / f'cloud_comparison_m{run_suffix}.png', dpi=150, bbox_inches='tight')
         plt.savefig(output_dir / f'cloud_comparison_m{run_suffix}.pdf', bbox_inches='tight')
         plt.close()
@@ -257,7 +257,7 @@ def plot_latency_breakdown_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> No
 
         plt.tight_layout()
 
-        run_suffix = f'{num_runs//1000}k' if num_runs >= 1000 else str(num_runs)
+        run_suffix = str(num_runs)
         plt.savefig(output_dir / f'latency_breakdown_1m_m{run_suffix}.png', dpi=150, bbox_inches='tight')
         plt.savefig(output_dir / f'latency_breakdown_1m_m{run_suffix}.pdf', bbox_inches='tight')
         plt.close()
@@ -265,8 +265,13 @@ def plot_latency_breakdown_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> No
     print(f"Saved: latency_breakdown_1m_m*.png/pdf for {len(run_counts)} run counts")
 
 
-def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path) -> None:
-    """Heatmap of remap latency by delete count × run count.
+def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path, metric: str = 'remap_ms') -> None:
+    """Heatmap of latency by delete count × run count.
+
+    Args:
+        raw_df: Raw benchmark results DataFrame
+        output_dir: Directory to save plots
+        metric: Column to plot - 'remap_ms' for remap only, 'latency_ms' for total
 
     Creates a separate subplot for each cloud provider with a common color scale.
     Uses a colorblind-friendly colormap (viridis).
@@ -276,6 +281,14 @@ def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path) -> None:
     if 'num-runs' not in df.columns:
         print("No num-runs column found, skipping heatmap")
         return
+
+    # Configure labels based on metric
+    if metric == 'remap_ms':
+        metric_label = 'Remap Latency'
+        file_prefix = 'latency_heatmap'
+    else:
+        metric_label = 'Total Latency'
+        file_prefix = 'total_latency_heatmap'
 
     clouds = sorted(df['cloud'].unique())
     formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
@@ -311,7 +324,7 @@ def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path) -> None:
         for cloud in clouds:
             cloud_df = format_df[format_df['cloud'] == cloud]
             pivot = cloud_df.pivot_table(
-                values='remap_ms',
+                values=metric,
                 index='num-runs',
                 columns='num-deletes',
                 aggfunc='mean'
@@ -368,17 +381,136 @@ def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path) -> None:
 
         # Add shared colorbar
         cbar = fig.colorbar(im, ax=axes, shrink=0.8, pad=0.02)
-        cbar.set_label('Remap Latency (ms)', fontsize=10)
+        cbar.set_label(f'{metric_label} (ms)', fontsize=10)
 
         fmt_label = format_labels[fmt]
-        fig.suptitle(f'Remap Latency Heatmap: {fmt_label}', fontsize=14, fontweight='bold')
+        fig.suptitle(f'{metric_label} Heatmap: {fmt_label}', fontsize=14, fontweight='bold')
 
         # Generate filename from format
         fmt_suffix = 'pd' if fmt == 'POSITION_DELETE_FILE' else 'dv'
-        plt.savefig(output_dir / f'latency_heatmap_{fmt_suffix}.png', dpi=150, bbox_inches='tight')
-        plt.savefig(output_dir / f'latency_heatmap_{fmt_suffix}.pdf', bbox_inches='tight')
+        plt.savefig(output_dir / f'{file_prefix}_{fmt_suffix}.png', dpi=150, bbox_inches='tight')
+        plt.savefig(output_dir / f'{file_prefix}_{fmt_suffix}.pdf', bbox_inches='tight')
         plt.close()
-        print(f"Saved: latency_heatmap_{fmt_suffix}.png/pdf")
+        print(f"Saved: {file_prefix}_{fmt_suffix}.png/pdf")
+
+
+def plot_latency_heatmap_per_cloud(raw_df: pd.DataFrame, output_dir: Path, metric: str = 'latency_ms') -> None:
+    """Generate separate heatmap for each cloud provider with consistent scale.
+
+    Args:
+        raw_df: Raw benchmark results DataFrame
+        output_dir: Directory to save plots
+        metric: Column to plot - 'remap_ms' for remap only, 'latency_ms' for total
+
+    Creates individual plots for each cloud, all using the same color scale
+    so they can be compared when placed side-by-side or on separate pages.
+    """
+    df = raw_df[~raw_df['warmup']].copy()
+
+    if 'num-runs' not in df.columns:
+        print("No num-runs column found, skipping per-cloud heatmaps")
+        return
+
+    # Configure labels based on metric
+    if metric == 'remap_ms':
+        metric_label = 'Remap Latency'
+        file_prefix = 'latency_heatmap'
+    else:
+        metric_label = 'Total Latency'
+        file_prefix = 'total_latency_heatmap'
+
+    clouds = sorted(df['cloud'].unique())
+    formats = ['POSITION_DELETE_FILE', 'DELETION_VECTOR']
+    format_labels = {'POSITION_DELETE_FILE': 'Position Deletes', 'DELETION_VECTOR': 'Deletion Vectors'}
+
+    for fmt in formats:
+        format_df = df[df['format'] == fmt]
+
+        if format_df.empty:
+            continue
+
+        # Get unique values for axes
+        delete_counts = sorted(format_df['num-deletes'].unique())
+        run_counts = sorted(format_df['num-runs'].unique())
+
+        if len(delete_counts) < 2 or len(run_counts) < 2:
+            print(f"Insufficient data for per-cloud heatmap ({fmt}), skipping")
+            continue
+
+        # Compute global min/max across ALL clouds for consistent scale
+        global_min = float('inf')
+        global_max = float('-inf')
+
+        pivot_data = {}
+        for cloud in clouds:
+            cloud_df = format_df[format_df['cloud'] == cloud]
+            pivot = cloud_df.pivot_table(
+                values=metric,
+                index='num-runs',
+                columns='num-deletes',
+                aggfunc='mean'
+            )
+            pivot_data[cloud] = pivot
+            if not pivot.empty:
+                global_min = min(global_min, pivot.min().min())
+                global_max = max(global_max, pivot.max().max())
+
+        if global_min == float('inf'):
+            print(f"No data for per-cloud heatmap ({fmt}), skipping")
+            continue
+
+        fmt_suffix = 'pd' if fmt == 'POSITION_DELETE_FILE' else 'dv'
+        fmt_label = format_labels[fmt]
+
+        # Generate separate figure for each cloud
+        for cloud in clouds:
+            pivot = pivot_data[cloud]
+
+            if pivot.empty:
+                continue
+
+            # Reindex to ensure consistent ordering
+            pivot = pivot.reindex(index=run_counts, columns=delete_counts)
+
+            # Create single-cloud figure
+            fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
+
+            # Create heatmap using viridis (colorblind-friendly)
+            im = ax.imshow(pivot.values, cmap='viridis', aspect='auto',
+                          vmin=global_min, vmax=global_max)
+
+            # Set tick labels
+            ax.set_xticks(range(len(delete_counts)))
+            ax.set_xticklabels([f'{d//1000}K' if d >= 1000 else str(d) for d in delete_counts],
+                              fontsize=10)
+            ax.set_yticks(range(len(run_counts)))
+            ax.set_yticklabels([f'{r//1000}K' if r >= 1000 else str(r) for r in run_counts],
+                              fontsize=10)
+
+            ax.set_xlabel('Delete Count (n)', fontsize=11)
+            ax.set_ylabel('Run Count (m)', fontsize=11)
+            ax.set_title(f'{metric_label}: {cloud.upper()} ({fmt_label})', fontsize=12, fontweight='bold')
+            ax.grid(False)
+
+            # Add value annotations
+            for i in range(len(run_counts)):
+                for j in range(len(delete_counts)):
+                    val = pivot.values[i, j]
+                    if not np.isnan(val):
+                        text_color = 'white' if val < (global_min + global_max) / 2 else 'black'
+                        ax.text(j, i, f'{val:.0f}', ha='center', va='center',
+                               fontsize=9, color=text_color)
+
+            # Add colorbar
+            cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+            cbar.set_label(f'{metric_label} (ms)', fontsize=10)
+
+            # Save
+            plt.savefig(output_dir / f'{file_prefix}_{fmt_suffix}_{cloud}.png', dpi=150, bbox_inches='tight')
+            plt.savefig(output_dir / f'{file_prefix}_{fmt_suffix}_{cloud}.pdf', bbox_inches='tight')
+            plt.close()
+
+        print(f"Saved: {file_prefix}_{fmt_suffix}_{{cloud}}.png/pdf for {len(clouds)} clouds")
 
 
 def main():
@@ -416,7 +548,9 @@ def main():
     print("\nGenerating plots...")
     plot_cloud_comparison_by_runs(raw_df, output_dir)
     plot_latency_breakdown_by_runs(raw_df, output_dir)
-    plot_latency_heatmap(raw_df, output_dir)
+    plot_latency_heatmap(raw_df, output_dir, metric='remap_ms')
+    plot_latency_heatmap(raw_df, output_dir, metric='latency_ms')
+    plot_latency_heatmap_per_cloud(raw_df, output_dir, metric='latency_ms')
 
     print(f"\nAll plots saved to: {output_dir}")
 

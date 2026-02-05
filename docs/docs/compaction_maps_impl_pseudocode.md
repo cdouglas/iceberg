@@ -55,9 +55,10 @@ function REMAP-BULK(mapping: FileMapping, positions: List<int64>) -> Map<int64, 
     // (Derived from empirical JMH benchmarks, Jan-Feb 2026)
 
     if not sorted then
-        // Very high m with small n: StreamJoin's O(n+m) beats IntervalTree
+        // Very high m with small n: StreamJoin (with binary search fallback) beats IntervalTree
+        // Binary search O(n log m) with small n is faster than IntervalTree O(m) build + O(n log m) query
         if m >= 5000 and n <= 2000 then
-            return STREAM-JOIN-REMAP(mapping.runs, SORT(positions))
+            return STREAM-JOIN-REMAP(mapping.runs, positions)  // Falls back to binary search
         return INTERVAL-TREE-REMAP(mapping.runs, positions)
 
     // Sorted data below
@@ -71,10 +72,16 @@ function REMAP-BULK(mapping: FileMapping, positions: List<int64>) -> Map<int64, 
         return RANGE-QUERY-REMAP(mapping.runs, positions)
 ```
 
-## Algorithm 3: Stream Join (Sorted Bulk Remapping)
+## Algorithm 3: Stream Join (Bulk Remapping)
 
 ```
 function STREAM-JOIN-REMAP(runs: List<Run>, positions: List<int64>) -> Map<int64, (string, int64)>
+    // Check if positions are sorted
+    if not IS-SORTED(positions) then
+        // Fall back to binary search for each position: O(n log m)
+        return BINARY-SEARCH-BULK(runs, positions)
+
+    // Sorted path: O(n + m) merge-join
     // Precondition: positions is sorted, runs is sorted by sourceStart
     result ← empty map
     runIdx ← 0
@@ -101,7 +108,7 @@ function STREAM-JOIN-REMAP(runs: List<Run>, positions: List<int64>) -> Map<int64
 
 ```
 function INTERVAL-TREE-REMAP(runs: List<Run>, positions: List<int64>) -> Map<int64, (string, int64)>
-    // Build interval tree from runs (one-time cost: O(m log m))
+    // Build balanced tree from sorted runs (one-time cost: O(m))
     tree ← BUILD-INTERVAL-TREE(runs)
     result ← empty map
 
@@ -228,8 +235,8 @@ function RESOLVE-COMPACTION-CONFLICT(
 | Algorithm | Time Complexity | Space Complexity | Best For |
 |-----------|-----------------|------------------|----------|
 | Single Lookup | O(log m) | O(1) | Individual queries |
-| Stream Join | O(n + m) | O(1) | Sorted bulk, dense |
-| Interval Tree | O(n log m) | O(m) | Unsorted data |
+| Stream Join | O(n + m) sorted, O(n log m) unsorted | O(1) | Sorted bulk, dense; unsorted with high m |
+| Interval Tree | O(m) build + O(n log m) query | O(m) | Unsorted data |
 | Range Query | O(m log n) | O(n) | Sorted, sparse/small m |
 | Composition | O(r₁ × r₂) | O(r₁ + r₂) | Chain of 2 maps |
 
