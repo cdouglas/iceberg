@@ -34,9 +34,10 @@ All plots are stratified by run count to avoid meaningless averaging:
 
 | Function | Output | Description |
 |----------|--------|-------------|
-| `plot_cloud_comparison_by_runs` | cloud_comparison_m{10,100,1k,10k}.png | Latency by delete count, separate plot per m |
-| `plot_latency_breakdown_by_runs` | latency_breakdown_1m_m{10,100,1k,10k}.png | Read/remap/write breakdown per m (1M deletes) |
-| `plot_latency_heatmap` | latency_heatmap_{pd,dv}.png | Heatmap of n × m with common scale |
+| `plot_cloud_comparison_by_runs` | cloud_comparison_m{10,100,1000,10000}.png | Latency by delete count, separate plot per m |
+| `plot_latency_breakdown_by_runs` | latency_breakdown_1m_m{10,100,1000,10000}.png | Read/remap/write breakdown per m (1M deletes) |
+| `plot_latency_heatmap` | latency_heatmap_{pd,dv}.png | Remap-only latency heatmap of n × m |
+| `plot_latency_heatmap` | total_latency_heatmap_{pd,dv}.png | Total latency (read+remap+write) heatmap of n × m |
 
 ## Generated Files
 
@@ -44,16 +45,18 @@ After running `python scripts/plot_results.py`:
 
 ```
 results/plots/
-├── cloud_comparison_m10.png/pdf      # m=10 runs
-├── cloud_comparison_m100.png/pdf     # m=100 runs
-├── cloud_comparison_m1k.png/pdf      # m=1000 runs
-├── cloud_comparison_m10k.png/pdf     # m=10000 runs
-├── latency_breakdown_1m_m10.png/pdf  # 1M deletes, m=10
-├── latency_breakdown_1m_m100.png/pdf # 1M deletes, m=100
-├── latency_breakdown_1m_m1k.png/pdf  # 1M deletes, m=1000
-├── latency_breakdown_1m_m10k.png/pdf # 1M deletes, m=10000
-├── latency_heatmap_pd.png/pdf        # Position deletes heatmap
-└── latency_heatmap_dv.png/pdf        # Deletion vectors heatmap
+├── cloud_comparison_m10.png/pdf        # m=10 runs
+├── cloud_comparison_m100.png/pdf       # m=100 runs
+├── cloud_comparison_m1000.png/pdf      # m=1000 runs
+├── cloud_comparison_m10000.png/pdf     # m=10000 runs
+├── latency_breakdown_1m_m10.png/pdf    # 1M deletes, m=10
+├── latency_breakdown_1m_m100.png/pdf   # 1M deletes, m=100
+├── latency_breakdown_1m_m1000.png/pdf  # 1M deletes, m=1000
+├── latency_breakdown_1m_m10000.png/pdf # 1M deletes, m=10000
+├── latency_heatmap_pd.png/pdf          # Remap-only latency heatmap (position deletes)
+├── latency_heatmap_dv.png/pdf          # Remap-only latency heatmap (deletion vectors)
+├── total_latency_heatmap_pd.png/pdf    # Total latency heatmap (position deletes)
+└── total_latency_heatmap_dv.png/pdf    # Total latency heatmap (deletion vectors)
 ```
 
 ## Recommended Usage
