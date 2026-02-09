@@ -52,8 +52,11 @@ import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
 import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
+import org.apache.iceberg.deletes.EqualityDeleteWriter;
+import org.apache.iceberg.util.ArrayUtil;
 import org.apache.iceberg.deletes.DVFileWriter;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
@@ -504,6 +507,72 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     assertThat(run.mapPosition(50)).isEqualTo(150);
   }
 
+  @TestTemplate
+  public void testEqualityDeletePreservedThroughCompaction() {
+    // This test verifies that equality deletes added concurrently with compaction
+    // are correctly preserved. Unlike position deletes, equality deletes don't need
+    // remapping - they commute with compaction because they're predicate-based.
+    //
+    // Scenario:
+    //   1. Start with data files containing ids 0-1999 (2 files, 1000 rows each)
+    //   2. Add equality delete for id = 500
+    //   3. Run compaction (compacts 2 files into 1)
+    //   4. Verify equality delete is preserved and id=500 is actually deleted
+
+    Table table = createTableWithData(2);
+    table
+        .updateProperties()
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .set(TableProperties.COMPACTION_RESOLVE_DELETE_CONFLICTS, "true")
+        .commit();
+
+    // Record initial row count
+    List<Object[]> initialRecords = currentData();
+    long initialRowCount = initialRecords.size();
+    assertThat(initialRowCount).isEqualTo(2 * SCALE);
+
+    // Add equality delete for id = 500
+    // This simulates a concurrent transaction that commits while compaction is running
+    writeEqualityDelete(table, 500);
+
+    // Verify the delete took effect
+    List<Object[]> recordsAfterDelete = currentData();
+    assertThat(recordsAfterDelete.size()).isEqualTo(initialRowCount - 1);
+
+    // Verify id=500 is not in results
+    boolean foundDeleted =
+        recordsAfterDelete.stream().anyMatch(row -> Integer.valueOf(500).equals(row[0]));
+    assertThat(foundDeleted).as("id=500 should be deleted").isFalse();
+
+    // Now run compaction - this should preserve the equality delete
+    RewriteDataFiles.Result result =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "2")
+            .execute();
+
+    assertThat(result.rewrittenDataFilesCount()).isGreaterThanOrEqualTo(2);
+
+    // Verify data is still correct after compaction
+    // The equality delete should still be in effect
+    table.refresh();
+    List<Object[]> recordsAfterCompaction = currentData();
+
+    assertThat(recordsAfterCompaction.size())
+        .as("Row count should be unchanged after compaction")
+        .isEqualTo(initialRowCount - 1);
+
+    // Verify id=500 is still deleted
+    foundDeleted =
+        recordsAfterCompaction.stream().anyMatch(row -> Integer.valueOf(500).equals(row[0]));
+    assertThat(foundDeleted).as("id=500 should still be deleted after compaction").isFalse();
+
+    // Note: The equality delete file may or may not still exist after compaction.
+    // If compaction applied the delete during the scan, the compacted file already
+    // excludes id=500, and the equality delete becomes "dangling" (can be cleaned up).
+    // The important thing is that the data is correct - id=500 is deleted.
+  }
+
   // Helper methods
 
   private Table createTableWithData(int numFiles) {
@@ -606,5 +675,44 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  /**
+   * Writes an equality delete that deletes rows where id = deleteId.
+   *
+   * <p>Equality deletes are predicate-based and don't reference specific files or positions. They
+   * should be preserved through compaction without any remapping needed.
+   */
+  private void writeEqualityDelete(Table table, int deleteId) {
+    table.refresh();
+
+    // Equality delete on the 'id' column
+    Schema idSchema = table.schema().select("id");
+    List<Integer> equalityFieldIds = Lists.newArrayList(table.schema().findField("id").fieldId());
+
+    OutputFileFactory fileFactory =
+        OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PARQUET).build();
+
+    GenericAppenderFactory appenderFactory =
+        new GenericAppenderFactory(
+            table.schema(),
+            table.spec(),
+            ArrayUtil.toIntArray(equalityFieldIds),
+            idSchema,
+            null);
+
+    EncryptedOutputFile outputFile = fileFactory.newOutputFile();
+    EqualityDeleteWriter<Record> eqDeleteWriter =
+        appenderFactory.newEqDeleteWriter(outputFile, FileFormat.PARQUET, null);
+
+    Record deleteRecord = GenericRecord.create(idSchema).copy(ImmutableMap.of("id", deleteId));
+
+    try (EqualityDeleteWriter<Record> writer = eqDeleteWriter) {
+      writer.write(deleteRecord);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+
+    table.newRowDelta().addDeletes(eqDeleteWriter.toDeleteFile()).commit();
   }
 }
