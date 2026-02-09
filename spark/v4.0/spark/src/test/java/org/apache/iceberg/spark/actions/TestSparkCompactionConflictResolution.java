@@ -64,6 +64,7 @@ import org.apache.iceberg.encryption.EncryptedFiles;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.encryption.EncryptionKeyMetadata;
 import org.apache.iceberg.hadoop.HadoopTables;
+import org.apache.iceberg.io.DataWriter;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
@@ -509,15 +510,22 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
   @TestTemplate
   public void testEqualityDeletePreservedThroughCompaction() {
-    // This test verifies that equality deletes added concurrently with compaction
-    // are correctly preserved. Unlike position deletes, equality deletes don't need
-    // remapping - they commute with compaction because they're predicate-based.
+    // This test verifies that equality deletes are preserved through compaction.
     //
-    // Scenario:
-    //   1. Start with data files containing ids 0-1999 (2 files, 1000 rows each)
-    //   2. Add equality delete for id = 500
-    //   3. Run compaction (compacts 2 files into 1)
-    //   4. Verify equality delete is preserved and id=500 is actually deleted
+    // Unlike position deletes (which reference specific file+position pairs and need remapping),
+    // equality deletes are predicate-based and commute with compaction automatically.
+    //
+    // The key mechanism is DATA SEQUENCE NUMBERS:
+    //   - When equality delete D_1 commits at S_1, it gets sequence number seq(S_1)
+    //   - When compaction commits S_2, new data files get sequence number seq(S_2) > seq(S_1)
+    //   - Equality deletes apply to all data files with sequence number >= seq(D_1)
+    //   - Therefore D_1 automatically applies to the compacted files in S_2
+    //
+    // This test verifies:
+    //   1. S_0: Start with data files containing ids 0-1999
+    //   2. S_1: Add equality delete for id=500
+    //   3. S_2: Run compaction (compacts files into fewer files)
+    //   4. Verify id=500 is still deleted after compaction (equality delete inherited)
 
     Table table = createTableWithData(2);
     table
@@ -531,20 +539,23 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     long initialRowCount = initialRecords.size();
     assertThat(initialRowCount).isEqualTo(2 * SCALE);
 
-    // Add equality delete for id = 500
-    // This simulates a concurrent transaction that commits while compaction is running
+    // S_1: Add equality delete for id = 500
     writeEqualityDelete(table, 500);
+    table.refresh();
+    long snapshotAfterDelete = table.currentSnapshot().snapshotId();
 
-    // Verify the delete took effect
-    List<Object[]> recordsAfterDelete = currentData();
-    assertThat(recordsAfterDelete.size()).isEqualTo(initialRowCount - 1);
+    // Verify the delete took effect at S_1
+    List<Object[]> recordsAtS1 = currentData();
+    assertThat(recordsAtS1.size()).isEqualTo(initialRowCount - 1);
 
     // Verify id=500 is not in results
     boolean foundDeleted =
-        recordsAfterDelete.stream().anyMatch(row -> Integer.valueOf(500).equals(row[0]));
+        recordsAtS1.stream().anyMatch(row -> Integer.valueOf(500).equals(row[0]));
     assertThat(foundDeleted).as("id=500 should be deleted").isFalse();
 
-    // Now run compaction - this should preserve the equality delete
+    // S_2: Run compaction - this creates new data files at a higher sequence number
+    // The equality delete from S_1 should still apply because its sequence number
+    // is less than the new files' sequence numbers
     RewriteDataFiles.Result result =
         SparkActions.get(spark)
             .rewriteDataFiles(table)
@@ -553,24 +564,25 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
     assertThat(result.rewrittenDataFilesCount()).isGreaterThanOrEqualTo(2);
 
-    // Verify data is still correct after compaction
-    // The equality delete should still be in effect
+    // Verify S_2 is a new snapshot (compaction committed)
     table.refresh();
-    List<Object[]> recordsAfterCompaction = currentData();
+    long snapshotAfterCompaction = table.currentSnapshot().snapshotId();
+    assertThat(snapshotAfterCompaction).isNotEqualTo(snapshotAfterDelete);
 
-    assertThat(recordsAfterCompaction.size())
-        .as("Row count should be unchanged after compaction")
+    // Verify snapshot lineage: S_2's parent should be S_1
+    assertThat(table.currentSnapshot().parentId()).isEqualTo(snapshotAfterDelete);
+
+    // Verify data is still correct - the equality delete must be preserved
+    List<Object[]> recordsAtS2 = currentData();
+    assertThat(recordsAtS2.size())
+        .as("Row count should reflect equality delete from S_1")
         .isEqualTo(initialRowCount - 1);
 
-    // Verify id=500 is still deleted
-    foundDeleted =
-        recordsAfterCompaction.stream().anyMatch(row -> Integer.valueOf(500).equals(row[0]));
-    assertThat(foundDeleted).as("id=500 should still be deleted after compaction").isFalse();
-
-    // Note: The equality delete file may or may not still exist after compaction.
-    // If compaction applied the delete during the scan, the compacted file already
-    // excludes id=500, and the equality delete becomes "dangling" (can be cleaned up).
-    // The important thing is that the data is correct - id=500 is deleted.
+    // Verify id=500 is still deleted (equality delete inherited from S_1 via sequence numbers)
+    foundDeleted = recordsAtS2.stream().anyMatch(row -> Integer.valueOf(500).equals(row[0]));
+    assertThat(foundDeleted)
+        .as("id=500 should still be deleted - equality delete must apply to compacted files")
+        .isFalse();
   }
 
   // Helper methods
@@ -714,5 +726,47 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     }
 
     table.newRowDelta().addDeletes(eqDeleteWriter.toDeleteFile()).commit();
+  }
+
+  /**
+   * Writes a data file containing records with ids from startId to startId + count - 1.
+   *
+   * <p>This simulates the output of a compaction operation that combines multiple data files.
+   */
+  private DataFile writeCompactedDataFile(Table table, int startId, int count) {
+    table.refresh();
+
+    OutputFile outputFile =
+        table
+            .io()
+            .newOutputFile(
+                table
+                    .locationProvider()
+                    .newDataLocation(
+                        FileFormat.PARQUET.addExtension(UUID.randomUUID().toString())));
+
+    GenericAppenderFactory appenderFactory =
+        new GenericAppenderFactory(table.schema(), table.spec(), null, null, null);
+
+    DataWriter<Record> dataWriter =
+        appenderFactory.newDataWriter(
+            EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY),
+            FileFormat.PARQUET,
+            null);
+
+    for (int i = startId; i < startId + count; i++) {
+      Record record = GenericRecord.create(table.schema());
+      record.setField("id", i);
+      record.setField("data", "data-" + i);
+      dataWriter.write(record);
+    }
+
+    try {
+      dataWriter.close();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+
+    return dataWriter.toDataFile();
   }
 }
