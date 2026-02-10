@@ -133,8 +133,7 @@ def plot_cloud_comparison_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> Non
         ax.set_title(f'Remapping Latency (m={run_label} runs)', fontsize=11, fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels([f'{d//1000}K' if d >= 1000 else str(d) for d in delete_counts], fontsize=9)
-        ax.grid(axis='y', alpha=0.3)
-
+        ax.grid(False)
         plt.tight_layout()
 
         # Filename includes run count
@@ -234,7 +233,7 @@ def plot_latency_breakdown_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> No
             Patch(facecolor='gray', edgecolor='white', hatch='///', label='Remap'),
             Patch(facecolor='gray', edgecolor='white', hatch='...', label='Write'),
         ]
-        leg1 = ax.legend(handles=legend_elements, loc='upper right', title='Phase', fontsize=12,
+        leg1 = ax.legend(handles=legend_elements, loc='upper left', title='Phase', fontsize=12,
                          title_fontsize=12)
         ax.add_artist(leg1)
 
@@ -249,9 +248,9 @@ def plot_latency_breakdown_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> No
         ax.set_ylabel('Latency (ms)', fontsize=14)
 
         run_label = f'{num_runs//1000}K' if num_runs >= 1000 else str(num_runs)
-        ax.set_title(f'Latency Breakdown: 1M Deletes, m={run_label} runs', fontsize=14, fontweight='bold')
+        ax.set_title(f'Latency Breakdown: 1000K Deletes, m={run_label} runs', fontsize=14, fontweight='bold')
         ax.tick_params(axis='y', labelsize=12)
-        ax.grid(axis='y', alpha=0.3)
+        ax.grid(False)
         if max_height > 0:
             ax.set_ylim(0, max_height * 1.15)
 
@@ -353,8 +352,9 @@ def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path, metric: str = '
             pivot = pivot.reindex(index=run_counts, columns=delete_counts)
 
             # Create heatmap using viridis (colorblind-friendly)
+            # origin='lower' puts lowest values (row 0) at the bottom, closer to origin
             im = ax.imshow(pivot.values, cmap='viridis', aspect='auto',
-                          vmin=global_min, vmax=global_max)
+                          vmin=global_min, vmax=global_max, origin='lower')
 
             # Set tick labels
             ax.set_xticks(range(len(delete_counts)))
@@ -369,7 +369,7 @@ def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path, metric: str = '
             ax.set_title(f'{cloud.upper()}', fontsize=12, fontweight='bold')
             ax.grid(False)
 
-            # Add value annotations
+            # Add value annotations (note: with origin='lower', row i is at y=i from bottom)
             for i in range(len(run_counts)):
                 for j in range(len(delete_counts)):
                     val = pivot.values[i, j]
@@ -476,8 +476,9 @@ def plot_latency_heatmap_per_cloud(raw_df: pd.DataFrame, output_dir: Path, metri
             fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
 
             # Create heatmap using viridis (colorblind-friendly)
+            # origin='lower' puts lowest values (row 0) at the bottom, closer to origin
             im = ax.imshow(pivot.values, cmap='viridis', aspect='auto',
-                          vmin=global_min, vmax=global_max)
+                          vmin=global_min, vmax=global_max, origin='lower')
 
             # Set tick labels
             ax.set_xticks(range(len(delete_counts)))
@@ -492,7 +493,7 @@ def plot_latency_heatmap_per_cloud(raw_df: pd.DataFrame, output_dir: Path, metri
             ax.set_title(f'{metric_label}: {cloud.upper()} ({fmt_label})', fontsize=12, fontweight='bold')
             ax.grid(False)
 
-            # Add value annotations
+            # Add value annotations (note: with origin='lower', row i is at y=i from bottom)
             for i in range(len(run_counts)):
                 for j in range(len(delete_counts)):
                     val = pivot.values[i, j]
