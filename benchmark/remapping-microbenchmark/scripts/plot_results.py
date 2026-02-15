@@ -145,6 +145,157 @@ def plot_cloud_comparison_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> Non
     print(f"Saved: cloud_comparison_m*.png/pdf for {len(run_counts)} run counts")
 
 
+def plot_cloud_comparison_by_runs_clipped(raw_df: pd.DataFrame, output_dir: Path) -> None:
+    """Generate cloud comparison plots with broken y-axis for outlier bars.
+
+    For run counts where some bars (typically PD at high delete counts) are much
+    taller than the rest, creates a variant with a broken y-axis: a tall bottom
+    panel sized for the non-outlier data and a short top panel showing just the
+    outlier bar tops with annotated values.
+
+    Outliers are detected using the IQR method (> Q3 + 1.5*IQR). A plot is only
+    generated when at least one outlier exists.
+    """
+    df = raw_df[~raw_df['warmup']].copy()
+
+    if 'num-runs' not in df.columns:
+        print("No num-runs column found, skipping cloud_comparison_by_runs_clipped")
+        return
+
+    run_counts = sorted(df['num-runs'].unique())
+    clouds = sorted(df['cloud'].unique())
+    formats = ['DELETION_VECTOR', 'POSITION_DELETE_FILE']
+    format_hatches = {'POSITION_DELETE_FILE': '///', 'DELETION_VECTOR': ''}
+
+    generated = 0
+
+    for num_runs in run_counts:
+        run_df = df[df['num-runs'] == num_runs]
+
+        if run_df.empty:
+            continue
+
+        delete_counts = sorted(run_df['num-deletes'].unique())
+        agg = run_df.groupby(['cloud', 'format', 'num-deletes'])['latency_ms'].mean()
+
+        # Collect all bar values to detect outliers
+        all_values = []
+        bar_data = []  # (cloud, fmt, dc, value, x_pos)
+        n_clouds = len(clouds)
+        n_formats = len(formats)
+        n_bars = n_clouds * n_formats
+        width = 0.06
+        group_width = n_bars * width + 0.08
+        x = np.arange(len(delete_counts)) * group_width
+
+        for cloud_idx, cloud in enumerate(clouds):
+            for fmt_idx, fmt in enumerate(formats):
+                bar_offset = cloud_idx * n_formats + fmt_idx
+                for dc_idx, dc in enumerate(delete_counts):
+                    try:
+                        val = agg.loc[(cloud, fmt, dc)]
+                    except KeyError:
+                        val = 0
+                    pos = x[dc_idx] + (bar_offset - n_bars/2 + 0.5) * width
+                    bar_data.append((cloud, fmt, dc, val, pos))
+                    if val > 0:
+                        all_values.append(val)
+
+        if len(all_values) < 4:
+            continue
+
+        # IQR outlier detection
+        sorted_vals = sorted(all_values)
+        q1 = sorted_vals[len(sorted_vals) // 4]
+        q3 = sorted_vals[3 * len(sorted_vals) // 4]
+        iqr = q3 - q1
+        outlier_threshold = q3 + 1.5 * iqr
+
+        outlier_values = [v for v in all_values if v > outlier_threshold]
+        if not outlier_values:
+            continue
+
+        # Axis limits
+        non_outlier_max = max(v for v in all_values if v <= outlier_threshold)
+        bottom_top = non_outlier_max * 1.15          # top of bottom panel
+        top_bottom = min(outlier_values) * 0.92       # bottom of top panel
+        top_top = max(outlier_values) * 1.12          # top of top panel
+
+        # Create broken-axis figure: short top panel, tall bottom panel
+        fig, (ax_top, ax_bot) = plt.subplots(
+            2, 1, sharex=True, figsize=(5, 4.0),
+            gridspec_kw={'height_ratios': [1, 3], 'hspace': 0.06})
+
+        # Draw identical bars on both axes; each clips to its own ylim
+        for cloud, fmt, dc, val, pos in bar_data:
+            for ax in (ax_top, ax_bot):
+                ax.bar(pos, val, width,
+                       color=COLORS.get(cloud, '#666'),
+                       hatch=format_hatches[fmt],
+                       edgecolor='white', linewidth=0.5)
+
+        # Set axis limits
+        ax_bot.set_ylim(0, bottom_top)
+        ax_top.set_ylim(top_bottom, top_top)
+
+        # Annotate outlier bars in the top panel
+        for cloud, fmt, dc, val, pos in bar_data:
+            if val > outlier_threshold:
+                ax_top.annotate(f'{val:.0f}',
+                                xy=(pos, val), xytext=(0, 3),
+                                textcoords='offset points',
+                                ha='center', va='bottom',
+                                fontsize=7, fontweight='bold')
+
+        # Hide the facing spines to create the break
+        ax_top.spines['bottom'].set_visible(False)
+        ax_bot.spines['top'].set_visible(False)
+        ax_top.tick_params(bottom=False)
+
+        # Draw diagonal break marks
+        d = 0.012  # size of break marks
+        kwargs = dict(color='k', clip_on=False, linewidth=0.8)
+        # Top-panel break marks (bottom edge)
+        ax_top.plot((-d, +d), (-d, +d), transform=ax_top.transAxes, **kwargs)
+        ax_top.plot((1 - d, 1 + d), (-d, +d), transform=ax_top.transAxes, **kwargs)
+        # Bottom-panel break marks (top edge)
+        ax_bot.plot((-d, +d), (1 - d, 1 + d), transform=ax_bot.transAxes, **kwargs)
+        ax_bot.plot((1 - d, 1 + d), (1 - d, 1 + d), transform=ax_bot.transAxes, **kwargs)
+
+        # Legend — Cloud in top panel (mostly empty), Format in bottom panel
+        from matplotlib.patches import Patch
+        cloud_legend = [Patch(facecolor=COLORS.get(c, '#666'), label=c.upper()) for c in clouds]
+        format_legend = [
+            Patch(facecolor='gray', hatch='', edgecolor='white', label='Deletion Vector'),
+            Patch(facecolor='gray', hatch='///', edgecolor='white', label='Position Delete'),
+        ]
+        ax_top.legend(handles=cloud_legend, loc='upper left', title='Cloud', fontsize=8)
+        ax_bot.legend(handles=format_legend, loc='upper left', title='Format', fontsize=8)
+
+        # Labels and title
+        ax_bot.set_xlabel('Number of Deletes', fontsize=10)
+        fig.text(0.01, 0.5, 'Average Latency (ms)', va='center', rotation='vertical', fontsize=10)
+
+        run_label = f'{num_runs//1000}K' if num_runs >= 1000 else str(num_runs)
+        ax_top.set_title(f'Remapping Latency (m={run_label} runs)', fontsize=11, fontweight='bold')
+        ax_bot.set_xticks(x)
+        ax_bot.set_xticklabels([f'{d//1000}K' if d >= 1000 else str(d) for d in delete_counts], fontsize=9)
+        ax_top.grid(False)
+        ax_bot.grid(False)
+
+        plt.savefig(output_dir / f'cloud_comparison_m{str(num_runs)}_detail.png',
+                    dpi=150, bbox_inches='tight')
+        plt.savefig(output_dir / f'cloud_comparison_m{str(num_runs)}_detail.pdf',
+                    bbox_inches='tight')
+        plt.close()
+        generated += 1
+
+    if generated > 0:
+        print(f"Saved: cloud_comparison_m*_detail.png/pdf for {generated} run counts with outliers")
+    else:
+        print("No run counts had outlier bars; no detail plots generated")
+
+
 def plot_latency_breakdown_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> None:
     """Generate latency breakdown plots stratified by run count.
 
@@ -548,6 +699,7 @@ def main():
     # Generate plots (all stratified by run count to avoid meaningless averaging)
     print("\nGenerating plots...")
     plot_cloud_comparison_by_runs(raw_df, output_dir)
+    plot_cloud_comparison_by_runs_clipped(raw_df, output_dir)
     plot_latency_breakdown_by_runs(raw_df, output_dir)
     plot_latency_heatmap(raw_df, output_dir, metric='remap_ms')
     plot_latency_heatmap(raw_df, output_dir, metric='latency_ms')

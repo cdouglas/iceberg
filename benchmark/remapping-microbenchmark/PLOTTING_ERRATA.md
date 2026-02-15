@@ -35,6 +35,7 @@ All plots are stratified by run count to avoid meaningless averaging:
 | Function | Output | Description |
 |----------|--------|-------------|
 | `plot_cloud_comparison_by_runs` | cloud_comparison_m{10,100,1000,10000}.png | Latency by delete count, separate plot per m |
+| `plot_cloud_comparison_by_runs_clipped` | cloud_comparison_m*_detail.png | Broken-axis variant; bottom panel sized for non-outlier bars, top panel shows outlier bar tops with annotated latency |
 | `plot_latency_breakdown_by_runs` | latency_breakdown_1m_m{10,100,1000,10000}.png | Read/remap/write breakdown per m (1M deletes) |
 | `plot_latency_heatmap` | latency_heatmap_{pd,dv}.png | Remap-only latency heatmap of n × m |
 | `plot_latency_heatmap` | total_latency_heatmap_{pd,dv}.png | Total latency (read+remap+write) heatmap of n × m |
@@ -49,6 +50,7 @@ results/plots/
 ├── cloud_comparison_m100.png/pdf       # m=100 runs
 ├── cloud_comparison_m1000.png/pdf      # m=1000 runs
 ├── cloud_comparison_m10000.png/pdf     # m=10000 runs
+├── cloud_comparison_m*_detail.png/pdf  # Clipped variant (only when outliers exist)
 ├── latency_breakdown_1m_m10.png/pdf    # 1M deletes, m=10
 ├── latency_breakdown_1m_m100.png/pdf   # 1M deletes, m=100
 ├── latency_breakdown_1m_m1000.png/pdf  # 1M deletes, m=1000
