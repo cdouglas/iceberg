@@ -61,7 +61,7 @@ def load_raw_results(results_dir: Path) -> pd.DataFrame:
 def plot_cloud_comparison_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> None:
     """Generate cloud comparison plots stratified by run count.
 
-    Creates a separate plot for each run count value (m=10, 100, 1000, 10000),
+    Creates a separate plot for each run count value (r=10, 100, 1000, 10000),
     avoiding the meaningless averaging across different run counts.
     """
     df = raw_df[~raw_df['warmup']].copy()
@@ -130,7 +130,7 @@ def plot_cloud_comparison_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> Non
 
         # Format run count for title
         run_label = f'{num_runs//1000}K' if num_runs >= 1000 else str(num_runs)
-        ax.set_title(f'Remapping Latency (m={run_label} runs)', fontsize=11, fontweight='bold')
+        ax.set_title(f'Remapping Latency (r={run_label} runs)', fontsize=11, fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels([f'{d//1000}K' if d >= 1000 else str(d) for d in delete_counts], fontsize=9)
         ax.grid(False)
@@ -138,11 +138,11 @@ def plot_cloud_comparison_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> Non
 
         # Filename includes run count
         run_suffix = str(num_runs)
-        plt.savefig(output_dir / f'cloud_comparison_m{run_suffix}.png', dpi=150, bbox_inches='tight')
-        plt.savefig(output_dir / f'cloud_comparison_m{run_suffix}.pdf', bbox_inches='tight')
+        plt.savefig(output_dir / f'cloud_comparison_r{run_suffix}.png', dpi=150, bbox_inches='tight')
+        plt.savefig(output_dir / f'cloud_comparison_r{run_suffix}.pdf', bbox_inches='tight')
         plt.close()
 
-    print(f"Saved: cloud_comparison_m*.png/pdf for {len(run_counts)} run counts")
+    print(f"Saved: cloud_comparison_r*.png/pdf for {len(run_counts)} run counts")
 
 
 def plot_cloud_comparison_by_runs_clipped(raw_df: pd.DataFrame, output_dir: Path) -> None:
@@ -277,21 +277,21 @@ def plot_cloud_comparison_by_runs_clipped(raw_df: pd.DataFrame, output_dir: Path
         fig.text(0.01, 0.5, 'Average Latency (ms)', va='center', rotation='vertical', fontsize=10)
 
         run_label = f'{num_runs//1000}K' if num_runs >= 1000 else str(num_runs)
-        ax_top.set_title(f'Remapping Latency (m={run_label} runs)', fontsize=11, fontweight='bold')
+        ax_top.set_title(f'Remapping Latency (r={run_label} runs)', fontsize=11, fontweight='bold')
         ax_bot.set_xticks(x)
         ax_bot.set_xticklabels([f'{d//1000}K' if d >= 1000 else str(d) for d in delete_counts], fontsize=9)
         ax_top.grid(False)
         ax_bot.grid(False)
 
-        plt.savefig(output_dir / f'cloud_comparison_m{str(num_runs)}_detail.png',
+        plt.savefig(output_dir / f'cloud_comparison_r{str(num_runs)}_detail.png',
                     dpi=150, bbox_inches='tight')
-        plt.savefig(output_dir / f'cloud_comparison_m{str(num_runs)}_detail.pdf',
+        plt.savefig(output_dir / f'cloud_comparison_r{str(num_runs)}_detail.pdf',
                     bbox_inches='tight')
         plt.close()
         generated += 1
 
     if generated > 0:
-        print(f"Saved: cloud_comparison_m*_detail.png/pdf for {generated} run counts with outliers")
+        print(f"Saved: cloud_comparison_r*_detail.png/pdf for {generated} run counts with outliers")
     else:
         print("No run counts had outlier bars; no detail plots generated")
 
@@ -299,7 +299,7 @@ def plot_cloud_comparison_by_runs_clipped(raw_df: pd.DataFrame, output_dir: Path
 def plot_latency_breakdown_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> None:
     """Generate latency breakdown plots stratified by run count.
 
-    Creates a separate plot for each run count value (m=10, 100, 1000, 10000),
+    Creates a separate plot for each run count value (r=10, 100, 1000, 10000),
     filtered to 1M deletes. Avoids meaningless averaging across run counts.
     """
     df = raw_df[~raw_df['warmup']].copy()
@@ -399,7 +399,7 @@ def plot_latency_breakdown_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> No
         ax.set_ylabel('Latency (ms)', fontsize=14)
 
         run_label = f'{num_runs//1000}K' if num_runs >= 1000 else str(num_runs)
-        ax.set_title(f'Latency Breakdown: 1000K Deletes, m={run_label} runs', fontsize=14, fontweight='bold')
+        ax.set_title(f'Latency Breakdown: 1000K Deletes, r={run_label} runs', fontsize=14, fontweight='bold')
         ax.tick_params(axis='y', labelsize=12)
         ax.grid(False)
         if max_height > 0:
@@ -408,15 +408,15 @@ def plot_latency_breakdown_by_runs(raw_df: pd.DataFrame, output_dir: Path) -> No
         plt.tight_layout()
 
         run_suffix = str(num_runs)
-        plt.savefig(output_dir / f'latency_breakdown_1m_m{run_suffix}.png', dpi=150, bbox_inches='tight')
-        plt.savefig(output_dir / f'latency_breakdown_1m_m{run_suffix}.pdf', bbox_inches='tight')
+        plt.savefig(output_dir / f'latency_breakdown_1m_r{run_suffix}.png', dpi=150, bbox_inches='tight')
+        plt.savefig(output_dir / f'latency_breakdown_1m_r{run_suffix}.pdf', bbox_inches='tight')
         plt.close()
 
-    print(f"Saved: latency_breakdown_1m_m*.png/pdf for {len(run_counts)} run counts")
+    print(f"Saved: latency_breakdown_1m_r*.png/pdf for {len(run_counts)} run counts")
 
 
 def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path, metric: str = 'remap_ms') -> None:
-    """Heatmap of latency by delete count × run count.
+    """Heatmap of latency by delete count (p) × run count (r).
 
     Args:
         raw_df: Raw benchmark results DataFrame
@@ -515,8 +515,8 @@ def plot_latency_heatmap(raw_df: pd.DataFrame, output_dir: Path, metric: str = '
             ax.set_yticklabels([f'{r//1000}K' if r >= 1000 else str(r) for r in run_counts],
                               fontsize=9)
 
-            ax.set_xlabel('Delete Count (n)', fontsize=10)
-            ax.set_ylabel('Run Count (m)', fontsize=10)
+            ax.set_xlabel('Delete Count (p)', fontsize=10)
+            ax.set_ylabel('Run Count (r)', fontsize=10)
             ax.set_title(f'{cloud.upper()}', fontsize=12, fontweight='bold')
             ax.grid(False)
 
@@ -639,8 +639,8 @@ def plot_latency_heatmap_per_cloud(raw_df: pd.DataFrame, output_dir: Path, metri
             ax.set_yticklabels([f'{r//1000}K' if r >= 1000 else str(r) for r in run_counts],
                               fontsize=10)
 
-            ax.set_xlabel('Delete Count (n)', fontsize=11)
-            ax.set_ylabel('Run Count (m)', fontsize=11)
+            ax.set_xlabel('Delete Count (p)', fontsize=11)
+            ax.set_ylabel('Run Count (r)', fontsize=11)
             ax.set_title(f'{metric_label}: {cloud.upper()} ({fmt_label})', fontsize=12, fontweight='bold')
             ax.grid(False)
 

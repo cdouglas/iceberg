@@ -34,14 +34,14 @@ This captures the full cost of conflict resolution, including cloud storage late
 
 | Strategy | Complexity | Best For |
 |----------|------------|----------|
-| LINEAR | O(n×m) | Baseline comparison |
-| BINARY_SEARCH | O(n log m) | Few positions, many runs |
-| INTERVAL_TREE | O(n log m) | Unsorted data |
-| STREAM_JOIN | O(n+m) | Sorted bulk operations |
-| RANGE_QUERY | O(m log n) | Sparse deletes, many runs |
+| LINEAR | O(p×r) | Baseline comparison |
+| BINARY_SEARCH | O(p log r) | Few positions, many runs |
+| INTERVAL_TREE | O(p log r) | Unsorted data |
+| STREAM_JOIN | O(p+r) | Sorted bulk operations |
+| RANGE_QUERY | O(r log p) | Sparse deletes, many runs |
 | SMART | Varies | Automatic selection |
 
-Where `n` = number of positions, `m` = number of runs in compaction map.
+Where `p` = number of positions, `r` = number of runs in compaction map.
 
 ## Quick Start
 
