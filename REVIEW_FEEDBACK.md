@@ -2,179 +2,180 @@
 
 ## Summary
 
-Two independent reviews identified four confirmed issues on the `cmpmap` branch.
-A subsequent audit found additional deferred work (TODOs, skipped tests, stub helpers,
-phantom documentation) that must be resolved before this branch is shippable.
+Two rounds of reviews identified issues on the `cmpmap` branch. This document
+tracks each finding, its verification status, and the fix applied.
 
-All findings verified against source code on 2026-03-08.
+All findings verified against source code. Last updated: 2026-03-08.
 
 ---
 
-## Review Findings
+## Round 1 Findings (original reviews)
 
-### Fix 1: `RemapFunctionWithRemapper` serialization (Review 1, Finding 1)
+### Fix 1: `RemapFunctionWithRemapper` serialization — **DONE**
 
 **Severity:** High
 **Files:** `SparkCompactionConflictResolver.java` in `spark/v3.5/` and `spark/v4.0/`
 
-**Problem:** `RemapFunctionWithRemapper` implements `Serializable` but captures a
-`PositionDeleteRemapper` field that does not implement `Serializable`. In distributed
-Spark execution the closure is serialized to executors, causing `NotSerializableException`.
+**Problem:** `RemapFunctionWithRemapper` captured a non-serializable
+`PositionDeleteRemapper` field. In distributed Spark execution, Java serialization
+of the closure fails with `NotSerializableException`.
 
-**Fix:** Mirror the pattern already used by `RemapFunction` in the same file:
-- Change `remapper` field to `transient`
-- Store the `CompactionMap` (which is Avro-serializable) instead
-- Lazily initialize `PositionDeleteRemapper` on first `call()` invocation
+**Fix:** Field marked `transient`, constructor serializes `CompactionMap` objects to
+`byte[][]` via `CompactionMaps.toBytes()`, `call()` lazily reconstructs the remapper.
+Both `RemapFunction` and `RemapFunctionWithRemapper` use this pattern.
 
-**Tests added:** `TestRemapFunctionSerializability.java` (3 tests)
+**Tests:** `TestRemapFunctionSerializability.java` (4 tests)
 
 ---
 
-### Fix 2: Multi-file position delete validation gap (Review 1, Finding 2)
+### Fix 2: Multi-file position delete validation — **DONE**
 
 **Severity:** Medium-High
 **File:** `CompactionMapValidator.java`
 
 **Problem:** `findConflicts()` only checked `referencedDataFile != null`, silently
-skipping multi-file position deletes. This allowed transactions with multi-file
-position deletes to commit with stale physical addresses, causing missed deletions.
+skipping multi-file position deletes. Stale physical addresses could commit
+unchallenged, causing missed deletions.
 
 **Fix:** Conservative conflict detection: when a multi-file position delete exists
-(`referencedDataFile == null`, `content == POSITION_DELETES`) and compacted files
-are present, treat all compacted files as conflicts. This forces the caller to
-rebase the deletes through the compaction map. If the delete doesn't actually
-reference compacted files, rebasing is a no-op and the retry succeeds.
+and compacted files are present, treat all compacted files as conflicts. Position
+deletes are writes (physical addresses), not reads; SERIALIZABLE isolation's
+structural-change exemption applies only to reads.
 
-**Key insight:** Position deletes are **writes** (physical `(file_path, position)`
-addresses), not reads. SERIALIZABLE isolation's "structural change = no conflict"
-optimization applies only to reads. Writes with stale physical addresses must always
-be rebased, regardless of whether the compaction was structural.
-
-**Tests:** `TestCompactionMapValidatorMultiFileDeletes.java` (2 tests) and updated
-assertions in `TestSerializableIsolationWithCompaction.java` (V2 expects conflict
-exception, V3 DVs targeting non-compacted files succeed).
-
-**Tests added:** `TestCompactionMapValidatorMultiFileDeletes.java` (2 tests: one
-verifies file-scoped detection works, one documents the multi-file gap)
+**Tests:** `TestCompactionMapValidatorMultiFileDeletes.java` (2 tests), updated
+assertions in `TestSerializableIsolationWithCompaction.java` (V2 expects conflict,
+V3 DVs targeting non-compacted files succeed).
 
 ---
 
-### Fix 3: Multi-file position tracking assigns all mappings to first output file (Review 2, Finding 1)
+### Fix 3 + Fix 7: Multi-file position tracking — **DONE**
 
 **Severity:** Critical
 **Files:** `PositionTrackingDataWriter.java` in `spark/v3.5/` and `spark/v4.0/`
 
-**Problem:** `recordBufferedMappingsWithActualPaths()` uses `files[0].location()` for
-all buffered mappings. If the writer rolls over to multiple output files, mappings for
-rows in later files are incorrectly attributed to the first file.
+**Problem:** `recordBufferedMappingsWithActualPaths()` assigned all mappings to
+`files[0].location()`, producing wrong compaction maps when the writer rolled over.
 
-**Fix:** Track per-output-file row boundaries. In `recordBufferedMappingsWithActualPaths`,
-assign each buffered mapping to the correct output file by matching its `targetPos`
-against cumulative row counts of each output file.
+**Fix:** Build cumulative record-count boundaries from output files array,
+binary-search each mapping's `targetPos` to the correct output file, adjust
+positions to be file-local. TODO removed.
 
-**Tests added:** `TestPositionTrackingMultiFileAssignment.java` (4 tests)
+**Tests:** `TestPositionTrackingMultiFileAssignment.java` (4 tests)
 
 ---
 
-### Fix 4: Fallback `sourceSnapshotId` uses sequence number (Review 2, Finding 2)
+### Fix 4: Fallback `sourceSnapshotId` uses sequence number — **DONE**
 
 **Severity:** Medium
 **File:** `BaseRewriteFiles.java`
 
-**Problem:** `generateAndWriteCompactionMap()` line 205 uses `base.lastSequenceNumber()`
-as fallback for `sourceSnapshotId`. Sequence numbers and snapshot IDs are distinct
-identifier domains; this produces semantically invalid compaction map metadata.
+**Problem:** `generateAndWriteCompactionMap()` used `base.lastSequenceNumber()` as
+fallback `sourceSnapshotId`. Sequence numbers and snapshot IDs are distinct domains.
 
-**Fix:** Use `base.currentSnapshot().snapshotId()` as fallback when available, or a
-sentinel value (-1L) when there is truly no snapshot. Never use a sequence number.
+**Fix:** Use `base.currentSnapshot().snapshotId()` when available, -1L sentinel
+when no snapshots exist.
 
-**Tests added:** `TestCompactionMapSnapshotIdFallback.java` (2 tests)
+**Tests:** `TestCompactionMapSnapshotIdFallback.java` (2 tests)
 
 ---
 
-## Deferred Work Audit (TODOs, Skipped Tests, Stubs)
-
-The following items were found during a sweep of the codebase. Every one of these
-represents deferred work that must be completed or explicitly removed. There is no
-"later" — this branch ships complete or not at all.
-
-### Fix 5: Spark 4.0 `TestBinPackWithPositionTracking` — two tests permanently skipped
+### Fix 5 + Fix 6: Spark 4.0 skipped tests and phantom doc — **DONE**
 
 **Severity:** High
-**File:** `spark/v4.0/spark/src/test/java/org/apache/iceberg/spark/actions/TestBinPackWithPositionTracking.java`
+**File:** `TestBinPackWithPositionTracking.java` (Spark 4.0)
 
-**Problem:** Two tests use `assumeThat(false).isTrue()` to unconditionally skip:
+**Problem:** Two tests unconditionally skipped via `assumeThat(false).isTrue()`,
+stub helper returned empty list, class Javadoc referenced nonexistent doc file.
 
-1. `testBinPackGeneratesCompactionMapWithPositionDeletes()` (line 158-161)
-   — TODO says "Implement position delete helper for comprehensive testing"
-2. `testNToMCompactionScenario()` (line 196-199)
-   — TODO says "Complex partitioned write scenario - requires proper partition value generation"
-
-Meanwhile, the Spark 3.5 version of this file has **fully working implementations** of
-both the `writePosDeletesToFile` helper and the test logic. The v4.0 file has a stub
-helper that returns an empty list (line 429-434).
-
-**Fix:**
-- Port the working `writePosDeletesToFile` / `writePosDeletes` helper from the Spark 3.5
-  version to v4.0 (it uses `GenericAppenderFactory` + `PositionDeleteWriter`, which
-  should work identically in 4.0)
-- Remove the `assumeThat(false).isTrue()` skips
-- Remove the stub helper
-- If the class-level doc claim about "schema validation issues during Parquet writer
-  creation" is real, diagnose and fix the root cause rather than skipping tests around it
-- Remove the class-level TODO doc comment (lines 59-61)
+**Fix:** Ported working helpers from Spark 3.5, removed skips, removed stub,
+removed phantom doc reference.
 
 ---
 
-### Fix 6: Phantom documentation reference
+## Round 2 Findings (reviews of fe7fe00a9)
 
-**Severity:** Low (but embarrassing)
-**File:** `spark/v4.0/spark/src/test/java/org/apache/iceberg/spark/actions/TestBinPackWithPositionTracking.java` line 61
+### Fix 8: `deleteFileCount()` excludes multi-file deletes from safety cap — **DONE**
 
-**Problem:** The class Javadoc references `spark/v4.0/docs/position_tracking_challenges.md`
-which does not exist. The `spark/v4.0/docs/` directory does not exist either. This is
-a citation to a document that was never written.
+**Severity:** Medium-High (review1 §2.2)
+**File:** `DeleteConflictInfo.java`
 
-**Fix:** Remove the reference. If there are genuine Spark 4.0 challenges worth
-documenting, write the document; otherwise delete the dead link.
+**Problem:** `deleteFileCount()` returned only `conflictingDeleteFiles.size()`,
+excluding multi-file position deletes. But `SparkCompactionConflictResolver.resolve()`
+appends `multiFilePositionDeletes()` to the resolver work. An operator setting
+`write.compaction.resolve-delete-conflicts.max-files=50` would cap only file-scoped
+conflicts while multi-file deletes are resolved without limit.
 
----
+**Fix:** `deleteFileCount()` now returns
+`conflictingDeleteFiles.size() + multiFilePositionDeletes.size()`, reflecting the
+actual work the resolver will perform.
 
-### Fix 7: TODO in `PositionTrackingDataWriter` (both Spark versions)
-
-**Severity:** Critical (same as Fix 3 — this is the implementation site)
-**Files:**
-- `spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/PositionTrackingDataWriter.java:192`
-- `spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/source/PositionTrackingDataWriter.java:192`
-
-**Problem:** `// TODO: Handle multiple target files if writer rolled over` marks the
-exact line where `files[0].location()` is used for all mappings. This is Fix 3's
-implementation site.
-
-**Fix:** Implement multi-file assignment (see Fix 3). After fix, remove the TODO.
-The implementation should:
-1. Iterate `files[]` and build cumulative record-count boundaries
-2. For each buffered mapping, binary-search `targetPos` to find the correct output file
-3. Record each mapping with the correct target file path
+**Tests:** Updated assertions in `TestCompactionConflictDetector.java` (2 tests).
 
 ---
 
-## Priority Order
+### Fix 9: Dead and inconsistent `findConflictingDeletes` — **DONE**
 
-1. **Fix 3 + Fix 7** (same issue) — silently produces wrong compaction maps — **DONE**
-2. **Fix 5** — entire test class is a facade in Spark 4.0; port working v3.5 code — **DONE**
-3. **Fix 1** — runtime failure in distributed Spark execution — **DONE**
-4. **Fix 2** — conservative multi-file position delete detection — **DONE**
-5. **Fix 4** — metadata inconsistency (snapshot ID vs sequence number) — **DONE**
-6. **Fix 6** — phantom doc reference — **DONE**
+**Severity:** Low (review1 §3, review2 §remaining concern)
+**File:** `CompactionMapValidator.java`
 
-## Test Inventory (added for review gaps)
+**Problem:** `findConflictingDeletes()` only checked `referencedDataFile != null`,
+inconsistent with the now-conservative `findConflicts()`. Both reviewers flagged this.
 
-| File | Tests | Covers |
-|------|-------|--------|
-| `TestRemapFunctionSerializability.java` | 4 | Fix 1: Serialization gap + Avro bytes round-trip |
-| `TestCompactionMapValidatorMultiFileDeletes.java` | 2 | Fix 2: Documents validator gap |
-| `TestPositionTrackingMultiFileAssignment.java` | 4 | Fix 3/7: Multi-file assignment |
-| `TestCompactionMapSnapshotIdFallback.java` | 2 | Fix 4: Snapshot ID fallback |
+**Fix:** Deleted. Zero callers in production code (confirmed by grep). Dead code
+with inconsistent semantics that could mislead future developers.
 
-All 12 tests pass. All compaction-related tests pass (256+ tests).
+---
+
+### Fix 10: Fallback map generation soundness precondition — **DONE**
+
+**Severity:** Medium (review1 §2.3)
+**Files:** `RewriteDataFilesCommitManager.java`, `SparkRewriteDataFilesCommitManager.java`
+(Spark 3.5 + 4.0), `BaseRewriteFiles.java`
+
+**Problem:** Fallback map generation (no explicit position tracking) assumes source
+files are concatenated in iteration order into the target file. This is only sound
+for bin-pack rewrites; sort/z-order rewrites rearrange rows and would produce
+incorrect maps. The assumption was undocumented and unenforced.
+
+**Fix:** Added `Preconditions.checkState()` verifying that the target file's record
+count equals the sum of source record counts. A mismatch indicates the writer
+filtered, reordered, or duplicated rows, which invalidates the sequential-offset
+assumption. Added documentation of the soundness precondition.
+
+---
+
+### Fix 11: Misleading test method name — **DONE**
+
+**Severity:** Low (review1 §3)
+**File:** `TestCompactionMapValidatorMultiFileDeletes.java`
+
+**Problem:** Method named `testMultiFilePositionDeleteConflictNotDetected` while
+asserting that the conflict IS detected.
+
+**Fix:** Renamed to `testMultiFilePositionDeleteConflictDetectedConservatively`.
+
+---
+
+### Review1 §2.1 — `RemapFunctionWithRemapper` serialization "still present" — **FALSE**
+
+The reviewer cited lines 489-504 (the `call()` method) but did not check the field
+declaration at line 468 (`private transient PositionDeleteRemapper remapper`) or the
+constructor at lines 470-488 (which serializes to `byte[][]`). Fix 1 was already
+applied and is correct.
+
+---
+
+## Not actionable
+
+### Review1 §4: Duplication across Spark 3.5/4.0
+
+Both reviewers noted that `SparkCompactionConflictResolver` and the fallback map
+generation are duplicated across Spark versions. This is inherent to the Iceberg
+project structure (each Spark version is a separate module with its own copy).
+Consolidation would require cross-version abstraction that the project does not
+currently support.
+
+### Review1 §6: Benchmark coupling
+
+Benchmarks directly use core strategy implementations. This is intentional — the
+benchmarks measure the actual code, not a parallel implementation.

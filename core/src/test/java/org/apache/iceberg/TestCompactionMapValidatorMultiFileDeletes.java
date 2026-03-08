@@ -150,7 +150,7 @@ public class TestCompactionMapValidatorMultiFileDeletes {
    * compacted files, rebasing is a no-op and the retry succeeds.
    */
   @Test
-  public void testMultiFilePositionDeleteConflictNotDetected() throws IOException {
+  public void testMultiFilePositionDeleteConflictDetectedConservatively() throws IOException {
     TableIdentifier tableIdent = TableIdentifier.of("db", "multi_file_gap_test");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 

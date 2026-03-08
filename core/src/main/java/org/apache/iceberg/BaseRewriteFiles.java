@@ -214,19 +214,30 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
 
     CompactionMapBuilder builder = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
 
-    // Simple bin-pack mapping: assume all source files map to target files sequentially
-    // This is valid for bin-pack rewrites where row order is preserved
+    // Simple bin-pack mapping: assume all source files map to target files sequentially.
+    // SOUNDNESS PRECONDITION: source files were concatenated in iteration order into a
+    // single target file, preserving row order. See RewriteDataFilesCommitManager for
+    // the equivalent fallback and its documentation.
     if (addedDataFiles.size() == 1) {
-      // Single target file case (most common)
       DataFile targetFile = addedDataFiles.iterator().next();
       long targetOffset = 0;
+      long totalSourceRecords = 0;
 
       for (DataFile sourceFile : replacedDataFiles) {
         builder
             .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
             .addRun(0L, targetOffset, sourceFile.recordCount());
         targetOffset += sourceFile.recordCount();
+        totalSourceRecords += sourceFile.recordCount();
       }
+
+      Preconditions.checkState(
+          targetFile.recordCount() == totalSourceRecords,
+          "Fallback compaction map requires target record count (%s) to equal sum of "
+              + "source record counts (%s). Use explicit position tracking for "
+              + "non-concatenation rewrites.",
+          targetFile.recordCount(),
+          totalSourceRecords);
     } else {
       // Multiple target files - more complex mapping would require position tracking
       // For now, log and skip (consistent with RewriteDataFilesCommitManager approach)
