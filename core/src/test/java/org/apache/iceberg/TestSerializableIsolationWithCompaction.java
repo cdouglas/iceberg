@@ -29,6 +29,8 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
 import org.apache.iceberg.deletes.DVFileWriter;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
+import org.apache.iceberg.exceptions.ChainedCompactionMapsException;
+import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
@@ -45,17 +47,20 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Tests for SERIALIZABLE isolation level with compaction-aware conflict detection.
  *
- * <p>These tests verify that SERIALIZABLE isolation correctly handles concurrent REPLACE operations
- * (compactions) by distinguishing between:
+ * <p>These tests verify two distinct concerns:
  *
  * <ul>
- *   <li>Structural changes (with compaction maps) - should NOT cause read conflicts
- *   <li>Data changes (without compaction maps) - SHOULD cause read conflicts
+ *   <li><b>Read conflicts (SERIALIZABLE isolation):</b> When a transaction reads data that was
+ *       replaced by a concurrent compaction, structural changes (with compaction maps) are allowed
+ *       because the logical data is unchanged. Data changes (without maps) are rejected.
+ *   <li><b>Write conflicts (position delete rebasing):</b> Position deletes contain physical
+ *       {@code (file_path, position)} tuples. When those files are compacted, the deletes must be
+ *       rebased through the compaction map — regardless of SERIALIZABLE isolation. This is not a
+ *       read optimization; it is a correctness requirement. V2 multi-file position deletes (no
+ *       {@code referencedDataFile}) are conservatively rejected because we cannot determine their
+ *       targets from metadata. V3 DVs always have {@code referencedDataFile} set, so they are
+ *       checked precisely.
  * </ul>
- *
- * <p>Note: These tests focus on READ conflicts (when a transaction reads data that was replaced).
- * Tests for position delete conflicts (when deletes reference compacted files) are in
- * TestCompactionConflictDetection.
  */
 @ExtendWith(ParameterizedTestExtension.class)
 public class TestSerializableIsolationWithCompaction {
@@ -197,12 +202,22 @@ public class TestSerializableIsolationWithCompaction {
 
     rewrite.commit();
 
-    // 5. Commit the RowDelta - should SUCCEED because compaction map exists
-    // (No read conflict since only structure changed, not logical data)
-    assertDoesNotThrow(() -> rowDelta.commit());
-
-    // Verify the delete was committed
-    assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
+    // 5. Commit the RowDelta
+    if (formatVersion == 2) {
+      // V2: Multi-file position delete (referencedDataFile == null) must be rebased.
+      // Position deletes are writes with physical addresses, not reads. Even though
+      // the compaction is structural-only, the delete's (file_path, position) tuples
+      // reference files that no longer exist and must be remapped through the
+      // compaction map. The validator conservatively rejects because it cannot determine
+      // which files the multi-file delete references from metadata alone.
+      assertThrows(CompactionConflictException.class, () -> rowDelta.commit());
+    } else {
+      // V3: DV references non-compacted file (referencedDataFile is set and not in
+      // the compacted set). No conflict — the DV's target file was not compacted.
+      // The SERIALIZABLE read check also passes because the compaction has a map.
+      assertDoesNotThrow(() -> rowDelta.commit());
+      assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
+    }
   }
 
   @TestTemplate
@@ -624,12 +639,17 @@ public class TestSerializableIsolationWithCompaction {
     }
     rewrite2.commit();
 
-    // 6. Commit the RowDelta - should SUCCEED because both compactions have maps
-    // Both C1 and C2 are structural changes (have compaction maps), not data changes
-    assertDoesNotThrow(() -> rowDelta.commit());
-
-    // Verify the delete was committed
-    assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
+    // 6. Commit the RowDelta
+    if (formatVersion == 2) {
+      // V2: Multi-file position delete must be rebased through the chained compaction maps.
+      // The validator detects chains (F1→F12→F123) and throws ChainedCompactionMapsException
+      // so the caller can compose the maps and remap the deletes.
+      assertThrows(ChainedCompactionMapsException.class, () -> rowDelta.commit());
+    } else {
+      // V3: DV references non-compacted file — no conflict.
+      assertDoesNotThrow(() -> rowDelta.commit());
+      assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
+    }
   }
 
   @TestTemplate
@@ -756,11 +776,15 @@ public class TestSerializableIsolationWithCompaction {
     performCompactionWithMap(
         table, snapshotAfterC2, Lists.newArrayList(targetFile1, targetFile2), targetFileAll);
 
-    // 7. Commit RowDelta - should SUCCEED because all three compactions have maps
-    assertDoesNotThrow(() -> rowDelta.commit());
-
-    // Verify the delete was committed
-    assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
+    // 7. Commit the RowDelta
+    if (formatVersion == 2) {
+      // V2: Multi-file position delete must be rebased through the chained compaction maps.
+      assertThrows(ChainedCompactionMapsException.class, () -> rowDelta.commit());
+    } else {
+      // V3: DV references non-compacted file — no conflict.
+      assertDoesNotThrow(() -> rowDelta.commit());
+      assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
+    }
   }
 
   /** Helper method to perform a compaction with a compaction map. */

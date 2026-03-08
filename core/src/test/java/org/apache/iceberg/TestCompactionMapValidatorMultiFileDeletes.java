@@ -33,15 +33,17 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Tests for the CompactionMapValidator gap with multi-file position deletes.
+ * Tests for CompactionMapValidator handling of multi-file position deletes.
  *
- * <p>CompactionMapValidator.findConflicts() only checks referencedDataFile, which means multi-file
- * position deletes (those without a single referencedDataFile) are silently skipped. This test
- * documents the gap: when multi-file position deletes reference compacted files, the validator does
- * not detect the conflict.
+ * <p>Position deletes are writes with physical {@code (file_path, position)} addresses. When files
+ * are compacted, these addresses must be rebased through the compaction map. For file-scoped
+ * deletes (referencedDataFile set), the validator checks directly against compacted files. For
+ * multi-file deletes (referencedDataFile null), the validator conservatively treats all compacted
+ * files as conflicts because it cannot determine the delete's targets from metadata alone.
  *
- * <p>Compare with {@link TestCompactionConflictDetector#testMultiFilePositionDeletesDetected()}
- * which verifies that CompactionConflictDetector correctly handles this case.
+ * <p>This conservative approach is correct: SERIALIZABLE isolation's "structural change = no
+ * conflict" optimization applies only to reads, not to writes. Position deletes with stale
+ * physical addresses would cause missed deletions if allowed to commit.
  */
 public class TestCompactionMapValidatorMultiFileDeletes {
 
@@ -137,25 +139,15 @@ public class TestCompactionMapValidatorMultiFileDeletes {
   }
 
   /**
-   * Documents a known gap: multi-file position deletes (without referencedDataFile) are NOT
-   * detected by CompactionMapValidator.findConflicts().
+   * Verifies that multi-file position deletes (without referencedDataFile) are conservatively
+   * detected as conflicts when compacted files exist.
    *
-   * <p><b>Consequence:</b> If a multi-file position delete references rows in files that were
-   * concurrently compacted, the RowDelta commit succeeds. The delete entries targeting the
-   * now-absent source files become stale: at read time they are silently ignored, and the rows
-   * that should have been deleted remain visible (missed deletions).
-   *
-   * <p><b>Why the conservative fix was reverted:</b> Adding all compacted files as conflicts
-   * whenever a multi-file delete exists breaks SERIALIZABLE isolation. The validation pipeline
-   * calls {@code CompactionMapValidator} BEFORE the SERIALIZABLE check that distinguishes
-   * structural changes (compaction with map → allowed) from data changes (without map → rejected).
-   * The conservative approach throws {@code CompactionConflictException} before that distinction
-   * can be made, rejecting valid commits where the multi-file delete targets non-compacted files.
-   *
-   * <p><b>Not mitigated by CompactionConflictDetector:</b> {@code CompactionConflictDetector}
-   * handles multi-file deletes from the <em>compaction's</em> perspective ("were deletes added for
-   * files I'm replacing?"), not from the RowDelta's perspective ("were my referenced files
-   * compacted?"). It does not protect against this scenario.
+   * <p>Position deletes are writes with physical {@code (file_path, position)} addresses. When
+   * files are compacted, these addresses become stale and must be rebased through the compaction
+   * map. For multi-file deletes (referencedDataFile == null), we cannot determine which files they
+   * reference from metadata alone, so we conservatively treat all compacted files as conflicts.
+   * This forces the caller to rebase the deletes — if the delete doesn't actually reference
+   * compacted files, rebasing is a no-op and the retry succeeds.
    */
   @Test
   public void testMultiFilePositionDeleteConflictNotDetected() throws IOException {
@@ -214,9 +206,9 @@ public class TestCompactionMapValidatorMultiFileDeletes {
     rewrite.addFile(targetFile);
     rewrite.commit();
 
-    // Known gap: multi-file position deletes are NOT detected because the validator
-    // only checks referencedDataFile. The conservative approach (flag all compacted files)
-    // was rejected because it breaks SERIALIZABLE isolation for V2 tables.
+    // Multi-file position deletes are conservatively treated as conflicts because
+    // position deletes are writes (physical addresses), not reads. The validator cannot
+    // determine which files they reference from metadata, so it forces rebasing.
     boolean conflictDetected = false;
     try {
       rowDelta.commit();
@@ -226,8 +218,8 @@ public class TestCompactionMapValidatorMultiFileDeletes {
 
     assertThat(conflictDetected)
         .as(
-            "Multi-file position delete conflict is NOT detected by validator (known gap). "
-                + "CompactionConflictDetector handles this case via manifest scanning instead.")
-        .isFalse();
+            "Multi-file position delete conflict must be detected: position deletes are writes "
+                + "with physical addresses that must be rebased through the compaction map")
+        .isTrue();
   }
 }
