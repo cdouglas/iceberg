@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMapChain;
+import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DeleteConflictInfo;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.MetadataTableType;
@@ -416,9 +417,15 @@ public class SparkCompactionConflictResolver implements Serializable {
     return sourceToTarget;
   }
 
-  /** Map function that remaps position deletes using the compaction map. */
+  /**
+   * Map function that remaps position deletes using a single compaction map.
+   *
+   * <p>The CompactionMap is serialized to Avro bytes for safe transport to Spark executors, since
+   * neither CompactionMap nor PositionDeleteRemapper implement Java Serializable. The remapper is
+   * lazily reconstructed on the executor side from the deserialized bytes.
+   */
   static class RemapFunction implements MapFunction<Row, Row>, Serializable {
-    private final CompactionMap compactionMap;
+    private final byte[] compactionMapBytes;
     private final Set<String> compactedSourceFiles;
     private final int filePathIndex;
     private final int posIndex;
@@ -429,7 +436,7 @@ public class SparkCompactionConflictResolver implements Serializable {
         Set<String> compactedSourceFiles,
         int filePathIndex,
         int posIndex) {
-      this.compactionMap = compactionMap;
+      this.compactionMapBytes = CompactionMaps.toBytes(compactionMap);
       this.compactedSourceFiles = compactedSourceFiles;
       this.filePathIndex = filePathIndex;
       this.posIndex = posIndex;
@@ -438,66 +445,43 @@ public class SparkCompactionConflictResolver implements Serializable {
     @Override
     public Row call(Row row) {
       if (remapper == null) {
-        remapper = new PositionDeleteRemapper(compactionMap);
+        remapper = new PositionDeleteRemapper(CompactionMaps.fromBytes(compactionMapBytes));
       }
 
-      String filePath = row.getString(filePathIndex);
-      long position = row.getLong(posIndex);
-
-      // Skip if not in compacted files (should be filtered already, but double-check)
-      if (!compactedSourceFiles.contains(filePath)) {
-        return null;
-      }
-
-      // Create position delete and remap
-      PositionDelete<?> delete = PositionDelete.create();
-      delete.set(filePath, position, null);
-
-      try {
-        PositionDelete<?> remappedDelete = remapper.remapDelete(delete);
-        String targetFile = remappedDelete.path().toString();
-        long targetPos = remappedDelete.pos();
-
-        // Create a new row with remapped values, preserving other columns
-        Object[] values = new Object[row.size()];
-        for (int i = 0; i < row.size(); i++) {
-          if (i == filePathIndex) {
-            values[i] = targetFile;
-          } else if (i == posIndex) {
-            values[i] = targetPos;
-          } else {
-            values[i] = row.get(i);
-          }
-        }
-
-        return RowFactory.create(values);
-      } catch (IllegalStateException e) {
-        // Position not found in compaction map - row was filtered during compaction
-        // This is idempotent - the row doesn't exist in the target file
-        LOG.debug("Position {} in {} not found in compaction map, skipping", position, filePath);
-        return null;
-      }
+      return remapRow(row, remapper, compactedSourceFiles, filePathIndex, posIndex);
     }
   }
 
   /**
-   * Map function that remaps position deletes using a pre-configured remapper.
+   * Map function that remaps position deletes using a pre-configured remapper backed by one or more
+   * compaction maps (supporting chained compactions).
    *
-   * <p>This function supports both single compaction maps and chained compaction maps, as the
-   * remapper abstracts the underlying mapping source.
+   * <p>Compaction maps are serialized to Avro bytes for safe transport to Spark executors. The
+   * remapper is lazily reconstructed on the executor side. For chains, a CompactionMapChain is
+   * rebuilt from the ordered list of deserialized maps.
    */
   static class RemapFunctionWithRemapper implements MapFunction<Row, Row>, Serializable {
-    private final PositionDeleteRemapper remapper;
+    private final byte[][] compactionMapBytesArray;
     private final Set<String> compactedSourceFiles;
     private final int filePathIndex;
     private final int posIndex;
+    private transient PositionDeleteRemapper remapper;
 
     RemapFunctionWithRemapper(
         PositionDeleteRemapper remapper,
         Set<String> compactedSourceFiles,
         int filePathIndex,
         int posIndex) {
-      this.remapper = remapper;
+      // Serialize all compaction maps to bytes for safe transport to executors
+      if (remapper.chain() != null) {
+        List<CompactionMap> maps = remapper.chain().maps();
+        this.compactionMapBytesArray = new byte[maps.size()][];
+        for (int i = 0; i < maps.size(); i++) {
+          this.compactionMapBytesArray[i] = CompactionMaps.toBytes(maps.get(i));
+        }
+      } else {
+        this.compactionMapBytesArray = new byte[][] {CompactionMaps.toBytes(remapper.compactionMap())};
+      }
       this.compactedSourceFiles = compactedSourceFiles;
       this.filePathIndex = filePathIndex;
       this.posIndex = posIndex;
@@ -505,42 +489,62 @@ public class SparkCompactionConflictResolver implements Serializable {
 
     @Override
     public Row call(Row row) {
-      String filePath = row.getString(filePathIndex);
-      long position = row.getLong(posIndex);
-
-      // Skip if not in compacted files (should be filtered already, but double-check)
-      if (!compactedSourceFiles.contains(filePath)) {
-        return null;
-      }
-
-      // Create position delete and remap
-      PositionDelete<?> delete = PositionDelete.create();
-      delete.set(filePath, position, null);
-
-      try {
-        PositionDelete<?> remappedDelete = remapper.remapDelete(delete);
-        String targetFile = remappedDelete.path().toString();
-        long targetPos = remappedDelete.pos();
-
-        // Create a new row with remapped values, preserving other columns
-        Object[] values = new Object[row.size()];
-        for (int i = 0; i < row.size(); i++) {
-          if (i == filePathIndex) {
-            values[i] = targetFile;
-          } else if (i == posIndex) {
-            values[i] = targetPos;
-          } else {
-            values[i] = row.get(i);
+      if (remapper == null) {
+        if (compactionMapBytesArray.length == 1) {
+          remapper =
+              new PositionDeleteRemapper(CompactionMaps.fromBytes(compactionMapBytesArray[0]));
+        } else {
+          List<CompactionMap> maps = Lists.newArrayListWithCapacity(compactionMapBytesArray.length);
+          for (byte[] bytes : compactionMapBytesArray) {
+            maps.add(CompactionMaps.fromBytes(bytes));
           }
+          remapper = new PositionDeleteRemapper(CompactionMapChain.build(maps));
         }
-
-        return RowFactory.create(values);
-      } catch (IllegalStateException e) {
-        // Position not found in compaction map - row was filtered during compaction
-        // This is idempotent - the row doesn't exist in the target file
-        LOG.debug("Position {} in {} not found in compaction map, skipping", position, filePath);
-        return null;
       }
+
+      return remapRow(row, remapper, compactedSourceFiles, filePathIndex, posIndex);
+    }
+  }
+
+  /**
+   * Shared remapping logic for both RemapFunction and RemapFunctionWithRemapper.
+   */
+  private static Row remapRow(
+      Row row,
+      PositionDeleteRemapper remapper,
+      Set<String> compactedSourceFiles,
+      int filePathIndex,
+      int posIndex) {
+    String filePath = row.getString(filePathIndex);
+    long position = row.getLong(posIndex);
+
+    if (!compactedSourceFiles.contains(filePath)) {
+      return null;
+    }
+
+    PositionDelete<?> delete = PositionDelete.create();
+    delete.set(filePath, position, null);
+
+    try {
+      PositionDelete<?> remappedDelete = remapper.remapDelete(delete);
+      String targetFile = remappedDelete.path().toString();
+      long targetPos = remappedDelete.pos();
+
+      Object[] values = new Object[row.size()];
+      for (int i = 0; i < row.size(); i++) {
+        if (i == filePathIndex) {
+          values[i] = targetFile;
+        } else if (i == posIndex) {
+          values[i] = targetPos;
+        } else {
+          values[i] = row.get(i);
+        }
+      }
+
+      return RowFactory.create(values);
+    } catch (IllegalStateException e) {
+      LOG.debug("Position {} in {} not found in compaction map, skipping", position, filePath);
+      return null;
     }
   }
 }

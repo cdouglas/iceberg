@@ -155,12 +155,9 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
    * Records buffered position mappings with actual target file paths from commit message.
    *
    * <p>The WriterCommitMessage (TaskCommit) contains the DataFile objects with actual file paths
-   * that were written. We extract these paths and record all buffered mappings to the coordinator.
-   *
-   * <p>Note: This implementation assumes a single target file per writer task. If the writer rolled
-   * over to multiple files, we would need to determine which buffered mappings belong to which
-   * target file based on position ranges. For now, bin-pack rewrites typically produce one file per
-   * task.
+   * that were written. When a single writer task produces multiple output files (due to rollover),
+   * each buffered mapping is assigned to the correct output file based on its target position and
+   * the cumulative record counts of the output files.
    *
    * @param message the commit message from the delegate writer
    */
@@ -188,26 +185,75 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
       return;
     }
 
-    // Use the first file as the target (typical for bin-pack single file per task)
-    // TODO: Handle multiple target files if writer rolled over
-    String targetFile = files[0].location();
+    if (files.length == 1) {
+      // Single output file — assign all mappings directly (common bin-pack case)
+      String targetFile = files[0].location();
+      LOG.debug(
+          "Recording {} buffered position mappings with single target file {} for fileSetId={}",
+          bufferedMappings.size(),
+          targetFile,
+          fileSetId);
 
-    LOG.debug(
-        "Recording {} buffered position mappings with target file {} for fileSetId={}",
-        bufferedMappings.size(),
-        targetFile,
-        fileSetId);
+      for (BufferedMapping mapping : bufferedMappings) {
+        coordinator.recordMapping(
+            table, fileSetId, mapping.sourceFile, mapping.sourcePos, targetFile, mapping.targetPos);
+      }
+    } else {
+      // Multiple output files — assign each mapping to the correct file by position range.
+      // Build cumulative record-count boundaries: [0, count0, count0+count1, ...]
+      long[] boundaries = new long[files.length + 1];
+      boundaries[0] = 0;
+      for (int i = 0; i < files.length; i++) {
+        boundaries[i + 1] = boundaries[i] + files[i].recordCount();
+      }
 
-    // Record all buffered mappings with the actual target file path
-    for (BufferedMapping mapping : bufferedMappings) {
-      coordinator.recordMapping(
-          table, fileSetId, mapping.sourceFile, mapping.sourcePos, targetFile, mapping.targetPos);
+      LOG.debug(
+          "Recording {} buffered position mappings across {} target files for fileSetId={}",
+          bufferedMappings.size(),
+          files.length,
+          fileSetId);
+
+      for (BufferedMapping mapping : bufferedMappings) {
+        int fileIdx = findTargetFileIndex(mapping.targetPos, boundaries);
+        String targetFile = files[fileIdx].location();
+        long adjustedTargetPos = mapping.targetPos - boundaries[fileIdx];
+        coordinator.recordMapping(
+            table,
+            fileSetId,
+            mapping.sourceFile,
+            mapping.sourcePos,
+            targetFile,
+            adjustedTargetPos);
+      }
     }
 
     LOG.info(
-        "Successfully recorded {} position mappings for fileSetId={}, target={}",
+        "Successfully recorded {} position mappings for fileSetId={}, targets={}",
         bufferedMappings.size(),
         fileSetId,
-        targetFile);
+        files.length);
+  }
+
+  /**
+   * Finds the index of the output file that contains the given target position using binary search
+   * on cumulative record-count boundaries.
+   *
+   * @param targetPos the absolute target position across all output files
+   * @param boundaries cumulative boundaries: [0, count0, count0+count1, ..., total]
+   * @return the index into the files array
+   */
+  private static int findTargetFileIndex(long targetPos, long[] boundaries) {
+    // Binary search: find the largest boundary <= targetPos
+    int lo = 0;
+    int hi = boundaries.length - 2; // max valid file index
+    while (lo < hi) {
+      int mid = lo + (hi - lo + 1) / 2;
+      if (boundaries[mid] <= targetPos) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
   }
 }

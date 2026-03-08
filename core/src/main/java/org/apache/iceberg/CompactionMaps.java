@@ -102,6 +102,39 @@ public class CompactionMaps {
   }
 
   /**
+   * Serializes a compaction map to a byte array using Avro encoding.
+   *
+   * <p>This is useful for embedding compaction maps in Java-serializable closures (e.g., Spark map
+   * functions) where the map data must survive serialization to executors.
+   *
+   * @param map the compaction map to serialize
+   * @return the Avro-encoded bytes
+   */
+  public static byte[] toBytes(CompactionMap map) {
+    org.apache.iceberg.inmemory.InMemoryOutputFile output =
+        new org.apache.iceberg.inmemory.InMemoryOutputFile();
+    try {
+      write(map, output);
+      return output.toByteArray();
+    } catch (IOException e) {
+      throw new RuntimeIOException(e, "Failed to serialize compaction map to bytes");
+    }
+  }
+
+  /**
+   * Deserializes a compaction map from Avro-encoded bytes produced by {@link #toBytes(CompactionMap)}.
+   *
+   * @param bytes the Avro-encoded bytes
+   * @return the deserialized compaction map
+   */
+  public static CompactionMap fromBytes(byte[] bytes) {
+    Preconditions.checkNotNull(bytes, "bytes cannot be null");
+    org.apache.iceberg.inmemory.InMemoryInputFile input =
+        new org.apache.iceberg.inmemory.InMemoryInputFile(bytes);
+    return read(input);
+  }
+
+  /**
    * Creates a writer for compaction maps.
    *
    * @param outputFile the output file to write to
