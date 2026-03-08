@@ -381,38 +381,29 @@ class CompactionMapValidator {
   /**
    * Finds conflicts between delete files and compacted files.
    *
-   * <p>This method handles two cases:
+   * <p>This method handles three cases:
    *
    * <ul>
    *   <li><b>File-scoped position deletes</b> (referencedDataFile set): checked directly against
    *       compacted files.
    *   <li><b>Deletion vectors (DVs)</b>: always have referencedDataFile set, same code path as
    *       file-scoped.
+   *   <li><b>Multi-file position deletes</b> (referencedDataFile null, content ==
+   *       POSITION_DELETES): conservatively treated as conflicting when compacted files exist.
    * </ul>
    *
-   * <p><b>Known gap — multi-file position deletes silently skipped:</b> V2 position deletes with
-   * {@code referencedDataFile == null} (i.e., multi-file / partition-scoped) are not checked. If
-   * such a delete references rows in a file that was concurrently compacted, this method will not
-   * detect the conflict. The delete commits successfully but becomes stale: at read time, entries
-   * referencing the now-absent source files are silently ignored, causing <b>missed deletions</b>
-   * (rows that should have been deleted remain visible).
+   * <p>Position deletes are <b>writes</b>, not reads. They contain physical {@code (file_path,
+   * position)} tuples that become stale when the referenced files are compacted. Unlike reads
+   * (which are logically equivalent before and after a structural-only compaction), writes must be
+   * <b>rebased</b> through the compaction map to update their physical addresses. SERIALIZABLE
+   * isolation's "structural change = no conflict" optimization applies only to reads — it does not
+   * exempt writes from rebasing.
    *
-   * <p>Detecting the conflict would require reading the delete file's content to enumerate which
-   * data files it references — too expensive for commit-time validation. A blanket conservative
-   * approach (treat all compacted files as conflicts whenever any multi-file delete exists) was
-   * tried and reverted because it breaks SERIALIZABLE isolation: the validation pipeline calls
-   * this method (via {@code validateNoCompactionConflicts}) <em>before</em> the SERIALIZABLE
-   * check in {@code validateCompactionAwareConflicts}, which distinguishes structural changes
-   * (compaction with map — allowed) from data changes (compaction without map — rejected). The
-   * conservative approach throws {@code CompactionConflictException} before that distinction can
-   * be made, rejecting valid commits where a multi-file delete targets <em>non-compacted</em>
-   * files in a table that also had a structural-only compaction.
-   *
-   * <p>Note: {@link CompactionConflictDetector} (used by {@code
-   * SparkRewriteDataFilesCommitManager}) does handle multi-file deletes, but from the
-   * <em>compaction's</em> perspective ("were deletes added for files I'm replacing?"), not from
-   * the RowDelta's perspective ("were files my deletes reference compacted?"). It does not
-   * protect against the scenario described above.
+   * <p>For multi-file position deletes (referencedDataFile == null), we cannot determine which
+   * data files they reference without reading their content. The conservative approach treats all
+   * compacted files as potential conflicts, forcing the caller to rebase the deletes through the
+   * compaction map. If the delete does not actually reference any compacted file, the rebasing is a
+   * no-op and the retry succeeds.
    *
    * @param deleteFiles the delete files to check
    * @param compactedFiles the set of compacted file paths
@@ -428,9 +419,14 @@ class CompactionMapValidator {
         if (compactedFiles.contains(referencedFile)) {
           conflicts.add(referencedFile);
         }
+      } else if (deleteFile.content() == FileContent.POSITION_DELETES
+          && !compactedFiles.isEmpty()) {
+        // Multi-file position delete: we cannot determine which files it references from
+        // metadata alone. Conservatively treat all compacted files as conflicts, forcing
+        // the caller to rebase. If the delete doesn't actually reference compacted files,
+        // rebasing is a no-op.
+        conflicts.addAll(compactedFiles);
       }
-      // Multi-file position deletes (referencedDataFile == null) are not checked here.
-      // See Javadoc above for the full rationale and consequences.
     }
 
     return conflicts;

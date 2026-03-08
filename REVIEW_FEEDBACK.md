@@ -32,38 +32,27 @@ Spark execution the closure is serialized to executors, causing `NotSerializable
 
 ### Fix 2: Multi-file position delete validation gap (Review 1, Finding 2)
 
-**Severity:** Medium-High (documented gap, not fixable in validator without content scanning)
+**Severity:** Medium-High
 **File:** `CompactionMapValidator.java`
 
-**Problem:** `findConflicts()` only checks `referencedDataFile != null`, silently
-skipping multi-file position deletes. `BaseRowDelta` inherits this gap, allowing
-transactions with multi-file position deletes to pass validation even when they
-reference compacted files.
+**Problem:** `findConflicts()` only checked `referencedDataFile != null`, silently
+skipping multi-file position deletes. This allowed transactions with multi-file
+position deletes to commit with stale physical addresses, causing missed deletions.
 
-**Resolution:** A conservative approach (flag all compacted files as conflicts when
-multi-file position deletes exist) was implemented and then **reverted** because it
-produces false positives that break SERIALIZABLE isolation for V2 tables. The
-validation pipeline calls `CompactionMapValidator` (via `validateNoCompactionConflicts`)
-BEFORE the SERIALIZABLE check in `validateCompactionAwareConflicts`, which distinguishes
-structural changes (compaction with map → allowed) from data changes (without map →
-rejected). The conservative approach throws `CompactionConflictException` before that
-distinction can be made, rejecting valid commits where the multi-file delete targets
-non-compacted files in a table that also had a structural-only compaction.
+**Fix:** Conservative conflict detection: when a multi-file position delete exists
+(`referencedDataFile == null`, `content == POSITION_DELETES`) and compacted files
+are present, treat all compacted files as conflicts. This forces the caller to
+rebase the deletes through the compaction map. If the delete doesn't actually
+reference compacted files, rebasing is a no-op and the retry succeeds.
 
-**Consequence of the gap:** If a multi-file position delete references rows in files
-that were concurrently compacted, the RowDelta commits successfully. At read time, the
-delete entries for the now-absent source files are silently ignored — the rows that
-should have been deleted remain visible (**missed deletions**).
+**Key insight:** Position deletes are **writes** (physical `(file_path, position)`
+addresses), not reads. SERIALIZABLE isolation's "structural change = no conflict"
+optimization applies only to reads. Writes with stale physical addresses must always
+be rebased, regardless of whether the compaction was structural.
 
-**Not mitigated by CompactionConflictDetector:** `CompactionConflictDetector` handles
-multi-file deletes from the compaction's perspective ("were deletes added for files I'm
-replacing?"), not from the RowDelta's perspective ("were my referenced files
-compacted?"). It does not protect against this scenario.
-
-**Status:** Open gap, documented in code and tests. Fixing requires either:
-(a) reading delete file content during validation (expensive I/O), or
-(b) restructuring the validation pipeline so the conservative check runs after the
-SERIALIZABLE structural-vs-data distinction.
+**Tests:** `TestCompactionMapValidatorMultiFileDeletes.java` (2 tests) and updated
+assertions in `TestSerializableIsolationWithCompaction.java` (V2 expects conflict
+exception, V3 DVs targeting non-compacted files succeed).
 
 **Tests added:** `TestCompactionMapValidatorMultiFileDeletes.java` (2 tests: one
 verifies file-scoped detection works, one documents the multi-file gap)
@@ -175,7 +164,7 @@ The implementation should:
 1. **Fix 3 + Fix 7** (same issue) — silently produces wrong compaction maps — **DONE**
 2. **Fix 5** — entire test class is a facade in Spark 4.0; port working v3.5 code — **DONE**
 3. **Fix 1** — runtime failure in distributed Spark execution — **DONE**
-4. **Fix 2** — documented gap (conservative fix reverted, breaks SERIALIZABLE isolation)
+4. **Fix 2** — conservative multi-file position delete detection — **DONE**
 5. **Fix 4** — metadata inconsistency (snapshot ID vs sequence number) — **DONE**
 6. **Fix 6** — phantom doc reference — **DONE**
 
