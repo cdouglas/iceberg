@@ -20,13 +20,16 @@ package org.apache.iceberg.spark.actions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assumptions.assumeThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.Parameter;
 import org.apache.iceberg.ParameterizedTestExtension;
@@ -34,14 +37,24 @@ import org.apache.iceberg.Parameters;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.ActionsProvider;
 import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
+import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.Record;
+import org.apache.iceberg.deletes.PositionDelete;
+import org.apache.iceberg.deletes.PositionDeleteWriter;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
+import org.apache.iceberg.encryption.EncryptionKeyMetadata;
 import org.apache.iceberg.hadoop.HadoopTables;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.spark.data.TestHelpers;
 import org.apache.iceberg.types.Types;
@@ -56,26 +69,16 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Integration tests for bin-pack rewrites with compaction maps enabled.
  *
- * <p><b>TODO (Spark 4.0):</b> These tests are currently FAILING in Spark 4.0 due to schema
- * validation issues during Parquet writer creation. Position tracking works correctly in Spark 3.5.
- * See spark/v4.0/docs/position_tracking_challenges.md for details.
- *
- * <p>NOTE: These tests verify that bin-pack rewrites complete successfully when compaction map
- * generation is enabled. Full end-to-end position tracking requires read-side implementation of
- * TRACK_SOURCE_POSITIONS to expose _file and _pos metadata columns during rewrite scans.
- *
  * <p>Tests cover:
  *
  * <ul>
  *   <li>Bin-pack rewrites with compaction-map.enabled=true
+ *   <li>Bin-pack rewrites with position deletes (merge compaction)
  *   <li>N:M compaction scenarios (many sources to many targets)
  *   <li>ORC and Parquet file formats
  *   <li>Sorted and unsorted tables
  *   <li>Position tracking disabled by default
  * </ul>
- *
- * <p>Unit tests (TestPositionMappingCoordinator, TestPositionTrackingDataWriter,
- * TestFilePositionMapping) validate the position tracking logic independently.
  */
 @ExtendWith(ParameterizedTestExtension.class)
 public class TestBinPackWithPositionTracking extends TestBase {
@@ -156,11 +159,8 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testBinPackGeneratesCompactionMapWithPositionDeletes() throws IOException {
-    // TODO: Implement position delete helper for comprehensive testing
-    // Skipping for now as writePosDeletesToFile() is not yet implemented
-    assumeThat(false).isTrue(); // Skip this test
-
-    assumeThat(formatVersion).isGreaterThanOrEqualTo(2);
+    // V3 tables require deletion vectors instead of position delete files
+    assumeTrue(formatVersion == 2, "Position delete files only work with V2");
 
     Table table = createTable();
 
@@ -194,33 +194,17 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
   @TestTemplate
   public void testNToMCompactionScenario() {
-    // TODO: Complex partitioned write scenario - requires proper partition value generation
-    // Skipping for now as test infrastructure needs enhancement
-    assumeThat(false).isTrue(); // Skip this test
+    // Test N:M compaction (many sources to many targets) using unpartitioned table
+    // with small target file size to force multiple output files
+    Table table = createTable();
 
-    // Test N:M compaction (many sources to many targets)
-    PartitionSpec spec = PartitionSpec.builderFor(SCHEMA).identity("data").build();
-
-    Map<String, String> props =
-        ImmutableMap.of(
-            TableProperties.FORMAT_VERSION,
-            String.valueOf(formatVersion),
-            TableProperties.DEFAULT_FILE_FORMAT,
-            fileFormat.name(),
-            TableProperties.COMPACTION_MAP_ENABLED,
-            "true");
-
-    Table table = TABLES.create(SCHEMA, spec, props, tableLocation);
-
-    // Create many small files across partitions
-    for (int partition = 0; partition < 3; partition++) {
-      for (int file = 0; file < 3; file++) {
-        writeRecordsPartitioned(table, partition, file, 10);
-      }
+    // Create many small files
+    for (int i = 0; i < 9; i++) {
+      writeRecords(table, i * 10, 10);
     }
 
     table.refresh();
-    assertThat(TestHelpers.dataFiles(table)).hasSizeGreaterThanOrEqualTo(9);
+    assertThat(TestHelpers.dataFiles(table)).hasSize(9);
 
     // Run bin-pack rewrite
     RewriteDataFiles.Result result =
@@ -404,10 +388,9 @@ public class TestBinPackWithPositionTracking extends TestBase {
     assertThat(result.addedDataFilesCount()).isGreaterThanOrEqualTo(1);
   }
 
-  // Helper methods - using Spark DataFrames
+  // Helper methods
 
   private void writeRecords(Table table, int startId, int count) {
-    // Create DataFrame with records
     java.util.List<org.apache.spark.sql.Row> rows = new java.util.ArrayList<>();
     for (int i = 0; i < count; i++) {
       rows.add(org.apache.spark.sql.RowFactory.create(startId + i, "data" + (startId + i)));
@@ -422,14 +405,78 @@ public class TestBinPackWithPositionTracking extends TestBase {
     df.coalesce(1).write().format("iceberg").mode(SaveMode.Append).save(tableLocation);
   }
 
-  private void writeRecordsPartitioned(Table table, int partition, int fileId, int count) {
-    writeRecords(table, partition * 1000 + fileId * 100, count);
+  /**
+   * Writes position delete files deleting the first N rows from a data file.
+   *
+   * @param table the table
+   * @param dataFile the data file to reference
+   * @param deleteCount number of rows to delete (starting from position 0)
+   * @return list of delete files created
+   */
+  private List<DeleteFile> writePosDeletesToFile(Table table, DataFile dataFile, int deleteCount)
+      throws IOException {
+    return writePosDeletesToFile(table, dataFile, deleteCount, 0);
   }
 
-  private List<org.apache.iceberg.DeleteFile> writePosDeletesToFile(
-      Table table, DataFile dataFile, int deleteCount) throws IOException {
-    // Simplified: just return empty list for now
-    // Full implementation would write actual position delete files
-    return java.util.Collections.emptyList();
+  /**
+   * Writes position delete files deleting rows starting at a specific position.
+   *
+   * @param table the table
+   * @param dataFile the data file to reference
+   * @param deleteCount number of rows to delete
+   * @param startPosition starting position (offset) for deletes
+   * @return list of delete files created
+   */
+  private List<DeleteFile> writePosDeletesToFile(
+      Table table, DataFile dataFile, int deleteCount, long startPosition) throws IOException {
+    return writePosDeletes(
+        table, dataFile.partition(), dataFile.location(), 1, deleteCount, startPosition);
+  }
+
+  private List<DeleteFile> writePosDeletes(
+      Table table,
+      StructLike partition,
+      String path,
+      int outputDeleteFiles,
+      int totalPositionsToDelete,
+      long startPosition)
+      throws IOException {
+    List<DeleteFile> results = Lists.newArrayList();
+
+    int positionsPerFile = (int) Math.ceil((double) totalPositionsToDelete / outputDeleteFiles);
+
+    long currentPosition = startPosition;
+    for (int file = 0; file < outputDeleteFiles; file++) {
+      OutputFile outputFile =
+          table
+              .io()
+              .newOutputFile(
+                  table
+                      .locationProvider()
+                      .newDataLocation(
+                          FileFormat.PARQUET.addExtension(UUID.randomUUID().toString())));
+      EncryptedOutputFile encryptedOutputFile =
+          EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY);
+
+      GenericAppenderFactory appenderFactory =
+          new GenericAppenderFactory(table.schema(), table.spec(), null, null, null);
+      PositionDeleteWriter<Record> posDeleteWriter =
+          appenderFactory
+              .set(TableProperties.DEFAULT_WRITE_METRICS_MODE, "full")
+              .newPosDeleteWriter(encryptedOutputFile, FileFormat.PARQUET, partition);
+
+      PositionDelete<Record> posDelete = PositionDelete.create();
+
+      int deletesInThisFile = Math.min(positionsPerFile, totalPositionsToDelete);
+      for (int i = 0; i < deletesInThisFile; i++) {
+        posDeleteWriter.write(posDelete.set(path, currentPosition++, null));
+      }
+      totalPositionsToDelete -= deletesInThisFile;
+
+      posDeleteWriter.close();
+      results.add(posDeleteWriter.toDeleteFile());
+    }
+
+    return results;
   }
 }

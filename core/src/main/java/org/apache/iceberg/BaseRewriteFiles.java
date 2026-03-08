@@ -199,10 +199,17 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
       return; // Nothing to map
     }
 
-    long sourceSnapshotId =
-        startingSnapshotId != null
-            ? startingSnapshotId
-            : (snapshot != null ? snapshot.snapshotId() : base.lastSequenceNumber());
+    long sourceSnapshotId;
+    if (startingSnapshotId != null) {
+      sourceSnapshotId = startingSnapshotId;
+    } else if (snapshot != null) {
+      sourceSnapshotId = snapshot.snapshotId();
+    } else if (base.currentSnapshot() != null) {
+      sourceSnapshotId = base.currentSnapshot().snapshotId();
+    } else {
+      // No snapshots exist yet — use -1 as sentinel
+      sourceSnapshotId = -1L;
+    }
     long targetSnapshotId = snapshotId();
 
     CompactionMapBuilder builder = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);

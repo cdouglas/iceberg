@@ -381,9 +381,20 @@ class CompactionMapValidator {
   /**
    * Finds conflicts between delete files and compacted files.
    *
-   * <p>This method handles both position delete files and deletion vectors (DVs). DVs always have a
-   * {@code referencedDataFile} set, so they are detected via the same code path as file-scoped
-   * position delete files.
+   * <p>This method handles two cases:
+   *
+   * <ul>
+   *   <li><b>File-scoped position deletes</b> (referencedDataFile set): checked directly against
+   *       compacted files.
+   *   <li><b>Deletion vectors (DVs)</b>: always have referencedDataFile set, same code path as
+   *       file-scoped.
+   * </ul>
+   *
+   * <p><b>Known gap:</b> Multi-file position deletes (referencedDataFile null) are not checked
+   * because determining which data files they reference would require reading delete file content.
+   * A conservative approach (treating all compacted files as conflicts) was considered but rejected
+   * because it produces false positives that break SERIALIZABLE isolation for V2 tables — position
+   * deletes that don't reference compacted files would be incorrectly flagged.
    *
    * @param deleteFiles the delete files to check
    * @param compactedFiles the set of compacted file paths
@@ -393,20 +404,15 @@ class CompactionMapValidator {
     Set<String> conflicts = Sets.newHashSet();
 
     for (DeleteFile deleteFile : deleteFiles) {
-      // Check if this delete file has a referenced data file
-      // This handles both:
-      // - Position delete files with referencedDataFile set (file-scoped)
-      // - Deletion vectors (DVs), which always have referencedDataFile set
       if (deleteFile.referencedDataFile() != null) {
+        // File-scoped position delete or DV — check directly
         String referencedFile = deleteFile.referencedDataFile();
         if (compactedFiles.contains(referencedFile)) {
           conflicts.add(referencedFile);
         }
       }
-      // For delete files that may reference multiple files (not file-scoped),
-      // we would need to read the file content to check.
-      // This is a trade-off: we detect obvious conflicts efficiently,
-      // but may miss some conflicts that require reading delete file content.
+      // Multi-file position deletes (referencedDataFile == null) are not checked here.
+      // See Javadoc above for rationale.
     }
 
     return conflicts;
