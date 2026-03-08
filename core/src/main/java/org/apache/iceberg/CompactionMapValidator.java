@@ -432,32 +432,6 @@ class CompactionMapValidator {
     return conflicts;
   }
 
-  /**
-   * Identifies which delete files conflict with compacted data files.
-   *
-   * <p>This method is useful for programmatically determining which delete files need to be
-   * remapped when resolving a compaction conflict.
-   *
-   * @param deleteFiles the delete files to check
-   * @return list of delete files that reference compacted data files
-   */
-  List<DeleteFile> findConflictingDeletes(List<DeleteFile> deleteFiles) {
-    Map<String, String> compactionMaps = findCompactionMaps();
-    if (compactionMaps.isEmpty()) {
-      return java.util.Collections.emptyList();
-    }
-
-    List<DeleteFile> conflicting = Lists.newArrayList();
-    for (DeleteFile deleteFile : deleteFiles) {
-      if (deleteFile.referencedDataFile() != null
-          && compactionMaps.containsKey(deleteFile.referencedDataFile())) {
-        conflicting.add(deleteFile);
-      }
-    }
-
-    return java.util.Collections.unmodifiableList(conflicting);
-  }
-
   /** Internal class to hold chain detection results. */
   private static class ChainInfo {
     final Set<String> chainedFiles;

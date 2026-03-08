@@ -125,9 +125,13 @@ public class DeleteConflictInfo {
     return !multiFilePositionDeletes.isEmpty();
   }
 
-  /** Returns the number of conflicting delete files. */
+  /**
+   * Returns the total number of conflicting delete files, including both file-scoped conflicts and
+   * multi-file position deletes. This count reflects the actual resolver work: both categories are
+   * fed into {@code SparkCompactionConflictResolver.resolve()}.
+   */
   public int deleteFileCount() {
-    return conflictingDeleteFiles.size();
+    return conflictingDeleteFiles.size() + multiFilePositionDeletes.size();
   }
 
   /** Returns the number of affected data files. */

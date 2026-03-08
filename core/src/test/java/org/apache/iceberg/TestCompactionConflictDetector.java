@@ -591,7 +591,8 @@ public class TestCompactionConflictDetector {
     assertThat(conflicts.multiFilePositionDeletes()).hasSize(1);
     // File-scoped conflicts should be empty (no single-file position deletes)
     assertThat(conflicts.conflictingDeleteFiles()).isEmpty();
-    assertThat(conflicts.deleteFileCount()).isEqualTo(0);
+    // deleteFileCount() includes multi-file deletes (total resolver work)
+    assertThat(conflicts.deleteFileCount()).isEqualTo(1);
   }
 
   @Test
@@ -704,8 +705,8 @@ public class TestCompactionConflictDetector {
 
     // Verify both types are detected
     assertThat(conflicts.hasConflicts()).isTrue();
-    // File-scoped delete
-    assertThat(conflicts.deleteFileCount()).isEqualTo(1);
+    // Total delete file count: 1 file-scoped + 1 multi-file
+    assertThat(conflicts.deleteFileCount()).isEqualTo(2);
     assertThat(conflicts.affectedDataFiles()).contains(dataFile1.path().toString());
     // Multi-file position delete
     assertThat(conflicts.hasMultiFilePositionDeletes()).isTrue();

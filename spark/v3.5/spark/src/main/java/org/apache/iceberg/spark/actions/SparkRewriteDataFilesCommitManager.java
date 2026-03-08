@@ -39,6 +39,7 @@ import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.RewriteDataFilesCommitManager;
 import org.apache.iceberg.actions.RewriteFileGroup;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.ValidationException;
@@ -338,18 +339,29 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
           }
         }
       } else {
-        // Fallback: Simple bin-pack mapping
+        // Fallback: Simple bin-pack mapping.
+        // See RewriteDataFilesCommitManager.buildCompactionMap() for soundness preconditions.
         if (targetFiles.size() == 1) {
           DataFile targetFile = targetFiles.iterator().next();
           long targetOffset = 0;
 
+          long totalSourceRecords = 0;
           for (DataFile sourceFile : sourceFiles) {
             builder
                 .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
                 .addRun(0L, targetOffset, sourceFile.recordCount());
 
             targetOffset += sourceFile.recordCount();
+            totalSourceRecords += sourceFile.recordCount();
           }
+
+          Preconditions.checkState(
+              targetFile.recordCount() == totalSourceRecords,
+              "Fallback compaction map requires target record count (%s) to equal sum of "
+                  + "source record counts (%s). Use explicit position tracking for "
+                  + "non-concatenation rewrites.",
+              targetFile.recordCount(),
+              totalSourceRecords);
         } else {
           LOG.warn(
               "Skipping compaction map for group with multiple target files ({}). "
