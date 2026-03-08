@@ -42,16 +42,28 @@ reference compacted files.
 
 **Resolution:** A conservative approach (flag all compacted files as conflicts when
 multi-file position deletes exist) was implemented and then **reverted** because it
-produces false positives that break SERIALIZABLE isolation for V2 tables. Position
-deletes that do NOT reference compacted files are incorrectly flagged, causing
-`CompactionConflictException` where the commit should succeed.
+produces false positives that break SERIALIZABLE isolation for V2 tables. The
+validation pipeline calls `CompactionMapValidator` (via `validateNoCompactionConflicts`)
+BEFORE the SERIALIZABLE check in `validateCompactionAwareConflicts`, which distinguishes
+structural changes (compaction with map → allowed) from data changes (without map →
+rejected). The conservative approach throws `CompactionConflictException` before that
+distinction can be made, rejecting valid commits where the multi-file delete targets
+non-compacted files in a table that also had a structural-only compaction.
 
-The gap cannot be fixed in the validator without reading delete file content (expensive
-I/O during validation). Instead, `CompactionConflictDetector` (which scans manifest
-content) handles this case correctly at the Spark action level.
+**Consequence of the gap:** If a multi-file position delete references rows in files
+that were concurrently compacted, the RowDelta commits successfully. At read time, the
+delete entries for the now-absent source files are silently ignored — the rows that
+should have been deleted remain visible (**missed deletions**).
 
-**Status:** Documented gap with test. The `findConflicts()` Javadoc explains the gap
-and the reason the conservative approach was rejected.
+**Not mitigated by CompactionConflictDetector:** `CompactionConflictDetector` handles
+multi-file deletes from the compaction's perspective ("were deletes added for files I'm
+replacing?"), not from the RowDelta's perspective ("were my referenced files
+compacted?"). It does not protect against this scenario.
+
+**Status:** Open gap, documented in code and tests. Fixing requires either:
+(a) reading delete file content during validation (expensive I/O), or
+(b) restructuring the validation pipeline so the conservative check runs after the
+SERIALIZABLE structural-vs-data distinction.
 
 **Tests added:** `TestCompactionMapValidatorMultiFileDeletes.java` (2 tests: one
 verifies file-scoped detection works, one documents the multi-file gap)

@@ -137,18 +137,25 @@ public class TestCompactionMapValidatorMultiFileDeletes {
   }
 
   /**
-   * Documents the known gap: multi-file position deletes (without referencedDataFile) are NOT
+   * Documents a known gap: multi-file position deletes (without referencedDataFile) are NOT
    * detected by CompactionMapValidator.findConflicts().
    *
-   * <p>The multi-file position delete references rows in files that were compacted, but the
-   * validator only checks referencedDataFile (which is null for multi-file deletes). A conservative
-   * approach (treating all compacted files as conflicts) was tried but rejected because it produces
-   * false positives that break SERIALIZABLE isolation for V2 tables — unrelated position deletes
-   * would be incorrectly flagged as conflicting.
+   * <p><b>Consequence:</b> If a multi-file position delete references rows in files that were
+   * concurrently compacted, the RowDelta commit succeeds. The delete entries targeting the
+   * now-absent source files become stale: at read time they are silently ignored, and the rows
+   * that should have been deleted remain visible (missed deletions).
    *
-   * <p>Compare with {@link TestCompactionConflictDetector#testMultiFilePositionDeletesDetected()}
-   * which verifies that CompactionConflictDetector correctly handles this case by scanning manifest
-   * content.
+   * <p><b>Why the conservative fix was reverted:</b> Adding all compacted files as conflicts
+   * whenever a multi-file delete exists breaks SERIALIZABLE isolation. The validation pipeline
+   * calls {@code CompactionMapValidator} BEFORE the SERIALIZABLE check that distinguishes
+   * structural changes (compaction with map → allowed) from data changes (without map → rejected).
+   * The conservative approach throws {@code CompactionConflictException} before that distinction
+   * can be made, rejecting valid commits where the multi-file delete targets non-compacted files.
+   *
+   * <p><b>Not mitigated by CompactionConflictDetector:</b> {@code CompactionConflictDetector}
+   * handles multi-file deletes from the <em>compaction's</em> perspective ("were deletes added for
+   * files I'm replacing?"), not from the RowDelta's perspective ("were my referenced files
+   * compacted?"). It does not protect against this scenario.
    */
   @Test
   public void testMultiFilePositionDeleteConflictNotDetected() throws IOException {

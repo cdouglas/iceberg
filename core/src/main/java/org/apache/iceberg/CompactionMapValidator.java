@@ -390,11 +390,29 @@ class CompactionMapValidator {
    *       file-scoped.
    * </ul>
    *
-   * <p><b>Known gap:</b> Multi-file position deletes (referencedDataFile null) are not checked
-   * because determining which data files they reference would require reading delete file content.
-   * A conservative approach (treating all compacted files as conflicts) was considered but rejected
-   * because it produces false positives that break SERIALIZABLE isolation for V2 tables — position
-   * deletes that don't reference compacted files would be incorrectly flagged.
+   * <p><b>Known gap — multi-file position deletes silently skipped:</b> V2 position deletes with
+   * {@code referencedDataFile == null} (i.e., multi-file / partition-scoped) are not checked. If
+   * such a delete references rows in a file that was concurrently compacted, this method will not
+   * detect the conflict. The delete commits successfully but becomes stale: at read time, entries
+   * referencing the now-absent source files are silently ignored, causing <b>missed deletions</b>
+   * (rows that should have been deleted remain visible).
+   *
+   * <p>Detecting the conflict would require reading the delete file's content to enumerate which
+   * data files it references — too expensive for commit-time validation. A blanket conservative
+   * approach (treat all compacted files as conflicts whenever any multi-file delete exists) was
+   * tried and reverted because it breaks SERIALIZABLE isolation: the validation pipeline calls
+   * this method (via {@code validateNoCompactionConflicts}) <em>before</em> the SERIALIZABLE
+   * check in {@code validateCompactionAwareConflicts}, which distinguishes structural changes
+   * (compaction with map — allowed) from data changes (compaction without map — rejected). The
+   * conservative approach throws {@code CompactionConflictException} before that distinction can
+   * be made, rejecting valid commits where a multi-file delete targets <em>non-compacted</em>
+   * files in a table that also had a structural-only compaction.
+   *
+   * <p>Note: {@link CompactionConflictDetector} (used by {@code
+   * SparkRewriteDataFilesCommitManager}) does handle multi-file deletes, but from the
+   * <em>compaction's</em> perspective ("were deletes added for files I'm replacing?"), not from
+   * the RowDelta's perspective ("were files my deletes reference compacted?"). It does not
+   * protect against the scenario described above.
    *
    * @param deleteFiles the delete files to check
    * @param compactedFiles the set of compacted file paths
@@ -412,7 +430,7 @@ class CompactionMapValidator {
         }
       }
       // Multi-file position deletes (referencedDataFile == null) are not checked here.
-      // See Javadoc above for rationale.
+      // See Javadoc above for the full rationale and consequences.
     }
 
     return conflicts;
