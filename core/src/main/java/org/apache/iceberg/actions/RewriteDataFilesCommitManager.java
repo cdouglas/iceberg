@@ -97,11 +97,14 @@ public class RewriteDataFilesCommitManager {
       rewrite.dataSequenceNumber(sequenceNumber);
     }
 
-    // Generate and write compaction map if enabled
-    if (shouldGenerateCompactionMap()) {
+    // Generate and write compaction map if enabled.
+    // Disable BaseRewriteFiles auto-generation: this commit manager controls map generation
+    // and only generates maps when explicit position mappings are available.
+    if (shouldGenerateCompactionMap() && rewrite instanceof BaseRewriteFiles) {
+      ((BaseRewriteFiles) rewrite).disableAutoCompactionMap();
       CompactionMap compactionMap = buildCompactionMap(fileGroups);
       String compactionMapLocation = writeCompactionMap(compactionMap);
-      if (compactionMapLocation != null && rewrite instanceof BaseRewriteFiles) {
+      if (compactionMapLocation != null) {
         ((BaseRewriteFiles) rewrite).setCompactionMapLocation(compactionMapLocation);
       }
     }
