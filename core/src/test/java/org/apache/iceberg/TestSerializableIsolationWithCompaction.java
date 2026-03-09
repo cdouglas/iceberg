@@ -53,13 +53,13 @@ import org.junit.jupiter.api.io.TempDir;
  *   <li><b>Read conflicts (SERIALIZABLE isolation):</b> When a transaction reads data that was
  *       replaced by a concurrent compaction, structural changes (with compaction maps) are allowed
  *       because the logical data is unchanged. Data changes (without maps) are rejected.
- *   <li><b>Write conflicts (position delete rebasing):</b> Position deletes contain physical
- *       {@code (file_path, position)} tuples. When those files are compacted, the deletes must be
- *       rebased through the compaction map — regardless of SERIALIZABLE isolation. This is not a
- *       read optimization; it is a correctness requirement. V2 multi-file position deletes (no
- *       {@code referencedDataFile}) are conservatively rejected because we cannot determine their
- *       targets from metadata. V3 DVs always have {@code referencedDataFile} set, so they are
- *       checked precisely.
+ *   <li><b>Write conflicts (position delete rebasing):</b> Position deletes contain physical {@code
+ *       (file_path, position)} tuples. When those files are compacted, the deletes must be rebased
+ *       through the compaction map — regardless of SERIALIZABLE isolation. This is not a read
+ *       optimization; it is a correctness requirement. V2 multi-file position deletes (no {@code
+ *       referencedDataFile}) are conservatively rejected because we cannot determine their targets
+ *       from metadata. V3 DVs always have {@code referencedDataFile} set, so they are checked
+ *       precisely.
  * </ul>
  */
 @ExtendWith(ParameterizedTestExtension.class)

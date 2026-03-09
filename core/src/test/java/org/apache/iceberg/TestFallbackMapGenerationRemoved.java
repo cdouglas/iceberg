@@ -34,7 +34,6 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.expressions.ResidualEvaluator;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -207,12 +206,14 @@ public class TestFallbackMapGenerationRemoved {
   }
 
   /**
-   * BaseRewriteFiles (low-level API) retains its fallback. Verify it still works for bin-pack
-   * callers using table.newRewrite() directly.
+   * BaseRewriteFiles (low-level API) no longer auto-generates fallback compaction maps. Callers
+   * must provide maps explicitly via {@link BaseRewriteFiles#setCompactionMapLocation(String)}.
+   * This prevents silently incorrect maps from sort/z-order rewrites that happen to preserve record
+   * counts.
    */
   @Test
-  public void testBaseRewriteFilesFallbackStillWorks() throws IOException {
-    TableIdentifier tableIdent = TableIdentifier.of("db", "base_fallback");
+  public void testBaseRewriteFilesNoAutoGeneration() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "base_no_auto");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
@@ -237,13 +238,13 @@ public class TestFallbackMapGenerationRemoved {
             .withRecordCount(100)
             .build();
 
-    // Use low-level BaseRewriteFiles API (table.newRewrite())
+    // Use low-level BaseRewriteFiles API (table.newRewrite()) without providing a map
     RewriteFiles rewrite = table.newRewrite();
     rewrite.deleteFile(source);
     rewrite.addFile(targetFile);
     rewrite.commit();
 
-    // BaseRewriteFiles fallback should still generate a map
+    // No auto-generation: manifest should NOT have a compaction map
     ManifestFile addedManifest =
         table.currentSnapshot().dataManifests(table.io()).stream()
             .filter(ManifestFile::hasAddedFiles)
@@ -252,8 +253,8 @@ public class TestFallbackMapGenerationRemoved {
 
     assertThat(addedManifest).isNotNull();
     assertThat(addedManifest.compactionMapLocation())
-        .as("BaseRewriteFiles low-level fallback should still generate maps for bin-pack")
-        .isNotNull();
+        .as("BaseRewriteFiles should NOT auto-generate maps; callers must provide them explicitly")
+        .isNull();
   }
 
   private RewriteFileGroup createFileGroup(
@@ -262,8 +263,7 @@ public class TestFallbackMapGenerationRemoved {
         ImmutableRewriteDataFiles.FileGroupInfo.builder()
             .globalIndex(0)
             .partitionIndex(0)
-            .partition(
-                org.apache.iceberg.data.GenericRecord.create(table.spec().partitionType()))
+            .partition(org.apache.iceberg.data.GenericRecord.create(table.spec().partitionType()))
             .build();
 
     // Create FileScanTasks from source files

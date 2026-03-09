@@ -32,6 +32,7 @@ import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
 import org.apache.iceberg.io.DeleteWriteResult;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
@@ -112,6 +113,22 @@ public class TestCompactionConflictDetectionDV {
             .build();
 
     rewrite.addFile(targetFile);
+
+    // Build and attach explicit compaction map
+    {
+      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
+      long off = 0;
+      for (DataFile sf : sourceFiles) {
+        cmb.addFileMapping(sf.path().toString(), targetFile.path().toString())
+            .addRun(0L, off, sf.recordCount());
+        off += sf.recordCount();
+      }
+      CompactionMap cmap = cmb.build();
+      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
+      CompactionMaps.write(cmap, cmf);
+      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
+    }
+
     rewrite.commit(); // Compaction commits successfully
 
     // 5. Try to commit the RowDelta - should fail with CompactionConflictException

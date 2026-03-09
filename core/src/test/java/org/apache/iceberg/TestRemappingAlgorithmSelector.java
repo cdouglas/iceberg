@@ -269,7 +269,8 @@ public class TestRemappingAlgorithmSelector {
 
     // m = 10000, n = 2000, sorted -> StreamJoin
     List<Long> mediumSorted = createSortedPositions(2000);
-    assertThat(selector.selectOptimal(veryHighM, mediumSorted)).isInstanceOf(StreamJoinStrategy.class);
+    assertThat(selector.selectOptimal(veryHighM, mediumSorted))
+        .isInstanceOf(StreamJoinStrategy.class);
   }
 
   @Test
@@ -280,7 +281,8 @@ public class TestRemappingAlgorithmSelector {
     // m = 5000, n = 3000, unsorted -> IntervalTree (n > 2000, so normal rules apply)
     FileMapping highM = createDenseMapping(5000);
     List<Long> largeUnsorted = createUnsortedPositions(3000);
-    assertThat(selector.selectOptimal(highM, largeUnsorted)).isInstanceOf(IntervalTreeStrategy.class);
+    assertThat(selector.selectOptimal(highM, largeUnsorted))
+        .isInstanceOf(IntervalTreeStrategy.class);
 
     // m = 5000, n = 10000, unsorted -> IntervalTree
     List<Long> veryLargeUnsorted = createUnsortedPositions(10000);

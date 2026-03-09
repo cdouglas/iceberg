@@ -26,6 +26,7 @@ import java.util.List;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,8 +43,8 @@ import org.junit.jupiter.api.io.TempDir;
  * files as conflicts because it cannot determine the delete's targets from metadata alone.
  *
  * <p>This conservative approach is correct: SERIALIZABLE isolation's "structural change = no
- * conflict" optimization applies only to reads, not to writes. Position deletes with stale
- * physical addresses would cause missed deletions if allowed to commit.
+ * conflict" optimization applies only to reads, not to writes. Position deletes with stale physical
+ * addresses would cause missed deletions if allowed to commit.
  */
 public class TestCompactionMapValidatorMultiFileDeletes {
 
@@ -122,6 +123,22 @@ public class TestCompactionMapValidatorMultiFileDeletes {
             .build();
 
     rewrite.addFile(targetFile);
+
+    // Build and attach explicit compaction map
+    {
+      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
+      long off = 0;
+      for (DataFile sf : sourceFiles) {
+        cmb.addFileMapping(sf.path().toString(), targetFile.path().toString())
+            .addRun(0L, off, sf.recordCount());
+        off += sf.recordCount();
+      }
+      CompactionMap cmap = cmb.build();
+      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
+      CompactionMaps.write(cmap, cmf);
+      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
+    }
+
     rewrite.commit();
 
     // Validator should detect the conflict
@@ -204,6 +221,22 @@ public class TestCompactionMapValidatorMultiFileDeletes {
             .build();
 
     rewrite.addFile(targetFile);
+
+    // Build and attach explicit compaction map
+    {
+      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
+      long off = 0;
+      for (DataFile sf : sourceFiles) {
+        cmb.addFileMapping(sf.path().toString(), targetFile.path().toString())
+            .addRun(0L, off, sf.recordCount());
+        off += sf.recordCount();
+      }
+      CompactionMap cmap = cmb.build();
+      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
+      CompactionMaps.write(cmap, cmf);
+      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
+    }
+
     rewrite.commit();
 
     // Multi-file position deletes are conservatively treated as conflicts because

@@ -480,7 +480,8 @@ public class SparkCompactionConflictResolver implements Serializable {
           this.compactionMapBytesArray[i] = CompactionMaps.toBytes(maps.get(i));
         }
       } else {
-        this.compactionMapBytesArray = new byte[][] {CompactionMaps.toBytes(remapper.compactionMap())};
+        this.compactionMapBytesArray =
+            new byte[][] {CompactionMaps.toBytes(remapper.compactionMap())};
       }
       this.compactedSourceFiles = compactedSourceFiles;
       this.filePathIndex = filePathIndex;
@@ -506,9 +507,7 @@ public class SparkCompactionConflictResolver implements Serializable {
     }
   }
 
-  /**
-   * Shared remapping logic for both RemapFunction and RemapFunctionWithRemapper.
-   */
+  /** Shared remapping logic for both RemapFunction and RemapFunctionWithRemapper. */
   private static Row remapRow(
       Row row,
       PositionDeleteRemapper remapper,

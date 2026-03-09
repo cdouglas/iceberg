@@ -31,10 +31,10 @@ import org.junit.jupiter.api.Test;
 /**
  * Tests verifying that PositionDeleteRemapper is NOT Java-serializable.
  *
- * <p>This test documents the serialization gap identified in review: any Spark closure that captures
- * a PositionDeleteRemapper as a non-transient field will fail with NotSerializableException when
- * shipped to executors. The correct pattern is to store CompactionMap (Avro-serializable) and lazily
- * initialize the remapper on the executor side.
+ * <p>This test documents the serialization gap identified in review: any Spark closure that
+ * captures a PositionDeleteRemapper as a non-transient field will fail with
+ * NotSerializableException when shipped to executors. The correct pattern is to store CompactionMap
+ * (Avro-serializable) and lazily initialize the remapper on the executor side.
  *
  * @see PositionDeleteRemapper
  */
@@ -155,9 +155,7 @@ public class TestRemapFunctionSerializability {
     }
   }
 
-  /**
-   * Mirrors the actual fix: store compaction map as Avro bytes in a Serializable closure.
-   */
+  /** Mirrors the actual fix: store compaction map as Avro bytes in a Serializable closure. */
   private static class AvroBytesWrapper implements Serializable {
     private final byte[] mapBytes;
 
