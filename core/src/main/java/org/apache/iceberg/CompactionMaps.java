@@ -122,7 +122,8 @@ public class CompactionMaps {
   }
 
   /**
-   * Deserializes a compaction map from Avro-encoded bytes produced by {@link #toBytes(CompactionMap)}.
+   * Deserializes a compaction map from Avro-encoded bytes produced by {@link
+   * #toBytes(CompactionMap)}.
    *
    * @param bytes the Avro-encoded bytes
    * @return the deserialized compaction map

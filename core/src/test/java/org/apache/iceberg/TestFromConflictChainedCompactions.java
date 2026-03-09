@@ -94,7 +94,10 @@ public class TestFromConflictChainedCompactions {
       assertThat(e).isInstanceOf(ChainedCompactionMapsException.class);
     }
 
-    assertThat(caught).as("ChainedCompactionMapsException should be caught by CompactionConflictException handler").isTrue();
+    assertThat(caught)
+        .as(
+            "ChainedCompactionMapsException should be caught by CompactionConflictException handler")
+        .isTrue();
   }
 
   @Test
@@ -110,8 +113,7 @@ public class TestFromConflictChainedCompactions {
 
     // Create chained exception (maps are pre-loaded, not from files)
     ChainedCompactionMapsException chainedException =
-        new ChainedCompactionMapsException(
-            Set.of("F1"), List.of(1L, 2L, 3L), List.of(m1, m2));
+        new ChainedCompactionMapsException(Set.of("F1"), List.of(1L, 2L, 3L), List.of(m1, m2));
 
     // fromConflict should handle ChainedCompactionMapsException transparently
     Map<String, PositionDeleteRemapper> remappers =
@@ -180,19 +182,15 @@ public class TestFromConflictChainedCompactions {
     TableIdentifier tableIdent = TableIdentifier.of("db", "single_map_table");
     Table table =
         catalog.createTable(
-            tableIdent,
-            new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get())));
+            tableIdent, new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get())));
 
-    org.apache.iceberg.io.OutputFile mapFile =
-        CompactionMaps.newCompactionMapFile(table, 2L);
+    org.apache.iceberg.io.OutputFile mapFile = CompactionMaps.newCompactionMapFile(table, 2L);
     CompactionMaps.write(map, mapFile);
 
     // Create single-map CompactionConflictException
     CompactionConflictException singleConflict =
         new CompactionConflictException(
-            "Test conflict",
-            Set.of("F1"),
-            java.util.Map.of("F1", mapFile.location()));
+            "Test conflict", Set.of("F1"), java.util.Map.of("F1", mapFile.location()));
 
     // fromConflict should handle single-map conflicts
     Map<String, PositionDeleteRemapper> remappers =

@@ -55,9 +55,8 @@ import org.apache.iceberg.data.GenericAppenderFactory;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
-import org.apache.iceberg.deletes.EqualityDeleteWriter;
-import org.apache.iceberg.util.ArrayUtil;
 import org.apache.iceberg.deletes.DVFileWriter;
+import org.apache.iceberg.deletes.EqualityDeleteWriter;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
 import org.apache.iceberg.encryption.EncryptedFiles;
@@ -74,6 +73,7 @@ import org.apache.iceberg.spark.SparkWriteOptions;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.spark.data.TestHelpers;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.util.ArrayUtil;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.internal.SQLConf;
@@ -707,11 +707,7 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
     GenericAppenderFactory appenderFactory =
         new GenericAppenderFactory(
-            table.schema(),
-            table.spec(),
-            ArrayUtil.toIntArray(equalityFieldIds),
-            idSchema,
-            null);
+            table.schema(), table.spec(), ArrayUtil.toIntArray(equalityFieldIds), idSchema, null);
 
     EncryptedOutputFile outputFile = fileFactory.newOutputFile();
     EqualityDeleteWriter<Record> eqDeleteWriter =

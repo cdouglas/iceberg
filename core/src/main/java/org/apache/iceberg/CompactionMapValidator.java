@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -319,6 +321,10 @@ class CompactionMapValidator {
   /**
    * Collects all maps in a chain starting from the given source file.
    *
+   * <p>Uses BFS to follow all downstream branches. For fan-out rewrites where a source file maps to
+   * multiple targets (e.g., F1 → {T1, T2}), and those targets are later compacted by different maps
+   * (T1 → T3, T2 → T4), this traversal collects all reachable downstream maps.
+   *
    * @param sourceFile the starting source file
    * @param mapsInChain set to collect maps into
    * @param snapshotsInChain set to collect snapshot IDs into
@@ -330,31 +336,33 @@ class CompactionMapValidator {
       Set<Long> snapshotsInChain,
       Map<String, CompactionMap> sourceToMap) {
 
-    String currentFile = sourceFile;
-    while (currentFile != null) {
+    Deque<String> toVisit = new ArrayDeque<>();
+    Set<String> visited = Sets.newHashSet();
+    toVisit.add(sourceFile);
+
+    while (!toVisit.isEmpty()) {
+      String currentFile = toVisit.poll();
+      if (!visited.add(currentFile)) {
+        continue;
+      }
+
       CompactionMap map = sourceToMap.get(currentFile);
-      if (map == null || mapsInChain.contains(map)) {
-        break;
+      if (map == null) {
+        continue;
       }
 
       mapsInChain.add(map);
       snapshotsInChain.add(map.sourceSnapshotId());
       snapshotsInChain.add(map.targetSnapshotId());
 
-      // Get targets and follow the chain
+      // Follow all targets that continue the chain
       CompactionMap.FileMapping mapping = map.mappingForFile(currentFile);
       if (mapping != null) {
-        Set<String> targets = getTargetFiles(mapping);
-        // Follow the first target that continues the chain
-        currentFile = null;
-        for (String target : targets) {
-          if (sourceToMap.containsKey(target)) {
-            currentFile = target;
-            break;
+        for (String target : getTargetFiles(mapping)) {
+          if (sourceToMap.containsKey(target) && !visited.contains(target)) {
+            toVisit.add(target);
           }
         }
-      } else {
-        currentFile = null;
       }
     }
   }
@@ -399,8 +407,8 @@ class CompactionMapValidator {
    * isolation's "structural change = no conflict" optimization applies only to reads — it does not
    * exempt writes from rebasing.
    *
-   * <p>For multi-file position deletes (referencedDataFile == null), we cannot determine which
-   * data files they reference without reading their content. The conservative approach treats all
+   * <p>For multi-file position deletes (referencedDataFile == null), we cannot determine which data
+   * files they reference without reading their content. The conservative approach treats all
    * compacted files as potential conflicts, forcing the caller to rebase the deletes through the
    * compaction map. If the delete does not actually reference any compacted file, the rebasing is a
    * no-op and the retry succeeds.

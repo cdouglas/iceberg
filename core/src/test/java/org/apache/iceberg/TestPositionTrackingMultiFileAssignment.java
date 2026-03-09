@@ -21,20 +21,19 @@ package org.apache.iceberg;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Arrays;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
  * Tests documenting the multi-file-per-task position tracking gap.
  *
  * <p>When a single writer task produces multiple output files (due to rollover/splitting), buffered
- * position mappings must be assigned to the correct output file based on which target position range
- * each output file covers. The current implementation in PositionTrackingDataWriter assigns ALL
- * mappings to files[0], which is incorrect when multiple files are produced.
+ * position mappings must be assigned to the correct output file based on which target position
+ * range each output file covers. The current implementation in PositionTrackingDataWriter assigns
+ * ALL mappings to files[0], which is incorrect when multiple files are produced.
  *
- * <p>This test verifies the correct behavior at the core level: given a set of buffered mappings and
- * multiple output files with known record counts, each mapping should be assigned to the output file
- * whose position range contains the mapping's target position.
+ * <p>This test verifies the correct behavior at the core level: given a set of buffered mappings
+ * and multiple output files with known record counts, each mapping should be assigned to the output
+ * file whose position range contains the mapping's target position.
  */
 public class TestPositionTrackingMultiFileAssignment {
 

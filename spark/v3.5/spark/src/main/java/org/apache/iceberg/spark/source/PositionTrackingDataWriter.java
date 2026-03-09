@@ -218,12 +218,7 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
         String targetFile = files[fileIdx].location();
         long adjustedTargetPos = mapping.targetPos - boundaries[fileIdx];
         coordinator.recordMapping(
-            table,
-            fileSetId,
-            mapping.sourceFile,
-            mapping.sourcePos,
-            targetFile,
-            adjustedTargetPos);
+            table, fileSetId, mapping.sourceFile, mapping.sourcePos, targetFile, adjustedTargetPos);
       }
     }
 
