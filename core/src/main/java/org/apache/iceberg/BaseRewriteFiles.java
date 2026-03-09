@@ -26,8 +26,10 @@ import org.apache.iceberg.util.DataFileSet;
 public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
     implements RewriteFiles {
   private final DataFileSet replacedDataFiles = DataFileSet.create();
+  private final DataFileSet addedDataFiles = DataFileSet.create();
   private Long startingSnapshotId = null;
   private String compactionMapLocation = null;
+  private boolean autoCompactionMapDisabled = false;
 
   BaseRewriteFiles(String tableName, TableOperations ops) {
     super(tableName, ops);
@@ -61,6 +63,7 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
 
   @Override
   public RewriteFiles addFile(DataFile dataFile) {
+    addedDataFiles.add(dataFile);
     add(dataFile);
     return self();
   }
@@ -161,6 +164,22 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
     return compactionMapLocation;
   }
 
+  /**
+   * Disables automatic compaction map generation in {@link #apply}.
+   *
+   * <p>When called, the fallback map generation in {@code apply()} is suppressed. Use this when an
+   * external commit manager (e.g., {@link
+   * org.apache.iceberg.actions.RewriteDataFilesCommitManager}) handles map generation and has
+   * determined that no map should be generated (e.g., because no explicit position tracking is
+   * available).
+   *
+   * @return this for method chaining
+   */
+  public BaseRewriteFiles disableAutoCompactionMap() {
+    this.autoCompactionMapDisabled = true;
+    return this;
+  }
+
   @Override
   protected ManifestWriter<DataFile> newManifestWriter(PartitionSpec spec) {
     ManifestWriter<DataFile> writer = super.newManifestWriter(spec);
@@ -171,6 +190,129 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
     }
 
     return writer;
+  }
+
+  @Override
+  public java.util.List<ManifestFile> apply(TableMetadata base, Snapshot snapshot) {
+    // Generate compaction map if enabled and not already set or suppressed
+    if (compactionMapLocation == null
+        && !autoCompactionMapDisabled
+        && shouldGenerateCompactionMap(base)) {
+      generateAndWriteCompactionMap(base, snapshot);
+    }
+
+    return super.apply(base, snapshot);
+  }
+
+  private boolean shouldGenerateCompactionMap(TableMetadata base) {
+    return base.properties()
+        .getOrDefault(
+            org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED,
+            String.valueOf(org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT))
+        .equalsIgnoreCase("true");
+  }
+
+  /**
+   * Generates a fallback compaction map for direct API callers (not action-based).
+   *
+   * <p>This is sound because compaction maps are scoped to <b>order-preserving</b> rewrites only
+   * (bin-pack and merge compactions). Sort and z-order rewrites are explicitly out of scope for
+   * compaction maps by design — they never enable this feature. Therefore the only callers reaching
+   * this path are performing simple concatenation where source files are appended into a single
+   * target in iteration order, preserving row positions.
+   *
+   * <p>The record-count equality check below is a <b>necessary</b> condition for this assumption:
+   * if the target has fewer rows than the sources, rows were filtered; if more, rows were added.
+   * Either case invalidates the positional mapping. The check cannot detect row <i>reordering</i>
+   * that preserves count, but reordering does not arise in bin-pack/merge operations.
+   *
+   * <p>Action-level rewrites (via {@link org.apache.iceberg.actions.RewriteDataFilesCommitManager})
+   * use explicit position tracking from {@code PositionTrackingDataWriter} and call {@link
+   * #disableAutoCompactionMap()} to suppress this fallback.
+   */
+  private void generateAndWriteCompactionMap(TableMetadata base, Snapshot snapshot) {
+    if (replacedDataFiles.isEmpty() || addedDataFiles.isEmpty()) {
+      return;
+    }
+
+    long sourceSnapshotId;
+    if (startingSnapshotId != null) {
+      sourceSnapshotId = startingSnapshotId;
+    } else if (snapshot != null) {
+      sourceSnapshotId = snapshot.snapshotId();
+    } else if (base.currentSnapshot() != null) {
+      sourceSnapshotId = base.currentSnapshot().snapshotId();
+    } else {
+      sourceSnapshotId = -1L;
+    }
+    long targetSnapshotId = snapshotId();
+
+    CompactionMapBuilder builder = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
+
+    if (addedDataFiles.size() == 1) {
+      DataFile targetFile = addedDataFiles.iterator().next();
+      long targetOffset = 0;
+      long totalSourceRecords = 0;
+
+      for (DataFile sourceFile : replacedDataFiles) {
+        builder
+            .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
+            .addRun(0L, targetOffset, sourceFile.recordCount());
+        targetOffset += sourceFile.recordCount();
+        totalSourceRecords += sourceFile.recordCount();
+      }
+
+      // This check is a necessary (not sufficient) condition for bin-pack concatenation.
+      // It catches filtering or duplication but cannot detect reordering. Reordering does
+      // not arise in the bin-pack/merge operations that are the only callers of this path.
+      // See class javadoc and CLAUDE.md "Design Scope: Order-Preserving Compactions".
+      Preconditions.checkState(
+          targetFile.recordCount() == totalSourceRecords,
+          "Compaction map requires target record count (%s) to equal sum of "
+              + "source record counts (%s). This indicates a non-concatenation rewrite. "
+              + "Use action-level rewrites with explicit position tracking instead.",
+          targetFile.recordCount(),
+          totalSourceRecords);
+    } else {
+      // Multiple target files require position tracking to build correct mappings.
+      // Action-level rewrites handle this via PositionTrackingDataWriter.
+      org.slf4j.LoggerFactory.getLogger(BaseRewriteFiles.class)
+          .warn(
+              "Skipping compaction map for rewrite with multiple target files ({}). "
+                  + "Multi-target compaction maps require position tracking during rewrite.",
+              addedDataFiles.size());
+      return;
+    }
+
+    CompactionMap map = builder.build();
+
+    if (map.fileMappings().isEmpty()) {
+      return;
+    }
+
+    try {
+      String fileName =
+          String.format(
+              java.util.Locale.ROOT,
+              "compaction-map-%d-%s%s",
+              targetSnapshotId,
+              java.util.UUID.randomUUID(),
+              org.apache.iceberg.FileFormat.AVRO.addExtension(""));
+
+      org.apache.iceberg.io.OutputFile mapFile =
+          ops().io().newOutputFile(ops().metadataFileLocation(fileName));
+
+      CompactionMaps.write(map, mapFile);
+      this.compactionMapLocation = mapFile.location();
+
+      org.slf4j.LoggerFactory.getLogger(BaseRewriteFiles.class)
+          .info(
+              "Wrote compaction map with {} file mappings to {}",
+              map.fileMappings().size(),
+              mapFile.location());
+    } catch (java.io.IOException e) {
+      throw new java.io.UncheckedIOException("Failed to write compaction map", e);
+    }
   }
 
   @Override
