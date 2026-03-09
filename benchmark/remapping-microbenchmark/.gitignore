@@ -3,3 +3,6 @@ results/
 
 # Build artifacts
 build/
+
+# venv
+.venv
