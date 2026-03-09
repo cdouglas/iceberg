@@ -138,10 +138,12 @@ public class PositionDeleteRemapper {
   }
 
   /**
-   * Creates remappers from compaction map locations in a conflict exception.
+   * Creates remappers from a conflict exception.
    *
    * <p>This is a convenience method for the common pattern of loading compaction maps after
-   * catching a {@link org.apache.iceberg.exceptions.CompactionConflictException}.
+   * catching a {@link org.apache.iceberg.exceptions.CompactionConflictException}. It handles both
+   * single-map conflicts and chained compactions ({@link
+   * org.apache.iceberg.exceptions.ChainedCompactionMapsException}) transparently.
    *
    * <p><b>Example usage:</b>
    *
@@ -149,6 +151,7 @@ public class PositionDeleteRemapper {
    * try {
    *   rowDelta.commit();
    * } catch (CompactionConflictException e) {
+   *   // Handles both single and chained compactions
    *   Map&lt;String, PositionDeleteRemapper&gt; remappers =
    *       PositionDeleteRemapper.fromConflict(e, table.io());
    *
@@ -167,13 +170,31 @@ public class PositionDeleteRemapper {
    * }
    * </pre>
    *
-   * @param conflict the conflict exception containing compaction map locations
+   * @param conflict the conflict exception containing compaction map locations (may be a {@link
+   *     org.apache.iceberg.exceptions.ChainedCompactionMapsException} for chained compactions)
    * @param io the file IO for reading compaction maps
    * @return map from source file path to its remapper (may share remappers for files in same
    *     compaction)
    */
   public static Map<String, PositionDeleteRemapper> fromConflict(
       org.apache.iceberg.exceptions.CompactionConflictException conflict, FileIO io) {
+
+    // Handle chained compactions: build a chain-based remapper for all affected files
+    if (conflict instanceof org.apache.iceberg.exceptions.ChainedCompactionMapsException) {
+      org.apache.iceberg.exceptions.ChainedCompactionMapsException chainedConflict =
+          (org.apache.iceberg.exceptions.ChainedCompactionMapsException) conflict;
+      CompactionMapChain chain = CompactionMapChain.build(chainedConflict.compactionMaps());
+      PositionDeleteRemapper chainRemapper = new PositionDeleteRemapper(chain);
+
+      Map<String, PositionDeleteRemapper> remappers = new HashMap<>();
+      for (String sourceFile : chainedConflict.chainedFiles()) {
+        remappers.put(sourceFile, chainRemapper);
+      }
+
+      return remappers;
+    }
+
+    // Single-map conflicts: load maps from locations
     Map<String, String> mapLocations = conflict.compactionMapLocations();
     Map<String, PositionDeleteRemapper> remappers = new HashMap<>();
     Map<String, PositionDeleteRemapper> mapLocationToRemapper = new HashMap<>();

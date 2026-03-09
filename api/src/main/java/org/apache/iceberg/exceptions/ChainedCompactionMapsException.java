@@ -19,8 +19,11 @@
 package org.apache.iceberg.exceptions;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.CompactionMap;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 
 /**
  * Exception thrown when position deletes require chained compaction map composition.
@@ -40,16 +43,22 @@ import org.apache.iceberg.CompactionMap;
  *    → M2 maps F2→F3, so maps must be composed: M1 ∘ M2
  * </pre>
  *
- * <p>When this exception is thrown, applications can either:
+ * <p>This is a subtype of {@link CompactionConflictException}, so callers handling compaction
+ * conflicts via {@code catch (CompactionConflictException e)} will also catch chained cases. The
+ * {@link org.apache.iceberg.PositionDeleteRemapper#fromConflict(CompactionConflictException,
+ * org.apache.iceberg.io.FileIO)} method handles both single and chained compactions transparently.
+ *
+ * <p>When handling manually, applications can either:
  *
  * <ul>
- *   <li>Use the provided compaction maps to compose the chain and remap deletes
+ *   <li>Use the provided compaction maps to compose the chain and remap deletes via {@link
+ *       org.apache.iceberg.CompactionMapChain}
  *   <li>Retry the transaction from a more recent snapshot
  * </ul>
  *
  * @see CompactionConflictException for single-map conflicts
  */
-public class ChainedCompactionMapsException extends ValidationException {
+public class ChainedCompactionMapsException extends CompactionConflictException {
   private final Set<String> chainedFiles;
   private final List<Long> chainSnapshotIds;
   private final List<CompactionMap> compactionMaps;
@@ -64,10 +73,15 @@ public class ChainedCompactionMapsException extends ValidationException {
   public ChainedCompactionMapsException(
       Set<String> chainedFiles, List<Long> chainSnapshotIds, List<CompactionMap> compactionMaps) {
     super(
-        "Cannot commit deletes: %d file(s) require chained compaction map composition. "
-            + "Chain spans snapshots %s. Either compose the compaction maps to remap deletes, "
-            + "or retry from a more recent snapshot.",
-        chainedFiles.size(), chainSnapshotIds);
+        String.format(
+            Locale.ROOT,
+            "Cannot commit deletes: %d file(s) require chained compaction map composition. "
+                + "Chain spans snapshots %s. Either compose the compaction maps to remap deletes, "
+                + "or retry from a more recent snapshot.",
+            chainedFiles.size(),
+            chainSnapshotIds),
+        chainedFiles,
+        ImmutableMap.of());
     this.chainedFiles = chainedFiles;
     this.chainSnapshotIds = chainSnapshotIds;
     this.compactionMaps = compactionMaps;

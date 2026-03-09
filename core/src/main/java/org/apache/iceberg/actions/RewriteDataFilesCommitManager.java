@@ -235,42 +235,23 @@ public class RewriteDataFilesCommitManager {
           }
         }
       } else {
-        // Fallback: Simple bin-pack mapping for backward compatibility.
-        // SOUNDNESS PRECONDITION: This path assumes the compaction writer concatenated
-        // source files in the same iteration order as sourceFiles, producing a single
-        // output file whose rows are [source0-rows, source1-rows, ...]. This holds for
-        // bin-pack rewrites (which simply copy rows in scan order) but NOT for sort or
-        // z-order rewrites (which rearrange rows). Sort/z-order compactions must use
-        // explicit position tracking via PositionTrackingDataWriter.
+        // No explicit position mappings available. Without position tracking, we cannot
+        // guarantee that the compaction map correctly reflects the actual row-to-position
+        // mapping in the target file(s). A sort or z-order rewrite that preserves record
+        // count would produce an incorrect map that silently corrupts position deletes.
+        //
+        // Skip this group and warn. Enable explicit position tracking via
+        // PositionTrackingDataWriter for correct compaction map generation.
         if (targetFiles.size() == 1) {
-          DataFile targetFile = targetFiles.iterator().next();
-          long targetOffset = 0;
-
-          long totalSourceRecords = 0;
-          for (DataFile sourceFile : sourceFiles) {
-            builder
-                .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
-                .addRun(0L, targetOffset, sourceFile.recordCount());
-
-            targetOffset += sourceFile.recordCount();
-            totalSourceRecords += sourceFile.recordCount();
-          }
-
-          // Verify that the target file record count matches the sum of source records.
-          // A mismatch means the writer reordered, filtered, or duplicated rows, which
-          // invalidates the sequential-offset assumption.
-          Preconditions.checkState(
-              targetFile.recordCount() == totalSourceRecords,
-              "Fallback compaction map requires target record count (%s) to equal sum of "
-                  + "source record counts (%s). Use explicit position tracking for "
-                  + "non-concatenation rewrites.",
-              targetFile.recordCount(),
-              totalSourceRecords);
-        } else {
-          // Multiple target files without position tracking - cannot build accurate map
           LOG.warn(
-              "Skipping compaction map for group with multiple target files ({}). "
-                  + "Multi-target compaction maps require position tracking during rewrite.",
+              "Skipping compaction map for group without position tracking ({} source files → 1 target). "
+                  + "Enable position tracking for correct compaction map generation.",
+              sourceFiles.size());
+        } else {
+          LOG.warn(
+              "Skipping compaction map for group without position tracking ({} source files → {} targets). "
+                  + "Enable position tracking for correct compaction map generation.",
+              sourceFiles.size(),
               targetFiles.size());
         }
       }
