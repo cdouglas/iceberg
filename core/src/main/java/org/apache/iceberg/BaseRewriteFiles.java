@@ -29,6 +29,7 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
   private final DataFileSet addedDataFiles = DataFileSet.create();
   private Long startingSnapshotId = null;
   private String compactionMapLocation = null;
+  private boolean autoCompactionMapDisabled = false;
 
   BaseRewriteFiles(String tableName, TableOperations ops) {
     super(tableName, ops);
@@ -163,6 +164,22 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
     return compactionMapLocation;
   }
 
+  /**
+   * Disables automatic compaction map generation in {@link #apply}.
+   *
+   * <p>When called, the fallback map generation in {@code apply()} is suppressed. Use this when an
+   * external commit manager (e.g., {@link
+   * org.apache.iceberg.actions.RewriteDataFilesCommitManager}) handles map generation and has
+   * determined that no map should be generated (e.g., because no explicit position tracking is
+   * available).
+   *
+   * @return this for method chaining
+   */
+  public BaseRewriteFiles disableAutoCompactionMap() {
+    this.autoCompactionMapDisabled = true;
+    return this;
+  }
+
   @Override
   protected ManifestWriter<DataFile> newManifestWriter(PartitionSpec spec) {
     ManifestWriter<DataFile> writer = super.newManifestWriter(spec);
@@ -177,8 +194,10 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
 
   @Override
   public java.util.List<ManifestFile> apply(TableMetadata base, Snapshot snapshot) {
-    // Generate compaction map if enabled and not already set
-    if (compactionMapLocation == null && shouldGenerateCompactionMap(base)) {
+    // Generate compaction map if enabled and not already set or suppressed
+    if (compactionMapLocation == null
+        && !autoCompactionMapDisabled
+        && shouldGenerateCompactionMap(base)) {
       generateAndWriteCompactionMap(base, snapshot);
     }
 
