@@ -309,8 +309,8 @@ PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
 // Read DV file
 DeleteFile sourceDV = ...; // DV that references compacted file
 
-// Remap DV to new target files
-Map<String, Set<Long>> remappedPositions = remapper.remapDV(sourceDV, fileIO);
+// Remap DV to new target files (use remapDVBulk, not the deprecated remapDV)
+Map<String, Set<Long>> remappedPositions = remapper.remapDVBulk(sourceDV, fileIO);
 
 // remappedPositions is a map from target file path to deleted positions
 // Example: {"s3://bucket/target.parquet" -> [10, 20, 30, 45, 75]}
@@ -399,31 +399,49 @@ rewrite.commit();
 
 ### Handling Compaction Conflicts
 
-When position deletes reference compacted files:
+When position deletes reference compacted files, a `CompactionConflictException` is thrown.
+This is a **correctness requirement**: stale position deletes must be remapped before commit.
+Use `PositionDeleteRemapper.fromConflict()` which handles both single and chained compactions:
 
 ```java
 try {
     rowDelta.addDeletes(deleteFile);
     rowDelta.commit();
 } catch (CompactionConflictException e) {
-    // Get compacted files and map locations from exception
+    // fromConflict() loads and composes all compaction maps from the exception,
+    // including chained maps if multiple sequential compactions occurred.
+    Map<String, PositionDeleteRemapper> remappers =
+        PositionDeleteRemapper.fromConflict(e, table.io());
+
+    // Remap position deletes using the appropriate remapper for each file
+    DeleteFile remappedDelete = remapDeleteFile(deleteFile, remappers);
+
+    // Retry with remapped deletes — validate from current snapshot
+    // to detect any further compactions during the retry
+    table.refresh();
+    RowDelta retry = table.newRowDelta()
+        .validateFromSnapshot(table.currentSnapshot().snapshotId());
+    retry.addDeletes(remappedDelete);
+    retry.commit();
+}
+```
+
+**Manual map loading** (lower-level alternative, does NOT handle chained compactions):
+
+```java
+} catch (CompactionConflictException e) {
     Set<String> compactedFiles = e.compactedFiles();
     Map<String, String> mapLocations = e.compactionMapLocations();
 
-    // Load compaction maps
     List<CompactionMap> maps = mapLocations.values().stream()
         .distinct()
         .map(loc -> CompactionMaps.read(fileIO.newInputFile(loc)))
         .collect(Collectors.toList());
 
-    // Remap position deletes
+    // WARNING: maps.get(0) only works for single compactions.
+    // For chained compactions, use PositionDeleteRemapper.fromConflict() instead.
     PositionDeleteRemapper remapper = new PositionDeleteRemapper(maps.get(0));
-    DeleteFile remappedDelete = remapDeleteFile(deleteFile, remapper);
-
-    // Retry with remapped deletes
-    RowDelta retry = table.newRowDelta();
-    retry.addDeletes(remappedDelete);
-    retry.commit();  // Should succeed
+    // ...
 }
 ```
 
@@ -527,11 +545,15 @@ builder.addFileMapping("file1", "file2")
 - Respects conflict detection filters for partition-aware validation
 - Clear error messages indicating whether remapping is possible
 
-**Isolation Semantics:**
+**Isolation Semantics (read-conflict optimization only):**
 - **REPLACE with compaction map**: No read conflict (structural change only, data unchanged)
 - **REPLACE without compaction map**: Validation failure (potential data change)
 - **SNAPSHOT isolation**: REPLACE operations not checked (existing behavior)
 - **SERIALIZABLE isolation**: REPLACE operations checked with compaction awareness
+
+**Note:** This is independent of write-conflict checking. Position deletes that reference
+compacted files always trigger `CompactionConflictException` via `CompactionMapValidator`,
+regardless of isolation level. See Phase 4 above.
 
 ### Phase 5: Compaction Integration - Core (Completed)
 

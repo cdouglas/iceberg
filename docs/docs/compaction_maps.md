@@ -112,28 +112,54 @@ SparkActions.get(spark)
 6. Writes new delete files referencing the compacted files
 7. Commits compaction with remapped deletes included
 
-## SERIALIZABLE Isolation with Compaction Awareness
+## Conflict Detection: Writes vs Reads
 
-Compaction maps enable SERIALIZABLE isolation to distinguish between structural and logical data changes:
+Compaction maps participate in two independent validation checks during commit. Understanding both is essential for correct integration.
+
+### Write-Conflict Checking (Always Active)
+
+Position deletes are **writes** — they contain physical `(file_path, row_position)` tuples that become stale when files are compacted. This check runs for **all** position delete transactions, regardless of isolation level:
+
+```java
+RowDelta rowDelta = table.newRowDelta()
+    .validateFromSnapshot(startingSnapshotId);
+
+rowDelta.addDeletes(deleteFile);
+
+// If deleteFile references files that were compacted since startingSnapshotId:
+// → CompactionConflictException is thrown
+// → Application MUST remap and retry (see next section)
+rowDelta.commit();
+```
+
+This is **mandatory for correctness**: committing stale position deletes without remapping would silently delete wrong rows or fail to delete intended rows.
+
+### SERIALIZABLE Read-Conflict Optimization
+
+Separately, SERIALIZABLE isolation checks whether concurrent data changes conflict with a transaction's reads. Compaction maps allow this check to distinguish structural changes (compaction) from logical changes (inserts/deletes):
 
 ```java
 // Start DELETE transaction with SERIALIZABLE isolation
 RowDelta rowDelta = table.newRowDelta()
     .validateFromSnapshot(startingSnapshotId)
     .conflictDetectionFilter(Expressions.equal("region", "us-west"))
-    .validateNoConflictingDataFiles();  // Enable SERIALIZABLE
+    .validateNoConflictingDataFiles();  // Enable SERIALIZABLE read check
 
 rowDelta.addDeletes(deleteFile);
 
-// Concurrent compaction occurred:
-// - WITH compaction map: commit succeeds (structural change only)
+// Concurrent compaction occurred (REPLACE operation):
+// - WITH compaction map: no read conflict (structural change only)
 // - WITHOUT compaction map: ValidationException (potential data change)
 rowDelta.commit();
 ```
 
+**Note:** Both checks run independently. A transaction can pass the SERIALIZABLE read check (compaction is structural) but still fail the write check (position deletes reference compacted files). The write-conflict `CompactionConflictException` must always be handled.
+
 ## Handling Compaction Conflicts in Application Transactions
 
-When an application transaction (e.g., RowDelta) conflicts with a compaction that rewrote referenced files, a `CompactionConflictException` is thrown. The application must remap its position deletes and retry.
+When an application transaction (e.g., RowDelta) conflicts with a compaction that rewrote referenced files, a `CompactionConflictException` is thrown. The application **must** remap its position deletes and retry — this is a correctness requirement, not an optimization. Committing stale position deletes would silently corrupt the table by deleting wrong rows or missing intended deletions.
+
+If multiple sequential compactions occurred between the transaction's start and commit (chained compactions), a `ChainedCompactionMapsException` subtype is thrown. The `PositionDeleteRemapper.fromConflict()` helper handles both cases transparently.
 
 ### Complete Example: Recovering from a Compaction Conflict
 
@@ -213,7 +239,7 @@ public class DeleteTransactionWithConflictRecovery {
 
             // Remap positions to target file(s)
             // Returns Map<targetPath, targetPositions[]>
-            Map<String, long[]> mapped = remapper.remapPositionsBulk(sourcePositions);
+            Map<String, long[]> mapped = remapper.remapPositionsBulkPrimitive(sourcePath, sourcePositions);
 
             for (Map.Entry<String, long[]> targetEntry : mapped.entrySet()) {
                 String targetPath = targetEntry.getKey();
@@ -258,7 +284,7 @@ public class DeleteTransactionWithConflictRecovery {
 
 2. **Load remappers**: `PositionDeleteRemapper.fromConflict(exception, io)` handles loading and composing multiple compaction maps if several compactions occurred between the transaction's start and commit.
 
-3. **Handle multi-target remapping**: A single source file may map to multiple target files (when file size limits cause splits). The `remapPositionsBulk()` method returns a map from target paths to position arrays.
+3. **Handle multi-target remapping**: A single source file may map to multiple target files (when file size limits cause splits). The `remapPositionsBulkPrimitive()` method returns a map from target paths to position arrays.
 
 4. **Handle filtered positions**: During merge compaction, some rows are deleted by position deletes applied during the scan. These positions won't appear in the compaction map—they're no-ops and can be safely skipped.
 
@@ -294,9 +320,14 @@ try {
         }
     }
 
-    // Write and commit remapped deletes
+    // Write and commit remapped deletes — validate from current snapshot
+    // to detect any further compactions during the retry
+    table.refresh();
     DeleteFile remappedFile = writePositionDeletes(remappedDeletes, table);
-    table.newRowDelta().addDeletes(remappedFile).commit();
+    table.newRowDelta()
+        .validateFromSnapshot(table.currentSnapshot().snapshotId())
+        .addDeletes(remappedFile)
+        .commit();
 }
 ```
 
