@@ -121,22 +121,6 @@ public class TestCompactionConflictDetection {
             .build();
 
     rewrite.addFile(targetFile);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      long off = 0;
-      for (DataFile sf : sourceFiles) {
-        cmb.addFileMapping(sf.path().toString(), targetFile.path().toString())
-            .addRun(0L, off, sf.recordCount());
-        off += sf.recordCount();
-      }
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite.commit(); // Compaction commits successfully
 
     // 5. Try to commit the RowDelta - should fail with CompactionConflictException
@@ -328,22 +312,6 @@ public class TestCompactionConflictDetection {
             .build();
 
     rewrite.addFile(targetFile);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      long off = 0;
-      for (DataFile sf : sourceFiles) {
-        cmb.addFileMapping(sf.path().toString(), targetFile.path().toString())
-            .addRun(0L, off, sf.recordCount());
-        off += sf.recordCount();
-      }
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite.commit(); // Compaction commits successfully
 
     // 5. Try to commit the RowDelta - should fail with CompactionConflictException
@@ -521,18 +489,6 @@ public class TestCompactionConflictDetection {
     RewriteFiles rewrite1 = table.newRewrite().validateFromSnapshot(snapshotS1);
     rewrite1.deleteFile(f1);
     rewrite1.addFile(f2);
-
-    // Build and attach explicit compaction map for first compaction
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(snapshotS1, snapshotS1 + 1);
-      cmb.addFileMapping(f1.path().toString(), f2.path().toString())
-          .addRun(0L, 0L, f1.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, snapshotS1 + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite1).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite1.commit();
 
     // Second compaction: F2 -> F3 (S2 -> S3)
@@ -547,18 +503,6 @@ public class TestCompactionConflictDetection {
     RewriteFiles rewrite2 = table.newRewrite().validateFromSnapshot(snapshotS2);
     rewrite2.deleteFile(f2);
     rewrite2.addFile(f3);
-
-    // Build and attach explicit compaction map for second compaction
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(snapshotS2, snapshotS2 + 1);
-      cmb.addFileMapping(f2.path().toString(), f3.path().toString())
-          .addRun(0L, 0L, f2.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, snapshotS2 + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite2).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite2.commit();
 
     // Try to commit - should detect chain F1 -> F2 -> F3
@@ -568,8 +512,7 @@ public class TestCompactionConflictDetection {
             () -> rowDelta.commit());
 
     assertThat(chainedException.chainedFiles()).contains(f1.path().toString());
-    // 4 unique snapshot IDs: map1 has (S1, S1+1), map2 has (S2, S2+1)
-    assertThat(chainedException.chainSnapshotIds()).hasSize(4);
+    assertThat(chainedException.chainSnapshotIds()).hasSize(3); // S1, S2, S3
     assertThat(chainedException.compactionMaps()).hasSize(2); // Two maps in the chain
   }
 
@@ -606,18 +549,6 @@ public class TestCompactionConflictDetection {
     RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
     rewrite.deleteFile(source);
     rewrite.addFile(target);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      cmb.addFileMapping(source.path().toString(), target.path().toString())
-          .addRun(0L, 0L, source.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite.commit();
 
     // Create validator and use findCompactionMaps()
@@ -660,22 +591,7 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    RewriteFiles rewrite1 = table.newRewrite().validateFromSnapshot(startingSnapshot);
-    rewrite1.deleteFile(f1);
-    rewrite1.addFile(f2);
-
-    // Build and attach explicit compaction map for first compaction
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      cmb.addFileMapping(f1.path().toString(), f2.path().toString())
-          .addRun(0L, 0L, f1.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite1).setCompactionMapLocation(cmf.location());
-    }
-
-    rewrite1.commit();
+    table.newRewrite().validateFromSnapshot(startingSnapshot).deleteFile(f1).addFile(f2).commit();
 
     // Second compaction
     long snap2 = table.currentSnapshot().snapshotId();
@@ -686,22 +602,7 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    RewriteFiles rewrite2 = table.newRewrite().validateFromSnapshot(snap2);
-    rewrite2.deleteFile(f2);
-    rewrite2.addFile(f3);
-
-    // Build and attach explicit compaction map for second compaction
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(snap2, snap2 + 1);
-      cmb.addFileMapping(f2.path().toString(), f3.path().toString())
-          .addRun(0L, 0L, f2.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, snap2 + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite2).setCompactionMapLocation(cmf.location());
-    }
-
-    rewrite2.commit();
+    table.newRewrite().validateFromSnapshot(snap2).deleteFile(f2).addFile(f3).commit();
 
     // Create validator and use findCompactionMapChain()
     TableMetadata metadata = ((BaseTable) table).operations().current();
@@ -745,22 +646,12 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
-    rewrite.deleteFile(source);
-    rewrite.addFile(target);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      cmb.addFileMapping(source.path().toString(), target.path().toString())
-          .addRun(0L, 0L, source.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
-    rewrite.commit();
+    table
+        .newRewrite()
+        .validateFromSnapshot(startingSnapshot)
+        .deleteFile(source)
+        .addFile(target)
+        .commit();
 
     // Create validator and call with empty list
     TableMetadata metadata = ((BaseTable) table).operations().current();
@@ -1054,6 +945,7 @@ public class TestCompactionConflictDetection {
     rowDelta.addDeletes(deleteFile);
 
     // First compaction: F1 → {T1, T2} (fan-out, first 100 rows to T1, next 100 to T2)
+    // This requires an explicit map since auto-generation only handles single-target rewrites.
     DataFile t1 =
         DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("/path/to/t1.parquet")
@@ -1079,7 +971,6 @@ public class TestCompactionConflictDetection {
       CompactionMapBuilder.FileMappingBuilder fmb =
           cmb.addFileMapping(f1.path().toString(), t1.path().toString());
       fmb.addRun(0L, 0L, 100L);
-      // Second run goes to T2 (per-run target)
       fmb.addRun(100L, 0L, 100L, t2.path().toString());
       CompactionMap cmap = cmb.build();
       OutputFile cmf = CompactionMaps.newCompactionMapFile(table, snap1 + 1);
@@ -1089,7 +980,7 @@ public class TestCompactionConflictDetection {
 
     rewrite1.commit();
 
-    // Second compaction: T1 → T3
+    // Second compaction: T1 → T3 (auto-generated map via single-target fallback)
     long snap2 = table.currentSnapshot().snapshotId();
 
     DataFile t3 =
@@ -1099,22 +990,9 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    RewriteFiles rewrite2 = table.newRewrite().validateFromSnapshot(snap2);
-    rewrite2.deleteFile(t1);
-    rewrite2.addFile(t3);
+    table.newRewrite().validateFromSnapshot(snap2).deleteFile(t1).addFile(t3).commit();
 
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(snap2, snap2 + 1);
-      cmb.addFileMapping(t1.path().toString(), t3.path().toString()).addRun(0L, 0L, 100L);
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, snap2 + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite2).setCompactionMapLocation(cmf.location());
-    }
-
-    rewrite2.commit();
-
-    // Third compaction: T2 → T4
+    // Third compaction: T2 → T4 (auto-generated map via single-target fallback)
     long snap3 = table.currentSnapshot().snapshotId();
 
     DataFile t4 =
@@ -1124,20 +1002,7 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    RewriteFiles rewrite3 = table.newRewrite().validateFromSnapshot(snap3);
-    rewrite3.deleteFile(t2);
-    rewrite3.addFile(t4);
-
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(snap3, snap3 + 1);
-      cmb.addFileMapping(t2.path().toString(), t4.path().toString()).addRun(0L, 0L, 100L);
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, snap3 + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite3).setCompactionMapLocation(cmf.location());
-    }
-
-    rewrite3.commit();
+    table.newRewrite().validateFromSnapshot(snap3).deleteFile(t2).addFile(t4).commit();
 
     // Try to commit deletes referencing F1 — should detect chain with ALL 3 maps
     org.apache.iceberg.exceptions.ChainedCompactionMapsException chainedException =

@@ -26,7 +26,6 @@ import java.util.List;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
@@ -123,22 +122,6 @@ public class TestCompactionMapValidatorMultiFileDeletes {
             .build();
 
     rewrite.addFile(targetFile);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      long off = 0;
-      for (DataFile sf : sourceFiles) {
-        cmb.addFileMapping(sf.path().toString(), targetFile.path().toString())
-            .addRun(0L, off, sf.recordCount());
-        off += sf.recordCount();
-      }
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite.commit();
 
     // Validator should detect the conflict
@@ -221,22 +204,6 @@ public class TestCompactionMapValidatorMultiFileDeletes {
             .build();
 
     rewrite.addFile(targetFile);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      long off = 0;
-      for (DataFile sf : sourceFiles) {
-        cmb.addFileMapping(sf.path().toString(), targetFile.path().toString())
-            .addRun(0L, off, sf.recordCount());
-        off += sf.recordCount();
-      }
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite.commit();
 
     // Multi-file position deletes are conservatively treated as conflicts because

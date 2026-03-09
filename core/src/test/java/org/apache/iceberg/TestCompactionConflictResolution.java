@@ -32,7 +32,6 @@ import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
 import org.apache.iceberg.io.DeleteWriteResult;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
@@ -149,22 +148,6 @@ public class TestCompactionConflictResolution {
             .build();
 
     rewrite.addFile(targetFile);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      long off = 0;
-      for (DataFile sf : sourceFiles) {
-        cmb.addFileMapping(sf.path().toString(), targetFile.path().toString())
-            .addRun(0L, off, sf.recordCount());
-        off += sf.recordCount();
-      }
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite.commit();
 
     // 5. Try to commit and catch conflict
@@ -249,18 +232,6 @@ public class TestCompactionConflictResolution {
             .withRecordCount(100)
             .build();
     rewrite1.addFile(target1);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(snap1, snap1 + 1);
-      cmb.addFileMapping(file1.path().toString(), target1.path().toString())
-          .addRun(0L, 0L, file1.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, snap1 + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite1).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite1.commit();
 
     // Add another file
@@ -317,18 +288,6 @@ public class TestCompactionConflictResolution {
             .withRecordCount(100)
             .build();
     rewrite2.addFile(target2);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(snap2, snap2 + 1);
-      cmb.addFileMapping(file2.path().toString(), target2.path().toString())
-          .addRun(0L, 0L, file2.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, snap2 + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite2).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite2.commit();
 
     // Try to commit - should detect conflicts with both compactions
@@ -430,18 +389,6 @@ public class TestCompactionConflictResolution {
             .withRecordCount(100)
             .build();
     rewrite.addFile(target);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      cmb.addFileMapping(file1.path().toString(), target.path().toString())
-          .addRun(0L, 0L, file1.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite.commit();
 
     // Try to commit - should only conflict on file1
@@ -525,22 +472,6 @@ public class TestCompactionConflictResolution {
             .withRecordCount(200)
             .build();
     rewrite.addFile(targetFile);
-
-    // Build and attach explicit compaction map
-    {
-      CompactionMapBuilder cmb = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-      long off = 0;
-      cmb.addFileMapping(file1.path().toString(), targetFile.path().toString())
-          .addRun(0L, off, file1.recordCount());
-      off += file1.recordCount();
-      cmb.addFileMapping(file2.path().toString(), targetFile.path().toString())
-          .addRun(0L, off, file2.recordCount());
-      CompactionMap cmap = cmb.build();
-      OutputFile cmf = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-      CompactionMaps.write(cmap, cmf);
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(cmf.location());
-    }
-
     rewrite.commit();
 
     // Catch the conflict

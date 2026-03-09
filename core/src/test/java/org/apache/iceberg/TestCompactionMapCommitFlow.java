@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Set;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,7 +35,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Integration tests for compaction map commit flow.
  *
- * <p>These tests verify that explicitly provided compaction maps are correctly referenced in
+ * <p>These tests verify that compaction maps are automatically generated and referenced in
  * ManifestFile records when data files are rewritten.
  */
 public class TestCompactionMapCommitFlow {
@@ -58,7 +57,8 @@ public class TestCompactionMapCommitFlow {
   }
 
   @Test
-  public void testRewriteWithExplicitCompactionMap() throws IOException {
+  public void testRewriteGeneratesCompactionMap() throws IOException {
+    // 1. Create table with compaction maps enabled
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
@@ -68,6 +68,7 @@ public class TestCompactionMapCommitFlow {
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
+    // 2. Write initial data files
     List<DataFile> sourceFiles = Lists.newArrayList();
     for (int i = 0; i < 3; i++) {
       DataFile dataFile =
@@ -79,67 +80,58 @@ public class TestCompactionMapCommitFlow {
       sourceFiles.add(dataFile);
     }
 
+    // Commit source files
     AppendFiles append = table.newAppend();
     sourceFiles.forEach(append::appendFile);
     append.commit();
 
     long snapshotBeforeRewrite = table.currentSnapshot().snapshotId();
 
+    // 3. Perform rewrite via RewriteFiles API
+    RewriteFiles rewrite = table.newRewrite();
+    sourceFiles.forEach(rewrite::deleteFile);
+
+    // Create target file (bin-pack of all 3 source files)
     DataFile targetFile =
         DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("/path/to/target.parquet")
             .withFileSizeInBytes(3072)
-            .withRecordCount(300)
+            .withRecordCount(300) // Sum of source files
             .build();
 
-    // Build compaction map explicitly
-    CompactionMapBuilder builder =
-        new CompactionMapBuilder(snapshotBeforeRewrite, snapshotBeforeRewrite + 1);
-    long offset = 0;
-    for (DataFile sf : sourceFiles) {
-      builder
-          .addFileMapping(sf.path().toString(), targetFile.path().toString())
-          .addRun(0L, offset, sf.recordCount());
-      offset += sf.recordCount();
-    }
-
-    CompactionMap map = builder.build();
-    OutputFile mapFile = CompactionMaps.newCompactionMapFile(table, snapshotBeforeRewrite + 1);
-    CompactionMaps.write(map, mapFile);
-
-    // Perform rewrite with explicit map
-    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(snapshotBeforeRewrite);
-    sourceFiles.forEach(rewrite::deleteFile);
     rewrite.addFile(targetFile);
-    ((BaseRewriteFiles) rewrite).setCompactionMapLocation(mapFile.location());
     rewrite.commit();
 
-    // Verify compaction map was attached
+    // 4. Verify compaction map was written
     Snapshot snapshot = table.currentSnapshot();
     assertThat(snapshot.operation()).isEqualTo(DataOperations.REPLACE);
 
+    List<ManifestFile> manifests = snapshot.dataManifests(table.io());
+    assertThat(manifests).isNotEmpty();
+
+    // Find manifest with added files
     ManifestFile addedManifest =
-        snapshot.dataManifests(table.io()).stream()
-            .filter(ManifestFile::hasAddedFiles)
-            .findFirst()
-            .orElse(null);
+        manifests.stream().filter(m -> m.hasAddedFiles()).findFirst().orElse(null);
 
     assertThat(addedManifest).isNotNull();
-    assertThat(addedManifest.compactionMapLocation()).isNotNull();
+    assertThat(addedManifest.compactionMapLocation())
+        .as("Manifest should have compaction map location")
+        .isNotNull();
 
-    // Verify map content
-    CompactionMap loadedMap =
+    // 5. Load and verify map structure
+    CompactionMap map =
         CompactionMaps.read(table.io().newInputFile(addedManifest.compactionMapLocation()));
 
-    assertThat(loadedMap.sourceSnapshotId()).isEqualTo(snapshotBeforeRewrite);
-    assertThat(loadedMap.fileMappings()).hasSize(3);
+    assertThat(map.sourceSnapshotId()).isEqualTo(snapshotBeforeRewrite);
+    assertThat(map.fileMappings()).hasSize(3); // 3 source files
 
+    // Verify each source file is mapped
     Set<String> sourcePaths =
         sourceFiles.stream()
             .map(f -> f.path().toString())
             .collect(java.util.stream.Collectors.toSet());
 
-    for (CompactionMap.FileMapping mapping : loadedMap.fileMappings()) {
+    for (CompactionMap.FileMapping mapping : map.fileMappings()) {
       assertThat(sourcePaths).contains(mapping.sourceFile());
       assertThat(mapping.targetFile()).isEqualTo(targetFile.path().toString());
       assertThat(mapping.runs()).isNotEmpty();
@@ -148,9 +140,13 @@ public class TestCompactionMapCommitFlow {
 
   @Test
   public void testBackwardCompatibilityWithoutCompactionMaps() throws IOException {
+    // Test that compaction maps are NOT generated when property is disabled
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table_compat");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
+    // Do NOT enable compaction maps (test default behavior)
+
+    // Write and rewrite files
     DataFile sourceFile =
         DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("/path/to/source.parquet")
@@ -158,7 +154,9 @@ public class TestCompactionMapCommitFlow {
             .withRecordCount(100)
             .build();
 
-    table.newAppend().appendFile(sourceFile).commit();
+    AppendFiles append = table.newAppend();
+    append.appendFile(sourceFile);
+    append.commit();
 
     RewriteFiles rewrite = table.newRewrite();
     rewrite.deleteFile(sourceFile);
@@ -174,7 +172,10 @@ public class TestCompactionMapCommitFlow {
     rewrite.commit();
 
     // Verify NO compaction map was written
-    for (ManifestFile manifest : table.currentSnapshot().dataManifests(table.io())) {
+    Snapshot snapshot = table.currentSnapshot();
+    List<ManifestFile> manifests = snapshot.dataManifests(table.io());
+
+    for (ManifestFile manifest : manifests) {
       assertThat(manifest.compactionMapLocation())
           .as("Manifest should not have compaction map location when feature is disabled")
           .isNull();
@@ -183,6 +184,7 @@ public class TestCompactionMapCommitFlow {
 
   @Test
   public void testCompactionMapLocationPersistence() throws IOException {
+    // Test that compaction map location survives table reload
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table_persist");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
@@ -192,6 +194,7 @@ public class TestCompactionMapCommitFlow {
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
+    // Write and rewrite files
     DataFile sourceFile =
         DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("/path/to/source.parquet")
@@ -199,8 +202,12 @@ public class TestCompactionMapCommitFlow {
             .withRecordCount(100)
             .build();
 
-    table.newAppend().appendFile(sourceFile).commit();
-    long startingSnapshot = table.currentSnapshot().snapshotId();
+    AppendFiles append = table.newAppend();
+    append.appendFile(sourceFile);
+    append.commit();
+
+    RewriteFiles rewrite = table.newRewrite();
+    rewrite.deleteFile(sourceFile);
 
     DataFile targetFile =
         DataFiles.builder(PartitionSpec.unpartitioned())
@@ -209,36 +216,26 @@ public class TestCompactionMapCommitFlow {
             .withRecordCount(100)
             .build();
 
-    // Build and write explicit map
-    CompactionMapBuilder builder = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-    builder
-        .addFileMapping(sourceFile.path().toString(), targetFile.path().toString())
-        .addRun(0, 0, 100);
-    CompactionMap map = builder.build();
-    OutputFile mapFile = CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-    CompactionMaps.write(map, mapFile);
-
-    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
-    rewrite.deleteFile(sourceFile);
     rewrite.addFile(targetFile);
-    ((BaseRewriteFiles) rewrite).setCompactionMapLocation(mapFile.location());
     rewrite.commit();
 
+    // Get compaction map location from manifest with added files
     String mapLocation =
         table.currentSnapshot().dataManifests(table.io()).stream()
-            .filter(ManifestFile::hasAddedFiles)
+            .filter(m -> m.hasAddedFiles())
             .findFirst()
             .orElseThrow(() -> new AssertionError("No manifest with added files found"))
             .compactionMapLocation();
 
     assertThat(mapLocation).isNotNull();
 
-    // Reload table and verify persistence
+    // Reload table
     Table reloadedTable = catalog.loadTable(tableIdent);
 
+    // Verify compaction map location is still present
     String reloadedMapLocation =
         reloadedTable.currentSnapshot().dataManifests(table.io()).stream()
-            .filter(ManifestFile::hasAddedFiles)
+            .filter(m -> m.hasAddedFiles())
             .findFirst()
             .orElseThrow(() -> new AssertionError("No manifest with added files found"))
             .compactionMapLocation();
@@ -249,7 +246,8 @@ public class TestCompactionMapCommitFlow {
   }
 
   @Test
-  public void testMultipleRewritesWithExplicitMaps() throws IOException {
+  public void testMultipleRewritesGenerateMultipleMaps() throws IOException {
+    // Test that multiple rewrite operations each generate their own compaction map
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table_multiple");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
@@ -259,7 +257,7 @@ public class TestCompactionMapCommitFlow {
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
-    // First rewrite with explicit map
+    // First rewrite
     DataFile source1 =
         DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("/path/to/source1.parquet")
@@ -267,8 +265,12 @@ public class TestCompactionMapCommitFlow {
             .withRecordCount(100)
             .build();
 
-    table.newAppend().appendFile(source1).commit();
-    long snap1 = table.currentSnapshot().snapshotId();
+    AppendFiles append1 = table.newAppend();
+    append1.appendFile(source1);
+    append1.commit();
+
+    RewriteFiles rewrite1 = table.newRewrite();
+    rewrite1.deleteFile(source1);
 
     DataFile target1 =
         DataFiles.builder(PartitionSpec.unpartitioned())
@@ -277,27 +279,19 @@ public class TestCompactionMapCommitFlow {
             .withRecordCount(100)
             .build();
 
-    CompactionMapBuilder b1 = new CompactionMapBuilder(snap1, snap1 + 1);
-    b1.addFileMapping(source1.path().toString(), target1.path().toString()).addRun(0, 0, 100);
-    OutputFile mf1 = CompactionMaps.newCompactionMapFile(table, snap1 + 1);
-    CompactionMaps.write(b1.build(), mf1);
-
-    RewriteFiles rewrite1 = table.newRewrite().validateFromSnapshot(snap1);
-    rewrite1.deleteFile(source1);
     rewrite1.addFile(target1);
-    ((BaseRewriteFiles) rewrite1).setCompactionMapLocation(mf1.location());
     rewrite1.commit();
 
     String mapLocation1 =
         table.currentSnapshot().dataManifests(table.io()).stream()
-            .filter(ManifestFile::hasAddedFiles)
+            .filter(m -> m.hasAddedFiles())
             .findFirst()
             .orElseThrow(() -> new AssertionError("No manifest with added files found"))
             .compactionMapLocation();
 
     assertThat(mapLocation1).isNotNull();
 
-    // Second rewrite with explicit map
+    // Second rewrite
     DataFile source2 =
         DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("/path/to/source2.parquet")
@@ -305,8 +299,12 @@ public class TestCompactionMapCommitFlow {
             .withRecordCount(100)
             .build();
 
-    table.newAppend().appendFile(source2).commit();
-    long snap2 = table.currentSnapshot().snapshotId();
+    AppendFiles append2 = table.newAppend();
+    append2.appendFile(source2);
+    append2.commit();
+
+    RewriteFiles rewrite2 = table.newRewrite();
+    rewrite2.deleteFile(source2);
 
     DataFile target2 =
         DataFiles.builder(PartitionSpec.unpartitioned())
@@ -315,28 +313,21 @@ public class TestCompactionMapCommitFlow {
             .withRecordCount(100)
             .build();
 
-    CompactionMapBuilder b2 = new CompactionMapBuilder(snap2, snap2 + 1);
-    b2.addFileMapping(source2.path().toString(), target2.path().toString()).addRun(0, 0, 100);
-    OutputFile mf2 = CompactionMaps.newCompactionMapFile(table, snap2 + 1);
-    CompactionMaps.write(b2.build(), mf2);
-
-    RewriteFiles rewrite2 = table.newRewrite().validateFromSnapshot(snap2);
-    rewrite2.deleteFile(source2);
     rewrite2.addFile(target2);
-    ((BaseRewriteFiles) rewrite2).setCompactionMapLocation(mf2.location());
     rewrite2.commit();
 
     String mapLocation2 =
         table.currentSnapshot().dataManifests(table.io()).stream()
-            .filter(ManifestFile::hasAddedFiles)
+            .filter(m -> m.hasAddedFiles())
             .findFirst()
             .orElseThrow(() -> new AssertionError("No manifest with added files found"))
             .compactionMapLocation();
 
     assertThat(mapLocation2).isNotNull();
 
+    // Verify the two maps are different
     assertThat(mapLocation2)
-        .as("Each rewrite should have a unique compaction map")
+        .as("Each rewrite should generate a unique compaction map")
         .isNotEqualTo(mapLocation1);
   }
 }

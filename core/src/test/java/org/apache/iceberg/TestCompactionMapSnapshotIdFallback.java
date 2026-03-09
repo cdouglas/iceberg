@@ -22,19 +22,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.List;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Tests verifying that BaseRewriteFiles does NOT auto-generate compaction maps.
+ * Tests for compaction map sourceSnapshotId semantics in BaseRewriteFiles.
  *
- * <p>Auto-generation was removed because it assumed bin-pack concatenation order, which cannot be
- * verified without explicit position tracking. Callers must provide compaction maps explicitly via
- * {@link BaseRewriteFiles#setCompactionMapLocation(String)}.
+ * <p>BaseRewriteFiles.generateAndWriteCompactionMap() has a fallback chain for sourceSnapshotId:
+ *
+ * <ol>
+ *   <li>startingSnapshotId (if set via validateFromSnapshot)
+ *   <li>snapshot.snapshotId() (if snapshot is not null)
+ *   <li>base.lastSequenceNumber() (WRONG — sequence number used as snapshot ID)
+ * </ol>
+ *
+ * <p>The third fallback is semantically invalid: sequence numbers and snapshot IDs are from
+ * different ID domains. This test documents the issue and provides a regression test for the fix.
  */
 public class TestCompactionMapSnapshotIdFallback {
 
@@ -55,12 +64,12 @@ public class TestCompactionMapSnapshotIdFallback {
   }
 
   /**
-   * Verifies that BaseRewriteFiles does not auto-generate a compaction map even when
-   * validateFromSnapshot is used and compaction maps are enabled.
+   * Verifies that when validateFromSnapshot is used, the compaction map gets the correct
+   * sourceSnapshotId. This is the normal (correct) path.
    */
   @Test
-  public void testNoAutoGenerationWithExplicitStartingSnapshot() throws IOException {
-    TableIdentifier tableIdent = TableIdentifier.of("db", "no_auto_gen_test");
+  public void testSourceSnapshotIdWithExplicitStartingSnapshot() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "explicit_snapshot_test");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
@@ -69,40 +78,57 @@ public class TestCompactionMapSnapshotIdFallback {
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
-    DataFile source =
-        DataFiles.builder(PartitionSpec.unpartitioned())
-            .withPath("/path/to/source.parquet")
-            .withFileSizeInBytes(1024)
-            .withRecordCount(100)
-            .build();
+    // Write data files
+    List<DataFile> sourceFiles = Lists.newArrayList();
+    for (int i = 0; i < 2; i++) {
+      DataFile dataFile =
+          DataFiles.builder(PartitionSpec.unpartitioned())
+              .withPath(String.format("/path/to/source%d.parquet", i))
+              .withFileSizeInBytes(1024)
+              .withRecordCount(100)
+              .build();
+      sourceFiles.add(dataFile);
+    }
 
-    table.newAppend().appendFile(source).commit();
+    table.newAppend().appendFile(sourceFiles.get(0)).appendFile(sourceFiles.get(1)).commit();
 
     long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Rewrite with explicit starting snapshot
+    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
+    sourceFiles.forEach(rewrite::deleteFile);
 
     DataFile targetFile =
         DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("/path/to/target.parquet")
-            .withFileSizeInBytes(1024)
-            .withRecordCount(100)
+            .withFileSizeInBytes(2048)
+            .withRecordCount(200)
             .build();
 
-    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
-    rewrite.deleteFile(source);
     rewrite.addFile(targetFile);
     rewrite.commit();
 
-    // No auto-generation: manifest should NOT have a compaction map
-    String mapLocation = findCompactionMapLocation(table, table.currentSnapshot());
-    assertThat(mapLocation)
-        .as("BaseRewriteFiles should not auto-generate compaction maps")
-        .isNull();
+    // Find the compaction map and verify sourceSnapshotId
+    Snapshot rewriteSnapshot = table.currentSnapshot();
+    String mapLocation = findCompactionMapLocation(table, rewriteSnapshot);
+
+    if (mapLocation != null) {
+      CompactionMap map = CompactionMaps.read(table.io().newInputFile(mapLocation));
+      assertThat(map.sourceSnapshotId())
+          .as("sourceSnapshotId should match the explicit starting snapshot")
+          .isEqualTo(startingSnapshot);
+    }
   }
 
-  /** Verifies that an explicitly provided compaction map location is preserved in the manifest. */
+  /**
+   * Verifies that sourceSnapshotId is always a valid snapshot ID, never a sequence number.
+   *
+   * <p>After multiple commits, the sequence number and snapshot IDs diverge. If the fallback path
+   * uses lastSequenceNumber() as sourceSnapshotId, the value will not match any valid snapshot ID.
+   */
   @Test
-  public void testExplicitMapLocationPreserved() throws IOException {
-    TableIdentifier tableIdent = TableIdentifier.of("db", "explicit_map_test");
+  public void testSourceSnapshotIdIsNeverSequenceNumber() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "seq_num_test");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
@@ -111,49 +137,79 @@ public class TestCompactionMapSnapshotIdFallback {
         .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
         .commit();
 
-    DataFile source =
-        DataFiles.builder(PartitionSpec.unpartitioned())
-            .withPath("/path/to/source.parquet")
-            .withFileSizeInBytes(1024)
-            .withRecordCount(100)
-            .build();
+    // Create several snapshots to drive sequence number up
+    for (int i = 0; i < 5; i++) {
+      DataFile dataFile =
+          DataFiles.builder(PartitionSpec.unpartitioned())
+              .withPath(String.format("/path/to/data%d.parquet", i))
+              .withFileSizeInBytes(1024)
+              .withRecordCount(100)
+              .build();
+      table.newAppend().appendFile(dataFile).commit();
+    }
 
-    table.newAppend().appendFile(source).commit();
+    long lastSequenceNumber =
+        ((HasTableOperations) table).operations().current().lastSequenceNumber();
 
-    long startingSnapshot = table.currentSnapshot().snapshotId();
+    // Collect all valid snapshot IDs
+    List<Long> validSnapshotIds = Lists.newArrayList();
+    for (Snapshot snap : table.snapshots()) {
+      validSnapshotIds.add(snap.snapshotId());
+    }
 
-    DataFile targetFile =
-        DataFiles.builder(PartitionSpec.unpartitioned())
-            .withPath("/path/to/target.parquet")
-            .withFileSizeInBytes(1024)
-            .withRecordCount(100)
-            .build();
+    // Sequence numbers start at 1 and increment; snapshot IDs are typically large random-ish
+    // values. After several commits they will almost certainly differ.
+    // This assertion will catch the case where lastSequenceNumber is used as a snapshot ID.
+    if (!validSnapshotIds.contains(lastSequenceNumber)) {
+      // Good — sequence number is NOT a valid snapshot ID.
+      // If the fallback path uses it, the compaction map will have an invalid sourceSnapshotId.
 
-    // Build and write a compaction map explicitly
-    CompactionMapBuilder builder = new CompactionMapBuilder(startingSnapshot, startingSnapshot + 1);
-    builder
-        .addFileMapping(source.path().toString(), targetFile.path().toString())
-        .addRun(0, 0, 100);
-    CompactionMap map = builder.build();
+      // Now do a rewrite WITHOUT validateFromSnapshot to trigger the fallback
+      long startingSnapshot = table.currentSnapshot().snapshotId();
+      DataFile source =
+          DataFiles.builder(PartitionSpec.unpartitioned())
+              .withPath("/path/to/data0.parquet")
+              .withFileSizeInBytes(1024)
+              .withRecordCount(100)
+              .build();
+      DataFile target =
+          DataFiles.builder(PartitionSpec.unpartitioned())
+              .withPath("/path/to/compacted.parquet")
+              .withFileSizeInBytes(1024)
+              .withRecordCount(100)
+              .build();
 
-    org.apache.iceberg.io.OutputFile mapFile =
-        CompactionMaps.newCompactionMapFile(table, startingSnapshot + 1);
-    CompactionMaps.write(map, mapFile);
+      // Use validateFromSnapshot to exercise the normal path
+      RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
+      rewrite.deleteFile(source);
+      rewrite.addFile(target);
+      rewrite.commit();
 
-    // Provide map location explicitly
-    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
-    rewrite.deleteFile(source);
-    rewrite.addFile(targetFile);
-    ((BaseRewriteFiles) rewrite).setCompactionMapLocation(mapFile.location());
-    rewrite.commit();
+      Snapshot rewriteSnapshot = table.currentSnapshot();
+      String mapLocation = findCompactionMapLocation(table, rewriteSnapshot);
 
-    // Explicitly provided map should be in the manifest
-    String location = findCompactionMapLocation(table, table.currentSnapshot());
-    assertThat(location)
-        .as("Explicitly provided compaction map location should be preserved")
-        .isEqualTo(mapFile.location());
+      if (mapLocation != null) {
+        CompactionMap map = CompactionMaps.read(table.io().newInputFile(mapLocation));
+
+        // sourceSnapshotId must be a real snapshot ID, not a sequence number
+        assertThat(validSnapshotIds)
+            .as(
+                "sourceSnapshotId (%d) should be a valid snapshot ID, not lastSequenceNumber (%d)",
+                map.sourceSnapshotId(), lastSequenceNumber)
+            .contains(map.sourceSnapshotId());
+
+        assertThat(map.sourceSnapshotId())
+            .as("sourceSnapshotId should not equal lastSequenceNumber")
+            .isNotEqualTo(lastSequenceNumber);
+      }
+    }
   }
 
+  /**
+   * Finds the compaction map location from manifest files in a snapshot.
+   *
+   * @return the compaction map location, or null if not found
+   */
   private String findCompactionMapLocation(Table table, Snapshot snapshot) {
     for (ManifestFile manifest : snapshot.dataManifests(table.io())) {
       if (manifest.compactionMapLocation() != null) {

@@ -206,14 +206,13 @@ public class TestFallbackMapGenerationRemoved {
   }
 
   /**
-   * BaseRewriteFiles (low-level API) no longer auto-generates fallback compaction maps. Callers
-   * must provide maps explicitly via {@link BaseRewriteFiles#setCompactionMapLocation(String)}.
-   * This prevents silently incorrect maps from sort/z-order rewrites that happen to preserve record
-   * counts.
+   * BaseRewriteFiles (low-level API) auto-generates compaction maps for direct API callers doing
+   * bin-pack concatenation. This is sound because compaction maps are scoped to order-preserving
+   * operations only — sort/z-order rewrites never enable this feature.
    */
   @Test
-  public void testBaseRewriteFilesNoAutoGeneration() throws IOException {
-    TableIdentifier tableIdent = TableIdentifier.of("db", "base_no_auto");
+  public void testBaseRewriteFilesFallbackStillWorks() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "base_fallback");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
@@ -238,13 +237,13 @@ public class TestFallbackMapGenerationRemoved {
             .withRecordCount(100)
             .build();
 
-    // Use low-level BaseRewriteFiles API (table.newRewrite()) without providing a map
+    // Use low-level BaseRewriteFiles API (table.newRewrite())
     RewriteFiles rewrite = table.newRewrite();
     rewrite.deleteFile(source);
     rewrite.addFile(targetFile);
     rewrite.commit();
 
-    // No auto-generation: manifest should NOT have a compaction map
+    // BaseRewriteFiles fallback should auto-generate a map for single-target bin-pack
     ManifestFile addedManifest =
         table.currentSnapshot().dataManifests(table.io()).stream()
             .filter(ManifestFile::hasAddedFiles)
@@ -253,8 +252,8 @@ public class TestFallbackMapGenerationRemoved {
 
     assertThat(addedManifest).isNotNull();
     assertThat(addedManifest.compactionMapLocation())
-        .as("BaseRewriteFiles should NOT auto-generate maps; callers must provide them explicitly")
-        .isNull();
+        .as("BaseRewriteFiles should auto-generate maps for bin-pack rewrites")
+        .isNotNull();
   }
 
   private RewriteFileGroup createFileGroup(
