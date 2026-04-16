@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.ManifestListSink.ManifestListDelta;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.LocationProvider;
 import org.apache.iceberg.types.Types;
@@ -82,11 +83,20 @@ public class TestManifestListSink {
 
   @TempDir Path referenceDir;
 
-  /** A TableOperations that captures manifest lists instead of writing them to Avro files. */
+  /**
+   * A TableOperations that captures manifest list deltas instead of writing them to Avro files.
+   *
+   * <p>Rebuilds each snapshot's full manifest list from the parent's full list + the delta, the
+   * way an inline catalog would. This demonstrates that the delta is sufficient to reproduce the
+   * full list that would have been written to the Avro file.
+   */
   static class CapturingOps implements TableOperations, ManifestListSink {
 
     private final TableOperations delegate;
+    // Reconstructed full list per snapshot, produced by applying the delta to the parent's list.
     final Map<Long, List<ManifestFile>> capturedBySnapshot = new HashMap<>();
+    // Raw delta captured per snapshot (for assertions about delta size)
+    final Map<Long, ManifestListDelta> deltasBySnapshot = new HashMap<>();
     Long lastSequenceNumber;
     Long lastSnapshotId;
     Long lastParentSnapshotId;
@@ -98,19 +108,33 @@ public class TestManifestListSink {
     }
 
     @Override
-    public void stageManifestList(
+    public void stageManifestListDelta(
         long sequenceNumber,
         long snapshotId,
         Long parentSnapshotId,
         Long nextRowId,
-        List<ManifestFile> manifests,
+        ManifestListDelta delta,
         Long nextRowIdAfter) {
       this.lastSequenceNumber = sequenceNumber;
       this.lastSnapshotId = snapshotId;
       this.lastParentSnapshotId = parentSnapshotId;
       this.lastNextRowId = nextRowId;
       this.lastNextRowIdAfter = nextRowIdAfter;
-      capturedBySnapshot.put(snapshotId, new ArrayList<>(manifests));
+      deltasBySnapshot.put(snapshotId, delta);
+
+      // Reconstruct the full list from parent + delta, as an inline catalog would.
+      List<ManifestFile> parentList =
+          parentSnapshotId != null
+              ? capturedBySnapshot.getOrDefault(parentSnapshotId, new ArrayList<>())
+              : new ArrayList<>();
+      java.util.Set<String> removed = new java.util.HashSet<>(delta.removedPaths());
+      List<ManifestFile> reconstructed = new ArrayList<>(delta.added());
+      for (ManifestFile mf : parentList) {
+        if (!removed.contains(mf.path())) {
+          reconstructed.add(mf);
+        }
+      }
+      capturedBySnapshot.put(snapshotId, reconstructed);
     }
 
     // TableOperations delegation
@@ -271,10 +295,20 @@ public class TestManifestListSink {
       t.newFastAppend().appendFile(FILE_C).commit();
       long snap3Id = t.currentSnapshot().snapshotId();
 
-      // Each commit should have been captured
+      // The RECONSTRUCTED full list per snapshot should match what the Avro path would write
       assertThat(capturing.capturedBySnapshot.get(snap1Id)).hasSize(1);
       assertThat(capturing.capturedBySnapshot.get(snap2Id)).hasSize(2);
       assertThat(capturing.capturedBySnapshot.get(snap3Id)).hasSize(3);
+
+      // The DELTAS captured should be compact: each FastAppend adds exactly 1 manifest
+      // and removes 0. This is the core win — the intention record carries only the
+      // change, not the full list.
+      assertThat(capturing.deltasBySnapshot.get(snap1Id).added()).hasSize(1);
+      assertThat(capturing.deltasBySnapshot.get(snap1Id).removedPaths()).isEmpty();
+      assertThat(capturing.deltasBySnapshot.get(snap2Id).added()).hasSize(1);
+      assertThat(capturing.deltasBySnapshot.get(snap2Id).removedPaths()).isEmpty();
+      assertThat(capturing.deltasBySnapshot.get(snap3Id).added()).hasSize(1);
+      assertThat(capturing.deltasBySnapshot.get(snap3Id).removedPaths()).isEmpty();
 
       // All snapshots have null manifestListLocation
       for (Snapshot snap : t.snapshots()) {
@@ -305,6 +339,56 @@ public class TestManifestListSink {
       assertThat(snapAvroCount)
           .as("No snap-*.avro manifest list files should be written when sink is active")
           .isZero();
+    } finally {
+      TestTables.clearTables();
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {2, 3})
+  public void testSinkCapturesDeltaForDelete(int formatVersion) throws Exception {
+    // Delete rewrites parent manifests (new path + deletion marker), producing
+    // both an added and a removed entry in the delta. Verify the reconstruction.
+    File sinkTableDir = sinkDir.resolve("sink-delete-" + formatVersion).toFile();
+    assertThat(sinkTableDir.mkdir()).isTrue();
+
+    TestTables.TestTable sinkTable =
+        TestTables.create(sinkTableDir, "del", SCHEMA, SPEC, formatVersion);
+
+    try {
+      CapturingOps capturing = new CapturingOps(sinkTable.operations());
+      BaseTable t = new BaseTable(capturing, "del");
+
+      t.newFastAppend().appendFile(FILE_A).commit();
+      t.newFastAppend().appendFile(FILE_B).commit();
+      long parentSnapId = t.currentSnapshot().snapshotId();
+
+      t.newDelete().deleteFile(FILE_A).commit();
+      long delSnapId = t.currentSnapshot().snapshotId();
+
+      ManifestListDelta delta = capturing.deltasBySnapshot.get(delSnapId);
+
+      // Delete rewrites the manifest that held FILE_A: +1 added (rewritten), -1 removed (original)
+      assertThat(delta.added()).as("delete should add the rewritten manifest").hasSize(1);
+      assertThat(delta.removedPaths()).as("delete should remove the original manifest").hasSize(1);
+
+      // Reconstructed full list has 2 entries (FILE_B's manifest unchanged, FILE_A's rewritten)
+      List<ManifestFile> reconstructed = capturing.capturedBySnapshot.get(delSnapId);
+      assertThat(reconstructed).hasSize(2);
+
+      // Parent's 2 paths minus 1 removed plus 1 added = 2 distinct paths
+      java.util.Set<String> parentPaths = new java.util.HashSet<>();
+      for (ManifestFile mf : capturing.capturedBySnapshot.get(parentSnapId)) {
+        parentPaths.add(mf.path());
+      }
+      java.util.Set<String> newPaths = new java.util.HashSet<>();
+      for (ManifestFile mf : reconstructed) {
+        newPaths.add(mf.path());
+      }
+      // Exactly one path should differ (the rewritten one)
+      java.util.Set<String> inBoth = new java.util.HashSet<>(parentPaths);
+      inBoth.retainAll(newPaths);
+      assertThat(inBoth).as("exactly one manifest carried forward unchanged").hasSize(1);
     } finally {
       TestTables.clearTables();
     }

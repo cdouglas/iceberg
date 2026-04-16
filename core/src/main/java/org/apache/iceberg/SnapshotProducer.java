@@ -388,7 +388,12 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
     return ManifestListResult.written(manifestList.location(), nextRowIdAfter);
   }
 
-  /** Inline path: finalize manifests in-memory and hand them to the sink. */
+  /**
+   * Inline path: finalize manifests in-memory, compute the add/remove delta vs parent, and hand
+   * the delta to the sink. The returned {@link InlineSnapshot} still carries the full finalized
+   * list so that subsequent commits in the same session can read parent manifests without
+   * reconstructing from the sink.
+   */
   private ManifestListResult stageManifestList(
       ManifestListSink sink,
       List<ManifestFile> enrichedManifests,
@@ -451,12 +456,47 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
               firstRowId));
     }
 
+    // Compute the delta relative to the parent snapshot's manifest list.
+    // Carried-forward manifests (same path in both) are implicit — zero bytes
+    // in the intention record; the catalog already has them from prior state.
+    Snapshot parentSnapshot = SnapshotUtil.latestSnapshot(base, targetBranch);
+    List<ManifestFile> parentManifests =
+        parentSnapshot == null ? ImmutableList.of() : parentSnapshot.allManifests(ops.io());
+    ManifestListSink.ManifestListDelta delta = computeManifestListDelta(parentManifests, finalized);
+
     Long rowIdForSink = formatVersion >= 3 ? baseNextRowId : null;
     Long rowIdAfter = formatVersion >= 3 ? nextRowId : null;
-    sink.stageManifestList(
-        sequenceNumber, snapshotId(), parentSnapshotId, rowIdForSink, finalized, rowIdAfter);
+    sink.stageManifestListDelta(
+        sequenceNumber, snapshotId(), parentSnapshotId, rowIdForSink, delta, rowIdAfter);
 
     return ManifestListResult.staged(finalized, formatVersion >= 3 ? nextRowId : 0L);
+  }
+
+  /** Computes the add/remove delta between two manifest lists, identified by path. */
+  private static ManifestListSink.ManifestListDelta computeManifestListDelta(
+      List<ManifestFile> parent, List<ManifestFile> current) {
+    Set<String> parentPaths = Sets.newHashSetWithExpectedSize(parent.size());
+    for (ManifestFile mf : parent) {
+      parentPaths.add(mf.path());
+    }
+
+    Set<String> currentPaths = Sets.newHashSetWithExpectedSize(current.size());
+    List<ManifestFile> added = Lists.newArrayList();
+    for (ManifestFile mf : current) {
+      currentPaths.add(mf.path());
+      if (!parentPaths.contains(mf.path())) {
+        added.add(mf);
+      }
+    }
+
+    List<String> removedPaths = Lists.newArrayList();
+    for (ManifestFile mf : parent) {
+      if (!currentPaths.contains(mf.path())) {
+        removedPaths.add(mf.path());
+      }
+    }
+
+    return new ManifestListSink.ManifestListDelta(added, removedPaths);
   }
 
   protected abstract Map<String, String> summary();
