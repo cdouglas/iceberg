@@ -22,37 +22,64 @@ import java.util.List;
 
 /**
  * Optional capability mix-in for {@link TableOperations}. When a {@code TableOperations}
- * implementation also implements this interface, {@link SnapshotProducer#apply()} will hand the
- * finalized manifest list directly to the sink instead of writing it to a separate Avro object.
+ * implementation also implements this interface, {@link SnapshotProducer#apply()} hands a
+ * <b>manifest list delta</b> (added + removed entries relative to the parent snapshot) to the sink
+ * instead of writing the full list to a separate Avro object.
  *
- * <p>This enables a catalog to store manifest lists inline with its own state (for example, in a
- * single-file catalog that absorbs the table's first-level metadata), eliminating the separate
- * {@code snap-*.avro} write per commit.
+ * <p>This enables a catalog to store manifest list state inline with its own state, storing only
+ * the per-commit change rather than the whole list. The reconstructed full list is exposed to the
+ * engine via {@link Snapshot#allManifests(org.apache.iceberg.io.FileIO)} on the {@link Snapshot}
+ * returned by {@code apply()} (which is an in-memory snapshot with the list already populated);
+ * on subsequent loads from storage, the catalog is responsible for replaying its stored deltas
+ * (typically starting from a checkpoint) to rebuild each snapshot's list.
  *
- * <p>When a sink is active, the {@link Snapshot} returned by {@code SnapshotProducer.apply()} has
- * {@link Snapshot#manifestListLocation()} set to {@code null}; callers must read manifests through
- * {@link Snapshot#allManifests(org.apache.iceberg.io.FileIO)} / {@code dataManifests} / {@code
- * deleteManifests}, which the catalog is responsible for satisfying without a file read.
+ * <p>When a sink is active, the returned {@link Snapshot}'s {@link Snapshot#manifestListLocation()}
+ * is {@code null} ("not separate").
  */
 public interface ManifestListSink {
 
   /**
-   * Accept the finalized manifest list for a snapshot. The list has already had sequence numbers
-   * and first-row-id values assigned per the table's format version; it is semantically identical
-   * to what {@link ManifestListWriter} would write to an Avro file.
+   * A manifest list delta: entries to add and entries to remove (by path) relative to the parent
+   * snapshot's manifest list. Each {@code ManifestFile} in {@code added} is finalized (sequence
+   * numbers assigned, v3+ {@code first_row_id} assigned) — semantically identical to what would be
+   * written into the Avro file for a brand-new manifest list entry.
+   *
+   * <p>If the parent snapshot is {@code null} (first commit), {@code removed} is empty and {@code
+   * added} contains the complete initial manifest list.
+   */
+  final class ManifestListDelta {
+    private final List<ManifestFile> added;
+    private final List<String> removedPaths;
+
+    public ManifestListDelta(List<ManifestFile> added, List<String> removedPaths) {
+      this.added = added;
+      this.removedPaths = removedPaths;
+    }
+
+    public List<ManifestFile> added() {
+      return added;
+    }
+
+    public List<String> removedPaths() {
+      return removedPaths;
+    }
+  }
+
+  /**
+   * Accept a manifest list delta for a snapshot.
    *
    * @param sequenceNumber sequence number being assigned to this commit
    * @param snapshotId id of the snapshot being committed
    * @param parentSnapshotId id of the parent snapshot, or null
    * @param nextRowId next-row-id at the start of this commit (v3+), or null for v1/v2
-   * @param manifests the finalized manifest list in the order it would be written
+   * @param delta manifests added and removed (by path) relative to the parent snapshot
    * @param nextRowIdAfter next-row-id after this commit (v3+), or null for v1/v2
    */
-  void stageManifestList(
+  void stageManifestListDelta(
       long sequenceNumber,
       long snapshotId,
       Long parentSnapshotId,
       Long nextRowId,
-      List<ManifestFile> manifests,
+      ManifestListDelta delta,
       Long nextRowIdAfter);
 }
