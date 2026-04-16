@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
+import org.apache.iceberg.encryption.StandardEncryptionManager;
 import org.apache.iceberg.encryption.StandardEncryptionManager.FileEncryptionKeys;
 import org.apache.iceberg.events.CreateSnapshotEvent;
 import org.apache.iceberg.events.Listeners;
@@ -364,40 +365,34 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
           manifest.partitionSpecId());
     }
 
-    OutputFile manifestList = manifestListPath();
+    // Enrich with per-manifest metadata (counts, partition summaries) in parallel.
+    // This is independent of the output path (Avro file vs inline sink).
+    ManifestFile[] enriched = new ManifestFile[manifests.size()];
+    Tasks.range(enriched.length)
+        .stopOnFailure()
+        .throwFailureWhenFinished()
+        .executeWith(workerPool())
+        .run(index -> enriched[index] = withMetadata(manifests.get(index)));
+    List<ManifestFile> enrichedManifests = Arrays.asList(enriched);
 
-    ManifestListWriter writer =
-        ManifestLists.write(
-            ops.current().formatVersion(),
-            manifestList,
-            ops.encryption(),
-            snapshotId(),
-            parentSnapshotId,
-            sequenceNumber,
-            base.nextRowId());
-
-    try (writer) {
-      // keep track of the manifest lists created
-      manifestLists.add(manifestList.location());
-
-      ManifestFile[] manifestFiles = new ManifestFile[manifests.size()];
-
-      Tasks.range(manifestFiles.length)
-          .stopOnFailure()
-          .throwFailureWhenFinished()
-          .executeWith(workerPool())
-          .run(index -> manifestFiles[index] = withMetadata(manifests.get(index)));
-
-      writer.addAll(Arrays.asList(manifestFiles));
-    } catch (IOException e) {
-      throw new RuntimeIOException(e, "Failed to write manifest list file");
+    // Choose output path: if ops is a ManifestListSink, stage the manifest list
+    // inline (no file write). Otherwise, write the Avro manifest list file. A table that encrypts
+    // its manifest lists keeps them in files, as an inline list would be stored unencrypted.
+    ManifestListResult result;
+    if (ops instanceof ManifestListSink
+        && !(ops.encryption() instanceof StandardEncryptionManager)) {
+      result =
+          stageManifestList(
+              (ManifestListSink) ops, enrichedManifests, sequenceNumber, parentSnapshotId);
+    } else {
+      result = writeManifestList(enrichedManifests, sequenceNumber, parentSnapshotId);
     }
 
     Long nextRowId = null;
     Long assignedRows = null;
     if (base.formatVersion() >= 3) {
       nextRowId = base.nextRowId();
-      assignedRows = writer.nextRowId() - base.nextRowId();
+      assignedRows = result.nextRowIdAfter - base.nextRowId();
     }
 
     Map<String, String> summary = summary();
@@ -417,7 +412,25 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
           replacedRecords);
     }
 
-    this.manifestListEncryptionKeys = writer.encryptionKeys();
+    this.manifestListEncryptionKeys = result.encryptionKeys;
+
+    // Sink path: return an InlineSnapshot that carries the manifest list in-memory,
+    // so subsequent commits (which read parentSnapshot.allManifests) don't attempt
+    // a FileIO read of a nonexistent manifest list file.
+    if (result.inlineManifests != null) {
+      return new InlineSnapshot(
+          sequenceNumber,
+          snapshotId(),
+          parentSnapshotId,
+          System.currentTimeMillis(),
+          operation(),
+          summary(base),
+          base.currentSchemaId(),
+          nextRowId,
+          assignedRows,
+          null,
+          result.inlineManifests);
+    }
 
     return new BaseSnapshot(
         sequenceNumber,
@@ -427,7 +440,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
         operation(),
         summary(base),
         base.currentSchemaId(),
-        manifestList.location(),
+        result.manifestListLocation,
         nextRowId,
         assignedRows,
         manifestListEncryptionKeys != null ? manifestListEncryptionKeys.fileKey().keyId() : null);
@@ -445,6 +458,136 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
     boolean valid = snapshotAncestryValidator.validate(snapshotAncestry);
     ValidationException.check(
         valid, "Snapshot ancestry validation failed: %s", snapshotAncestryValidator.errorMessage());
+  }
+
+  /**
+   * Result of producing a manifest list for a snapshot. Exactly one of {@link
+   * #manifestListLocation} or {@link #inlineManifests} is non-null: the former for the Avro file
+   * path, the latter for the inline sink path.
+   */
+  private static final class ManifestListResult {
+    final String manifestListLocation;
+    final List<ManifestFile> inlineManifests;
+    final long nextRowIdAfter;
+    final FileEncryptionKeys encryptionKeys;
+
+    static ManifestListResult written(
+        String location, long nextRowIdAfter, FileEncryptionKeys encryptionKeys) {
+      return new ManifestListResult(location, null, nextRowIdAfter, encryptionKeys);
+    }
+
+    static ManifestListResult staged(List<ManifestFile> manifests, long nextRowIdAfter) {
+      return new ManifestListResult(null, manifests, nextRowIdAfter, null);
+    }
+
+    private ManifestListResult(
+        String manifestListLocation,
+        List<ManifestFile> inlineManifests,
+        long nextRowIdAfter,
+        FileEncryptionKeys encryptionKeys) {
+      this.manifestListLocation = manifestListLocation;
+      this.inlineManifests = inlineManifests;
+      this.nextRowIdAfter = nextRowIdAfter;
+      this.encryptionKeys = encryptionKeys;
+    }
+  }
+
+  /** Default path: write the manifest list to an external Avro file. */
+  private ManifestListResult writeManifestList(
+      List<ManifestFile> enrichedManifests, long sequenceNumber, Long parentSnapshotId) {
+    OutputFile manifestList = manifestListPath();
+    ManifestListWriter writer =
+        ManifestLists.write(
+            ops.current().formatVersion(),
+            manifestList,
+            ops.encryption(),
+            snapshotId(),
+            parentSnapshotId,
+            sequenceNumber,
+            base.nextRowId());
+
+    try (writer) {
+      // keep track of the manifest lists created
+      manifestLists.add(manifestList.location());
+      writer.addAll(enrichedManifests);
+    } catch (IOException e) {
+      throw new RuntimeIOException(e, "Failed to write manifest list file");
+    }
+
+    long nextRowIdAfter = base.formatVersion() >= 3 ? writer.nextRowId() : 0L;
+    return ManifestListResult.written(
+        manifestList.location(), nextRowIdAfter, writer.encryptionKeys());
+  }
+
+  /** Inline path: finalize manifests in-memory and hand them to the sink. */
+  private ManifestListResult stageManifestList(
+      ManifestListSink sink,
+      List<ManifestFile> enrichedManifests,
+      long sequenceNumber,
+      Long parentSnapshotId) {
+    int formatVersion = ops.current().formatVersion();
+    long baseNextRowId = base.nextRowId();
+
+    // Apply the same field transformations that ManifestListWriter does: assign
+    // sequence numbers for manifests from this commit (UNASSIGNED_SEQ -> commit seq)
+    // and assign first-row-id for v3+ data manifests that don't already have one.
+    List<ManifestFile> finalized = Lists.newArrayListWithExpectedSize(enrichedManifests.size());
+    long nextRowId = baseNextRowId;
+    for (ManifestFile mf : enrichedManifests) {
+      if (formatVersion < 2) {
+        finalized.add(mf);
+        continue;
+      }
+
+      long seq = mf.sequenceNumber();
+      long minSeq = mf.minSequenceNumber();
+      if (seq == ManifestWriter.UNASSIGNED_SEQ) {
+        Preconditions.checkState(
+            snapshotId() == mf.snapshotId(),
+            "Found unassigned sequence number for a manifest from snapshot: %s",
+            mf.snapshotId());
+        seq = sequenceNumber;
+      }
+      if (minSeq == ManifestWriter.UNASSIGNED_SEQ) {
+        Preconditions.checkState(
+            snapshotId() == mf.snapshotId(),
+            "Found unassigned sequence number for a manifest from snapshot: %s",
+            mf.snapshotId());
+        minSeq = sequenceNumber;
+      }
+
+      Long firstRowId = mf.firstRowId();
+      if (formatVersion >= 3 && mf.content() == ManifestContent.DATA && firstRowId == null) {
+        firstRowId = nextRowId;
+        nextRowId += mf.existingRowsCount() + mf.addedRowsCount();
+      }
+
+      finalized.add(
+          new GenericManifestFile(
+              mf.path(),
+              mf.length(),
+              mf.partitionSpecId(),
+              mf.content(),
+              seq,
+              minSeq,
+              mf.snapshotId(),
+              mf.partitions(),
+              mf.keyMetadata(),
+              mf.addedFilesCount(),
+              mf.addedRowsCount(),
+              mf.existingFilesCount(),
+              mf.existingRowsCount(),
+              mf.deletedFilesCount(),
+              mf.deletedRowsCount(),
+              firstRowId));
+    }
+
+    Long rowIdForSink = formatVersion >= 3 ? baseNextRowId : null;
+    Long rowIdAfter = formatVersion >= 3 ? nextRowId : null;
+    sink.stageManifestList(
+        sequenceNumber, snapshotId(), parentSnapshotId, rowIdForSink, finalized, rowIdAfter);
+
+    return ManifestListResult.staged(finalized, formatVersion >= 3 ? nextRowId : 0L);
   }
 
   protected abstract Map<String, String> summary();
@@ -639,7 +782,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
 
           // also clean up unused manifest lists created by multiple attempts
           for (String manifestList : manifestLists) {
-            if (!saved.manifestListLocation().equals(manifestList)) {
+            if (!manifestList.equals(saved.manifestListLocation())) {
               deleteFile(manifestList);
             }
           }
