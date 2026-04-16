@@ -46,7 +46,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
  * this snapshot. The inline manifest list is only the list-level state; manifest files themselves
  * remain external.
  */
-class InlineSnapshot implements Snapshot {
+public class InlineSnapshot implements Snapshot {
 
   private static final long serialVersionUID = 1L;
 
@@ -72,7 +72,7 @@ class InlineSnapshot implements Snapshot {
   private transient List<DeleteFile> addedDeleteFiles = null;
   private transient List<DeleteFile> removedDeleteFiles = null;
 
-  InlineSnapshot(
+  public InlineSnapshot(
       long sequenceNumber,
       long snapshotId,
       Long parentId,
