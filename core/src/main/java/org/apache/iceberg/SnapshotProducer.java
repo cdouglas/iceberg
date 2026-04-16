@@ -260,39 +260,32 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
     validate(base, parentSnapshot);
     List<ManifestFile> manifests = apply(base, parentSnapshot);
 
-    OutputFile manifestList = manifestListPath();
+    // Enrich with per-manifest metadata (counts, partition summaries) in parallel.
+    // This is independent of the output path (Avro file vs inline sink).
+    ManifestFile[] enriched = new ManifestFile[manifests.size()];
+    Tasks.range(enriched.length)
+        .stopOnFailure()
+        .throwFailureWhenFinished()
+        .executeWith(workerPool())
+        .run(index -> enriched[index] = manifestsWithMetadata.get(manifests.get(index)));
+    List<ManifestFile> enrichedManifests = Arrays.asList(enriched);
 
-    ManifestListWriter writer =
-        ManifestLists.write(
-            ops.current().formatVersion(),
-            manifestList,
-            snapshotId(),
-            parentSnapshotId,
-            sequenceNumber,
-            base.nextRowId());
-
-    try (writer) {
-      // keep track of the manifest lists created
-      manifestLists.add(manifestList.location());
-
-      ManifestFile[] manifestFiles = new ManifestFile[manifests.size()];
-
-      Tasks.range(manifestFiles.length)
-          .stopOnFailure()
-          .throwFailureWhenFinished()
-          .executeWith(workerPool())
-          .run(index -> manifestFiles[index] = manifestsWithMetadata.get(manifests.get(index)));
-
-      writer.addAll(Arrays.asList(manifestFiles));
-    } catch (IOException e) {
-      throw new RuntimeIOException(e, "Failed to write manifest list file");
+    // Choose output path: if ops is a ManifestListSink, stage the manifest list
+    // inline (no file write). Otherwise, write the Avro manifest list file.
+    ManifestListResult result;
+    if (ops instanceof ManifestListSink) {
+      result =
+          stageManifestList(
+              (ManifestListSink) ops, enrichedManifests, sequenceNumber, parentSnapshotId);
+    } else {
+      result = writeManifestList(enrichedManifests, sequenceNumber, parentSnapshotId);
     }
 
     Long nextRowId = null;
     Long assignedRows = null;
     if (base.formatVersion() >= 3) {
       nextRowId = base.nextRowId();
-      assignedRows = writer.nextRowId() - base.nextRowId();
+      assignedRows = result.nextRowIdAfter - base.nextRowId();
     }
 
     Map<String, String> summary = summary();
@@ -312,6 +305,24 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
           replacedRecords);
     }
 
+    // Sink path: return an InlineSnapshot that carries the manifest list in-memory,
+    // so subsequent commits (which read parentSnapshot.allManifests) don't attempt
+    // a FileIO read of a nonexistent manifest list file.
+    if (result.inlineManifests != null) {
+      return new InlineSnapshot(
+          sequenceNumber,
+          snapshotId(),
+          parentSnapshotId,
+          System.currentTimeMillis(),
+          operation(),
+          summary(base),
+          base.currentSchemaId(),
+          nextRowId,
+          assignedRows,
+          null,
+          result.inlineManifests);
+    }
+
     return new BaseSnapshot(
         sequenceNumber,
         snapshotId(),
@@ -320,10 +331,132 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
         operation(),
         summary(base),
         base.currentSchemaId(),
-        manifestList.location(),
+        result.manifestListLocation,
         nextRowId,
         assignedRows,
         null);
+  }
+
+  /**
+   * Result of producing a manifest list for a snapshot. Exactly one of {@link
+   * #manifestListLocation} or {@link #inlineManifests} is non-null: the former for the Avro file
+   * path, the latter for the inline sink path.
+   */
+  private static final class ManifestListResult {
+    final String manifestListLocation;
+    final List<ManifestFile> inlineManifests;
+    final long nextRowIdAfter;
+
+    static ManifestListResult written(String location, long nextRowIdAfter) {
+      return new ManifestListResult(location, null, nextRowIdAfter);
+    }
+
+    static ManifestListResult staged(List<ManifestFile> manifests, long nextRowIdAfter) {
+      return new ManifestListResult(null, manifests, nextRowIdAfter);
+    }
+
+    private ManifestListResult(
+        String manifestListLocation, List<ManifestFile> inlineManifests, long nextRowIdAfter) {
+      this.manifestListLocation = manifestListLocation;
+      this.inlineManifests = inlineManifests;
+      this.nextRowIdAfter = nextRowIdAfter;
+    }
+  }
+
+  /** Default path: write the manifest list to an external Avro file. */
+  private ManifestListResult writeManifestList(
+      List<ManifestFile> enrichedManifests, long sequenceNumber, Long parentSnapshotId) {
+    OutputFile manifestList = manifestListPath();
+    ManifestListWriter writer =
+        ManifestLists.write(
+            ops.current().formatVersion(),
+            manifestList,
+            snapshotId(),
+            parentSnapshotId,
+            sequenceNumber,
+            base.nextRowId());
+
+    try (writer) {
+      // keep track of the manifest lists created
+      manifestLists.add(manifestList.location());
+      writer.addAll(enrichedManifests);
+    } catch (IOException e) {
+      throw new RuntimeIOException(e, "Failed to write manifest list file");
+    }
+
+    long nextRowIdAfter = base.formatVersion() >= 3 ? writer.nextRowId() : 0L;
+    return ManifestListResult.written(manifestList.location(), nextRowIdAfter);
+  }
+
+  /** Inline path: finalize manifests in-memory and hand them to the sink. */
+  private ManifestListResult stageManifestList(
+      ManifestListSink sink,
+      List<ManifestFile> enrichedManifests,
+      long sequenceNumber,
+      Long parentSnapshotId) {
+    int formatVersion = ops.current().formatVersion();
+    long baseNextRowId = base.nextRowId();
+
+    // Apply the same field transformations that ManifestListWriter does: assign
+    // sequence numbers for manifests from this commit (UNASSIGNED_SEQ -> commit seq)
+    // and assign first-row-id for v3+ data manifests that don't already have one.
+    List<ManifestFile> finalized = Lists.newArrayListWithExpectedSize(enrichedManifests.size());
+    long nextRowId = baseNextRowId;
+    for (ManifestFile mf : enrichedManifests) {
+      if (formatVersion < 2) {
+        finalized.add(mf);
+        continue;
+      }
+
+      long seq = mf.sequenceNumber();
+      long minSeq = mf.minSequenceNumber();
+      if (seq == ManifestWriter.UNASSIGNED_SEQ) {
+        Preconditions.checkState(
+            snapshotId() == mf.snapshotId(),
+            "Found unassigned sequence number for a manifest from snapshot: %s",
+            mf.snapshotId());
+        seq = sequenceNumber;
+      }
+      if (minSeq == ManifestWriter.UNASSIGNED_SEQ) {
+        Preconditions.checkState(
+            snapshotId() == mf.snapshotId(),
+            "Found unassigned sequence number for a manifest from snapshot: %s",
+            mf.snapshotId());
+        minSeq = sequenceNumber;
+      }
+
+      Long firstRowId = mf.firstRowId();
+      if (formatVersion >= 3 && mf.content() == ManifestContent.DATA && firstRowId == null) {
+        firstRowId = nextRowId;
+        nextRowId += mf.existingRowsCount() + mf.addedRowsCount();
+      }
+
+      finalized.add(
+          new GenericManifestFile(
+              mf.path(),
+              mf.length(),
+              mf.partitionSpecId(),
+              mf.content(),
+              seq,
+              minSeq,
+              mf.snapshotId(),
+              mf.partitions(),
+              mf.keyMetadata(),
+              mf.addedFilesCount(),
+              mf.addedRowsCount(),
+              mf.existingFilesCount(),
+              mf.existingRowsCount(),
+              mf.deletedFilesCount(),
+              mf.deletedRowsCount(),
+              firstRowId));
+    }
+
+    Long rowIdForSink = formatVersion >= 3 ? baseNextRowId : null;
+    Long rowIdAfter = formatVersion >= 3 ? nextRowId : null;
+    sink.stageManifestList(
+        sequenceNumber, snapshotId(), parentSnapshotId, rowIdForSink, finalized, rowIdAfter);
+
+    return ManifestListResult.staged(finalized, formatVersion >= 3 ? nextRowId : 0L);
   }
 
   protected abstract Map<String, String> summary();
