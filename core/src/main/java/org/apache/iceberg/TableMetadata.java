@@ -914,6 +914,7 @@ public class TableMetadata implements Serializable {
     private final Map<Long, List<StatisticsFile>> statisticsFiles;
     private final Map<Long, List<PartitionStatisticsFile>> partitionStatisticsFiles;
     private boolean suppressHistoricalSnapshots = false;
+    private boolean snapshotsReplaced = false;
     private long nextRowId;
     private final List<EncryptedKey> encryptionKeys;
 
@@ -1402,6 +1403,36 @@ public class TableMetadata implements Serializable {
       return this;
     }
 
+    /**
+     * Replaces snapshot implementations in-place without touching refs, sequence numbers,
+     * or any other builder state. Used by inline manifest list loading to swap BaseSnapshot
+     * with InlineSnapshot while preserving all metadata invariants.
+     *
+     * <p>Sets {@code snapshotsReplaced} so {@link #hasChanges()} returns true; otherwise
+     * {@link #build()} would short-circuit to {@code return base} and discard the replacements,
+     * since replacing snapshot implementations doesn't add a {@code MetadataUpdate} to the
+     * changes log.
+     */
+    public Builder replaceSnapshots(Map<Long, Snapshot> replacements) {
+      List<Snapshot> replaced = Lists.newArrayListWithExpectedSize(snapshots.size());
+      boolean anyReplaced = false;
+      for (Snapshot s : snapshots) {
+        Snapshot replacement = replacements.get(s.snapshotId());
+        if (replacement != null) {
+          replaced.add(replacement);
+          snapshotsById.put(s.snapshotId(), replacement);
+          anyReplaced = true;
+        } else {
+          replaced.add(s);
+        }
+      }
+      this.snapshots = replaced;
+      if (anyReplaced) {
+        this.snapshotsReplaced = true;
+      }
+      return this;
+    }
+
     public Builder removeSnapshots(List<Snapshot> snapshotsToRemove) {
       Set<Long> idsToRemove =
           snapshotsToRemove.stream().map(Snapshot::snapshotId).collect(Collectors.toSet());
@@ -1526,6 +1557,7 @@ public class TableMetadata implements Serializable {
           || (discardChanges && !changes.isEmpty())
           || metadataLocation != null
           || suppressHistoricalSnapshots
+          || snapshotsReplaced
           || null != snapshotsSupplier;
     }
 
