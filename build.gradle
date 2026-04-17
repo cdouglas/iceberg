@@ -86,18 +86,74 @@ tasks.withType(AbstractArchiveTask).configureEach {
   reproducibleFileOrder = true
 }
 
-apply plugin: 'com.gorylenko.gradle-git-properties'
 // git properties file for the root project for adding to the source tarball
+//
+// gradle-git-properties uses JGit, which doesn't handle git worktrees correctly: the plugin
+// fails with "repository not found" when rootDir/.git is a worktree pointer file. Since this
+// iceberg/ checkout is typically a worktree (the .git file points at an external common dir),
+// we replace the plugin's behavior with a shell-out to the git CLI, which handles worktrees
+// natively. failOnNoGitDirectory=false keeps source-tarball builds working.
+def runGit = { String... args ->
+  try {
+    def out = new ByteArrayOutputStream()
+    def err = new ByteArrayOutputStream()
+    def proc = new ProcessBuilder((["git"] + args.toList()) as List<String>)
+        .directory(rootDir)
+        .redirectErrorStream(false)
+        .start()
+    proc.inputStream.withStream { it.transferTo(out) }
+    proc.errorStream.withStream { it.transferTo(err) }
+    if (proc.waitFor() != 0) {
+      return null
+    }
+    return out.toString("UTF-8").trim()
+  } catch (Exception ignored) {
+    return null
+  }
+}
+
+apply plugin: 'com.gorylenko.gradle-git-properties'
 gitProperties {
   gitPropertiesName = 'iceberg-build.properties'
   gitPropertiesResourceDir = file("${rootDir}/build")
   extProperty = 'gitProps'
-  failOnNoGitDirectory = true
-  keys = ['git.branch', 'git.build.version', 'git.closest.tag.name','git.commit.id.abbrev', 'git.commit.id',
-          'git.commit.message.short', 'git.commit.time', 'git.tags']
+  failOnNoGitDirectory = false
+  keys = ['git.branch', 'git.build.version', 'git.closest.tag.name', 'git.commit.id.abbrev',
+          'git.commit.id', 'git.commit.message.short', 'git.commit.time', 'git.tags']
   version = projectVersion
 }
-generateGitProperties.outputs.upToDateWhen { false }
+
+// Override the JGit-driven task with a shell-out implementation. The plugin's task runs first and
+// emits whatever it can (often empty in worktrees); we then overwrite the file with accurate data
+// derived from the git CLI, which handles worktrees correctly.
+generateGitProperties {
+  outputs.upToDateWhen { false }
+  doLast {
+    def commit = runGit("rev-parse", "HEAD")
+    if (commit == null) {
+      return
+    }
+    def abbrev = runGit("rev-parse", "--short=7", "HEAD") ?: commit.substring(0, Math.min(7, commit.length()))
+    def branch = runGit("rev-parse", "--abbrev-ref", "HEAD") ?: ""
+    def msg = runGit("log", "-1", "--pretty=%s") ?: ""
+    def when = runGit("log", "-1", "--date=iso-strict", "--pretty=%cd") ?: ""
+    def tag = runGit("describe", "--tags", "--abbrev=0") ?: ""
+    def tags = runGit("tag", "--points-at", "HEAD") ?: ""
+    def props = [
+        "git.branch=${branch}",
+        "git.build.version=${project.version}",
+        "git.closest.tag.name=${tag}",
+        "git.commit.id=${commit}",
+        "git.commit.id.abbrev=${abbrev}",
+        "git.commit.message.short=${msg.replace("\\", "\\\\").replace(":", "\\:").replace("=", "\\=")}",
+        "git.commit.time=${when.replace(":", "\\:")}",
+        "git.tags=${tags.replace("\n", ",")}"
+    ]
+    def outFile = file("${rootDir}/build/iceberg-build.properties")
+    outFile.parentFile.mkdirs()
+    outFile.text = props.join("\n") + "\n"
+  }
+}
 
 if (file("${rootDir}/iceberg-build.properties").exists()) {
   tasks.register('buildInfo', Exec) {
