@@ -49,11 +49,11 @@ import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
  * <p><b>Identity:</b> {@link #equals(Object)} and {@link #hashCode()} compare only scalar identity
  * fields ({@code snapshotId}, {@code parentId}, {@code sequenceNumber}, {@code timestampMillis},
  * {@code schemaId}), <em>not</em> the manifest list contents. This matches {@link BaseSnapshot}'s
- * contract and supports {@link java.util.Set Set}-based membership checks across mixed
- * {@code BaseSnapshot} / {@code InlineSnapshot} instances (e.g. in {@code ReachableFileCleanup}).
- * Two {@code InlineSnapshot} instances with the same scalar identity and different manifest lists
- * are {@code equal()} — callers that need to detect manifest-pool divergence must compare
- * {@link #allManifests(FileIO)} explicitly rather than relying on {@code equals}.
+ * contract and supports {@link java.util.Set Set}-based membership checks across mixed {@code
+ * BaseSnapshot} / {@code InlineSnapshot} instances (e.g. in {@code ReachableFileCleanup}). Two
+ * {@code InlineSnapshot} instances with the same scalar identity and different manifest lists are
+ * {@code equal()} — callers that need to detect manifest-pool divergence must compare {@link
+ * #allManifests(FileIO)} explicitly rather than relying on {@code equals}.
  */
 public class InlineSnapshot implements Snapshot {
 
