@@ -331,8 +331,8 @@ class BaseSnapshot implements Snapshot {
       return true;
     }
 
-    if (o instanceof BaseSnapshot) {
-      BaseSnapshot other = (BaseSnapshot) o;
+    if (o instanceof Snapshot) {
+      Snapshot other = (Snapshot) o;
       return this.snapshotId == other.snapshotId()
           && Objects.equal(this.parentId, other.parentId())
           && this.sequenceNumber == other.sequenceNumber()

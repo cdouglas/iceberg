@@ -45,6 +45,15 @@ import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
  * read individual manifest files (not manifest lists) to identify which files were added/removed in
  * this snapshot. The inline manifest list is only the list-level state; manifest files themselves
  * remain external.
+ *
+ * <p><b>Identity:</b> {@link #equals(Object)} and {@link #hashCode()} compare only scalar identity
+ * fields ({@code snapshotId}, {@code parentId}, {@code sequenceNumber}, {@code timestampMillis},
+ * {@code schemaId}), <em>not</em> the manifest list contents. This matches {@link BaseSnapshot}'s
+ * contract and supports {@link java.util.Set Set}-based membership checks across mixed
+ * {@code BaseSnapshot} / {@code InlineSnapshot} instances (e.g. in {@code ReachableFileCleanup}).
+ * Two {@code InlineSnapshot} instances with the same scalar identity and different manifest lists
+ * are {@code equal()} — callers that need to detect manifest-pool divergence must compare
+ * {@link #allManifests(FileIO)} explicitly rather than relying on {@code equals}.
  */
 public class InlineSnapshot implements Snapshot {
 
@@ -270,6 +279,28 @@ public class InlineSnapshot implements Snapshot {
 
     this.addedDeleteFiles = adds.build();
     this.removedDeleteFiles = deletes.build();
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o instanceof Snapshot) {
+      Snapshot other = (Snapshot) o;
+      return this.snapshotId == other.snapshotId()
+          && Objects.equal(this.parentId, other.parentId())
+          && this.sequenceNumber == other.sequenceNumber()
+          && this.timestampMillis == other.timestampMillis()
+          && Objects.equal(this.schemaId, other.schemaId());
+    }
+    return false;
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hashCode(
+        this.snapshotId, this.parentId, this.sequenceNumber, this.timestampMillis, this.schemaId);
   }
 
   @Override

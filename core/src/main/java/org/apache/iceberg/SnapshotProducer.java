@@ -662,7 +662,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
         }
         // also clean up unused manifest lists created by multiple attempts
         for (String manifestList : manifestLists) {
-          if (!committedSnapshot.manifestListLocation().equals(manifestList)) {
+          if (!manifestList.equals(committedSnapshot.manifestListLocation())) {
             deleteFile(manifestList);
           }
         }
