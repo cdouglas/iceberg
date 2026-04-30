@@ -29,8 +29,8 @@ import java.util.List;
  * <p>This enables a catalog to store manifest list state inline with its own state, storing only
  * the per-commit change rather than the whole list. The reconstructed full list is exposed to the
  * engine via {@link Snapshot#allManifests(org.apache.iceberg.io.FileIO)} on the {@link Snapshot}
- * returned by {@code apply()} (which is an in-memory snapshot with the list already populated);
- * on subsequent loads from storage, the catalog is responsible for replaying its stored deltas
+ * returned by {@code apply()} (which is an in-memory snapshot with the list already populated); on
+ * subsequent loads from storage, the catalog is responsible for replaying its stored deltas
  * (typically starting from a checkpoint) to rebuild each snapshot's list.
  *
  * <p>When a sink is active, the returned {@link Snapshot}'s {@link Snapshot#manifestListLocation()}

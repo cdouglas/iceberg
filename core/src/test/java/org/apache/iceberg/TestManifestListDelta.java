@@ -170,9 +170,7 @@ public class TestManifestListDelta extends TestBase {
       List<ManifestFile> currentML = current.allManifests(table.io());
 
       ManifestListDelta delta = computeDelta(parentML, currentML);
-      assertThat(delta.added)
-          .as("Transition %d→%d should add 1 manifest", i - 1, i)
-          .hasSize(1);
+      assertThat(delta.added).as("Transition %d→%d should add 1 manifest", i - 1, i).hasSize(1);
       assertThat(delta.removed)
           .as("Transition %d→%d should remove 0 manifests", i - 1, i)
           .isEmpty();
@@ -277,9 +275,7 @@ public class TestManifestListDelta extends TestBase {
     assertThat(mb_in_ml3)
         .as("ml3 should contain one manifest carried over unchanged from ml2")
         .isNotNull();
-    assertThat(mb_in_ml3.path())
-        .as("carried manifest path matches parent")
-        .isIn(pathsOf(ml2));
+    assertThat(mb_in_ml3.path()).as("carried manifest path matches parent").isIn(pathsOf(ml2));
   }
 
   @TestTemplate
@@ -442,9 +438,7 @@ public class TestManifestListDelta extends TestBase {
 
       // V3+: assign first_row_id for data manifests that don't have one
       Long firstRowId = mf.firstRowId();
-      if (formatVersion >= 3
-          && mf.content() == ManifestContent.DATA
-          && firstRowId == null) {
+      if (formatVersion >= 3 && mf.content() == ManifestContent.DATA && firstRowId == null) {
         firstRowId = nextRowId;
         nextRowId += mf.existingRowsCount() + mf.addedRowsCount();
       }
@@ -510,8 +504,7 @@ public class TestManifestListDelta extends TestBase {
     // snapshot (they've already been finalized by the writer), so this is a
     // unit-level check of the logic rather than an end-to-end comparison.
     List<ManifestFile> localFinalized =
-        finalizeManifests(
-            fromAvro, formatVersion, snap.snapshotId(), snap.sequenceNumber(), 0L);
+        finalizeManifests(fromAvro, formatVersion, snap.snapshotId(), snap.sequenceNumber(), 0L);
     for (int i = 0; i < fromAvro.size(); i++) {
       ManifestFile a = fromAvro.get(i);
       ManifestFile b = localFinalized.get(i);
