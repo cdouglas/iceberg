@@ -1404,14 +1404,13 @@ public class TableMetadata implements Serializable {
     }
 
     /**
-     * Replaces snapshot implementations in-place without touching refs, sequence numbers,
-     * or any other builder state. Used by inline manifest list loading to swap BaseSnapshot
-     * with InlineSnapshot while preserving all metadata invariants.
+     * Replaces snapshot implementations in-place without touching refs, sequence numbers, or any
+     * other builder state. Used by inline manifest list loading to swap BaseSnapshot with
+     * InlineSnapshot while preserving all metadata invariants.
      *
-     * <p>Sets {@code snapshotsReplaced} so {@link #hasChanges()} returns true; otherwise
-     * {@link #build()} would short-circuit to {@code return base} and discard the replacements,
-     * since replacing snapshot implementations doesn't add a {@code MetadataUpdate} to the
-     * changes log.
+     * <p>Sets {@code snapshotsReplaced} so {@link #hasChanges()} returns true; otherwise {@link
+     * #build()} would short-circuit to {@code return base} and discard the replacements, since
+     * replacing snapshot implementations doesn't add a {@code MetadataUpdate} to the changes log.
      */
     public Builder replaceSnapshots(Map<Long, Snapshot> replacements) {
       List<Snapshot> replaced = Lists.newArrayListWithExpectedSize(snapshots.size());

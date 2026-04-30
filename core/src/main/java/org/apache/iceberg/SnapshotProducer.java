@@ -389,10 +389,10 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
   }
 
   /**
-   * Inline path: finalize manifests in-memory, compute the add/remove delta vs parent, and hand
-   * the delta to the sink. The returned {@link InlineSnapshot} still carries the full finalized
-   * list so that subsequent commits in the same session can read parent manifests without
-   * reconstructing from the sink.
+   * Inline path: finalize manifests in-memory, compute the add/remove delta vs parent, and hand the
+   * delta to the sink. The returned {@link InlineSnapshot} still carries the full finalized list so
+   * that subsequent commits in the same session can read parent manifests without reconstructing
+   * from the sink.
    */
   private ManifestListResult stageManifestList(
       ManifestListSink sink,
