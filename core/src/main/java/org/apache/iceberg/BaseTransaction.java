@@ -95,7 +95,16 @@ public class BaseTransaction implements Transaction {
     this.ops = ops;
     this.transactionTable = new TransactionTable();
     this.current = start;
-    this.transactionOps = new TransactionTableOperations();
+    // Capability-transparent wrapper: if the underlying ops is a ManifestListSink,
+    // expose that capability through the wrapper so SnapshotProducer.apply() takes
+    // the inline path (no transient snap-*.avro files written and orphaned on a
+    // crash before the catalog commit). The temp(...) view path is intentionally
+    // sink-less — temp constructs an in-memory TableOperations from a hypothetical
+    // metadata snapshot that must not pollute the catalog with stale deltas.
+    this.transactionOps =
+        (ops instanceof ManifestListSink)
+            ? new TransactionTableOperationsWithSink()
+            : new TransactionTableOperations();
     this.updates = Lists.newArrayList();
     this.base = ops.current();
     this.type = type;
@@ -549,6 +558,28 @@ public class BaseTransaction implements Transaction {
     @Override
     public long newSnapshotId() {
       return tempOps.newSnapshotId();
+    }
+  }
+
+  /**
+   * Capability-transparent variant of {@link TransactionTableOperations} that forwards {@link
+   * ManifestListSink} calls to the underlying ops. Selected at construction when the underlying ops
+   * implements the sink, so {@link SnapshotProducer#apply()}'s {@code instanceof ManifestListSink}
+   * check sees the capability through the wrapper.
+   */
+  class TransactionTableOperationsWithSink extends TransactionTableOperations
+      implements ManifestListSink {
+    @Override
+    public void stageManifestListDelta(
+        long sequenceNumber,
+        long snapshotId,
+        Long parentSnapshotId,
+        Long nextRowId,
+        ManifestListSink.ManifestListDelta delta,
+        Long nextRowIdAfter) {
+      ((ManifestListSink) ops)
+          .stageManifestListDelta(
+              sequenceNumber, snapshotId, parentSnapshotId, nextRowId, delta, nextRowIdAfter);
     }
   }
 
