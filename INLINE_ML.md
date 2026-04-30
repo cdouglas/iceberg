@@ -900,18 +900,22 @@ private synchronized void loadFromCatalogFile(CatalogFile catalogFile) {
 
       // Replace each snapshot with InlineSnapshot if we have its inline ML
       TableMetadata.Builder builder = TableMetadata.buildFrom(parsed);
+      Map<Long, Snapshot> replacements = Maps.newHashMap();
       for (Snapshot s : parsed.snapshots()) {
         if (proto.hasInlineManifests(tblId, s.snapshotId())) {
           List<ManifestFile> manifests =
               proto.inlineManifests(tblId, s.snapshotId());
-          Snapshot wrapped = new InlineSnapshot(
-              s.sequenceNumber(), s.snapshotId(), s.parentId(),
-              s.timestampMillis(), s.operation(), s.summary(),
-              s.schemaId(), s.firstRowId(), s.addedRows(), s.keyId(),
-              manifests);
-          builder.removeSnapshots(ImmutableList.of(s));
-          builder.addSnapshot(wrapped);
+          replacements.put(
+              s.snapshotId(),
+              new InlineSnapshot(
+                  s.sequenceNumber(), s.snapshotId(), s.parentId(),
+                  s.timestampMillis(), s.operation(), s.summary(),
+                  s.schemaId(), s.firstRowId(), s.addedRows(), s.keyId(),
+                  manifests));
         }
+      }
+      if (!replacements.isEmpty()) {
+        builder.replaceSnapshots(replacements);
       }
       return builder.build();
     });
@@ -923,19 +927,14 @@ private synchronized void loadFromCatalogFile(CatalogFile catalogFile) {
 
 `InlineSnapshot` is in package `org.apache.iceberg` (not `org.apache.iceberg.io`)
 because it needs access to `ManifestFiles`, `ManifestGroup`, etc. to implement
-`addedDataFiles`/`removedDataFiles`. It has a public-by-default constructor
-that `fileio-catalog` can call from `org.apache.iceberg.io`.
+`addedDataFiles`/`removedDataFiles`. The class and its constructor are public
+so `fileio-catalog` can call it from `org.apache.iceberg.io`.
 
-**Wait — `InlineSnapshot` is package-private in core.** To call its
-constructor from `org.apache.iceberg.io`, either:
-
-- Make `InlineSnapshot` public (requires a small change to core). Preferred.
-- Add a public factory method in `org.apache.iceberg` (e.g.,
-  `BaseSnapshotFactory.inline(...)`) that constructs it.
-- Use reflection (not recommended).
-
-Making `InlineSnapshot` public is the cleanest option since we control the
-Iceberg fork. Follow-up commit on `vldb-1.10.1-ml`.
+`Builder.replaceSnapshots(Map<Long, Snapshot>)` is the supported seam for
+swapping `BaseSnapshot` for `InlineSnapshot` without touching refs, sequence
+numbers, or other builder state. It also flips an internal `snapshotsReplaced`
+flag so `build()` won't short-circuit to `return base` when the parsed
+metadata's changes log is empty (the case when reloading from JSON).
 
 ### commitInline Extension
 
@@ -1070,42 +1069,48 @@ one-time rewrite.
 
 ### Integration Checklist
 
-1. **Make `InlineSnapshot` public** (in iceberg-core on `vldb-1.10.1-ml`)
-   so fileio-catalog can construct it.
+The iceberg-core hooks (items 1–2 below) are landed on `vldb-1.10.1-ml`.
+Items 3–12 are the corresponding fileio-catalog work.
 
-2. **`ProtoCatalogFile`**: add `manifestPool` and `snapshotManifests` maps
+1. ~~**Make `InlineSnapshot` public**~~ — done.
+
+2. ~~**`Builder.replaceSnapshots(Map)`** for swapping `BaseSnapshot` →
+   `InlineSnapshot` without losing the changes-log short-circuit~~ — done.
+
+3. **`ProtoCatalogFile`**: add `manifestPool` and `snapshotManifests` maps
    plus `inlineManifests()` / `hasInlineManifests()` accessors.
 
-3. **`catalog.proto`**: extend `InlineTable` with `manifest_pool` and
+4. **`catalog.proto`**: extend `InlineTable` with `manifest_pool` and
    `snapshot_refs`; add `ManifestFileEntry` and `SnapshotManifestRefs`
    messages. Regenerate.
 
-4. **`ProtoCodec`**: add `ManifestFile ⇄ ManifestFileEntry` conversions.
+5. **`ProtoCodec`**: add `ManifestFile ⇄ ManifestFileEntry` conversions.
 
-5. **`InlineDeltaCodec`**: add `AddManifestUpdate` and `RemoveManifestUpdate`
+6. **`InlineDeltaCodec`**: add `AddManifestUpdate` and `RemoveManifestUpdate`
    types; extend `encodeDelta` / `decodeDelta` / `applyDelta`; add
    `attachManifestDelta` helper.
 
-6. **`FileIOTableOperations`**: make it (conditionally, via subclass or
+7. **`FileIOTableOperations`**: make it (conditionally, via subclass or
    wrapper) implement `ManifestListSink`. Stash deltas in a map keyed by
    snapshot ID.
 
-7. **`loadFromCatalogFile`**: when `ProtoCatalogFile.hasInlineManifests(tblId,
-   snapId)`, replace the parsed `BaseSnapshot` with an `InlineSnapshot`
-   carrying the resolved manifest list from the pool.
+8. **`loadFromCatalogFile`**: when `ProtoCatalogFile.hasInlineManifests(tblId,
+   snapId)`, replace the parsed `BaseSnapshot` with an `InlineSnapshot` via
+   `Builder.replaceSnapshots(Map)`, carrying the resolved manifest list from
+   the pool.
 
-8. **`commitInline`**: drain `stagedDeltas` and call
+9. **`commitInline`**: drain `stagedDeltas` and call
    `InlineDeltaCodec.attachManifestDelta` for each new snapshot.
 
-9. **`FileIOCatalog` configuration**: add `fileio.catalog.inline.manifests`
-   property and wire it through to `FileIOTableOperations`.
+10. **`FileIOCatalog` configuration**: add `fileio.catalog.inline.manifests`
+    property and wire it through to `FileIOTableOperations`.
 
-10. **Tests**: extend `TestInlineDelta` and `TestProtoActions` with
+11. **Tests**: extend `TestInlineDelta` and `TestProtoActions` with
     manifest list cases — FastAppend (1 add, 0 remove), delete (1 add + 1
     remove for the rewritten manifest), snapshot expiration (removes only),
     compaction/merge (multiple adds + multiple removes).
 
-11. **End-to-end test**: commit through the inline manifest path, refresh the
+12. **End-to-end test**: commit through the inline manifest path, refresh the
     catalog, and verify `snapshot.allManifests(io)` returns the correct list
     without reading any `snap-*.avro` file from storage.
 
