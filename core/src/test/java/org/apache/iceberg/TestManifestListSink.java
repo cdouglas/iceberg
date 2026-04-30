@@ -86,9 +86,9 @@ public class TestManifestListSink {
   /**
    * A TableOperations that captures manifest list deltas instead of writing them to Avro files.
    *
-   * <p>Rebuilds each snapshot's full manifest list from the parent's full list + the delta, the
-   * way an inline catalog would. This demonstrates that the delta is sufficient to reproduce the
-   * full list that would have been written to the Avro file.
+   * <p>Rebuilds each snapshot's full manifest list from the parent's full list + the delta, the way
+   * an inline catalog would. This demonstrates that the delta is sufficient to reproduce the full
+   * list that would have been written to the Avro file.
    */
   static class CapturingOps implements TableOperations, ManifestListSink {
 
@@ -225,9 +225,7 @@ public class TestManifestListSink {
             .as("partitionSpecId [%d]", i)
             .isEqualTo(r.partitionSpecId());
         assertThat(c.content()).as("content [%d]", i).isEqualTo(r.content());
-        assertThat(c.sequenceNumber())
-            .as("sequenceNumber [%d]", i)
-            .isEqualTo(r.sequenceNumber());
+        assertThat(c.sequenceNumber()).as("sequenceNumber [%d]", i).isEqualTo(r.sequenceNumber());
         assertThat(c.minSequenceNumber())
             .as("minSequenceNumber [%d]", i)
             .isEqualTo(r.minSequenceNumber());
@@ -240,9 +238,7 @@ public class TestManifestListSink {
         assertThat(c.deletedFilesCount())
             .as("deletedFilesCount [%d]", i)
             .isEqualTo(r.deletedFilesCount());
-        assertThat(c.addedRowsCount())
-            .as("addedRowsCount [%d]", i)
-            .isEqualTo(r.addedRowsCount());
+        assertThat(c.addedRowsCount()).as("addedRowsCount [%d]", i).isEqualTo(r.addedRowsCount());
         assertThat(c.existingRowsCount())
             .as("existingRowsCount [%d]", i)
             .isEqualTo(r.existingRowsCount());
@@ -396,7 +392,8 @@ public class TestManifestListSink {
 
   @ParameterizedTest
   @ValueSource(ints = {2, 3})
-  public void testSinkAndWriterProduceEquivalentSequenceNumbers(int formatVersion) throws Exception {
+  public void testSinkAndWriterProduceEquivalentSequenceNumbers(int formatVersion)
+      throws Exception {
     File sinkTableDir = sinkDir.resolve("sink-seq-" + formatVersion).toFile();
     File refTableDir = referenceDir.resolve("ref-seq-" + formatVersion).toFile();
     assertThat(sinkTableDir.mkdir()).isTrue();
