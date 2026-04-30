@@ -19,8 +19,15 @@
 package org.apache.iceberg;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.Collections;
+import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 public class TestRewriteTablePathUtil {
 
@@ -86,5 +93,74 @@ public class TestRewriteTablePathUtil {
     assertThat(newMethodResult).isEqualTo("/staging/file.parquet");
     assertThat(oldMethodResult).isEqualTo("/staging/file.parquet");
     assertThat(newMethodResult).isEqualTo(oldMethodResult);
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Inline-ML guard (R3 / errata D4)
+  //
+  // The path-rewrite migration utility writes a fresh manifest list per snapshot at the target
+  // prefix. Inline-ML snapshots have no separate manifest list file (manifestListLocation()
+  // returns null by contract); they cannot be rewritten by this utility. Both entry points that
+  // touch manifestListLocation() must fail fast with a descriptive IllegalStateException rather
+  // than NPE'ing inside ManifestLists.read.
+  // -----------------------------------------------------------------------------------------
+
+  @Test
+  public void testRewriteManifestListRejectsInlineSnapshot() {
+    Snapshot inline =
+        new InlineSnapshot(
+            1L,
+            42L,
+            null,
+            0L,
+            "append",
+            ImmutableMap.of(),
+            0,
+            null,
+            null,
+            null,
+            ImmutableList.of());
+    FileIO io = Mockito.mock(FileIO.class);
+    TableMetadata md = Mockito.mock(TableMetadata.class);
+
+    assertThatThrownBy(
+            () ->
+                RewriteTablePathUtil.rewriteManifestList(
+                    inline, io, md, Collections.emptySet(), "/src", "/dst", "/staging", "/out"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("inline-ML snapshot 42")
+        .hasMessageContaining("evict to pointer mode");
+
+    // The guard fires before any FileIO interaction.
+    Mockito.verifyNoInteractions(io);
+  }
+
+  @Test
+  public void testReplacePathsRejectsInlineSnapshot() {
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+    TableMetadata empty =
+        TableMetadata.newTableMetadata(
+            schema, PartitionSpec.unpartitioned(), "s3://bucket/loc", ImmutableMap.of());
+
+    Snapshot inline =
+        new InlineSnapshot(
+            1L,
+            42L,
+            null,
+            0L,
+            "append",
+            ImmutableMap.of(),
+            0,
+            null,
+            null,
+            null,
+            ImmutableList.of());
+    TableMetadata withInline = TableMetadata.buildFrom(empty).addSnapshot(inline).build();
+
+    assertThatThrownBy(
+            () -> RewriteTablePathUtil.replacePaths(withInline, "s3://bucket/", "s3://other/"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("inline-ML snapshot 42")
+        .hasMessageContaining("evict to pointer mode");
   }
 }

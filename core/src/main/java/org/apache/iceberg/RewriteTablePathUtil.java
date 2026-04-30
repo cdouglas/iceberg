@@ -46,7 +46,16 @@ import org.apache.iceberg.util.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Utilities for Rewrite table path action. */
+/**
+ * Utilities for Rewrite table path action.
+ *
+ * <p><b>Inline manifest-list tables are not supported.</b> Snapshots whose manifest list is stored
+ * inline in the catalog (e.g. {@link InlineSnapshot}) report {@code manifestListLocation() == null}
+ * — there is no separate manifest-list file to rewrite. Calling {@link #replacePaths} or {@link
+ * #rewriteManifestList} on such a table fails fast with {@link IllegalStateException}; the table
+ * must be evicted to pointer mode (separate Avro manifest list files) before running the
+ * path-rewrite migration. See {@code fileio-catalog/docs/errata.md#D3}.
+ */
 public class RewriteTablePathUtil {
 
   private static final Logger LOG = LoggerFactory.getLogger(RewriteTablePathUtil.class);
@@ -55,6 +64,17 @@ public class RewriteTablePathUtil {
   public static final String FILE_SEPARATOR = "/";
 
   private RewriteTablePathUtil() {}
+
+  private static void checkSnapshotIsNotInline(Snapshot snapshot) {
+    if (snapshot.manifestListLocation() == null) {
+      throw new IllegalStateException(
+          "Cannot rewrite path for inline-ML snapshot "
+              + snapshot.snapshotId()
+              + ": manifest list is stored in the catalog, not as a separate file. "
+              + "Rewriting paths for inline-ML tables is not supported; "
+              + "evict to pointer mode before running the path-rewrite utility.");
+    }
+  }
 
   /**
    * Rewrite result.
@@ -193,6 +213,7 @@ public class RewriteTablePathUtil {
       TableMetadata metadata, String sourcePrefix, String targetPrefix) {
     List<Snapshot> newSnapshots = Lists.newArrayListWithCapacity(metadata.snapshots().size());
     for (Snapshot snapshot : metadata.snapshots()) {
+      checkSnapshotIsNotInline(snapshot);
       String newManifestListLocation =
           newPath(snapshot.manifestListLocation(), sourcePrefix, targetPrefix);
       Snapshot newSnapshot =
@@ -236,6 +257,7 @@ public class RewriteTablePathUtil {
       String targetPrefix,
       String stagingDir,
       String outputPath) {
+    checkSnapshotIsNotInline(snapshot);
     RewriteResult<ManifestFile> result = new RewriteResult<>();
     OutputFile outputFile = io.newOutputFile(outputPath);
 
