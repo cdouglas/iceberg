@@ -25,7 +25,6 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.UUID;
@@ -35,7 +34,6 @@ import org.apache.iceberg.aws.AwsClientFactory;
 import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.io.CharStreams;
@@ -51,6 +49,7 @@ import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.TestWatcher;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.ChecksumAlgorithm;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -60,7 +59,13 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 @ExtendWith(TestS3FileIOAtomic.SuccessCleanupExtension.class)
 public class TestS3FileIOAtomic {
   // private static final Logger LOG = LoggerFactory.getLogger(TestS3FileIOAtomic.class);
-  private static final String TEST_BUCKET = "casalog";
+  // Standard bucket for CAS / if-match tests; override with S3_TEST_BUCKET.
+  private static final String TEST_BUCKET =
+      System.getenv().getOrDefault("S3_TEST_BUCKET", "lst-pbafvfgrapl");
+  // S3 Express One Zone (directory) bucket required for APPEND tests; override with
+  // S3_EXPRESS_TEST_BUCKET.
+  private static final String EXPR_BUCKET =
+      System.getenv().getOrDefault("S3_EXPRESS_TEST_BUCKET", "lst-pbafvfgrapl--usw2-az3--x-s3");
 
   private static S3Client s3;
   private static String uniqTestRun;
@@ -195,11 +200,18 @@ public class TestS3FileIOAtomic {
 
   @Test
   public void testAppend() throws IOException, S3Exception {
-    final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
-    final String objName = "bananaslugs";
+    final String objName = "bananaslugs-" + uniqTestRun;
     final String path = "s3://" + EXPR_BUCKET + "/" + objName;
 
-    PutObjectRequest req1 = PutObjectRequest.builder().bucket(EXPR_BUCKET).key(objName).build();
+    // Match the checksum algorithm used by S3OutputFile.appendDestObj (CRC32C). The SDK >= 2.30
+    // defaults to CRC32 when none is specified, which causes "Checksum Type mismatch" on append
+    // against directory buckets, since append requires the same checksum type as the existing obj.
+    PutObjectRequest req1 =
+        PutObjectRequest.builder()
+            .bucket(EXPR_BUCKET)
+            .key(objName)
+            .checksumAlgorithm(ChecksumAlgorithm.CRC32_C)
+            .build();
     RequestBody body1 = RequestBody.fromBytes("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
     PutObjectResponse resp1 = s3.putObject(req1, body1);
 
@@ -224,16 +236,21 @@ public class TestS3FileIOAtomic {
 
   @Test
   public void testAppendConditions() throws IOException, S3Exception {
-    final String EXPR_BUCKET = "lst-pbafvfgrapl--usw2-az3--x-s3";
-    final String objName = "bananaslugs";
+    final String objName = "bananaslugs-cond-" + uniqTestRun;
     final String path = "s3://" + EXPR_BUCKET + "/" + objName;
 
     S3FileIO fileIO = new S3FileIO(() -> s3);
     fileIO.initialize(Maps.newHashMap());
-    final OutputFile orig = fileIO.newOutputFile(path);
-    try (OutputStream out = orig.createOrOverwrite()) {
-      out.write("shaved my kiwis".getBytes(StandardCharsets.UTF_8));
-    }
+    // Initial put uses CRC32C explicitly to match S3OutputFile.appendDestObj's hardcoded checksum
+    // algorithm (see comment in testAppend).
+    PutObjectRequest origReq =
+        PutObjectRequest.builder()
+            .bucket(EXPR_BUCKET)
+            .key(objName)
+            .checksumAlgorithm(ChecksumAlgorithm.CRC32_C)
+            .build();
+    s3.putObject(
+        origReq, RequestBody.fromBytes("shaved my kiwis".getBytes(StandardCharsets.UTF_8)));
     final InputFile inf = fileIO.newInputFile(path);
     try (InputStream i = inf.newStream()) {
       assertThat(CharStreams.toString(new InputStreamReader(i, StandardCharsets.UTF_8)))
