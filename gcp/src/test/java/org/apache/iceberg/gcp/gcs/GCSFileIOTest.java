@@ -19,6 +19,7 @@
 package org.apache.iceberg.gcp.gcs;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
@@ -57,6 +58,7 @@ import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.ResolvingFileIO;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -86,10 +88,12 @@ public class GCSFileIOTest {
   public static void initStorage() throws IOException {
     uniqTestRun = UUID.randomUUID().toString();
     LOG.info("TEST RUN: " + uniqTestRun);
-    // TODO get from env
-    final File credFile = new File("/IdeaProjects/.cloud/gcs/lst-consistency-8dd2dfbea73a.json");
-    // final File credFile =
-    //     new File("/IdeaProjects/iceberg/.secret/lst-consistency-8dd2dfbea73a.json");
+    final String credPath =
+        System.getenv()
+            .getOrDefault(
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "/IdeaProjects/.cloud/gcs/lst-consistency-8dd2dfbea73a.json");
+    final File credFile = new File(credPath);
     if (credFile.exists()) {
       try (FileInputStream creds = new FileInputStream(credFile)) {
         storage = RemoteStorageHelper.create("lst-consistency", creds).getOptions().getService();
@@ -188,48 +192,95 @@ public class GCSFileIOTest {
 
   @Test
   public void newOutputFileMatchFail() throws IOException {
-    // Generation matching requires real GCS or more complete mock
+    // ifGenerationMatch enforcement requires real GCS; LocalStorageHelper does not honor it.
     Assumptions.assumeTrue(usingRealGCS, "Atomic operations require real GCS");
 
+    // Two writers each snapshot the same generation of an existing object and attempt
+    // to CAS-replace it via writeAtomic. Exactly one must win; the loser must surface
+    // a CASException because its pinned generation no longer matches the live object.
     final String location = gsUri("/file.txt");
-    final byte[] expected = new byte[1024 * 1024];
-    random.nextBytes(expected);
-
-    final OutputFile out = io.newOutputFile(location);
-    try (OutputStream os = out.createOrOverwrite()) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
+    final byte[] seed = new byte[1024 * 1024];
+    random.nextBytes(seed);
+    try (OutputStream os = io.newOutputFile(location).createOrOverwrite()) {
+      IOUtil.writeFully(os, ByteBuffer.wrap(seed));
     }
 
-    final InputFile in = io.newInputFile(location);
-    assertThat(in.exists()).isTrue();
+    // Both writers read the same snapshot. Forcing exists() pins the generation so the
+    // precondition is captured before either writer commits.
+    final InputFile readerA = io.newInputFile(location);
+    final InputFile readerB = io.newInputFile(location);
+    assertThat(readerA.exists()).isTrue();
+    assertThat(readerB.exists()).isTrue();
+
+    final byte[] writeA = new byte[1024 * 1024];
+    random.nextBytes(writeA);
+    final byte[] writeB = new byte[1024 * 1024];
+    random.nextBytes(writeB);
+
+    // Both writers pin the snapshot (ifGenerationMatch=Gseed) before either commits, modeling
+    // the race where each prepared a write against the same observed state.
+    final AtomicOutputFile outA = io.newOutputFile(readerA);
+    final AtomicOutputFile outB = io.newOutputFile(readerB);
+    final CAS chkA =
+        outA.prepare(() -> new ByteArrayInputStream(writeA), AtomicOutputFile.Strategy.CAS);
+    final CAS chkB =
+        outB.prepare(() -> new ByteArrayInputStream(writeB), AtomicOutputFile.Strategy.CAS);
+
+    // Writer A wins; generation advances to Ga.
+    outA.writeAtomic(chkA, () -> new ByteArrayInputStream(writeA));
+
+    // Writer B's pinned generation is Gseed which no longer matches; CAS must fail.
+    assertThatThrownBy(() -> outB.writeAtomic(chkB, () -> new ByteArrayInputStream(writeB)))
+        .isInstanceOf(SupportsAtomicOperations.CASException.class);
+
+    // Final live object is writer A's content.
     final byte[] actual = new byte[1024 * 1024];
-    try (InputStream is = in.newStream()) {
+    try (InputStream is = io.newInputFile(location).newStream()) {
       IOUtil.readFully(is, actual, 0, actual.length);
     }
-    assertThat(actual).isEqualTo(expected);
+    assertThat(actual).isEqualTo(writeA);
+  }
 
-    // overwrite succeeds, because generation matches InputFile
-    final OutputFile overwrite = io.newOutputFile(in);
-    final byte[] overbytes = new byte[1024 * 1024];
-    random.nextBytes(overbytes);
-    try (OutputStream os = overwrite.createOrOverwrite()) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
+  @Test
+  public void newOutputFileCreateRace() throws IOException {
+    // ifGenerationMatch=0 enforcement requires real GCS.
+    Assumptions.assumeTrue(usingRealGCS, "Atomic operations require real GCS");
+
+    // Two writers each snapshot the *non-existence* of an object and attempt to create
+    // it via writeAtomic. Exactly one must win; the loser must surface a CASException
+    // because the doesNotExist precondition no longer holds.
+    final String location = gsUri("/create-race.txt");
+
+    final InputFile snapA = io.newInputFile(location);
+    final InputFile snapB = io.newInputFile(location);
+    assertThat(snapA.exists()).isFalse();
+    assertThat(snapB.exists()).isFalse();
+
+    final byte[] dataA = new byte[1024];
+    random.nextBytes(dataA);
+    final byte[] dataB = new byte[1024];
+    random.nextBytes(dataB);
+
+    // Both writers pin the snapshot (ifGenerationMatch=0 / doesNotExist) before either commits.
+    final AtomicOutputFile outA = io.newOutputFile(snapA);
+    final AtomicOutputFile outB = io.newOutputFile(snapB);
+    final CAS chkA =
+        outA.prepare(() -> new ByteArrayInputStream(dataA), AtomicOutputFile.Strategy.CAS);
+    final CAS chkB =
+        outB.prepare(() -> new ByteArrayInputStream(dataB), AtomicOutputFile.Strategy.CAS);
+
+    // Writer A wins; the object is created.
+    outA.writeAtomic(chkA, () -> new ByteArrayInputStream(dataA));
+
+    // Writer B still pins doesNotExist, but the object now exists; CAS must fail.
+    assertThatThrownBy(() -> outB.writeAtomic(chkB, () -> new ByteArrayInputStream(dataB)))
+        .isInstanceOf(SupportsAtomicOperations.CASException.class);
+
+    final byte[] actual = new byte[1024];
+    try (InputStream is = io.newInputFile(location).newStream()) {
+      IOUtil.readFully(is, actual, 0, actual.length);
     }
-    // overwrite fails, object has been overwritten
-    // TODO: disparity beteen local/remote. Remote fails with CASException wrapping a 412
-    // TODO: precondition failed StorageException
-    StorageException generationFailure =
-        Assertions.assertThrows(
-            StorageException.class,
-            () -> {
-              try (OutputStream os = overwrite.createOrOverwrite()) {
-                IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
-              }
-            });
-    assertThat(generationFailure.getMessage()).startsWith("Generation mismatch");
-    // XXX Why does a generation mismatch return 404 (not found), and not 409 (Conflict) or 412
-    // (Precondition)? (it does return 412, the local runner is incorrect)
-    // assertThat(generationFailure.getCode()).isEqualTo(412);
+    assertThat(actual).isEqualTo(dataA);
   }
 
   @Test
