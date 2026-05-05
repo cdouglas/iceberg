@@ -19,7 +19,6 @@
 package org.apache.iceberg.gcp.gcs;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
@@ -195,9 +194,11 @@ public class GCSFileIOTest {
     // ifGenerationMatch enforcement requires real GCS; LocalStorageHelper does not honor it.
     Assumptions.assumeTrue(usingRealGCS, "Atomic operations require real GCS");
 
-    // Two writers each snapshot the same generation of an existing object and attempt
-    // to CAS-replace it via writeAtomic. Exactly one must win; the loser must surface
-    // a CASException because its pinned generation no longer matches the live object.
+    // N writers each snapshot the same generation of an existing object and attempt to
+    // CAS-replace it. Exactly one must win; every other writer with the same dependency
+    // must surface a CASException because the pinned generation no longer matches the
+    // live object.
+    final int writers = 4;
     final String location = gsUri("/file.txt");
     final byte[] seed = new byte[1024 * 1024];
     random.nextBytes(seed);
@@ -205,40 +206,44 @@ public class GCSFileIOTest {
       IOUtil.writeFully(os, ByteBuffer.wrap(seed));
     }
 
-    // Both writers read the same snapshot. Forcing exists() pins the generation so the
-    // precondition is captured before either writer commits.
-    final InputFile readerA = io.newInputFile(location);
-    final InputFile readerB = io.newInputFile(location);
-    assertThat(readerA.exists()).isTrue();
-    assertThat(readerB.exists()).isTrue();
+    // All writers pin the snapshot (ifGenerationMatch=Gseed) before any of them commits.
+    final List<byte[]> payloads = Lists.newArrayListWithCapacity(writers);
+    final List<AtomicOutputFile> outs = Lists.newArrayListWithCapacity(writers);
+    final List<CAS> tokens = Lists.newArrayListWithCapacity(writers);
+    for (int i = 0; i < writers; i++) {
+      final InputFile snap = io.newInputFile(location);
+      assertThat(snap.exists()).isTrue();
+      final byte[] payload = new byte[1024 * 1024];
+      random.nextBytes(payload);
+      payloads.add(payload);
+      AtomicOutputFile out = io.newOutputFile(snap);
+      outs.add(out);
+      tokens.add(
+          out.prepare(() -> new ByteArrayInputStream(payload), AtomicOutputFile.Strategy.CAS));
+    }
 
-    final byte[] writeA = new byte[1024 * 1024];
-    random.nextBytes(writeA);
-    final byte[] writeB = new byte[1024 * 1024];
-    random.nextBytes(writeB);
+    // Sequence the writes; only the first should observe its pinned generation as live.
+    int winner = -1;
+    int casFailures = 0;
+    for (int i = 0; i < writers; i++) {
+      final byte[] payload = payloads.get(i);
+      try {
+        outs.get(i).writeAtomic(tokens.get(i), () -> new ByteArrayInputStream(payload));
+        assertThat(winner).as("only one writer may succeed").isEqualTo(-1);
+        winner = i;
+      } catch (SupportsAtomicOperations.CASException expected) {
+        casFailures++;
+      }
+    }
+    assertThat(winner).isNotEqualTo(-1);
+    assertThat(casFailures).isEqualTo(writers - 1);
 
-    // Both writers pin the snapshot (ifGenerationMatch=Gseed) before either commits, modeling
-    // the race where each prepared a write against the same observed state.
-    final AtomicOutputFile outA = io.newOutputFile(readerA);
-    final AtomicOutputFile outB = io.newOutputFile(readerB);
-    final CAS chkA =
-        outA.prepare(() -> new ByteArrayInputStream(writeA), AtomicOutputFile.Strategy.CAS);
-    final CAS chkB =
-        outB.prepare(() -> new ByteArrayInputStream(writeB), AtomicOutputFile.Strategy.CAS);
-
-    // Writer A wins; generation advances to Ga.
-    outA.writeAtomic(chkA, () -> new ByteArrayInputStream(writeA));
-
-    // Writer B's pinned generation is Gseed which no longer matches; CAS must fail.
-    assertThatThrownBy(() -> outB.writeAtomic(chkB, () -> new ByteArrayInputStream(writeB)))
-        .isInstanceOf(SupportsAtomicOperations.CASException.class);
-
-    // Final live object is writer A's content.
+    // Final live object is the winner's content.
     final byte[] actual = new byte[1024 * 1024];
     try (InputStream is = io.newInputFile(location).newStream()) {
       IOUtil.readFully(is, actual, 0, actual.length);
     }
-    assertThat(actual).isEqualTo(writeA);
+    assertThat(actual).isEqualTo(payloads.get(winner));
   }
 
   @Test
@@ -246,41 +251,47 @@ public class GCSFileIOTest {
     // ifGenerationMatch=0 enforcement requires real GCS.
     Assumptions.assumeTrue(usingRealGCS, "Atomic operations require real GCS");
 
-    // Two writers each snapshot the *non-existence* of an object and attempt to create
-    // it via writeAtomic. Exactly one must win; the loser must surface a CASException
-    // because the doesNotExist precondition no longer holds.
+    // N writers each snapshot the *non-existence* of an object and attempt to create it.
+    // Exactly one must win; every other writer with the same doesNotExist dependency must
+    // surface a CASException once the object is live.
+    final int writers = 4;
     final String location = gsUri("/create-race.txt");
 
-    final InputFile snapA = io.newInputFile(location);
-    final InputFile snapB = io.newInputFile(location);
-    assertThat(snapA.exists()).isFalse();
-    assertThat(snapB.exists()).isFalse();
+    final List<byte[]> payloads = Lists.newArrayListWithCapacity(writers);
+    final List<AtomicOutputFile> outs = Lists.newArrayListWithCapacity(writers);
+    final List<CAS> tokens = Lists.newArrayListWithCapacity(writers);
+    for (int i = 0; i < writers; i++) {
+      final InputFile snap = io.newInputFile(location);
+      assertThat(snap.exists()).isFalse();
+      final byte[] payload = new byte[1024];
+      random.nextBytes(payload);
+      payloads.add(payload);
+      AtomicOutputFile out = io.newOutputFile(snap);
+      outs.add(out);
+      tokens.add(
+          out.prepare(() -> new ByteArrayInputStream(payload), AtomicOutputFile.Strategy.CAS));
+    }
 
-    final byte[] dataA = new byte[1024];
-    random.nextBytes(dataA);
-    final byte[] dataB = new byte[1024];
-    random.nextBytes(dataB);
-
-    // Both writers pin the snapshot (ifGenerationMatch=0 / doesNotExist) before either commits.
-    final AtomicOutputFile outA = io.newOutputFile(snapA);
-    final AtomicOutputFile outB = io.newOutputFile(snapB);
-    final CAS chkA =
-        outA.prepare(() -> new ByteArrayInputStream(dataA), AtomicOutputFile.Strategy.CAS);
-    final CAS chkB =
-        outB.prepare(() -> new ByteArrayInputStream(dataB), AtomicOutputFile.Strategy.CAS);
-
-    // Writer A wins; the object is created.
-    outA.writeAtomic(chkA, () -> new ByteArrayInputStream(dataA));
-
-    // Writer B still pins doesNotExist, but the object now exists; CAS must fail.
-    assertThatThrownBy(() -> outB.writeAtomic(chkB, () -> new ByteArrayInputStream(dataB)))
-        .isInstanceOf(SupportsAtomicOperations.CASException.class);
+    int winner = -1;
+    int casFailures = 0;
+    for (int i = 0; i < writers; i++) {
+      final byte[] payload = payloads.get(i);
+      try {
+        outs.get(i).writeAtomic(tokens.get(i), () -> new ByteArrayInputStream(payload));
+        assertThat(winner).as("only one writer may succeed").isEqualTo(-1);
+        winner = i;
+      } catch (SupportsAtomicOperations.CASException expected) {
+        casFailures++;
+      }
+    }
+    assertThat(winner).isNotEqualTo(-1);
+    assertThat(casFailures).isEqualTo(writers - 1);
 
     final byte[] actual = new byte[1024];
     try (InputStream is = io.newInputFile(location).newStream()) {
       IOUtil.readFully(is, actual, 0, actual.length);
     }
-    assertThat(actual).isEqualTo(dataA);
+    assertThat(actual).isEqualTo(payloads.get(winner));
   }
 
   @Test
