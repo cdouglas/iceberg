@@ -126,8 +126,9 @@ public class GCSFileIO
         replace instanceof GCSInputFile, "InputFile must be a GCSInputFile: %s", replace);
     GCSInputFile gcsInputFile = (GCSInputFile) replace;
     PrefixedStorage storage = clientForStoragePath(replace.location());
-    return GCSOutputFile.fromBlobId(
-        gcsInputFile.blobId(), storage.storage(), storage.gcpProperties(), metrics);
+    BlobId pinnedId = gcsInputFile.pinnedBlobId();
+    return GCSOutputFile.replacing(
+        gcsInputFile.blobId(), pinnedId, storage.storage(), storage.gcpProperties(), metrics);
   }
 
   @SuppressWarnings("resource")
