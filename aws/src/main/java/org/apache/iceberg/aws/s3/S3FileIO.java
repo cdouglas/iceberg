@@ -197,8 +197,13 @@ public class S3FileIO
   public AtomicOutputFile newOutputFile(InputFile replace) {
     final String path = replace.location();
     if (replace instanceof S3InputFile) {
+      // S3InputFile.etag() resolves null iff the object does not currently exist; pinning a
+      // non-existent snapshot must translate to ifNoneMatch=* on commit so a stale "doesn't exist"
+      // writer cannot silently overwrite the winner of a create race.
       String etag = ((S3InputFile) replace).etag();
-      return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics, etag);
+      boolean assertAbsent = etag == null;
+      return S3OutputFile.fromLocation(
+          path, clientForStoragePath(path), metrics, etag, assertAbsent);
     }
     return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics);
   }

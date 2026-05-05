@@ -44,7 +44,11 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 
 public class S3OutputFile extends BaseS3File implements AtomicOutputFile, NativelyEncryptedFile {
   private NativeFileCryptoParameters nativeEncryptionParameters;
+  // Atomic-write precondition: when non-null, ifMatch=etag pins the live object; when null and
+  // assertAbsent=true, ifNoneMatch=* requires the destination to not exist; when both are unset
+  // (vanilla overwrite path), no precondition is applied.
   private final String etag;
+  private final boolean assertAbsent;
 
   /**
    * Creates a {@link S3OutputFile} from the given parameters.
@@ -91,18 +95,28 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
 
   static S3OutputFile fromLocation(
       String location, PrefixedS3Client client, MetricsContext metrics) {
-    return fromLocation(location, client, metrics, null);
+    return fromLocation(location, client, metrics, null, false);
   }
 
   static S3OutputFile fromLocation(
       String location, PrefixedS3Client client, MetricsContext metrics, String etag) {
+    return fromLocation(location, client, metrics, etag, false);
+  }
+
+  static S3OutputFile fromLocation(
+      String location,
+      PrefixedS3Client client,
+      MetricsContext metrics,
+      String etag,
+      boolean assertAbsent) {
     return new S3OutputFile(
         client.s3(),
         client.s3FileIOProperties().isS3AnalyticsAcceleratorEnabled() ? client.s3Async() : null,
         new S3URI(location, client.s3FileIOProperties().bucketToAccessPointMapping()),
         client.s3FileIOProperties(),
         metrics,
-        etag);
+        etag,
+        assertAbsent);
   }
 
   S3OutputFile(
@@ -112,8 +126,20 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       S3FileIOProperties s3FileIOProperties,
       MetricsContext metrics,
       String etag) {
+    this(client, asyncClient, uri, s3FileIOProperties, metrics, etag, false);
+  }
+
+  S3OutputFile(
+      S3Client client,
+      S3AsyncClient asyncClient,
+      S3URI uri,
+      S3FileIOProperties s3FileIOProperties,
+      MetricsContext metrics,
+      String etag,
+      boolean assertAbsent) {
     super(client, asyncClient, uri, s3FileIOProperties, metrics);
     this.etag = etag;
+    this.assertAbsent = assertAbsent;
   }
 
   /**
@@ -186,14 +212,21 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       throws IOException {
     try (InputStream src = source.get()) {
       final S3URI location = uri();
-      PutObjectRequest req =
+      PutObjectRequest.Builder reqBuilder =
           PutObjectRequest.builder()
               .bucket(location.bucket())
               .key(location.key())
               .checksumCRC32C(token.contentHeaderString())
-              .contentLength(token.contentLength())
-              .ifMatch(etag)
-              .build();
+              .contentLength(token.contentLength());
+      // Atomic-write precondition: ifMatch pins a known etag; otherwise ifNoneMatch=* enforces
+      // "object must not exist." A null etag with assertAbsent=false indicates a vanilla overwrite
+      // and applies no precondition.
+      if (etag != null) {
+        reqBuilder.ifMatch(etag);
+      } else if (assertAbsent) {
+        reqBuilder.ifNoneMatch("*");
+      }
+      PutObjectRequest req = reqBuilder.build();
       RequestBody content = RequestBody.fromInputStream(src, token.contentLength());
       PutObjectResponse response = client().putObject(req, content);
       return new S3InputFile(

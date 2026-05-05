@@ -41,6 +41,7 @@ import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -249,6 +250,141 @@ public class ADLSFileIOTest {
             });
     // precondition not met
     assertThat(etagFailure.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
+  }
+
+  /**
+   * Walk the full atomic lifecycle on ADLS — atomic create, append, CAS replace at the same length,
+   * append — and at every stage verify a concurrent writer pinned to the prior snapshot fails with
+   * the expected {@link SupportsAtomicOperations.CASException} or {@link
+   * SupportsAtomicOperations.AppendException}. Each ghost writer prepares its checksum from the
+   * same snapshot the winner uses, then commits *after* the winner has advanced the live object —
+   * modeling the canonical "we both observed the same generation; only one of us may commit" race.
+   */
+  @Test
+  public void testCreateAppendCasAppendLifecycle() throws IOException {
+    final String path = "lifecycle/" + UUID.randomUUID();
+    final String location = az.location(path);
+    ADLSFileIO io = createFileIO();
+
+    // ---- Stage 1: atomic create. Both writers pin "object does not exist" (ifNoneMatch=*). ----
+    final InputFile snap0 = io.newInputFile(location);
+    assertThat(snap0.exists()).isFalse();
+    final AtomicOutputFile winnerCreate = io.newOutputFile(snap0);
+    final byte[] payload1 = "shaved my kiwis".getBytes();
+    final CAS tok1 =
+        winnerCreate.prepare(
+            () -> new ByteArrayInputStream(payload1), AtomicOutputFile.Strategy.CAS);
+
+    final InputFile ghostSnap0 = io.newInputFile(location);
+    assertThat(ghostSnap0.exists()).isFalse();
+    final AtomicOutputFile ghostCreate = io.newOutputFile(ghostSnap0);
+    final byte[] ghostPayload1 = "ghost create".getBytes();
+    final CAS ghostTok1 =
+        ghostCreate.prepare(
+            () -> new ByteArrayInputStream(ghostPayload1), AtomicOutputFile.Strategy.CAS);
+
+    InputFile after1 = winnerCreate.writeAtomic(tok1, () -> new ByteArrayInputStream(payload1));
+    assertThat(readAllBytes(after1)).isEqualTo(payload1);
+
+    // Stale create: object now exists, ifNoneMatch=* must reject the write.
+    org.junit.jupiter.api.Assertions.assertThrows(
+        SupportsAtomicOperations.CASException.class,
+        () -> ghostCreate.writeAtomic(ghostTok1, () -> new ByteArrayInputStream(ghostPayload1)));
+    assertThat(readAllBytes(io.newInputFile(location))).isEqualTo(payload1);
+
+    // ---- Stage 2: APPEND on the freshly-created object. ----
+    final AtomicOutputFile winnerAppend1 = io.newOutputFile(after1);
+    final byte[] payload2 = "shaved my hamster".getBytes();
+    final CAS tok2 =
+        winnerAppend1.prepare(
+            () -> new ByteArrayInputStream(payload2), AtomicOutputFile.Strategy.APPEND);
+
+    final AtomicOutputFile ghostAppend1 = io.newOutputFile(after1);
+    final byte[] ghostPayload2 = "ghost append".getBytes();
+    final CAS ghostTok2 =
+        ghostAppend1.prepare(
+            () -> new ByteArrayInputStream(ghostPayload2), AtomicOutputFile.Strategy.APPEND);
+
+    InputFile after2 = winnerAppend1.writeAtomic(tok2, () -> new ByteArrayInputStream(payload2));
+    final byte[] expected2 = concat(payload1, payload2);
+    assertThat(readAllBytes(after2)).isEqualTo(expected2);
+
+    // Stale append: the etag the ghost pinned is no longer live; flush must fail.
+    org.junit.jupiter.api.Assertions.assertThrows(
+        SupportsAtomicOperations.AppendException.class,
+        () -> ghostAppend1.writeAtomic(ghostTok2, () -> new ByteArrayInputStream(ghostPayload2)));
+    assertThat(readAllBytes(io.newInputFile(location))).isEqualTo(expected2);
+
+    // ---- Stage 3: CAS replace at the *same* length as the appended object. ----
+    final byte[] payload3 = padTo("shaved my pickles".getBytes(), expected2.length);
+    final AtomicOutputFile winnerCas = io.newOutputFile(after2);
+    final CAS tok3 =
+        winnerCas.prepare(() -> new ByteArrayInputStream(payload3), AtomicOutputFile.Strategy.CAS);
+
+    final byte[] ghostPayload3 = padTo("ghost replace".getBytes(), expected2.length);
+    final AtomicOutputFile ghostCas = io.newOutputFile(after2);
+    final CAS ghostTok3 =
+        ghostCas.prepare(
+            () -> new ByteArrayInputStream(ghostPayload3), AtomicOutputFile.Strategy.CAS);
+
+    InputFile after3 = winnerCas.writeAtomic(tok3, () -> new ByteArrayInputStream(payload3));
+    assertThat(readAllBytes(after3)).isEqualTo(payload3);
+
+    // Stale CAS: same length but stale etag must fail.
+    org.junit.jupiter.api.Assertions.assertThrows(
+        SupportsAtomicOperations.CASException.class,
+        () -> ghostCas.writeAtomic(ghostTok3, () -> new ByteArrayInputStream(ghostPayload3)));
+    assertThat(readAllBytes(io.newInputFile(location))).isEqualTo(payload3);
+
+    // ---- Stage 4: APPEND after CAS replace. ----
+    final AtomicOutputFile winnerAppend2 = io.newOutputFile(after3);
+    final byte[] payload4 = "shaved my yak".getBytes();
+    final CAS tok4 =
+        winnerAppend2.prepare(
+            () -> new ByteArrayInputStream(payload4), AtomicOutputFile.Strategy.APPEND);
+
+    final AtomicOutputFile ghostAppend2 = io.newOutputFile(after3);
+    final byte[] ghostPayload4 = "ghost yak".getBytes();
+    final CAS ghostTok4 =
+        ghostAppend2.prepare(
+            () -> new ByteArrayInputStream(ghostPayload4), AtomicOutputFile.Strategy.APPEND);
+
+    InputFile after4 = winnerAppend2.writeAtomic(tok4, () -> new ByteArrayInputStream(payload4));
+    final byte[] expected4 = concat(payload3, payload4);
+    assertThat(readAllBytes(after4)).isEqualTo(expected4);
+
+    // Stale append after CAS: ghost still pins after3's etag, which the winner has appended past.
+    org.junit.jupiter.api.Assertions.assertThrows(
+        SupportsAtomicOperations.AppendException.class,
+        () -> ghostAppend2.writeAtomic(ghostTok4, () -> new ByteArrayInputStream(ghostPayload4)));
+    assertThat(readAllBytes(io.newInputFile(location))).isEqualTo(expected4);
+  }
+
+  private static byte[] padTo(byte[] src, int length) {
+    if (src.length >= length) {
+      byte[] truncated = new byte[length];
+      System.arraycopy(src, 0, truncated, 0, length);
+      return truncated;
+    }
+    byte[] out = new byte[length];
+    System.arraycopy(src, 0, out, 0, src.length);
+    for (int i = src.length; i < length; i++) {
+      out[i] = '.';
+    }
+    return out;
+  }
+
+  private static byte[] concat(byte[] a, byte[] b) {
+    byte[] out = new byte[a.length + b.length];
+    System.arraycopy(a, 0, out, 0, a.length);
+    System.arraycopy(b, 0, out, a.length, b.length);
+    return out;
+  }
+
+  private static byte[] readAllBytes(InputFile in) throws IOException {
+    try (InputStream s = in.newStream()) {
+      return s.readAllBytes();
+    }
   }
 
   @Test

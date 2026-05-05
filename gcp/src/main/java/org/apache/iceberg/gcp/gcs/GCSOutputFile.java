@@ -20,9 +20,11 @@ package org.apache.iceberg.gcp.gcs;
 
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.StorageException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.gcp.GCPProperties;
@@ -120,6 +122,44 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
   @Override
   public InputFile writeAtomic(CAS token, final Supplier<InputStream> source) throws IOException {
+    // GCS enforces a per-object update rate (~1/sec sustained); under bursty workloads
+    // close() surfaces 429 from getResult(). 429 (and 5xx) are transient -- retry the
+    // entire write with capped exponential backoff and jitter. Buffer the source bytes
+    // up front because the supplier given by the caller is not guaranteed to replay
+    // (e.g. ProtoCatalogFormat passes a single ByteArrayInputStream that is exhausted
+    // by the first attempt).
+    final byte[] payload;
+    try (InputStream src = source.get()) {
+      payload = ByteStreams.toByteArray(src);
+    }
+
+    final int maxAttempts = 8;
+    long backoffMs = 200L;
+    StorageException lastTransient = null;
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return writeAtomicOnce(token, () -> new java.io.ByteArrayInputStream(payload));
+      } catch (StorageException e) {
+        if (!isTransient(e)) {
+          throw e;
+        }
+        lastTransient = e;
+        long sleepMs = backoffMs + ThreadLocalRandom.current().nextLong(backoffMs / 2 + 1);
+        try {
+          Thread.sleep(sleepMs);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw new IOException("Interrupted retrying atomic write to: " + uri(), ie);
+        }
+        backoffMs = Math.min(backoffMs * 2, 5_000L);
+      }
+    }
+    throw new IOException(
+        "Exceeded " + maxAttempts + " transient retries on atomic write to: " + uri(),
+        lastTransient);
+  }
+
+  private InputFile writeAtomicOnce(CAS token, Supplier<InputStream> source) throws IOException {
     final InputFile[] result = new InputFile[1];
     try (InputStream src = source.get()) {
       try (GCSAtomicOutputStream dest =
@@ -139,5 +179,10 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
       }
     }
     return result[0];
+  }
+
+  private static boolean isTransient(StorageException e) {
+    int code = e.getCode();
+    return code == 429 || (code >= 500 && code < 600);
   }
 }

@@ -36,6 +36,7 @@ import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 import org.apache.iceberg.relocated.com.google.common.io.CharStreams;
 import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
 import org.junit.jupiter.api.AfterEach;
@@ -283,6 +284,154 @@ public class TestS3FileIOAtomic {
         app2.prepare(() -> new ByteArrayInputStream(replContent), AtomicOutputFile.Strategy.APPEND);
     assertThatThrownBy(() -> app2.writeAtomic(chk2, () -> new ByteArrayInputStream(replContent)))
         .isInstanceOf(SupportsAtomicOperations.AppendException.class);
+  }
+
+  /**
+   * Walk the full atomic lifecycle on an S3 Express directory bucket — atomic create, append, CAS
+   * replace at the same length, append — and at every stage verify a concurrent writer pinned to
+   * the prior snapshot fails with the expected {@link SupportsAtomicOperations.CASException} or
+   * {@link SupportsAtomicOperations.AppendException}. Each ghost writer prepares its checksum from
+   * the same snapshot the winner uses, then commits *after* the winner has advanced the live object
+   * — modeling the canonical "we both observed the same generation; only one of us may commit"
+   * race.
+   */
+  @Test
+  public void testCreateAppendCasAppendLifecycle() throws IOException, S3Exception {
+    final String objName = "lifecycle-" + uniqTestRun;
+    final String path = "s3://" + EXPR_BUCKET + "/" + objName;
+
+    S3FileIO fileIO = new S3FileIO(() -> s3);
+    fileIO.initialize(Maps.newHashMap());
+
+    // ---- Stage 1: atomic create. Both writers pin "object does not exist". ----
+    final InputFile snap0 = fileIO.newInputFile(path);
+    assertThat(snap0.exists()).isFalse();
+
+    final AtomicOutputFile winnerCreate = fileIO.newOutputFile(snap0);
+    final byte[] payload1 = "shaved my kiwis".getBytes(StandardCharsets.UTF_8);
+    final CAS tok1 =
+        winnerCreate.prepare(
+            () -> new ByteArrayInputStream(payload1), AtomicOutputFile.Strategy.CAS);
+
+    final InputFile ghostSnap0 = fileIO.newInputFile(path);
+    assertThat(ghostSnap0.exists()).isFalse();
+    final AtomicOutputFile ghostCreate = fileIO.newOutputFile(ghostSnap0);
+    final byte[] ghostPayload1 = "ghost create".getBytes(StandardCharsets.UTF_8);
+    final CAS ghostTok1 =
+        ghostCreate.prepare(
+            () -> new ByteArrayInputStream(ghostPayload1), AtomicOutputFile.Strategy.CAS);
+
+    InputFile after1 = winnerCreate.writeAtomic(tok1, () -> new ByteArrayInputStream(payload1));
+    assertThat(readAll(after1)).isEqualTo("shaved my kiwis");
+
+    // Stale create: object now exists, ifNoneMatch=* must reject the write.
+    assertThatThrownBy(
+            () -> ghostCreate.writeAtomic(ghostTok1, () -> new ByteArrayInputStream(ghostPayload1)))
+        .isInstanceOf(SupportsAtomicOperations.CASException.class);
+    assertThat(readAll(fileIO.newInputFile(path))).isEqualTo("shaved my kiwis");
+
+    // ---- Stage 2: APPEND on the freshly-created object. ----
+    // after1's etag is the winner's create response; the ghost pins the same snapshot the winner
+    // is about to commit against.
+    final AtomicOutputFile winnerAppend1 = fileIO.newOutputFile(after1);
+    final byte[] payload2 = "shaved my hamster".getBytes(StandardCharsets.UTF_8);
+    final CAS tok2 =
+        winnerAppend1.prepare(
+            () -> new ByteArrayInputStream(payload2), AtomicOutputFile.Strategy.APPEND);
+
+    final AtomicOutputFile ghostAppend1 = fileIO.newOutputFile(after1);
+    final byte[] ghostPayload2 = "ghost append".getBytes(StandardCharsets.UTF_8);
+    final CAS ghostTok2 =
+        ghostAppend1.prepare(
+            () -> new ByteArrayInputStream(ghostPayload2), AtomicOutputFile.Strategy.APPEND);
+
+    InputFile after2 = winnerAppend1.writeAtomic(tok2, () -> new ByteArrayInputStream(payload2));
+    assertThat(readAll(after2)).isEqualTo("shaved my kiwisshaved my hamster");
+
+    // Stale append: the etag the ghost pinned is no longer live; ifMatch must fail.
+    assertThatThrownBy(
+            () ->
+                ghostAppend1.writeAtomic(ghostTok2, () -> new ByteArrayInputStream(ghostPayload2)))
+        .isInstanceOf(SupportsAtomicOperations.AppendException.class);
+    assertThat(readAll(fileIO.newInputFile(path))).isEqualTo("shaved my kiwisshaved my hamster");
+
+    // ---- Stage 3: CAS replace at the *same* length as the appended object. ----
+    final long appendedLen = "shaved my kiwisshaved my hamster".length();
+    final byte[] payload3 = padTo("shaved my pickles", (int) appendedLen);
+    assertThat(payload3.length).isEqualTo((int) appendedLen);
+    final AtomicOutputFile winnerCas = fileIO.newOutputFile(after2);
+    final CAS tok3 =
+        winnerCas.prepare(() -> new ByteArrayInputStream(payload3), AtomicOutputFile.Strategy.CAS);
+
+    final byte[] ghostPayload3 = padTo("ghost replace", (int) appendedLen);
+    final AtomicOutputFile ghostCas = fileIO.newOutputFile(after2);
+    final CAS ghostTok3 =
+        ghostCas.prepare(
+            () -> new ByteArrayInputStream(ghostPayload3), AtomicOutputFile.Strategy.CAS);
+
+    InputFile after3 = winnerCas.writeAtomic(tok3, () -> new ByteArrayInputStream(payload3));
+    assertThat(readAllBytes(after3)).isEqualTo(payload3);
+
+    // Stale CAS: same length but stale etag must fail.
+    assertThatThrownBy(
+            () -> ghostCas.writeAtomic(ghostTok3, () -> new ByteArrayInputStream(ghostPayload3)))
+        .isInstanceOf(SupportsAtomicOperations.CASException.class);
+    assertThat(readAllBytes(fileIO.newInputFile(path))).isEqualTo(payload3);
+
+    // ---- Stage 4: APPEND after CAS replace. ----
+    final AtomicOutputFile winnerAppend2 = fileIO.newOutputFile(after3);
+    final byte[] payload4 = "shaved my yak".getBytes(StandardCharsets.UTF_8);
+    final CAS tok4 =
+        winnerAppend2.prepare(
+            () -> new ByteArrayInputStream(payload4), AtomicOutputFile.Strategy.APPEND);
+
+    final AtomicOutputFile ghostAppend2 = fileIO.newOutputFile(after3);
+    final byte[] ghostPayload4 = "ghost yak".getBytes(StandardCharsets.UTF_8);
+    final CAS ghostTok4 =
+        ghostAppend2.prepare(
+            () -> new ByteArrayInputStream(ghostPayload4), AtomicOutputFile.Strategy.APPEND);
+
+    InputFile after4 = winnerAppend2.writeAtomic(tok4, () -> new ByteArrayInputStream(payload4));
+
+    final byte[] expectedFinal = new byte[payload3.length + payload4.length];
+    System.arraycopy(payload3, 0, expectedFinal, 0, payload3.length);
+    System.arraycopy(payload4, 0, expectedFinal, payload3.length, payload4.length);
+    assertThat(readAllBytes(after4)).isEqualTo(expectedFinal);
+
+    // Stale append after CAS: ghost still has after3's etag, which CAS replaced and the winner
+    // has now appended past. ifMatch must fail.
+    assertThatThrownBy(
+            () ->
+                ghostAppend2.writeAtomic(ghostTok4, () -> new ByteArrayInputStream(ghostPayload4)))
+        .isInstanceOf(SupportsAtomicOperations.AppendException.class);
+    assertThat(readAllBytes(fileIO.newInputFile(path))).isEqualTo(expectedFinal);
+  }
+
+  private static byte[] padTo(String s, int length) {
+    byte[] src = s.getBytes(StandardCharsets.UTF_8);
+    if (src.length >= length) {
+      byte[] truncated = new byte[length];
+      System.arraycopy(src, 0, truncated, 0, length);
+      return truncated;
+    }
+    byte[] out = new byte[length];
+    System.arraycopy(src, 0, out, 0, src.length);
+    for (int i = src.length; i < length; i++) {
+      out[i] = '.';
+    }
+    return out;
+  }
+
+  private static String readAll(InputFile in) throws IOException {
+    try (InputStream s = in.newStream()) {
+      return CharStreams.toString(new InputStreamReader(s, StandardCharsets.UTF_8));
+    }
+  }
+
+  private static byte[] readAllBytes(InputFile in) throws IOException {
+    try (InputStream s = in.newStream()) {
+      return ByteStreams.toByteArray(s);
+    }
   }
 
   static class SuccessCleanupExtension implements TestWatcher {
