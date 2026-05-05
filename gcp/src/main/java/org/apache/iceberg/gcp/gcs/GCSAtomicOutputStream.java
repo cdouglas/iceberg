@@ -206,9 +206,8 @@ class GCSAtomicOutputStream extends PositionOutputStream {
       // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
       throw new SupportsAtomicOperations.CASException("Target modified", e);
     }
-    if (e.getCode() == 429) { // Too many requests
-      throw new SupportsAtomicOperations.CASException("Rate limit exceeded", e);
-    }
+    // 429 (rate limit) and 5xx are transient; let the StorageException propagate so the
+    // caller (GCSOutputFile.writeAtomic) can retry without treating them as CAS conflicts.
   }
 
   @SuppressWarnings({"checkstyle:NoFinalizer", "Finalize"})
