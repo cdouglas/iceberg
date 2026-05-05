@@ -36,9 +36,10 @@ import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
 class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
-  // Atomic-write precondition: null = none (vanilla overwrite); 0 = doesNotExist (create-only);
-  // positive = generationMatch on the captured generation.
-  private final Long pinnedGeneration;
+  // Pinned snapshot of the InputFile being replaced (null for vanilla overwrites). The BlobId's
+  // generation drives the write precondition: a positive value enforces generationMatch on the
+  // captured generation; 0 enforces "object must not exist".
+  private final BlobId pinnedSnapshot;
 
   static GCSOutputFile fromLocation(
       String location, PrefixedStorage storage, MetricsContext metrics) {
@@ -55,17 +56,16 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
    * Build an OutputFile that replaces an InputFile snapshot.
    *
    * @param target write destination (bucket+name, no generation)
-   * @param pinnedId snapshot BlobId with generation if existing, or {@code null} if the snapshot
-   *     was a non-existent object
+   * @param pinnedSnapshot snapshot BlobId with generation set; positive pins the existing
+   *     generation, {@code 0} pins "object must not exist"
    */
   static GCSOutputFile replacing(
       BlobId target,
-      BlobId pinnedId,
+      BlobId pinnedSnapshot,
       Storage storage,
       GCPProperties gcpProperties,
       MetricsContext metrics) {
-    Long pinned = pinnedId == null ? 0L : pinnedId.getGeneration();
-    return new GCSOutputFile(storage, target, gcpProperties, metrics, pinned);
+    return new GCSOutputFile(storage, target, gcpProperties, metrics, pinnedSnapshot);
   }
 
   GCSOutputFile(
@@ -73,9 +73,9 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
       BlobId blobId,
       GCPProperties gcpProperties,
       MetricsContext metrics,
-      Long pinnedGeneration) {
+      BlobId pinnedSnapshot) {
     super(storage, blobId, gcpProperties, metrics);
-    this.pinnedGeneration = pinnedGeneration;
+    this.pinnedSnapshot = pinnedSnapshot;
   }
 
   /**
@@ -129,7 +129,7 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
               gcpProperties(),
               metrics(),
               token,
-              pinnedGeneration,
+              pinnedSnapshot,
               written -> result[0] = written)) {
         byte[] buf = new byte[gcpProperties().channelWriteChunkSize().orElse(32 * 1024)];
         int nread;

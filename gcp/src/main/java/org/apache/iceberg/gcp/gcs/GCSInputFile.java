@@ -85,16 +85,19 @@ class GCSInputFile extends BaseGCSFile implements InputFile {
   /**
    * Resolve this InputFile to a snapshot BlobId for use as a CAS precondition.
    *
-   * <p>Returns the BlobId pinned to a specific generation if the object exists, or {@code null} if
-   * the object did not exist at snapshot time. The snapshot is the cached metadata if {@link
-   * #getBlob()} was already invoked (e.g., via {@link #exists()} or {@link #getLength()}); else
-   * fetched now.
+   * <p>Always returns a BlobId with a generation set, suitable for {@link
+   * com.google.cloud.storage.Storage.BlobWriteOption#generationMatch(long)}: a positive value pins
+   * the live generation, {@code 0} pins "object must not exist". This mirrors {@code
+   * ADLSInputFile.conditions()}, which returns a {@code DataLakeRequestConditions} encoding either
+   * {@code ifMatch=etag} or {@code ifNoneMatch=*}.
    */
   BlobId pinnedBlobId() {
     if (blobId().getGeneration() != null) {
       return blobId();
     }
     Blob blob = getBlob();
-    return blob == null ? null : blob.getBlobId();
+    return blob == null
+        ? BlobId.of(blobId().getBucket(), blobId().getName(), 0L)
+        : blob.getBlobId();
   }
 }
