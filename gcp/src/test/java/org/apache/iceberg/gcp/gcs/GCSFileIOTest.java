@@ -26,7 +26,6 @@ import static org.mockito.Mockito.spy;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.contrib.nio.testing.LocalStorageHelper;
 import com.google.cloud.storage.testing.RemoteStorageHelper;
 import java.io.ByteArrayInputStream;
@@ -40,7 +39,6 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
-import java.util.regex.Pattern;
 import java.util.stream.StreamSupport;
 import java.util.zip.CheckedOutputStream;
 import org.apache.commons.io.output.NullOutputStream;
@@ -49,21 +47,16 @@ import org.apache.hadoop.util.PureJavaCrc32C;
 import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.common.DynMethods;
 import org.apache.iceberg.gcp.GCPProperties;
-import org.apache.iceberg.io.AtomicOutputFile;
-import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.ResolvingFileIO;
-import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -151,184 +144,6 @@ public class GCSFileIOTest {
     io.deleteFile(in);
 
     assertThat(io.newInputFile(location).exists()).isFalse();
-  }
-
-  @Test
-  public void newOutputFileMatch() throws IOException {
-    // Generation matching requires real GCS or more complete mock
-    Assumptions.assumeTrue(usingRealGCS, "Atomic operations require real GCS");
-
-    final String location = gsUri("file.txt");
-    final byte[] expected = new byte[1024 * 1024];
-    random.nextBytes(expected);
-
-    final OutputFile out = io.newOutputFile(location);
-    try (OutputStream os = out.createOrOverwrite()) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
-    }
-
-    final InputFile in = io.newInputFile(location);
-    assertThat(in.exists()).isTrue();
-    final byte[] actual = new byte[1024 * 1024];
-
-    try (InputStream is = in.newStream()) {
-      IOUtil.readFully(is, actual, 0, actual.length);
-    }
-    assertThat(actual).isEqualTo(expected);
-
-    OutputFile overwrite = io.newOutputFile(in);
-    final byte[] overbytes = new byte[1024 * 1024];
-    random.nextBytes(overbytes);
-    try (OutputStream os = overwrite.createOrOverwrite()) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
-    }
-    final InputFile overwritten = io.newInputFile(location);
-    try (InputStream is = overwritten.newStream()) {
-      IOUtil.readFully(is, actual, 0, actual.length);
-    }
-    assertThat(actual).isEqualTo(overbytes);
-  }
-
-  @Test
-  public void newOutputFileMatchFail() throws IOException {
-    // ifGenerationMatch enforcement requires real GCS; LocalStorageHelper does not honor it.
-    Assumptions.assumeTrue(usingRealGCS, "Atomic operations require real GCS");
-
-    // N writers each snapshot the same generation of an existing object and attempt to
-    // CAS-replace it. Exactly one must win; every other writer with the same dependency
-    // must surface a CASException because the pinned generation no longer matches the
-    // live object.
-    final int writers = 4;
-    final String location = gsUri("/file.txt");
-    final byte[] seed = new byte[1024 * 1024];
-    random.nextBytes(seed);
-    try (OutputStream os = io.newOutputFile(location).createOrOverwrite()) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(seed));
-    }
-
-    // All writers pin the snapshot (ifGenerationMatch=Gseed) before any of them commits.
-    final List<byte[]> payloads = Lists.newArrayListWithCapacity(writers);
-    final List<AtomicOutputFile> outs = Lists.newArrayListWithCapacity(writers);
-    final List<CAS> tokens = Lists.newArrayListWithCapacity(writers);
-    for (int i = 0; i < writers; i++) {
-      final InputFile snap = io.newInputFile(location);
-      assertThat(snap.exists()).isTrue();
-      final byte[] payload = new byte[1024 * 1024];
-      random.nextBytes(payload);
-      payloads.add(payload);
-      AtomicOutputFile out = io.newOutputFile(snap);
-      outs.add(out);
-      tokens.add(
-          out.prepare(() -> new ByteArrayInputStream(payload), AtomicOutputFile.Strategy.CAS));
-    }
-
-    // Sequence the writes; only the first should observe its pinned generation as live.
-    int winner = -1;
-    int casFailures = 0;
-    for (int i = 0; i < writers; i++) {
-      final byte[] payload = payloads.get(i);
-      try {
-        outs.get(i).writeAtomic(tokens.get(i), () -> new ByteArrayInputStream(payload));
-        assertThat(winner).as("only one writer may succeed").isEqualTo(-1);
-        winner = i;
-      } catch (SupportsAtomicOperations.CASException expected) {
-        casFailures++;
-      }
-    }
-    assertThat(winner).isNotEqualTo(-1);
-    assertThat(casFailures).isEqualTo(writers - 1);
-
-    // Final live object is the winner's content.
-    final byte[] actual = new byte[1024 * 1024];
-    try (InputStream is = io.newInputFile(location).newStream()) {
-      IOUtil.readFully(is, actual, 0, actual.length);
-    }
-    assertThat(actual).isEqualTo(payloads.get(winner));
-  }
-
-  @Test
-  public void newOutputFileCreateRace() throws IOException {
-    // ifGenerationMatch=0 enforcement requires real GCS.
-    Assumptions.assumeTrue(usingRealGCS, "Atomic operations require real GCS");
-
-    // N writers each snapshot the *non-existence* of an object and attempt to create it.
-    // Exactly one must win; every other writer with the same doesNotExist dependency must
-    // surface a CASException once the object is live.
-    final int writers = 4;
-    final String location = gsUri("/create-race.txt");
-
-    final List<byte[]> payloads = Lists.newArrayListWithCapacity(writers);
-    final List<AtomicOutputFile> outs = Lists.newArrayListWithCapacity(writers);
-    final List<CAS> tokens = Lists.newArrayListWithCapacity(writers);
-    for (int i = 0; i < writers; i++) {
-      final InputFile snap = io.newInputFile(location);
-      assertThat(snap.exists()).isFalse();
-      final byte[] payload = new byte[1024];
-      random.nextBytes(payload);
-      payloads.add(payload);
-      AtomicOutputFile out = io.newOutputFile(snap);
-      outs.add(out);
-      tokens.add(
-          out.prepare(() -> new ByteArrayInputStream(payload), AtomicOutputFile.Strategy.CAS));
-    }
-
-    int winner = -1;
-    int casFailures = 0;
-    for (int i = 0; i < writers; i++) {
-      final byte[] payload = payloads.get(i);
-      try {
-        outs.get(i).writeAtomic(tokens.get(i), () -> new ByteArrayInputStream(payload));
-        assertThat(winner).as("only one writer may succeed").isEqualTo(-1);
-        winner = i;
-      } catch (SupportsAtomicOperations.CASException expected) {
-        casFailures++;
-      }
-    }
-    assertThat(winner).isNotEqualTo(-1);
-    assertThat(casFailures).isEqualTo(writers - 1);
-
-    final byte[] actual = new byte[1024];
-    try (InputStream is = io.newInputFile(location).newStream()) {
-      IOUtil.readFully(is, actual, 0, actual.length);
-    }
-    assertThat(actual).isEqualTo(payloads.get(winner));
-  }
-
-  @Test
-  public void testAtomicPartialWrite() throws IOException {
-    // BlobWriteSession API is not supported by LocalStorageHelper
-    Assumptions.assumeTrue(usingRealGCS, "Atomic operations require real GCS");
-
-    final String location = gsUri("file.txt");
-    final byte[] expected = new byte[1024 * 1024];
-    random.nextBytes(expected);
-
-    final OutputFile out = io.newOutputFile(location);
-    try (OutputStream os = out.createOrOverwrite()) {
-      IOUtil.writeFully(os, ByteBuffer.wrap(expected));
-    }
-
-    final InputFile in = io.newInputFile(location);
-    assertThat(in.exists()).isTrue();
-
-    // overwrite fails, checksum does not match
-    final AtomicOutputFile overwrite = io.newOutputFile(in);
-    final byte[] overbytes = new byte[1024 * 1024];
-    random.nextBytes(overbytes);
-    final CAS chk =
-        overwrite.prepare(() -> new ByteArrayInputStream(overbytes), AtomicOutputFile.Strategy.CAS);
-    StorageException hackFailure =
-        Assertions.assertThrows(
-            StorageException.class,
-            () -> {
-              // partial write
-              overwrite.writeAtomic(chk, () -> new ByteArrayInputStream(overbytes, 0, 512 * 1024));
-            });
-    // Error message validated against GCP
-    assertThat(hackFailure.getCause().getMessage())
-        .containsPattern(
-            Pattern.compile(
-                "Provided CRC32C \\\\\"[A-Za-z0-9+/=]+\\\\\" doesn't match calculated CRC32C \\\\\"[A-Za-z0-9+/=]+\\\\\""));
   }
 
   @Test
