@@ -65,6 +65,7 @@ class GCSAtomicOutputStream extends PositionOutputStream {
   private final BlobId blobId;
   private final GCPProperties gcpProperties;
   private final MetricsContext metrics;
+  private final BlobId pinnedSnapshot;
   private final Consumer<InputFile> onClose;
 
   private OutputStream stream;
@@ -83,11 +84,13 @@ class GCSAtomicOutputStream extends PositionOutputStream {
       GCPProperties gcpProperties,
       MetricsContext metrics,
       CAS token,
+      BlobId pinnedSnapshot,
       Consumer<InputFile> onClose) {
     this.storage = storage;
     this.blobId = blobId;
     this.gcpProperties = gcpProperties;
     this.metrics = metrics;
+    this.pinnedSnapshot = pinnedSnapshot;
     this.onClose = onClose;
 
     createStack = Thread.currentThread().getStackTrace();
@@ -134,9 +137,11 @@ class GCSAtomicOutputStream extends PositionOutputStream {
         .userProject()
         .ifPresent(userProject -> writeOptions.add(BlobWriteOption.userProject(userProject)));
 
-    // Use generation match for conditional writes when blobId has a generation
-    if (blobId.getGeneration() != null) {
-      writeOptions.add(BlobWriteOption.generationMatch());
+    // Apply CAS precondition from the InputFile snapshot. The BlobId's generation drives the
+    // ifGenerationMatch precondition: 0 enforces "object must not exist", positive pins the
+    // captured live generation. Null snapshot means no precondition (vanilla overwrite).
+    if (pinnedSnapshot != null) {
+      writeOptions.add(BlobWriteOption.generationMatch(pinnedSnapshot.getGeneration()));
     }
 
     BlobInfo.Builder blobInfoBuilder = BlobInfo.newBuilder(blobId);
