@@ -202,12 +202,18 @@ class GCSAtomicOutputStream extends PositionOutputStream {
   }
 
   private void handleStorageException(StorageException e) {
-    if (e.getCode() == 412) { // precondition failed
+    int code = e.getCode();
+    if (code == 412) {
       // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
-      throw new SupportsAtomicOperations.CASException("Target modified", e);
+      throw new SupportsAtomicOperations.StorageInvariantException("Target modified", e);
     }
-    // 429 (rate limit) and 5xx are transient; let the StorageException propagate so the
-    // caller (GCSOutputFile.writeAtomic) can retry without treating them as CAS conflicts.
+    if (code == 429 || (code >= 500 && code < 600)) {
+      // 429 = per-object update rate / quota; 5xx = transient server error.
+      // Both are recoverable by retrying the same write after a backoff.
+      throw new SupportsAtomicOperations.StorageThrottleException(
+          "Storage applied backpressure (HTTP " + code + ")", e);
+    }
+    // Other codes (auth, malformed request) propagate as the original StorageException.
   }
 
   @SuppressWarnings({"checkstyle:NoFinalizer", "Finalize"})
