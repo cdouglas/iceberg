@@ -23,13 +23,17 @@ import com.azure.core.util.Context;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.DataLakeStorageException;
+import com.azure.storage.file.datalake.models.LeaseAction;
 import com.azure.storage.file.datalake.models.PathHttpHeaders;
 import com.azure.storage.file.datalake.models.PathInfo;
+import com.azure.storage.file.datalake.options.DataLakeFileAppendOptions;
 import com.azure.storage.file.datalake.options.DataLakeFileFlushOptions;
 import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
+import com.azure.storage.file.datalake.specialized.DataLakeLeaseClientBuilder;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.util.UUID;
 import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -124,26 +128,55 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
     }
   }
 
+  // Default lease duration covers the append+flush span; on flush failure the lease is explicitly
+  // released so a stale-etag writer doesn't lock out other writers for the full duration.
+  private static final int APPEND_LEASE_SECONDS = 15;
+
+  /**
+   * Append to the live object atomically. Concurrent writers are serialized by acquiring a blob
+   * lease that spans the two-phase {@code appendWithResponse} + {@code flushWithResponse}: without
+   * the lease, two writers can both upload uncommitted data at the same offset and the flush-etag
+   * winner ends up committing a loser's bytes. The lease is acquired atomically with append (via
+   * {@link LeaseAction#ACQUIRE}) and released atomically with flush (via {@link
+   * LeaseAction#RELEASE}); flush failure releases the lease in the catch block to keep the lock-out
+   * window short.
+   */
   private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source) {
+    final String leaseId = UUID.randomUUID().toString();
+    boolean leaseHeld = false;
     try {
       final long appendLen = checksum.contentLength();
+      DataLakeFileAppendOptions appendOpts =
+          new DataLakeFileAppendOptions()
+              .setContentHash(checksum.contentChecksumBytes())
+              .setLeaseAction(LeaseAction.ACQUIRE)
+              .setProposedLeaseId(leaseId)
+              .setLeaseDuration(APPEND_LEASE_SECONDS);
       fileClient()
-          .appendWithResponse(
-              source.get(),
-              length,
-              appendLen,
-              checksum.contentChecksumBytes(),
-              null,
-              null,
-              Context.NONE);
+          .appendWithResponse(source.get(), length, appendLen, appendOpts, null, Context.NONE);
+      leaseHeld = true;
+
+      DataLakeRequestConditions flushConditions =
+          new DataLakeRequestConditions().setLeaseId(leaseId);
+      if (conditions != null) {
+        if (conditions.getIfMatch() != null) {
+          flushConditions.setIfMatch(conditions.getIfMatch());
+        }
+        if (conditions.getIfNoneMatch() != null) {
+          flushConditions.setIfNoneMatch(conditions.getIfNoneMatch());
+        }
+      }
       final DataLakeFileFlushOptions flushOpts =
           new DataLakeFileFlushOptions()
               .setClose(true)
-              .setRequestConditions(conditions)
-              .setUncommittedDataRetained(false);
+              .setRequestConditions(flushConditions)
+              .setUncommittedDataRetained(false)
+              .setLeaseAction(LeaseAction.RELEASE);
       // throws on failure
       final Response<PathInfo> resp =
           fileClient().flushWithResponse(length + appendLen, flushOpts, null, Context.NONE);
+      // RELEASE on the flush options drops the lease atomically with a successful flush.
+      leaseHeld = false;
       // update length to orig len + append (succeeded)
       this.length += appendLen;
       final PathInfo info = resp.getValue();
@@ -155,6 +188,15 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
           metrics(),
           new DataLakeRequestConditions().setIfMatch(info.getETag()));
     } catch (DataLakeStorageException e) {
+      if (409 == e.getStatusCode() && e.getErrorCode() != null) {
+        String code = e.getErrorCode();
+        if ("LeaseAlreadyPresent".equals(code)
+            || "LeaseIdMismatchWithLeaseOperation".equals(code)
+            || "LeaseAlreadyBroken".equals(code)
+            || "LeaseIsBreakingAndCannotBeAcquired".equals(code)) {
+          throw new SupportsAtomicOperations.AppendException("Concurrent writer holds lease", e);
+        }
+      }
       if (412 == e.getStatusCode()) {
         // precondition failed
         throw new SupportsAtomicOperations.AppendException("Target modified", e);
@@ -163,6 +205,20 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
         throw new SupportsAtomicOperations.AppendException("Wrong length", e);
       }
       throw e;
+    } finally {
+      // Belt-and-suspenders: if append succeeded but flush failed, release the lease eagerly so
+      // we don't lock other writers out for the full lease duration.
+      if (leaseHeld) {
+        try {
+          new DataLakeLeaseClientBuilder()
+              .fileClient(fileClient())
+              .leaseId(leaseId)
+              .buildClient()
+              .releaseLease();
+        } catch (DataLakeStorageException ignored) {
+          // best effort: lease will expire on its own
+        }
+      }
     }
   }
 
