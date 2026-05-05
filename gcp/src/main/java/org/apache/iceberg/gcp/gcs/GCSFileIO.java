@@ -137,6 +137,16 @@ public class GCSFileIO
         gcsInputFile.blobId(), pinnedId, storage.storage(), storage.gcpProperties(), metrics);
   }
 
+  /**
+   * GCS has no append primitive: every write replaces the whole object. Returning {@code false}
+   * here lets the catalog format coerce its commit policy to CAS-only on this backend, regardless
+   * of {@code fileio.catalog.max.append.count}.
+   */
+  @Override
+  public boolean supportsAppend() {
+    return false;
+  }
+
   @SuppressWarnings("resource")
   @Override
   public void deleteFile(String path) {
