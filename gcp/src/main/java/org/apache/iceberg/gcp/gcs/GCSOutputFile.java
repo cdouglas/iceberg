@@ -36,6 +36,11 @@ import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
 class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
+  // Pinned snapshot of the InputFile being replaced (null for vanilla overwrites). The BlobId's
+  // generation drives the write precondition: a positive value enforces generationMatch on the
+  // captured generation; 0 enforces "object must not exist".
+  private final BlobId pinnedSnapshot;
+
   static GCSOutputFile fromLocation(
       String location, PrefixedStorage storage, MetricsContext metrics) {
     return new GCSOutputFile(
@@ -43,12 +48,29 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
         storage.gcsFileSystem(),
         BlobId.fromGsUtilUri(location),
         storage.gcpProperties(),
-        metrics);
+        metrics,
+        null);
   }
 
   static GCSOutputFile fromBlobId(
       BlobId blobId, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
-    return new GCSOutputFile(storage, blobId, gcpProperties, metrics);
+    return new GCSOutputFile(storage, blobId, gcpProperties, metrics, null);
+  }
+
+  /**
+   * Build an OutputFile that replaces an InputFile snapshot.
+   *
+   * @param target write destination (bucket+name, no generation)
+   * @param pinnedSnapshot snapshot BlobId with generation set; positive pins the existing
+   *     generation, {@code 0} pins "object must not exist"
+   */
+  static GCSOutputFile replacing(
+      BlobId target,
+      BlobId pinnedSnapshot,
+      Storage storage,
+      GCPProperties gcpProperties,
+      MetricsContext metrics) {
+    return new GCSOutputFile(storage, target, gcpProperties, metrics, pinnedSnapshot);
   }
 
   GCSOutputFile(
@@ -58,8 +80,10 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
       AutoCloseable gcsFileSystem,
       BlobId blobId,
       GCPProperties gcpProperties,
-      MetricsContext metrics) {
+      MetricsContext metrics,
+      BlobId pinnedSnapshot) {
     super(storage, gcsFileSystem, blobId, gcpProperties, metrics);
+    this.pinnedSnapshot = pinnedSnapshot;
   }
 
   /**
@@ -113,6 +137,7 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
               gcpProperties(),
               metrics(),
               token,
+              pinnedSnapshot,
               written -> result[0] = written)) {
         byte[] buf = new byte[gcpProperties().channelWriteChunkSize().orElse(32 * 1024)];
         int nread;
