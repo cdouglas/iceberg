@@ -36,20 +36,46 @@ import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
 class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
+  // Atomic-write precondition: null = none (vanilla overwrite); 0 = doesNotExist (create-only);
+  // positive = generationMatch on the captured generation.
+  private final Long pinnedGeneration;
+
   static GCSOutputFile fromLocation(
       String location, PrefixedStorage storage, MetricsContext metrics) {
     return new GCSOutputFile(
-        storage.storage(), BlobId.fromGsUtilUri(location), storage.gcpProperties(), metrics);
+        storage.storage(), BlobId.fromGsUtilUri(location), storage.gcpProperties(), metrics, null);
   }
 
   static GCSOutputFile fromBlobId(
       BlobId blobId, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
-    return new GCSOutputFile(storage, blobId, gcpProperties, metrics);
+    return new GCSOutputFile(storage, blobId, gcpProperties, metrics, null);
+  }
+
+  /**
+   * Build an OutputFile that replaces an InputFile snapshot.
+   *
+   * @param target write destination (bucket+name, no generation)
+   * @param pinnedId snapshot BlobId with generation if existing, or {@code null} if the snapshot
+   *     was a non-existent object
+   */
+  static GCSOutputFile replacing(
+      BlobId target,
+      BlobId pinnedId,
+      Storage storage,
+      GCPProperties gcpProperties,
+      MetricsContext metrics) {
+    Long pinned = pinnedId == null ? 0L : pinnedId.getGeneration();
+    return new GCSOutputFile(storage, target, gcpProperties, metrics, pinned);
   }
 
   GCSOutputFile(
-      Storage storage, BlobId blobId, GCPProperties gcpProperties, MetricsContext metrics) {
+      Storage storage,
+      BlobId blobId,
+      GCPProperties gcpProperties,
+      MetricsContext metrics,
+      Long pinnedGeneration) {
     super(storage, blobId, gcpProperties, metrics);
+    this.pinnedGeneration = pinnedGeneration;
   }
 
   /**
@@ -103,6 +129,7 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
               gcpProperties(),
               metrics(),
               token,
+              pinnedGeneration,
               written -> result[0] = written)) {
         byte[] buf = new byte[gcpProperties().channelWriteChunkSize().orElse(32 * 1024)];
         int nread;

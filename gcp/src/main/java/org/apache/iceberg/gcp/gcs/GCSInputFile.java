@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.gcp.gcs;
 
+import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
 import org.apache.iceberg.gcp.GCPProperties;
@@ -79,5 +80,21 @@ class GCSInputFile extends BaseGCSFile implements InputFile {
   @Override
   public SeekableInputStream newStream() {
     return new GCSInputStream(storage(), blobId(), blobSize, gcpProperties(), metrics());
+  }
+
+  /**
+   * Resolve this InputFile to a snapshot BlobId for use as a CAS precondition.
+   *
+   * <p>Returns the BlobId pinned to a specific generation if the object exists, or {@code null} if
+   * the object did not exist at snapshot time. The snapshot is the cached metadata if {@link
+   * #getBlob()} was already invoked (e.g., via {@link #exists()} or {@link #getLength()}); else
+   * fetched now.
+   */
+  BlobId pinnedBlobId() {
+    if (blobId().getGeneration() != null) {
+      return blobId();
+    }
+    Blob blob = getBlob();
+    return blob == null ? null : blob.getBlobId();
   }
 }
