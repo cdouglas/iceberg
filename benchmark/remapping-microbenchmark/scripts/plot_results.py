@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 try:
+    import matplotlib
     import matplotlib.pyplot as plt
     import pandas as pd
     import numpy as np
@@ -21,6 +22,11 @@ except ImportError:
     print("Required packages not installed. Run:")
     print("  pip install matplotlib pandas numpy")
     sys.exit(1)
+
+# Embed TrueType outlines instead of matplotlib's default Type 3 bitmaps
+# (ACM proceedings require scalable fonts).
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42
 
 # Set style
 plt.style.use('seaborn-v0_8-whitegrid')
