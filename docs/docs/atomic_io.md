@@ -348,5 +348,4 @@ try {
 1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. Provider tests declare this via `supportsAppend()`.
 2. **GCS APPEND**: Not supported. GCS objects are immutable — every write replaces the whole object — so `GCSFileIO.supportsAppend()` returns `false` and `GCSOutputFile.prepare()` rejects `Strategy.APPEND` with `IllegalArgumentException`. Callers that mix CAS and APPEND in a commit log must fall back to CAS-only.
 3. **ADLS APPEND**: Atomic via the lease mechanism described above. Concurrent writers serialize on the file's blob lease; the loser sees `AppendException` at append time, before any bytes are staged.
-4. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large files may timeout
-5. **Eventual Consistency**: Some operations may require retries due to storage system eventual consistency
+4. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large writes may exceed provider request timeouts.
