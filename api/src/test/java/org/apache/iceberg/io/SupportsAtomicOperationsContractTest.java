@@ -65,11 +65,14 @@ public abstract class SupportsAtomicOperationsContractTest {
   protected abstract String randomLocation(String slug);
 
   /**
-   * Whether the backing store supports {@link AtomicOutputFile.Strategy#APPEND}. Default {@code
-   * false}; providers that support APPEND override this to {@code true}.
+   * Whether the backing store supports {@link AtomicOutputFile.Strategy#APPEND}. Defaults to the
+   * FileIO's own {@link SupportsAtomicOperations#supportsAppend()} declaration. Subclasses override
+   * only when the FileIO's coarse capability is wrong for this specific configuration — e.g. S3
+   * standard buckets, where {@code S3FileIO} reports {@code true} (S3 supports {@code
+   * writeOffsetBytes} on directory buckets) but the standard bucket under test rejects append.
    */
   protected boolean supportsAppend() {
-    return false;
+    return newFileIO().supportsAppend();
   }
 
   /** Best-effort cleanup hook called after each successful test. Subclasses may override. */
@@ -364,6 +367,11 @@ public abstract class SupportsAtomicOperationsContractTest {
     Random random = new Random(0xC0FFEE);
     List<byte[]> payloads = new ArrayList<>(writers);
     for (int i = 0; i < writers; i++) {
+      // Identical-length payloads. The contract is that exactly one writer commits and the live
+      // bytes match that writer's payload, regardless of length collisions. Provider impls are
+      // responsible for serializing concurrent writers correctly (e.g. ADLS uses a blob lease over
+      // its two-phase append/flush, since neither the position nor the etag check alone prevents
+      // an etag-race winner from committing a loser's bytes).
       byte[] payload = new byte[1024];
       random.nextBytes(payload);
       payloads.add(payload);
@@ -378,9 +386,13 @@ public abstract class SupportsAtomicOperationsContractTest {
         final byte[] payload = payloads.get(i);
         Callable<Integer> task =
             () -> {
-              // Each thread fetches its own snapshot + prepares its token before rendezvousing.
-              InputFile snap = io.newInputFile(location);
-              AtomicOutputFile out = io.newOutputFile(snap);
+              // Each thread builds its own FileIO (and underlying SDK client) so the race
+              // doesn't share client-side state — observable conflicts must come from the
+              // backing store, not from cached fields, shared connection state, or block
+              // buffers in the client library.
+              SupportsAtomicOperations threadIo = newFileIO();
+              InputFile snap = threadIo.newInputFile(location);
+              AtomicOutputFile out = threadIo.newOutputFile(snap);
               CAS tok = out.prepare(supplier(payload), strategy);
               startGate.await(30, TimeUnit.SECONDS);
               try {

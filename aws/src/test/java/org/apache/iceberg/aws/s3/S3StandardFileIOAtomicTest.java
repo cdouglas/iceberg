@@ -71,6 +71,13 @@ public class S3StandardFileIOAtomicTest extends SupportsAtomicOperationsContract
   }
 
   @Override
+  protected boolean supportsAppend() {
+    // S3FileIO.supportsAppend() reports true (the SDK supports writeOffsetBytes); only directory
+    // buckets accept it server-side, so override to false for this standard-bucket test.
+    return false;
+  }
+
+  @Override
   protected SupportsAtomicOperations newFileIO() {
     S3FileIO io = new S3FileIO(() -> s3);
     io.initialize(Maps.newHashMap());
