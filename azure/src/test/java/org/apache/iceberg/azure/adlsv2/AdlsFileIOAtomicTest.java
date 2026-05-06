@@ -202,27 +202,28 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
   }
 
   /**
-   * After a writer abandons an append (lease times out without flush), a subsequent writer can
+   * After a writer abandons an append and the lease becomes available, a subsequent writer can
    * acquire a fresh lease, append at the file's *committed* end, and flush. The orphaned
    * uncommitted bytes don't affect the committed content; the second writer's append at the same
    * offset cleanly overwrites the orphaned uncommitted block, and its flush position matches the
    * uncommitted region's new end.
+   *
+   * <p>Azure's minimum fixed-duration lease is 15s, so a faithful timeout test would block for at
+   * least that long; instead this test models lease expiry by explicitly breaking the lease with
+   * {@code breakPeriodInSeconds=0}. The end state — lease released, uncommitted bytes orphaned — is
+   * identical to natural expiry.
    */
   @Test
-  void abandonedAppendIsOverwrittenByNextWriter() throws IOException, InterruptedException {
+  void abandonedAppendIsOverwrittenAfterLeaseRelease() throws IOException {
     String location = randomLocation("orphan-recovery");
     SupportsAtomicOperations io = newFileIO();
     String path = pathOf(location);
 
-    // Seed the file via the FileIO so subsequent reads see it through the same code path.
     byte[] seed = "seed".getBytes();
     DataLakeFileClient client = resolver.fileClient(path);
     client.upload(new ByteArrayInputStream(seed), seed.length, true);
 
-    // Writer A: stage uncommitted bytes via a raw appendWithResponse holding a short lease, then
-    // walk away without flushing. We use the lowest legal lease duration (15s) to keep the test
-    // bounded; production uses the same value. The lease is acquired explicitly here so we can
-    // observe the recovery without introducing a real concurrent client.
+    // Writer A: stage uncommitted bytes via a raw appendWithResponse holding a lease.
     byte[] orphan = "writer-A-orphan".getBytes();
     String orphanLeaseId = UUID.randomUUID().toString();
     com.azure.storage.file.datalake.options.DataLakeFileAppendOptions appendOpts =
@@ -233,8 +234,12 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
     client.appendWithResponse(
         new ByteArrayInputStream(orphan), seed.length, orphan.length, appendOpts, null, null);
 
-    // Wait for the lease to expire. (15s minimum; pad a couple seconds for clock drift.)
-    Thread.sleep(17_000);
+    // Model the lease timeout: break the lease immediately rather than waiting 15s.
+    new com.azure.storage.file.datalake.specialized.DataLakeLeaseClientBuilder()
+        .fileClient(client)
+        .leaseId(orphanLeaseId)
+        .buildClient()
+        .breakLeaseWithResponse(0, null, null, null);
 
     // Writer B: snapshot the file's committed state, append, flush via the FileIO lease path.
     InputFile snap = io.newInputFile(location);
