@@ -19,17 +19,37 @@ The `SupportsAtomicOperations` interface exposes these primitives through a unif
 public interface SupportsAtomicOperations extends FileIO {
     /**
      * Create an atomic output file that can conditionally replace an existing file.
-     *
-     * @param toReplace The input file to atomically replace
-     * @return An AtomicOutputFile for conditional writes
      */
     AtomicOutputFile newOutputFile(InputFile toReplace);
 
-    /** Thrown when a compare-and-swap operation fails due to concurrent modification */
-    class CASException extends IOException { ... }
+    /**
+     * Whether this FileIO exposes the APPEND strategy. Backends without an append primitive
+     * (e.g. GCS objects are immutable; standard S3 buckets reject writeOffsetBytes) return
+     * false; callers that mix CAS and APPEND must fall back to CAS-only on those backends.
+     */
+    default boolean supportsAppend() { return true; }
 
-    /** Thrown when an append operation fails due to offset mismatch */
-    class AppendException extends IOException { ... }
+    /** Base class for atomic-operation failures. */
+    class AtomicOperationException extends RuntimeException { ... }
+
+    /** Atomic CAS write could not complete. Subclassed below. */
+    class CASException extends AtomicOperationException { ... }
+
+    /**
+     * Storage rejected the write because its CAS precondition failed (etag/generation mismatch,
+     * or a "must not exist" lost a create race). Retrying the same write will fail again — the
+     * caller must re-read state and reconcile before another attempt.
+     */
+    class StorageInvariantException extends CASException { ... }
+
+    /**
+     * Storage applied backpressure (HTTP 429, 5xx, GCS per-object update rate). Underlying
+     * invariants still hold; the caller should retry the same write after a backoff.
+     */
+    class StorageThrottleException extends CASException { ... }
+
+    /** APPEND failed (etag/lease mismatch or wrong flush position). */
+    class AppendException extends AtomicOperationException { ... }
 }
 ```
 
@@ -239,7 +259,37 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
 ### Azure Preconditions
 
 - **CAS**: `FileParallelUploadOptions.setRequestConditions(conditions.setIfMatch(etag))` - fails with 412
-- **APPEND**: `appendWithResponse()` + `flushWithResponse()` with position validation - fails with 400 InvalidFlushPosition
+- **APPEND**: `appendWithResponse()` + `flushWithResponse()` with position validation, serialized by a blob lease (see below) - fails with 400 InvalidFlushPosition or 412 ConditionNotMet
+
+### Azure APPEND validation gap and lease serialization
+
+ADLS Gen2's append is a two-phase operation:
+
+1. `appendWithResponse(stream, position=L, length=N, ...)` uploads bytes to an **uncommitted block** at file offset `L`.
+2. `flushWithResponse(position=L+N, ifMatch=etag, ...)` commits the uncommitted region; the position must equal the uncommitted region's end and the etag must match the snapshot.
+
+This pair has a validation gap that no combination of the SDK's response codes can close on its own. Concurrent same-position appends share the uncommitted buffer at offset `L`: a second append at the same position **completely replaces** both the bytes and the effective length of the prior uncommitted block. The flush then commits whatever bytes are there. With same-length concurrent payloads, both writers' flush positions match `L+N`, the etag race elects one flush winner, but the bytes at the offset are last-appender-wins **independently** of the flush winner. A `200` from `flushWithResponse` therefore tells the caller "some atomic append happened" but not "*your* bytes were committed" — empirically this anomaly fires on roughly half of contended same-length writes.
+
+The position-flush check does prevent torn or partial writes: if the uncommitted region's end no longer matches our position, the flush fails cleanly with `400 InvalidFlushPosition` and commits nothing. So committed bytes are always *some* concurrent writer's complete payload — never a mix. But the FileIO contract demands the stronger guarantee that a successful `writeAtomic` means *this writer's* bytes are live, so `ADLSOutputFile.appendDestObj` serializes the append+flush span with a blob lease:
+
+| Step | Call | Lease action |
+|---|---|---|
+| Append | `appendWithResponse(..., DataLakeFileAppendOptions.setLeaseAction(ACQUIRE).setProposedLeaseId(...).setLeaseDuration(15))` | Acquire on the same RPC as the byte upload |
+| Flush | `flushWithResponse(..., DataLakeFileFlushOptions.setRequestConditions(setLeaseId(...).setIfMatch(...)).setLeaseAction(RELEASE))` | Release on the same RPC as the etag-checked commit |
+| Flush failure | `finally { DataLakeLeaseClient.releaseLease() }` | Eager release so a stale-snapshot writer doesn't lock other writers out for the full duration |
+
+The lease is piggybacked on the calls that were already happening — no extra round trips. While we hold it, no other writer can stage uncommitted data at our offset, so a `200` from flush implies our bytes are live.
+
+**Lease timeout semantics** — uncommitted data is *not* tied to lease lifetime. If a writer crashes between append and flush:
+
+- The lease ages out (15s) and becomes available again.
+- The writer's uncommitted bytes remain orphaned at the file's offset, **invisible to readers** (`getLength()` reports only flushed bytes; streamed reads see only the committed file).
+- The next writer pins the file's committed length, appends at that offset, and flushes. Their append at the same offset cleanly overwrites the orphaned uncommitted block.
+- Azure's block-blob storage reclaims orphaned uncommitted data after its TTL (~7 days).
+
+There is no scenario in which a lease timeout leads to a partial commit, a torn write, or visibility of unflushed bytes.
+
+**Lease contention** — two simultaneous `LeaseAction.ACQUIRE` requests resolve at the *append* call: one writer acquires the lease, the other gets `409 LeaseAlreadyPresent` and is translated to `AppendException`. The loser's bytes never enter the uncommitted buffer.
 
 ### Azure Checksums
 
@@ -286,15 +336,17 @@ try {
 
 | Provider | CAS Failure | Append Failure |
 |----------|-------------|----------------|
-| GCS | 412 Precondition Failed | 412 Precondition Failed |
-| S3 | 412 PreconditionFailed, 409 ConditionalRequestConflict | InvalidWriteOffsetException |
-| Azure | 412 Precondition Failed | 400 InvalidFlushPosition |
+| GCS | 412 Precondition Failed → `StorageInvariantException`; 429/5xx → `StorageThrottleException` | N/A (`supportsAppend() == false`) |
+| S3 standard | 412 PreconditionFailed, 409 ConditionalRequestConflict → `CASException` | N/A (writeOffsetBytes rejected) |
+| S3 Express One Zone | 412 PreconditionFailed, 409 ConditionalRequestConflict → `CASException` | InvalidWriteOffsetException → `AppendException` |
+| Azure ADLS | 412 Precondition Failed → `CASException` | 412, 400 InvalidFlushPosition, or 409 LeaseAlreadyPresent → `AppendException` |
 
-All failures are wrapped in `CASException` or `AppendException` for consistent handling.
+`CASException` is the base type for atomic-CAS failures; callers that need to distinguish "snapshot is stale, must reconcile" from "transient, retry the same bytes" can catch `StorageInvariantException` and `StorageThrottleException` separately. `AppendException` covers all APPEND-strategy failures.
 
 ## Limitations
 
-1. **S3 APPEND**: Only supported on S3 Express One Zone storage class
-2. **GCS APPEND**: Emulated using generation match; not true append
-3. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large files may timeout
-4. **Eventual Consistency**: Some operations may require retries due to storage system eventual consistency
+1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. Provider tests declare this via `supportsAppend()`.
+2. **GCS APPEND**: Not supported. GCS objects are immutable — every write replaces the whole object — so `GCSFileIO.supportsAppend()` returns `false` and `GCSOutputFile.prepare()` rejects `Strategy.APPEND` with `IllegalArgumentException`. Callers that mix CAS and APPEND in a commit log must fall back to CAS-only.
+3. **ADLS APPEND**: Atomic via the lease mechanism described above. Concurrent writers serialize on the file's blob lease; the loser sees `AppendException` at append time, before any bytes are staged.
+4. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large files may timeout
+5. **Eventual Consistency**: Some operations may require retries due to storage system eventual consistency

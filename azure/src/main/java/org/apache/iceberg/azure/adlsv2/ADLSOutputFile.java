@@ -128,18 +128,24 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
     }
   }
 
-  // Default lease duration covers the append+flush span; on flush failure the lease is explicitly
-  // released so a stale-etag writer doesn't lock out other writers for the full duration.
+  // Default lease duration covers a typical append+flush span. On flush failure the lease is
+  // explicitly released so a stale-snapshot writer doesn't lock other writers out for the full
+  // window; on writer crash the lease ages out and orphaned uncommitted bytes are GC'd by Azure.
   private static final int APPEND_LEASE_SECONDS = 15;
 
   /**
-   * Append to the live object atomically. Concurrent writers are serialized by acquiring a blob
-   * lease that spans the two-phase {@code appendWithResponse} + {@code flushWithResponse}: without
-   * the lease, two writers can both upload uncommitted data at the same offset and the flush-etag
-   * winner ends up committing a loser's bytes. The lease is acquired atomically with append (via
-   * {@link LeaseAction#ACQUIRE}) and released atomically with flush (via {@link
-   * LeaseAction#RELEASE}); flush failure releases the lease in the catch block to keep the lock-out
-   * window short.
+   * Append to the live object atomically. ADLS Gen2's two-phase append/flush exposes a validation
+   * gap that no combination of return codes can close on its own: the bytes at uncommitted offset L
+   * are last-appender-wins and decoupled from which writer's flush wins the etag race, so a writeup
+   * that returns {@code 200} can still have committed a different concurrent writer's payload. (The
+   * position check on flush guarantees no torn or partial writes — committed bytes are always some
+   * concurrent writer's complete payload — but not whose.) We close the gap with a blob lease that
+   * serializes the append+flush span: the lease is acquired atomically with append (via {@link
+   * LeaseAction#ACQUIRE}) and released atomically with flush (via {@link LeaseAction#RELEASE}), so
+   * no extra round trips. While we hold the lease no other writer can touch the uncommitted buffer,
+   * so a successful flush implies *our* bytes are live. On flush failure we release the lease
+   * eagerly in the finally block; on writer crash the lease ages out and the next writer's
+   * same-position append cleanly overwrites the orphaned uncommitted bytes.
    */
   private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source) {
     final String leaseId = UUID.randomUUID().toString();
@@ -177,7 +183,6 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
           fileClient().flushWithResponse(length + appendLen, flushOpts, null, Context.NONE);
       // RELEASE on the flush options drops the lease atomically with a successful flush.
       leaseHeld = false;
-      // update length to orig len + append (succeeded)
       this.length += appendLen;
       final PathInfo info = resp.getValue();
       return new ADLSInputFile(
@@ -206,8 +211,8 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       }
       throw e;
     } finally {
-      // Belt-and-suspenders: if append succeeded but flush failed, release the lease eagerly so
-      // we don't lock other writers out for the full lease duration.
+      // If append acquired the lease but flush failed, release the lease eagerly so we don't lock
+      // out other writers for the full lease duration.
       if (leaseHeld) {
         try {
           new DataLakeLeaseClientBuilder()
