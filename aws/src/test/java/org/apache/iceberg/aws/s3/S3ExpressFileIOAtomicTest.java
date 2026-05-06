@@ -55,11 +55,6 @@ public class S3ExpressFileIOAtomicTest extends SupportsAtomicOperationsContractT
   }
 
   @Override
-  protected boolean supportsAppend() {
-    return true;
-  }
-
-  @Override
   protected SupportsAtomicOperations newFileIO() {
     S3FileIO io = new S3FileIO(() -> s3);
     io.initialize(Maps.newHashMap());
