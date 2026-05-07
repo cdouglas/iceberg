@@ -1022,19 +1022,6 @@ public class TableMetadata implements Serializable {
       return this;
     }
 
-    /**
-     * Pin the {@code last-updated-ms} field to a deterministic value instead of letting {@link
-     * #build()} default it to {@code System.currentTimeMillis()}. Required for callers that
-     * reconstruct a logically-identical metadata snapshot from a delta and need byte-stable output
-     * across reads (e.g. inline TM in {@code FileIOCatalog}, where every delta replay otherwise
-     * produces a fresh timestamp that breaks {@code BaseMetastoreTableOperations}' location-based
-     * change detection).
-     */
-    public Builder setLastUpdatedMillis(long newLastUpdatedMillis) {
-      this.lastUpdatedMillis = newLastUpdatedMillis;
-      return this;
-    }
-
     public Builder assignUUID() {
       if (uuid == null) {
         this.uuid = UUID.randomUUID().toString();
