@@ -1022,6 +1022,29 @@ public class TableMetadata implements Serializable {
       return this;
     }
 
+    /**
+     * Pins {@code lastUpdatedMillis} on the builder so subsequent operations
+     * read this value rather than fall through to wall-clock.
+     *
+     * <p>Required by the {@code FileIOCatalog} inline-table replay path. The
+     * catalog's intention records carry the writer's {@code last-updated-ms} as
+     * a field, which is enough to reconstruct the catalog state deterministically
+     * — but {@link #setRef} (line ~1324, the {@code MAIN_BRANCH} stamping branch)
+     * synchronously reads {@code builder.lastUpdatedMillis} when adding a
+     * {@code SnapshotLogEntry}. After {@link #buildFrom} initialises the field
+     * to {@code null}, a delta whose updates are pure setRef (e.g.
+     * {@code manageSnapshots().createBranch()} on an existing snapshot — no
+     * {@code addSnapshot} in the same builder pass to side-effect the field)
+     * stamps the snapshot-log entry with {@code System.currentTimeMillis()}
+     * and bakes wall-clock into the result. The catalog has no other way to
+     * inject the writer's value before {@link #setRef} fires; this setter is
+     * the bridge.
+     */
+    public Builder setLastUpdatedMillis(long newLastUpdatedMillis) {
+      this.lastUpdatedMillis = newLastUpdatedMillis;
+      return this;
+    }
+
     public Builder assignUUID() {
       if (uuid == null) {
         this.uuid = UUID.randomUUID().toString();
