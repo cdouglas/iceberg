@@ -1037,6 +1037,24 @@ public class TableMetadata implements Serializable {
       return this;
     }
 
+    /**
+     * Pins {@code lastUpdatedMillis} on the builder so later operations, and {@link #build()}, use
+     * this value instead of the wall clock.
+     *
+     * <p>Required by the {@code FileIOCatalog} inline-table replay path. The catalog's intention
+     * records carry the writer's {@code last-updated-ms}, but {@link #buildFrom} resets the field
+     * to {@code null}, and then both {@link #setRef} on {@code main} and {@link #build()} stamp
+     * {@code System.currentTimeMillis()}: setRef records it as the snapshot-log time when {@code
+     * main} moves to a snapshot this builder did not add (e.g. a rollback), and build() writes it
+     * as the table's {@code last-updated-ms}. Since apache/iceberg#14504 (1.12.0), adding a
+     * snapshot no longer sets the field either, so a replay that adds snapshots needs it too. The
+     * catalog has no other way to inject the writer's value; this setter is the bridge.
+     */
+    public Builder setLastUpdatedMillis(long newLastUpdatedMillis) {
+      this.lastUpdatedMillis = newLastUpdatedMillis;
+      return this;
+    }
+
     public Builder assignUUID() {
       if (uuid == null) {
         this.uuid = UUID.randomUUID().toString();
