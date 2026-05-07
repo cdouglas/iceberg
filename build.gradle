@@ -772,11 +772,6 @@ project(':iceberg-gcp') {
     compileOnly "com.google.cloud:google-cloud-storage"
     compileOnly "com.google.cloud:google-cloud-kms"
 
-    // PoC: Rapid Storage appendable-object API (BlobAppendableUpload) landed in
-    // google-cloud-storage 2.62.0; the libraries-bom pins 2.55.0. Override on the
-    // test classpath only so the PoC sees the new surface without changing the
-    // version main code compiles against.
-    testImplementation "com.google.cloud:google-cloud-storage:2.68.0"
     testImplementation "com.google.cloud:google-cloud-nio"
 
     testImplementation project(path: ':iceberg-api', configuration: 'testArtifacts')
