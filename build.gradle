@@ -772,6 +772,11 @@ project(':iceberg-gcp') {
     compileOnly "com.google.cloud:google-cloud-storage"
     compileOnly "com.google.cloud:google-cloud-kms"
 
+    // Stage 0 probe: the libraries-bom pins google-cloud-storage 2.55.0; the appendable-objects API
+    // (BlobAppendableUpload) and StorageOptions.grpc() entry points needed by GcsCasTransportProbe
+    // landed in 2.62.0. Override on the test classpath only so the probe can survey the SDK without
+    // committing to a production bom bump until we know which CAS-replace path to keep.
+    testImplementation "com.google.cloud:google-cloud-storage:2.68.0"
     testImplementation "com.google.cloud:google-cloud-nio"
 
     testImplementation project(path: ':iceberg-api', configuration: 'testArtifacts')
