@@ -62,6 +62,22 @@ public class GCPProperties implements Serializable {
    */
   public static final int GCS_DELETE_BATCH_SIZE_DEFAULT = 50;
 
+  /**
+   * Delay in milliseconds before issuing the speculative {@code moveBlob} on zonal/Rapid buckets'
+   * stage-and-move CAS path. After starting the temp's {@code blobAppendableUpload} finalize, the
+   * driver fires the move at this delay (without source-gen-match — temp gen isn't known yet); once
+   * the finalize completes it also fires an idempotent post-flush move with the source-gen-match.
+   * The win is one round-trip when the speculative move arrives at the server just after the
+   * finalize completes; the failure mode is a 404 on the speculative move (caller falls through to
+   * the post-flush move and pays the serial cost).
+   *
+   * <p>{@code -1} (default) disables speculation: only the serial post-flush move is issued.
+   */
+  public static final String GCS_RAPID_MOVE_SPECULATIVE_DELAY_MS =
+      "gcs.rapid.move.speculative-delay-ms";
+
+  public static final long GCS_RAPID_MOVE_SPECULATIVE_DELAY_DISABLED = -1L;
+
   private final Map<String, String> allProperties;
 
   private String projectId;
@@ -82,6 +98,8 @@ public class GCPProperties implements Serializable {
   private boolean gcsOauth2RefreshCredentialsEnabled;
 
   private int gcsDeleteBatchSize = GCS_DELETE_BATCH_SIZE_DEFAULT;
+
+  private long gcsRapidMoveSpeculativeDelayMs = GCS_RAPID_MOVE_SPECULATIVE_DELAY_DISABLED;
 
   public GCPProperties() {
     this.allProperties = ImmutableMap.of();
@@ -128,6 +146,12 @@ public class GCPProperties implements Serializable {
     gcsDeleteBatchSize =
         PropertyUtil.propertyAsInt(
             properties, GCS_DELETE_BATCH_SIZE, GCS_DELETE_BATCH_SIZE_DEFAULT);
+
+    gcsRapidMoveSpeculativeDelayMs =
+        PropertyUtil.propertyAsLong(
+            properties,
+            GCS_RAPID_MOVE_SPECULATIVE_DELAY_MS,
+            GCS_RAPID_MOVE_SPECULATIVE_DELAY_DISABLED);
   }
 
   public Optional<Integer> channelReadChunkSize() {
@@ -176,6 +200,14 @@ public class GCPProperties implements Serializable {
 
   public int deleteBatchSize() {
     return gcsDeleteBatchSize;
+  }
+
+  /**
+   * Delay in ms before firing the speculative move on Rapid's stage-and-move CAS path; {@code -1}
+   * means speculation is disabled (default).
+   */
+  public long rapidMoveSpeculativeDelayMs() {
+    return gcsRapidMoveSpeculativeDelayMs;
   }
 
   public Optional<String> oauth2RefreshCredentialsEndpoint() {

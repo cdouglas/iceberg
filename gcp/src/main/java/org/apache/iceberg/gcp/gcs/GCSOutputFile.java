@@ -42,15 +42,25 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
   // captured generation; 0 enforces "object must not exist".
   private final BlobId pinnedSnapshot;
 
+  // Non-null when the target is a zonal/Rapid bucket: writeAtomic routes through stage-and-move on
+  // a gRPC-transport Storage client. Null on standard buckets — they keep the direct
+  // blobWriteSession path through GCSAtomicOutputStream.
+  private final GCSRapidStageAndMove zonalWriter;
+
   static GCSOutputFile fromLocation(
       String location, PrefixedStorage storage, MetricsContext metrics) {
     return new GCSOutputFile(
-        storage.storage(), BlobId.fromGsUtilUri(location), storage.gcpProperties(), metrics, null);
+        storage.storage(),
+        BlobId.fromGsUtilUri(location),
+        storage.gcpProperties(),
+        metrics,
+        null,
+        null);
   }
 
   static GCSOutputFile fromBlobId(
       BlobId blobId, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
-    return new GCSOutputFile(storage, blobId, gcpProperties, metrics, null);
+    return new GCSOutputFile(storage, blobId, gcpProperties, metrics, null, null);
   }
 
   /**
@@ -59,14 +69,17 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
    * @param target write destination (bucket+name, no generation)
    * @param pinnedSnapshot snapshot BlobId with generation set; positive pins the existing
    *     generation, {@code 0} pins "object must not exist"
+   * @param zonalWriter non-null when the target's bucket is zonal/Rapid; routes {@code writeAtomic}
+   *     through stage-and-move. Null on standard buckets (existing direct-write path).
    */
   static GCSOutputFile replacing(
       BlobId target,
       BlobId pinnedSnapshot,
       Storage storage,
       GCPProperties gcpProperties,
-      MetricsContext metrics) {
-    return new GCSOutputFile(storage, target, gcpProperties, metrics, pinnedSnapshot);
+      MetricsContext metrics,
+      GCSRapidStageAndMove zonalWriter) {
+    return new GCSOutputFile(storage, target, gcpProperties, metrics, pinnedSnapshot, zonalWriter);
   }
 
   GCSOutputFile(
@@ -74,9 +87,11 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
       BlobId blobId,
       GCPProperties gcpProperties,
       MetricsContext metrics,
-      BlobId pinnedSnapshot) {
+      BlobId pinnedSnapshot,
+      GCSRapidStageAndMove zonalWriter) {
     super(storage, blobId, gcpProperties, metrics);
     this.pinnedSnapshot = pinnedSnapshot;
+    this.zonalWriter = zonalWriter;
   }
 
   /**
@@ -130,6 +145,16 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
   @Override
   public InputFile writeAtomic(CAS token, final Supplier<InputStream> source) throws IOException {
+    if (zonalWriter != null) {
+      // Zonal/Rapid: stage-and-move. The full payload is buffered into memory first so the temp
+      // upload is a single atomic write (no partial-bytes exposure on Rapid's appendable API).
+      byte[] payload;
+      try (InputStream src = source.get()) {
+        payload = ByteStreams.toByteArray(src);
+      }
+      return zonalWriter.writeAtomic(blobId(), pinnedSnapshot, token.contentHeaderString(), payload);
+    }
+    // Standard buckets: existing direct-write path through blobWriteSession.
     final InputFile[] result = new InputFile[1];
     try (InputStream src = source.get()) {
       try (GCSAtomicOutputStream dest =
