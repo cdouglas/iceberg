@@ -206,7 +206,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
         // precondition failed
         throw new SupportsAtomicOperations.AppendException("Target modified", e);
       }
-      if (400 == e.getStatusCode() && e.getErrorCode().equals("InvalidFlushPosition")) {
+      if (400 == e.getStatusCode() && "InvalidFlushPosition".equals(e.getErrorCode())) {
         throw new SupportsAtomicOperations.AppendException("Wrong length", e);
       }
       throw e;
@@ -259,15 +259,15 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
         // precondition failed
         throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
-      if (400 == e.getStatusCode() && e.getErrorCode().equals("InvalidFlushPosition")) {
+      if (400 == e.getStatusCode() && "InvalidFlushPosition".equals(e.getErrorCode())) {
         // spurious
         throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
-      if (409 == e.getStatusCode() && e.getErrorCode().equals("InvalidFlushOperation")) {
+      if (409 == e.getStatusCode() && "InvalidFlushOperation".equals(e.getErrorCode())) {
         // spurious
         throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
-      if (409 == e.getStatusCode() && e.getErrorCode().equals("PathAlreadyExists")) {
+      if (409 == e.getStatusCode() && "PathAlreadyExists".equals(e.getErrorCode())) {
         // include among atomic errors
         throw new SupportsAtomicOperations.CASException("Location exists", e);
       }
