@@ -152,7 +152,8 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
       try (InputStream src = source.get()) {
         payload = ByteStreams.toByteArray(src);
       }
-      return zonalWriter.writeAtomic(blobId(), pinnedSnapshot, token.contentHeaderString(), payload);
+      return zonalWriter.writeAtomic(
+          blobId(), pinnedSnapshot, token.contentHeaderString(), payload);
     }
     // Standard buckets: existing direct-write path through blobWriteSession.
     final InputFile[] result = new InputFile[1];

@@ -77,7 +77,16 @@ class PrefixedStorage implements AutoCloseable {
     if (null == storage) {
       this.storage = () -> configureBuilder(StorageOptions.newBuilder()).build().getService();
       this.grpcStorageSupplier =
-          () -> configureBuilder(StorageOptions.grpc()).build().getService();
+          () -> {
+            com.google.cloud.storage.GrpcStorageOptions.Builder grpcBuilder = StorageOptions.grpc();
+            // The default-enabled gRPC OpenTelemetry metrics initialization pulls
+            // com.google.monitoring.v3 proto classes which can collide with the
+            // protobuf-lite / protobuf-full classpath of bundled environments (e.g.
+            // YCSB binding) and throw ClassCastException during Storage client
+            // construction. Disable metrics — we don't consume them anyway.
+            grpcBuilder.setEnableGrpcClientMetrics(false);
+            return configureBuilder(grpcBuilder).build().getService();
+          };
     }
   }
 
@@ -150,8 +159,8 @@ class PrefixedStorage implements AutoCloseable {
 
   /**
    * Returns {@code true} if the named bucket is a zonal (Rapid Storage) bucket. The result is
-   * cached per-bucket on first probe; bucket type is fixed at creation time, so caching is safe.
-   * If the probe itself fails (auth, transient), returns {@code false} — keeping callers on the
+   * cached per-bucket on first probe; bucket type is fixed at creation time, so caching is safe. If
+   * the probe itself fails (auth, transient), returns {@code false} — keeping callers on the
    * standard-bucket write path.
    */
   public boolean isZonalBucket(String bucketName) {
@@ -162,8 +171,7 @@ class PrefixedStorage implements AutoCloseable {
 
   private boolean probeZonal(String bucketName) {
     try {
-      Bucket bucket =
-          storage().get(bucketName, BucketGetOption.fields(BucketField.LOCATION_TYPE));
+      Bucket bucket = storage().get(bucketName, BucketGetOption.fields(BucketField.LOCATION_TYPE));
       if (bucket == null) {
         LOG.debug("Bucket {} not found during zonal probe; defaulting to non-zonal", bucketName);
         return false;

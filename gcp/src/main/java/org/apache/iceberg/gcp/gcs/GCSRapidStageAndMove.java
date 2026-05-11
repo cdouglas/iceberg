@@ -47,27 +47,26 @@ import org.slf4j.LoggerFactory;
 /**
  * CAS-replace on zonal/Rapid GCS buckets via stage-and-move.
  *
- * <p>Zonal buckets reject every standard write surface ({@code blobWriteSession},
- * {@code storage.create}, {@code storage.copy/rewrite}) and the one surface they accept
- * ({@code blobAppendableUpload} writing directly to the target) silently publishes truncated bytes
- * on any exception path through {@code close()} regardless of {@code CloseAction}. The viable
- * pattern is:
+ * <p>Zonal buckets reject every standard write surface ({@code blobWriteSession}, {@code
+ * storage.create}, {@code storage.copy/rewrite}) and the one surface they accept ({@code
+ * blobAppendableUpload} writing directly to the target) silently publishes truncated bytes on any
+ * exception path through {@code close()} regardless of {@code CloseAction}. The viable pattern is:
  *
  * <ol>
- *   <li>Write payload to a UUID-named temp via
- *       {@code blobAppendableUpload(doesNotExist) + finalizeAndClose}.
- *   <li>{@code Storage.moveBlob} with both source and target generation preconditions to
- *       atomically replace the live target. The server-side move preserves the temp's bytes,
- *       deletes the temp on success, and rejects stale-target races with {@code HTTP 412}.
+ *   <li>Write payload to a UUID-named temp via {@code blobAppendableUpload(doesNotExist) +
+ *       finalizeAndClose}.
+ *   <li>{@code Storage.moveBlob} with both source and target generation preconditions to atomically
+ *       replace the live target. The server-side move preserves the temp's bytes, deletes the temp
+ *       on success, and rejects stale-target races with {@code HTTP 412}.
  * </ol>
  *
  * <p>Speculative variant (engaged when {@link GCPProperties#rapidMoveSpeculativeDelayMs()} is
  * {@code >= 0}): in parallel with the finalize task, schedule a moveBlob at delay {@code D} that
  * carries only the target-gen-match (the source's generation isn't known until finalize returns).
  * After finalize completes, fire an idempotent post-flush moveBlob with both preconditions.
- * Whichever moveBlob reaches the server first consumes the source; the loser sees {@code 404}.
- * The win is one round-trip when {@code D} matches the server-side finalize processing time. See
- * {@code docs/docs/atomic_io_gcs_rapid.md} for the empirical justification.
+ * Whichever moveBlob reaches the server first consumes the source; the loser sees {@code 404}. The
+ * win is one round-trip when {@code D} matches the server-side finalize processing time. See {@code
+ * docs/docs/atomic_io_gcs_rapid.md} for the empirical justification.
  *
  * <p>This class is stateless across calls; instances may be shared across writers.
  */
@@ -99,15 +98,14 @@ class GCSRapidStageAndMove {
 
   /**
    * Atomically replace {@code target} with {@code payload}, gated on {@code pinnedSnapshot}'s
-   * generation. Returns an {@link InputFile} pointing at the new generation. Throws
-   * {@link SupportsAtomicOperations.StorageInvariantException} on stale-gen rejection (HTTP 412).
+   * generation. Returns an {@link InputFile} pointing at the new generation. Throws {@link
+   * SupportsAtomicOperations.StorageInvariantException} on stale-gen rejection (HTTP 412).
    */
   InputFile writeAtomic(
       BlobId target, BlobId pinnedSnapshot, String expectedCrc32cB64, byte[] payload)
       throws IOException {
     long expectedTargetGen = pinnedSnapshot == null ? 0L : pinnedSnapshot.getGeneration();
-    BlobId temp =
-        BlobId.of(target.getBucket(), TEMP_PREFIX + UUID.randomUUID() + ".tmp");
+    BlobId temp = BlobId.of(target.getBucket(), TEMP_PREFIX + UUID.randomUUID() + ".tmp");
     long speculativeDelayMs = gcpProperties.rapidMoveSpeculativeDelayMs();
 
     if (speculativeDelayMs < 0) {
@@ -153,8 +151,7 @@ class GCSRapidStageAndMove {
       byte[] payload,
       long speculativeDelayMs)
       throws IOException {
-    Future<Long> finalizeFut =
-        SHARED_EXECUTOR.submit(() -> stageTemp(temp, expectedCrc, payload));
+    Future<Long> finalizeFut = SHARED_EXECUTOR.submit(() -> stageTemp(temp, expectedCrc, payload));
 
     Future<Blob> specMoveFut =
         SHARED_EXECUTOR.submit(
@@ -220,12 +217,15 @@ class GCSRapidStageAndMove {
     if (propagate != null) {
       throw mapStorageException(propagate);
     }
-    throw new IOException("Both speculative and post-flush moveBlob calls failed without a recognized cause");
+    throw new IOException(
+        "Both speculative and post-flush moveBlob calls failed without a recognized cause");
   }
 
   // ─── primitives ────────────────────────────────────────────────────────────────────────────
 
-  /** Append-upload {@code payload} into {@code temp} and finalize. Returns the temp's generation. */
+  /**
+   * Append-upload {@code payload} into {@code temp} and finalize. Returns the temp's generation.
+   */
   private long stageTemp(BlobId temp, String expectedCrc32cB64, byte[] payload) throws IOException {
     BlobInfo info = BlobInfo.newBuilder(temp).setCrc32c(expectedCrc32cB64).build();
     BlobAppendableUpload up =
@@ -242,7 +242,8 @@ class GCSRapidStageAndMove {
       return up.getResult().get().getGeneration();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new IOException("Interrupted awaiting append-upload result for " + temp.toGsUtilUri(), e);
+      throw new IOException(
+          "Interrupted awaiting append-upload result for " + temp.toGsUtilUri(), e);
     } catch (ExecutionException e) {
       throw rethrowExecution(e);
     }
@@ -260,8 +261,8 @@ class GCSRapidStageAndMove {
 
   /**
    * Speculative move: no source-gen-match (we don't know the temp's gen yet). The temp's UUID name
-   * guarantees only this writer can have created it, so the "wrong source bytes" risk is bounded
-   * by the assumption that no other process is writing to this UUID path.
+   * guarantees only this writer can have created it, so the "wrong source bytes" risk is bounded by
+   * the assumption that no other process is writing to this UUID path.
    */
   private Blob doMoveNoSrcGen(BlobId source, BlobId target, long targetGen) {
     Storage.MoveBlobRequest req =
@@ -274,7 +275,8 @@ class GCSRapidStageAndMove {
   }
 
   private InputFile inputFileFor(Blob moved) {
-    return new GCSInputFile(grpcStorage, moved.getBlobId(), moved.getSize(), gcpProperties, metrics);
+    return new GCSInputFile(
+        grpcStorage, moved.getBlobId(), moved.getSize(), gcpProperties, metrics);
   }
 
   // ─── helpers ───────────────────────────────────────────────────────────────────────────────
