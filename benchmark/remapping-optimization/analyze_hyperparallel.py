@@ -190,7 +190,7 @@ def create_plots(scenarios, output_dir):
 
         for scenario_key, strats in filtered:
             gap, n, m, s = scenario_key
-            labels.append(f"n={n},m={m},g={gap}")
+            labels.append(f"p={n},r={m}")
 
             row = []
             times = {k: v['mean'] for k, v in strats.items() if k in strategies}
@@ -228,9 +228,10 @@ def create_plots(scenarios, output_dir):
                 ax.add_patch(plt.Rectangle((min_idx-0.5, i-0.5), 1, 1,
                             fill=False, edgecolor='black', linewidth=2))
 
-    plt.colorbar(im, ax=axes, label='Ratio to Optimal', shrink=0.8)
     plt.suptitle('Strategy Performance Comparison (Hyperparallel Benchmark)', fontsize=14, fontweight='bold')
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    plt.colorbar(im, ax=axes, label='Ratio to Optimal', location='bottom',
+                 shrink=0.5, pad=0.12, aspect=40)
     plt.savefig(f'{output_dir}/hyperparallel_strategy_heatmap.png', dpi=150, bbox_inches='tight')
     print(f"Saved: {output_dir}/hyperparallel_strategy_heatmap.png")
     plt.close()
