@@ -208,7 +208,7 @@ def create_plots(scenarios, output_dir):
 
         data = np.array(heatmap_data)
 
-        im = ax.imshow(data, aspect='auto', cmap='RdYlGn_r', vmin=1.0, vmax=3.0)
+        im = ax.imshow(data, aspect='auto', cmap='viridis', vmin=1.0, vmax=3.0)
 
         ax.set_xticks(range(n_strats))
         ax.set_xticklabels([s.replace('Search', '').replace('Tree', 'Tree').replace('Selector', 'Select')
@@ -218,7 +218,7 @@ def create_plots(scenarios, output_dir):
         ax.set_yticks(range(0, n_scenarios, 3))
         ax.set_yticklabels([labels[i] for i in range(0, n_scenarios, 3)], fontsize=7)
 
-        ax.set_title(f"{'Sorted' if sorted_flag else 'Unsorted'} Data\n(1.0=optimal, darker=slower)", fontsize=11)
+        ax.set_title(f"{'Sorted' if sorted_flag else 'Unsorted'} Data\n(1.0=optimal, brighter=slower)", fontsize=11)
 
         # Mark optimal cells
         for i in range(len(heatmap_data)):
