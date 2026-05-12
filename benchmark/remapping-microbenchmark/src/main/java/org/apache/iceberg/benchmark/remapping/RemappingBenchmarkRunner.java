@@ -380,13 +380,18 @@ public class RemappingBenchmarkRunner {
       // Use the optimized primitive bulk remapping API
       Map<String, long[]> remapped = remapper.remapPositionsBulkPrimitive(sourceFile, positions);
 
-      // Merge directly into RoaringBitmaps (no HashSet intermediate)
+      // Bulk-add via addN: tighter loop than per-value add() and accepts any input order.
+      // bitmapOfUnordered was measurably slower at scale (sort cost outweighs the win),
+      // and bitmapOf would require a sorted-unique guarantee we don't enforce here.
       for (Map.Entry<String, long[]> e : remapped.entrySet()) {
-        RoaringBitmap targetBitmap =
-            remappedByTarget.computeIfAbsent(e.getKey(), k -> new RoaringBitmap());
-        for (long pos : e.getValue()) {
-          targetBitmap.add((int) pos);
+        long[] longs = e.getValue();
+        int[] ints = new int[longs.length];
+        for (int i = 0; i < longs.length; i++) {
+          ints[i] = (int) longs[i];
         }
+        RoaringBitmap target =
+            remappedByTarget.computeIfAbsent(e.getKey(), k -> new RoaringBitmap());
+        target.addN(ints, 0, ints.length);
       }
     }
 
