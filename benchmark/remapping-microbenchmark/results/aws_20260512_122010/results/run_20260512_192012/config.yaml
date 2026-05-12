@@ -1,0 +1,26 @@
+---
+storage-uri: "s3://iceberg-benchmark-1769730994/benchmark/20260512_122010"
+cloud-provider: "LOCAL"
+delete-counts:
+- 1000
+- 10000
+run-counts:
+- 10
+- 100
+densities:
+- "SPARSE"
+formats:
+- "POSITION_DELETE_FILE"
+- "DELETION_VECTOR"
+strategies:
+- "LINEAR"
+- "INTERVAL_TREE"
+- "SMART"
+warmup-iterations: 1
+measurement-iterations: 3
+output-dir: "results"
+random-seed: 42
+fanout-factors:
+- 10
+split-factors:
+- 1
