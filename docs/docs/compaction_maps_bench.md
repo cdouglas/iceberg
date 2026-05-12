@@ -97,23 +97,33 @@ Based on empirical benchmarks (January-February 2026):
 
 | Condition | Best Strategy | Speedup vs Linear |
 |-----------|---------------|-------------------|
-| Unsorted data | IntervalTree | 2-7x |
-| Sorted + sparse (gaps > 30%) | RangeQuery | 1.5-6x |
-| Sorted + dense + large scale | StreamJoin | 3-32x |
-| Small scale (n < 1000) | Any optimized | 1.1-1.5x |
+| Unsorted data, any scale | IntervalTree | 2–264× (one outlier at 832× for n=1M, m=10K) |
+| Sorted + sparse (gaps > 30%) | RangeQuery | 1.5–6× |
+| Sorted + dense + large scale | StreamJoin | 3–138× |
+| Small scale (n=1K) | Any optimized | 1.4–6.9× |
+
+The high-end multipliers (≥100×) come from the Feb 2026 hyperparallel run, which extends the parameter sweep up to `n=1M, m=10K`. Earlier runs that capped at `n=100K` reported up to 32×.
 
 ### Smart Selector
 
-- **Average overhead:** ~5% vs manually selecting optimal strategy
-- **Selection logic:** Simple 4-branch decision tree based on sortedness, gap ratio, and scale
-- **Validation:** 324 JMH configurations tested
+- **Average overhead:** ~5% vs manually selecting optimal strategy.
+- **Selection logic:** Four-branch decision tree on sortedness, gap ratio, and scale; see [implementation pseudocode](compaction_maps_impl_pseudocode.md).
+- **Sorted-hint API:** `selectOptimal(mapping, positions, Boolean.TRUE)` skips the up-to-1000-element sortedness sample when the caller has structural knowledge (e.g., positions extracted from a Roaring bitmap are sorted by construction).
+- **Validation:** 324 JMH configurations in the standard sweep, 72 in the hyperparallel sweep.
 
 ### I/O vs CPU Cost
 
-From remapping-microbenchmark results:
-- **Cloud storage:** Read/write phases dominate (~90% of total time)
-- **Local storage:** Remap phase more significant (~30-50%)
-- **Deletion vectors:** More efficient than position delete files for dense deletes
+From `remapping-microbenchmark` cloud results (AWS + GCP + Azure pooled, Feb 3, 2026, 2400 samples per format):
+
+| Phase | V2 Position Delete | V3 Deletion Vector |
+|-------|-------------------:|-------------------:|
+| read  | 91 ms median (151 ms mean) | 75 ms (81 ms) |
+| remap |  1.6 ms (15 ms) | 4.7 ms (25 ms) |
+| write | 179 ms (507 ms) | 106 ms (140 ms) |
+
+- **DVs are faster end-to-end**, primarily because the compact Roaring/Puffin write is ~1.7× faster than per-row Parquet encoding.
+- **Remap-phase cost favors V2 PD** by ~3× at the median — the DV path pays for in-memory Roaring bitmap reconstruction during remapping.
+- **As of Feb 2026** the bitmap-construction step inside DV remap is 1.4–1.8× faster than it was previously, thanks to bulk `RoaringPositionBitmap.setAll(long[])` and the V2 PD read path now using the same bulk entry through `PositionDeleteIndex.delete(long[])`.
 
 ## Running Benchmarks
 

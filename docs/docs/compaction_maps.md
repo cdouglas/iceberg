@@ -419,15 +419,35 @@ The remapping implementation uses automatic algorithm selection based on workloa
 | Stream Join | O(n + m) | Sorted, dense, many runs (m ≥ 100) |
 | Range Query | O(m log n) | Sorted, sparse or few runs |
 
-**Measured speedup vs linear baseline (100K positions):**
+**Measured speedup vs linear baseline (Feb 2026 hyperparallel JMH run, 72 configurations):**
 
-| Runs (m) | Best Strategy | Speedup |
-|----------|---------------|---------|
-| 10       | Range Query   | 6.7x    |
-| 100      | Stream Join   | 23.6x   |
-| 1000     | Stream Join   | 32.4x   |
+| Scale | Best strategy | Speedup vs Linear |
+|-------|---------------|-------------------|
+| n=1K, m=100 (sorted, dense) | StreamJoin / IntervalTree | 1.6–6.9× |
+| n=10K, m=1K  (sorted, dense) | StreamJoin | 60× |
+| n=100K, m=10 (sorted, dense) | RangeQuery | 6.5× |
+| n=100K, m=1K (sorted, dense) | IntervalTree | 68× |
+| n=1M, m=10K  (sorted, dense) | IntervalTree | 832× |
 
-The smart selector automatically chooses the optimal algorithm with ~5% overhead.
+The smart selector automatically chooses an optimal strategy with ~5% average overhead. When the caller has structural knowledge that positions are sorted (e.g., positions extracted from a Deletion Vector bitmap), `RemappingAlgorithmSelector.selectOptimal(mapping, positions, Boolean.TRUE)` skips the sortedness sample entirely.
+
+### Bitmap Construction Performance
+
+When materializing remapped positions into a `RoaringPositionBitmap` (the engine type behind V3 Deletion Vectors and `BitmapPositionDeleteIndex`), construction now uses bulk APIs that group positions by the bitmap's upper-32-bit key and call `RoaringBitmap.addN` per sub-bitmap, avoiding the per-call routing and container-locating cost that dominated the previous per-position `set(long)` loop.
+
+**Measured speedup of `RoaringPositionBitmap.setAll(long[])` vs `set(long)` per value (DVRemappingPhaseBenchmark, Feb 2026):**
+
+| numDeletes | `set(long)` per value | `setAll(long[])` | speedup |
+|-----------:|----------------------:|-----------------:|--------:|
+|       1,000 |   5.93 µs |  3.29 µs | 1.80× |
+|      10,000 |  64.2 µs  | 41.8 µs  | 1.54× |
+|     100,000 |   648 µs  |  446 µs  | 1.45× |
+|   1,000,000 | 6447 µs   | 4624 µs  | 1.39× |
+
+This speedup propagates to:
+
+- **V2 position-delete reads.** `Deletes.toPositionIndexes` and `toPositionIndex` accumulate per-data-file positions into a small primitive buffer and flush via `PositionDeleteIndex.delete(long[])`, which dispatches to the bulk path.
+- **V3 deletion-vector remapping output.** `PositionDeleteRemapper.remapPositionsBulkDV(String, int[])` keeps the output side in `int[]`, avoiding the long→int narrowing pass callers used to do.
 
 ## References
 
