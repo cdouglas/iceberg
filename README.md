@@ -17,93 +17,62 @@
   - under the License.
   -->
 
-![Iceberg](https://iceberg.apache.org/assets/images/Iceberg-logo.svg)
+# Compaction Maps for Apache Iceberg
 
-[![](https://github.com/apache/iceberg/actions/workflows/java-ci.yml/badge.svg)](https://github.com/apache/iceberg/actions/workflows/java-ci.yml)
-[![Slack](https://img.shields.io/badge/chat-on%20Slack-brightgreen.svg)](https://apache-iceberg.slack.com/)
+This branch of Apache Iceberg adds **compaction maps**: a compact data structure that records the position transformations applied by a compaction so that concurrent transactions writing position deletes (or deletion vectors) can be rebased onto the new layout instead of restarted.
 
-Iceberg is a high-performance format for huge analytic tables. Iceberg brings the reliability and simplicity of SQL tables to big data, while making it possible for engines like Spark, Trino, Flink, Presto, Hive and Impala to safely work with the same tables, at the same time.
+Compactions and concurrent updates logically commute — compaction does not change table contents — but in current table formats they conflict on direct file references. A compaction map captures, per run of rows, the move from a source file to one or more target files. Either side of a conflict can use the map to rewrite its position-delete references and commit, with no global coordination beyond Iceberg's existing snapshot pointer swap.
 
-Background and documentation is available at <https://iceberg.apache.org>
+## Paper
 
+Chris Douglas and Joseph M. Hellerstein. **Commutative Compaction.** *1st International Workshop on Data FORMATS for Modern Architectures and Workloads ([FORMATS '26](https://dataformats.org/))*, May 31–June 5, 2026, Bengaluru, India. ACM. <https://doi.org/10.1145/3802514.3809174>
+
+The paper introduces compaction maps, the rebase operation, and the remapping policy, and evaluates an Apache Iceberg prototype (this branch) on Apache Spark 3.5 and 4.0 with both v2 position delete files and v3 deletion vectors.
+
+## Benchmark Results
+
+End-to-end remapping was measured against object storage in three clouds (AWS S3 us-west-2, Azure ADLSv2 westus2, GCS uswest1) on commodity VMs (4 vCPU, 16 GiB), varying the number of runs in the compaction map (10 to 10K) and the size of the position delete file or deletion vector (1K to 1M deletes):
+
+![Total latency heatmap for deletion vectors across AWS, Azure, and GCP](benchmark/remapping-microbenchmark/results/plots/total_latency_heatmap_dv.png)
+
+
+- Repairing a 1M-delete commit against a 10K-run compaction map completes in **under one second in every cloud**, including all I/O — 0.34–0.45 s for deletion vectors and 1.8–2.3 s for position delete files.
+- At 10K deletes (typical commit size) latency never exceeds **half a second** in any cloud, regardless of run count.
+- Deletion vectors outperform position delete files across the board; Parquet encode dominates the PD cost while the DV roaring-bitmap region is only a few KiB.
+- The compaction map itself is small: 10 runs occupies 2.6 KiB and 10K runs occupies 8.9 KiB on disk.
+
+Cost is negligible relative to the compaction it commutes with — compactions typically run for minutes to hours.
+
+See [docs/docs/compaction_maps_bench.md](docs/docs/compaction_maps_bench.md) for the full benchmark methodology and the JMH microbenchmark suite that drives the remapping-algorithm policy.
 
 ## Status
 
-Iceberg is under active development at the Apache Software Foundation.
+Implementation is on the `cmpmap` branch:
 
-The [Iceberg format specification][iceberg-spec] is stable and new features are added with each version.
+- Core data structure, builder, Avro storage, and manifest-list reference.
+- Conflict detection and SERIALIZABLE-isolation integration in `BaseRowDelta` / `MergingSnapshotProducer`.
+- Automatic remapping in `RewriteDataFilesCommitManager` for Spark 3.5 and 4.0, for both position delete files (v2) and deletion vectors (v3).
+- Empirically-tuned remapping policy (IntervalTree / RangeQuery / StreamJoin) selected at runtime from the shape of the inputs.
 
-The core Java library is located in this repository and is the reference implementation for other libraries.
+## Documentation
 
-[Documentation][iceberg-docs] is available for all libraries and integrations.
+Detailed documentation lives in `docs/docs/`:
 
-[iceberg-docs]: https://iceberg.apache.org/docs/latest/
-[iceberg-spec]: https://iceberg.apache.org/spec/
+- [compaction_maps.md](docs/docs/compaction_maps.md) — user guide, table properties, conflict-resolution workflow.
+- [compaction_maps_impl.md](docs/docs/compaction_maps_impl.md) — implementation walkthrough, schema, integration points.
+- [compaction_maps_impl_pseudocode.md](docs/docs/compaction_maps_impl_pseudocode.md) — pseudocode for the remapping strategies.
+- [compaction_maps_bench.md](docs/docs/compaction_maps_bench.md) — benchmark suites, methodology, and how to reproduce.
+- [compaction_maps_errata.md](docs/docs/compaction_maps_errata.md) — design scope and known limitations (e.g. sort/z-order rewrites are out of scope).
 
-## Collaboration
+## Building
 
-Iceberg tracks issues in GitHub and prefers to receive contributions as pull requests.
+This branch builds with the standard Iceberg toolchain (Gradle, Java 11/17/21):
 
-Community discussions happen primarily on the [dev mailing list][dev-list] or on specific issues.
-
-[dev-list]: mailto:dev@iceberg.apache.org
-
-
-### Building
-
-Iceberg is built using Gradle with Java 11, 17, or 21.
-
-* To invoke a build and run tests: `./gradlew build`
-* To skip tests: `./gradlew build -x test -x integrationTest`
-* To fix code style for default versions: `./gradlew spotlessApply`
-* To fix code style for all versions of Spark/Hive/Flink:`./gradlew spotlessApply -DallModules`
-
-Iceberg table support is organized in library modules:
-
-* `iceberg-common` contains utility classes used in other modules
-* `iceberg-api` contains the public Iceberg API
-* `iceberg-core` contains implementations of the Iceberg API and support for Avro data files, **this is what processing engines should depend on**
-* `iceberg-parquet` is an optional module for working with tables backed by Parquet files
-* `iceberg-arrow` is an optional module for reading Parquet into Arrow memory
-* `iceberg-orc` is an optional module for working with tables backed by ORC files
-* `iceberg-hive-metastore` is an implementation of Iceberg tables backed by the Hive metastore Thrift client
-* `iceberg-data` is an optional module for working with tables directly from JVM applications
-
-Iceberg also has modules for adding Iceberg support to processing engines:
-
-* `iceberg-spark` is an implementation of Spark's Datasource V2 API for Iceberg with submodules for each spark versions (use runtime jars for a shaded version)
-* `iceberg-flink` contains classes for integrating with Apache Flink (use iceberg-flink-runtime for a shaded version)
-* `iceberg-mr` contains an InputFormat and other classes for integrating with Apache Hive
-
----
-**NOTE**
-
-The tests require Docker to execute. On macOS (with Docker Desktop), you might need to create a symbolic name to the docker socket in order to be detected by the tests:
-
-```
-sudo ln -s $HOME/.docker/run/docker.sock /var/run/docker.sock
+```bash
+./gradlew :iceberg-core:compileJava
+./gradlew :iceberg-core:test --tests "*CompactionMap*"
+./gradlew :iceberg-core:test --tests "*Remapping*"
+./gradlew spotlessApply
 ```
 
-In some cases the testcontainer may exit with an initialization error because of an illegal state exception in the GenericContainer.  One work around for this problem is to set `selinux` into permissive mode before running the tests. 
-
-```
-sudo setenforce Permissive
-./gradlew ...
-sudo setenforce Enforcing
-```
-
----
-
-### Engine Compatibility
-
-See the [Multi-Engine Support](https://iceberg.apache.org/multi-engine-support/) page to know about Iceberg compatibility with different Spark, Flink and Hive versions.
-For other engines such as Presto or Trino, please visit their websites for Iceberg integration details.
-
-### Implementations
-
-This repository contains the Java implementation of Iceberg. Other implementations can be found at:
-
-* **Go**: [iceberg-go](https://github.com/apache/iceberg-go)
-* **PyIceberg** (Python): [iceberg-python](https://github.com/apache/iceberg-python)
-* **Rust**: [iceberg-rust](https://github.com/apache/iceberg-rust)
-* **C++**: [iceberg-cpp](https://github.com/apache/iceberg-cpp)
+For general Iceberg build, engine-compatibility, and contribution information, see the upstream project at <https://iceberg.apache.org>.
