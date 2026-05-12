@@ -24,8 +24,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.file.datalake.DataLakeFileClient;
+import com.azure.storage.file.datalake.DataLakePathClientBuilder;
 import java.io.ByteArrayInputStream;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -53,26 +53,43 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
 
   private static String runId;
   private static Map<String, String> properties;
-  private static AzureSAS.SasResolver resolver;
+  private static String account;
+  private static String container;
+  private static String sasToken;
 
   @BeforeAll
   static void initStorage() {
     runId = UUID.randomUUID().toString();
-    String credsPath = System.getenv("AZURE_SAS_CREDENTIALS_FILE");
-    AzureSAS creds = credsPath != null ? AzureSAS.readCreds(new File(credsPath)) : null;
-    if (creds != null) {
+    String acct = System.getenv("AZURE_STORAGE_ACCOUNT");
+    if (acct != null && !acct.isBlank()) {
+      account = acct;
+      container = System.getenv("AZURE_TEST_CONTAINER");
+      sasToken = System.getenv("AZURE_STORAGE_SAS_TOKEN");
+      if (container == null || container.isBlank() || sasToken == null || sasToken.isBlank()) {
+        throw new IllegalStateException(
+            "AZURE_STORAGE_ACCOUNT is set but AZURE_TEST_CONTAINER and/or "
+                + "AZURE_STORAGE_SAS_TOKEN are not.");
+      }
       properties = Maps.newHashMap();
       properties.put(
-          AzureProperties.ADLS_SAS_TOKEN_PREFIX + creds.account + ".dfs.core.windows.net",
-          creds.sasToken);
-      resolver = new AzureSAS.SasResolver(creds);
+          AzureProperties.ADLS_SAS_TOKEN_PREFIX + account + ".dfs.core.windows.net", sasToken);
     }
+  }
+
+  private static DataLakeFileClient fileClient(String path) {
+    return new DataLakePathClientBuilder()
+        .endpoint("https://" + account + ".dfs.core.windows.net")
+        .sasToken(sasToken)
+        .fileSystemName(container)
+        .pathName(path)
+        .buildFileClient();
   }
 
   @BeforeEach
   void requireCredentials() {
     Assumptions.assumeTrue(
-        properties != null, "ADLS not available - set AZURE_SAS_CREDENTIALS_FILE");
+        properties != null,
+        "ADLS not available - set AZURE_STORAGE_ACCOUNT, AZURE_STORAGE_SAS_TOKEN, AZURE_TEST_CONTAINER");
   }
 
   @Override
@@ -82,7 +99,9 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
 
   @Override
   protected String randomLocation(String slug) {
-    return resolver.location(runId + "/" + slug + "-" + UUID.randomUUID());
+    return String.format(
+        "abfs://%s@%s.dfs.core.windows.net/%s/%s-%s",
+        container, account, runId, slug, UUID.randomUUID());
   }
 
   // ─── ADLS-specific behavior tests (read-side ifMatch on InputFile snapshots) ────────────────
@@ -180,7 +199,7 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
     String path = pathOf(location);
 
     byte[] seed = "seed".getBytes();
-    DataLakeFileClient client = resolver.fileClient(path);
+    DataLakeFileClient client = fileClient(path);
     client.upload(new ByteArrayInputStream(seed), seed.length, true);
 
     // Stage uncommitted bytes via a raw appendWithResponse — never flush.
@@ -220,7 +239,7 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
     String path = pathOf(location);
 
     byte[] seed = "seed".getBytes();
-    DataLakeFileClient client = resolver.fileClient(path);
+    DataLakeFileClient client = fileClient(path);
     client.upload(new ByteArrayInputStream(seed), seed.length, true);
 
     // Writer A: stage uncommitted bytes via a raw appendWithResponse holding a lease.
@@ -273,7 +292,7 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
     String path = pathOf(location);
 
     byte[] seed = "seed".getBytes();
-    DataLakeFileClient client = resolver.fileClient(path);
+    DataLakeFileClient client = fileClient(path);
     client.upload(new ByteArrayInputStream(seed), seed.length, true);
 
     // Writer A: acquire the lease via a manual appendWithResponse and HOLD it (don't flush, don't
