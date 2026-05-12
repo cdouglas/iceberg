@@ -274,8 +274,10 @@ USERDATA
 
     # Wait for SSH and user-data to complete
     wait_for_ssh "$ip" "$SSH_USER"
-    log_info "Waiting for user-data script to complete..."
-    sleep 30  # Give user-data time to finish
+    log_info "Waiting for cloud-init to complete..."
+    # Wait up to 8 minutes for cloud-init / user-data; apt install of JDK can take 60-90s
+    # on a cold m5.xlarge and `sleep 30` was racing the install.
+    remote_exec "$ip" "$SSH_USER" "sudo cloud-init status --wait" >/dev/null
 
     log_ok "VM ready"
 }

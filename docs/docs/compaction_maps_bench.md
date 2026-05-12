@@ -113,17 +113,19 @@ The high-end multipliers (≥100×) come from the Feb 2026 hyperparallel run, wh
 
 ### I/O vs CPU Cost
 
-From `remapping-microbenchmark` cloud results (AWS + GCP + Azure pooled, Feb 3, 2026, 2400 samples per format):
+Two cloud-benchmark runs are referenced below. Both pool measurements from AWS (us-west-2), GCP (us-west1), and Azure (westus2). Each run was driven by `RemappingBenchmarkRunner` against the `sigmod.yaml` config, which only exercises the `SMART` strategy through the public API (1600 records per cloud, 4800 pooled).
 
-| Phase | V2 Position Delete | V3 Deletion Vector |
-|-------|-------------------:|-------------------:|
-| read  | 91 ms median (151 ms mean) | 75 ms (81 ms) |
-| remap |  1.6 ms (15 ms) | 4.7 ms (25 ms) |
-| write | 179 ms (507 ms) | 106 ms (140 ms) |
+| Phase | V2 PD median (mean) — May 12, 2026 | V3 DV median (mean) — May 12, 2026 | V2 PD median (mean) — Feb 3, 2026 | V3 DV median (mean) — Feb 3, 2026 |
+|-------|-----------------------------------:|------------------------------------:|----------------------------------:|----------------------------------:|
+| read  | 96 ms (165 ms) | 79 ms (80 ms) | 91 ms (150 ms) | 74 ms (80 ms) |
+| remap | 1.8 ms (17 ms) | 5.0 ms (29 ms) | 1.5 ms (15 ms) | 4.6 ms (25 ms) |
+| write | 161 ms (503 ms) | 95 ms (100 ms) | 179 ms (508 ms) | 105 ms (139 ms) |
 
-- **DVs are faster end-to-end**, primarily because the compact Roaring/Puffin write is ~1.7× faster than per-row Parquet encoding.
-- **Remap-phase cost favors V2 PD** by ~3× at the median — the DV path pays for in-memory Roaring bitmap reconstruction during remapping.
-- **As of Feb 2026** the bitmap-construction step inside DV remap is 1.4–1.8× faster than it was previously, thanks to bulk `RoaringPositionBitmap.setAll(long[])` and the V2 PD read path now using the same bulk entry through `PositionDeleteIndex.delete(long[])`.
+- **DVs are faster end-to-end** in both runs, primarily because the compact Roaring/Puffin write is ~1.6–1.7× faster than per-row Parquet encoding.
+- **Remap-phase cost favors V2 PD** by roughly 3× at the median — the DV path pays for in-memory Roaring bitmap reconstruction during remapping.
+- **Cloud-side variability dominates run-to-run differences** at this scale. The largest deltas between Feb 3 and May 12 — for example, DV write at 1M deletes shifted from 283 ms → 144 ms on GCP and 110 ms → 69 ms on Azure while staying nearly flat on AWS (178 ms → 186 ms) — track per-cloud capacity fluctuations rather than code changes. The bulk-construct optimization from May 2026 (`RoaringPositionBitmap.setAll(long[])`, `PositionDeleteIndex.delete(long[])`) is real (verified at 1.4–1.8× on the in-process `DVRemappingPhaseBenchmark`) but is not visible above the I/O noise floor at this scale.
+
+The takeaway for users: don't read a 10–20% shift in cloud-benchmark medians as a meaningful change. For algorithm-level speedup measurement, use the in-process JMH benchmarks in `core/src/jmh/`.
 
 ## Running Benchmarks
 
