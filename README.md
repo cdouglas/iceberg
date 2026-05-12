@@ -19,7 +19,7 @@
 
 # Compaction Maps for Apache Iceberg
 
-This branch of Apache Iceberg adds **compaction maps**: a compact data structure that records the position transformations applied by a compaction so that concurrent transactions writing position deletes (or deletion vectors) can be rebased onto the new layout instead of restarted.
+This branch is a research prototype built on **Apache Iceberg 1.10.1** (tag [`apache-iceberg-1.10.1`](https://github.com/apache/iceberg/releases/tag/apache-iceberg-1.10.1)). It adds **compaction maps**: a compact data structure that records the position transformations applied by a compaction so that concurrent transactions writing position deletes (or deletion vectors) can be rebased onto the new layout instead of restarted.
 
 Compactions and concurrent updates logically commute — compaction does not change table contents — but in current table formats they conflict on direct file references. A compaction map captures, per run of rows, the move from a source file to one or more target files. Either side of a conflict can use the map to rewrite its position-delete references and commit, with no global coordination beyond Iceberg's existing snapshot pointer swap.
 
