@@ -91,6 +91,65 @@ class RoaringPositionBitmap {
   }
 
   /**
+   * Sets all positions from a primitive {@code long[]} in this bitmap.
+   *
+   * <p>Equivalent to calling {@link #set(long)} for each element of the array, but groups
+   * positions by their upper-32-bit key and batches the insertion into each underlying 32-bit
+   * Roaring bitmap via {@link RoaringBitmap#addN}. This amortizes the per-call key computation
+   * and sub-bitmap location work over the whole input.
+   *
+   * @param positions the positions to set
+   */
+  public void setAll(long[] positions) {
+    if (positions.length == 0) {
+      return;
+    }
+
+    int maxKey = 0;
+    for (long pos : positions) {
+      validatePosition(pos);
+      int k = key(pos);
+      if (k > maxKey) {
+        maxKey = k;
+      }
+    }
+
+    allocateBitmapsIfNeeded(maxKey + 1);
+
+    if (maxKey == 0) {
+      // Common case: every position fits in the first sub-bitmap. One copy + one addN call.
+      int[] low32 = new int[positions.length];
+      for (int i = 0; i < positions.length; i++) {
+        low32[i] = pos32Bits(positions[i]);
+      }
+      bitmaps[0].addN(low32, 0, low32.length);
+      return;
+    }
+
+    int[] counts = new int[maxKey + 1];
+    for (long pos : positions) {
+      counts[key(pos)]++;
+    }
+
+    int[][] buffers = new int[maxKey + 1][];
+    int[] cursor = new int[maxKey + 1];
+    for (int k = 0; k <= maxKey; k++) {
+      if (counts[k] > 0) {
+        buffers[k] = new int[counts[k]];
+      }
+    }
+    for (long pos : positions) {
+      int k = key(pos);
+      buffers[k][cursor[k]++] = pos32Bits(pos);
+    }
+    for (int k = 0; k <= maxKey; k++) {
+      if (buffers[k] != null) {
+        bitmaps[k].addN(buffers[k], 0, buffers[k].length);
+      }
+    }
+  }
+
+  /**
    * Sets all positions from the other bitmap in this bitmap, modifying this bitmap in place.
    *
    * @param that the other bitmap

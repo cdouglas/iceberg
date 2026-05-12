@@ -154,6 +154,47 @@ public class TestRoaringPositionBitmap {
   }
 
   @TestTemplate
+  public void testSetAllArray() {
+    RoaringPositionBitmap bitmap = new RoaringPositionBitmap();
+    long[] positions = {
+      0L,
+      10L,
+      ((long) 1 << 32) | 20L, // key = 1
+      ((long) 1 << 32) | 30L, // key = 1
+      ((long) 5 << 32) | 40L, // key = 5
+    };
+    bitmap.setAll(positions);
+
+    for (long pos : positions) {
+      assertThat(bitmap.contains(pos)).isTrue();
+    }
+    assertThat(bitmap.cardinality()).isEqualTo(positions.length);
+    assertThat(bitmap.contains(50L)).isFalse();
+    // sparse bitmaps array sized to maxKey + 1
+    assertThat(bitmap.allocatedBitmapCount()).isEqualTo(6);
+  }
+
+  @TestTemplate
+  public void testSetAllArrayEmpty() {
+    RoaringPositionBitmap bitmap = new RoaringPositionBitmap();
+    bitmap.setAll(new long[0]);
+    assertThat(bitmap.isEmpty()).isTrue();
+    assertThat(bitmap.allocatedBitmapCount()).isEqualTo(0);
+  }
+
+  @TestTemplate
+  public void testSetAllArraySingleKey() {
+    RoaringPositionBitmap bitmap = new RoaringPositionBitmap();
+    long[] positions = {0L, 1L, 1L, 100L, 50L}; // unordered, with a duplicate
+    bitmap.setAll(positions);
+    assertThat(bitmap.cardinality()).isEqualTo(4);
+    assertThat(bitmap.contains(0L)).isTrue();
+    assertThat(bitmap.contains(1L)).isTrue();
+    assertThat(bitmap.contains(50L)).isTrue();
+    assertThat(bitmap.contains(100L)).isTrue();
+  }
+
+  @TestTemplate
   public void testAddAll() {
     RoaringPositionBitmap bitmap1 = new RoaringPositionBitmap();
     bitmap1.set(10L);
