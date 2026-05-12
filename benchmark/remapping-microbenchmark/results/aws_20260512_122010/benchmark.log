@@ -1,0 +1,83 @@
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - === Remapping Microbenchmark ===
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - Storage URI: s3://iceberg-benchmark-1769730994/benchmark/20260512_122010
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - Output directory: results
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - Warmup iterations: 1
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - Measurement iterations: 3
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Starting remapping benchmark with 1 warmup and 3 measurement iterations
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Running scenario: format=POSITION_DELETE_FILE, density=SPARSE, deletes=1000, runs=10, strategy=SMART
+[main] INFO org.apache.iceberg.CatalogUtil - Loading custom FileIO implementation: org.apache.iceberg.aws.s3.S3FileIO
+log4j:WARN No appenders could be found for logger (org.apache.iceberg.aws.shaded.org.apache.http.client.protocol.RequestAddCookies).
+log4j:WARN Please initialize the log4j system properly.
+log4j:WARN See http://logging.apache.org/log4j/1.2/faq.html#noconfig for more info.
+[main] WARN org.apache.hadoop.util.NativeCodeLoader - Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Running scenario: format=POSITION_DELETE_FILE, density=SPARSE, deletes=1000, runs=100, strategy=SMART
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Running scenario: format=POSITION_DELETE_FILE, density=SPARSE, deletes=10000, runs=10, strategy=SMART
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Running scenario: format=POSITION_DELETE_FILE, density=SPARSE, deletes=10000, runs=100, strategy=SMART
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new decompressor [.gz]
+[main] INFO org.apache.hadoop.io.compress.CodecPool - Got brand-new compressor [.gz]
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Running scenario: format=DELETION_VECTOR, density=SPARSE, deletes=1000, runs=10, strategy=SMART
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Running scenario: format=DELETION_VECTOR, density=SPARSE, deletes=1000, runs=100, strategy=SMART
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Running scenario: format=DELETION_VECTOR, density=SPARSE, deletes=10000, runs=10, strategy=SMART
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Running scenario: format=DELETION_VECTOR, density=SPARSE, deletes=10000, runs=100, strategy=SMART
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingBenchmarkRunner - Benchmark complete. 32 results collected.
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - 
+=== Benchmark Summary ===
+
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - --- Position Delete Files ---
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - ScenarioSummary{format=POSITION_DELETE_FILE, density=SPARSE, strategy=SMART, deletes=10000, runs=10, avgLatency=245.59ms, p99=259.38ms, read=49.2%, remap=0.6%, write=50.2%, throughput=40807/s}
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - ScenarioSummary{format=POSITION_DELETE_FILE, density=SPARSE, strategy=SMART, deletes=10000, runs=100, avgLatency=220.49ms, p99=259.08ms, read=51.8%, remap=0.5%, write=47.7%, throughput=46003/s}
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - ScenarioSummary{format=POSITION_DELETE_FILE, density=SPARSE, strategy=SMART, deletes=1000, runs=10, avgLatency=238.85ms, p99=259.20ms, read=56.2%, remap=0.1%, write=43.7%, throughput=4206/s}
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - ScenarioSummary{format=POSITION_DELETE_FILE, density=SPARSE, strategy=SMART, deletes=1000, runs=100, avgLatency=204.73ms, p99=210.69ms, read=56.8%, remap=0.1%, write=43.1%, throughput=4887/s}
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - 
+--- Deletion Vectors ---
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - ScenarioSummary{format=DELETION_VECTOR, density=SPARSE, strategy=SMART, deletes=10000, runs=10, avgLatency=245.01ms, p99=296.02ms, read=41.5%, remap=2.2%, write=56.3%, throughput=43034/s}
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - ScenarioSummary{format=DELETION_VECTOR, density=SPARSE, strategy=SMART, deletes=10000, runs=100, avgLatency=192.61ms, p99=203.12ms, read=51.8%, remap=1.8%, write=46.3%, throughput=52009/s}
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - ScenarioSummary{format=DELETION_VECTOR, density=SPARSE, strategy=SMART, deletes=1000, runs=10, avgLatency=191.12ms, p99=214.37ms, read=57.1%, remap=0.6%, write=42.4%, throughput=5278/s}
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - ScenarioSummary{format=DELETION_VECTOR, density=SPARSE, strategy=SMART, deletes=1000, runs=100, avgLatency=192.81ms, p99=229.74ms, read=59.1%, remap=0.6%, write=40.2%, throughput=5288/s}
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - 
+--- Strategy Comparison (avg latency ms) ---
+Scenario                                     LINEAR     BINARY   INTERVAL     STREAM      RANGE      SMART
+----------------------------------------------------------------------------------------------------
+DELETION_VECTOR SPARSE d=d10000 r=r10             -          -          -          -          -     245.01
+DELETION_VECTOR SPARSE d=d10000 r=r100            -          -          -          -          -     192.61
+DELETION_VECTOR SPARSE d=d1000 r=r10              -          -          -          -          -     191.12
+DELETION_VECTOR SPARSE d=d1000 r=r100             -          -          -          -          -     192.81
+POSITION_DELETE FILE d=X r=d10000                 -          -          -          -          -     245.59
+POSITION_DELETE FILE d=X r=d10000                 -          -          -          -          -     220.49
+POSITION_DELETE FILE d=X r=d1000                  -          -          -          -          -     238.85
+POSITION_DELETE FILE d=X r=d1000                  -          -          -          -          -     204.73
+[main] INFO org.apache.iceberg.benchmark.remapping.RemappingMicrobenchmark - Results saved to: results/run_20260512_192012

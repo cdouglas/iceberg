@@ -1,0 +1,40 @@
+---
+storage-uri: "gs://iceberg-benchmark-us-west1-1770146489/benchmark/20260512_122516"
+cloud-provider: "AWS_S3"
+delete-counts:
+- 1000
+- 10000
+- 100000
+- 1000000
+run-counts:
+- 10
+- 100
+- 1000
+- 10000
+densities:
+- "SPARSE"
+- "DENSE"
+formats:
+- "POSITION_DELETE_FILE"
+- "DELETION_VECTOR"
+strategies:
+- "LINEAR"
+- "BINARY_SEARCH"
+- "INTERVAL_TREE"
+- "STREAM_JOIN"
+- "RANGE_QUERY"
+- "SMART"
+warmup-iterations: 5
+measurement-iterations: 20
+output-dir: "results"
+random-seed: 20260124
+fanout-factors:
+- 2
+- 10
+- 50
+- 100
+split-factors:
+- 1
+- 2
+- 5
+- 10
