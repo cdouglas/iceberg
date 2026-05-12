@@ -111,21 +111,49 @@ The high-end multipliers (≥100×) come from the Feb 2026 hyperparallel run, wh
 - **Sorted-hint API:** `selectOptimal(mapping, positions, Boolean.TRUE)` skips the up-to-1000-element sortedness sample when the caller has structural knowledge (e.g., positions extracted from a Roaring bitmap are sorted by construction).
 - **Validation:** 324 JMH configurations in the standard sweep, 72 in the hyperparallel sweep.
 
-### I/O vs CPU Cost
+### Cloud Benchmark Results (May 12, 2026)
 
-Two cloud-benchmark runs are referenced below. Both pool measurements from AWS (us-west-2), GCP (us-west1), and Azure (westus2). Each run was driven by `RemappingBenchmarkRunner` against the `sigmod.yaml` config, which only exercises the `SMART` strategy through the public API (1600 records per cloud, 4800 pooled).
+The data below is from `RemappingBenchmarkRunner` against `sigmod.yaml` on the `cmpmap` branch (commit `49cc6dcdb` family), pooling AWS (us-west-2, `m5.xlarge`), GCP (us-west1, `n2-standard-4`), and Azure (westus2, `Standard_D4s_v3`). The runner only exercises the `SMART` strategy through the public API, so each cloud produces 1600 records (4 delete counts × 4 run counts × 2 densities × 2 formats × 25 iterations); 3840 measurement records pooled after dropping warmups. Result files and regenerated plots are committed under [`benchmark/remapping-microbenchmark/results/`](../../benchmark/remapping-microbenchmark/results/).
 
-| Phase | V2 PD median (mean) — May 12, 2026 | V3 DV median (mean) — May 12, 2026 | V2 PD median (mean) — Feb 3, 2026 | V3 DV median (mean) — Feb 3, 2026 |
-|-------|-----------------------------------:|------------------------------------:|----------------------------------:|----------------------------------:|
-| read  | 96 ms (165 ms) | 79 ms (80 ms) | 91 ms (150 ms) | 74 ms (80 ms) |
-| remap | 1.8 ms (17 ms) | 5.0 ms (29 ms) | 1.5 ms (15 ms) | 4.6 ms (25 ms) |
-| write | 161 ms (503 ms) | 95 ms (100 ms) | 179 ms (508 ms) | 105 ms (139 ms) |
+**Pooled phase latency (all clouds, all scenarios):**
 
-- **DVs are faster end-to-end** in both runs, primarily because the compact Roaring/Puffin write is ~1.6–1.7× faster than per-row Parquet encoding.
-- **Remap-phase cost favors V2 PD** by roughly 3× at the median — the DV path pays for in-memory Roaring bitmap reconstruction during remapping.
-- **Cloud-side variability dominates run-to-run differences** at this scale. The largest deltas between Feb 3 and May 12 — for example, DV write at 1M deletes shifted from 283 ms → 144 ms on GCP and 110 ms → 69 ms on Azure while staying nearly flat on AWS (178 ms → 186 ms) — track per-cloud capacity fluctuations rather than code changes. The bulk-construct optimization from May 2026 (`RoaringPositionBitmap.setAll(long[])`, `PositionDeleteIndex.delete(long[])`) is real (verified at 1.4–1.8× on the in-process `DVRemappingPhaseBenchmark`) but is not visible above the I/O noise floor at this scale.
+| Phase | V2 Position Delete median (mean) | V3 Deletion Vector median (mean) |
+|-------|--------------------------------:|---------------------------------:|
+| read  |  96 ms (165 ms) |  79 ms ( 80 ms) |
+| remap | 1.8 ms ( 17 ms) | 5.0 ms ( 29 ms) |
+| write | 161 ms (503 ms) |  95 ms (100 ms) |
 
-The takeaway for users: don't read a 10–20% shift in cloud-benchmark medians as a meaningful change. For algorithm-level speedup measurement, use the in-process JMH benchmarks in `core/src/jmh/`.
+See [`results/plots/latency_heatmap_pd.png`](../../benchmark/remapping-microbenchmark/results/plots/latency_heatmap_pd.png) and [`latency_heatmap_dv.png`](../../benchmark/remapping-microbenchmark/results/plots/latency_heatmap_dv.png) for per-cloud × delete-count × run-count breakdowns of the remap phase. Total-latency heatmaps live alongside as [`total_latency_heatmap_{pd,dv}.png`](../../benchmark/remapping-microbenchmark/results/plots/).
+
+**End-to-end totals by scale (pooled, median of `read + remap + write`):**
+
+| numDeletes | V2 PD total | V3 DV total | PD / DV |
+|-----------:|------------:|------------:|--------:|
+|       1,000 |   161 ms |   162 ms | 1.0× |
+|      10,000 |   171 ms |   157 ms | 1.1× |
+|     100,000 |   355 ms |   197 ms | 1.8× |
+|   1,000,000 |  2006 ms |   313 ms | **6.4×** |
+
+DV's compactness advantage only matters at scale: at 1K–10K deletes the two formats are tied, and DV's structural cost on the remap phase (bitmap reconstruction) is almost exactly cancelled by its smaller read/write. At 1M deletes the write-side gap dominates and DV is 6× faster end-to-end.
+
+**Remap phase isolated by scale (where PD has the structural advantage):**
+
+| numDeletes | V2 PD remap | V3 DV remap | DV / PD |
+|-----------:|------------:|------------:|--------:|
+|       1,000 |   134 µs |   390 µs | 2.9× |
+|      10,000 |   630 µs |   829 µs | 1.3× |
+|     100,000 |  5.93 ms |  6.69 ms | 1.1× |
+|   1,000,000 |  59.6 ms |  75.5 ms | 1.3× |
+
+The DV-over-PD remap penalty is real but small in absolute terms — at most ~15 ms median at 1M deletes — and is overwhelmed by DV's read/write savings on the same scenario.
+
+**Caveats on run-to-run noise:**
+
+Cloud-side variability dominates differences between runs of the same benchmark. As a concrete example, the prior baseline (Feb 3, 2026, preserved in commit `a6615d438` for reference) reported DV write at 1M deletes as 283 ms on GCP and 110 ms on Azure; the current run reports 144 ms and 69 ms for the same scenario. AWS in the same window moved barely (178 → 186 ms). Those swings track cloud-capacity fluctuations, not code changes.
+
+The in-process bulk-construct optimization committed in May 2026 (`RoaringPositionBitmap.setAll(long[])`, `PositionDeleteIndex.delete(long[])`) was independently verified at 1.4–1.8× on `DVRemappingPhaseBenchmark`, but the speedup is on a small absolute component of an already-small phase and is not visible above the I/O noise floor at the cloud-benchmark scale.
+
+**Takeaway for users:** treat the cloud-benchmark medians as order-of-magnitude indicators of relative format cost. Don't read a 10–20% shift in cloud-benchmark medians as a meaningful code-change signal — that resolution belongs to the JMH benchmarks under `core/src/jmh/`.
 
 ## Running Benchmarks
 
