@@ -74,6 +74,11 @@ class BitmapPositionDeleteIndex implements PositionDeleteIndex {
   }
 
   @Override
+  public void delete(long[] positions) {
+    bitmap.setAll(positions);
+  }
+
+  @Override
   public void merge(PositionDeleteIndex that) {
     if (that instanceof BitmapPositionDeleteIndex) {
       merge((BitmapPositionDeleteIndex) that);

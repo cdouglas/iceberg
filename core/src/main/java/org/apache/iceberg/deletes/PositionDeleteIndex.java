@@ -41,6 +41,20 @@ public interface PositionDeleteIndex {
   void delete(long posStart, long posEnd);
 
   /**
+   * Adds a primitive array of deleted row positions.
+   *
+   * <p>The default implementation falls back to per-position calls. Bitmap-backed indexes override
+   * this to group positions by sub-bitmap key and batch the insertion.
+   *
+   * @param positions the deleted row positions
+   */
+  default void delete(long[] positions) {
+    for (long position : positions) {
+      delete(position);
+    }
+  }
+
+  /**
    * Adds positions from the other index, modifying this index in place.
    *
    * @param that the other index to merge

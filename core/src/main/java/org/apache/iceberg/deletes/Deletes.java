@@ -20,6 +20,7 @@ package org.apache.iceberg.deletes;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -138,21 +139,48 @@ public class Deletes {
    */
   public static <T extends StructLike> CharSequenceMap<PositionDeleteIndex> toPositionIndexes(
       CloseableIterable<T> posDeletes, DeleteFile file) {
-    CharSequenceMap<PositionDeleteIndex> indexes = CharSequenceMap.create();
+    // Accumulate per-path positions into growing long[] buffers, then build each index via the
+    // bulk delete(long[]) entry in one shot. Avoids the per-position routing cost inside
+    // RoaringPositionBitmap.set(long), which dominates this loop for large PD files.
+    CharSequenceMap<LongBuffer> buffers = CharSequenceMap.create();
 
     try (CloseableIterable<T> deletes = posDeletes) {
       for (T delete : deletes) {
         CharSequence filePath = (CharSequence) FILENAME_ACCESSOR.get(delete);
         long position = (long) POSITION_ACCESSOR.get(delete);
-        PositionDeleteIndex index =
-            indexes.computeIfAbsent(filePath, key -> new BitmapPositionDeleteIndex(file));
-        index.delete(position);
+        LongBuffer buf = buffers.computeIfAbsent(filePath, LongBuffer::new);
+        buf.add(position);
       }
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to close position delete source", e);
     }
 
+    CharSequenceMap<PositionDeleteIndex> indexes = CharSequenceMap.create();
+    buffers.forEach(
+        (filePath, buf) -> {
+          PositionDeleteIndex index = new BitmapPositionDeleteIndex(file);
+          index.delete(buf.toArray());
+          indexes.put(filePath, index);
+        });
     return indexes;
+  }
+
+  // Minimal primitive long buffer with array doubling. Used by toPositionIndexes/toPositionIndex
+  // to accumulate positions per data file before flushing via PositionDeleteIndex.delete(long[]).
+  private static final class LongBuffer {
+    private long[] data = new long[16];
+    private int size = 0;
+
+    void add(long value) {
+      if (size == data.length) {
+        data = Arrays.copyOf(data, data.length * 2);
+      }
+      data[size++] = value;
+    }
+
+    long[] toArray() {
+      return size == data.length ? data : Arrays.copyOf(data, size);
+    }
   }
 
   public static <T extends StructLike> PositionDeleteIndex toPositionIndex(
@@ -175,13 +203,15 @@ public class Deletes {
 
   private static PositionDeleteIndex toPositionIndex(
       CloseableIterable<Long> posDeletes, List<DeleteFile> files) {
+    LongBuffer buf = new LongBuffer();
     try (CloseableIterable<Long> deletes = posDeletes) {
-      PositionDeleteIndex positionDeleteIndex = new BitmapPositionDeleteIndex(files);
-      deletes.forEach(positionDeleteIndex::delete);
-      return positionDeleteIndex;
+      deletes.forEach(buf::add);
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to close position delete source", e);
     }
+    PositionDeleteIndex positionDeleteIndex = new BitmapPositionDeleteIndex(files);
+    positionDeleteIndex.delete(buf.toArray());
+    return positionDeleteIndex;
   }
 
   public static CloseableIterable<Long> deletePositions(
