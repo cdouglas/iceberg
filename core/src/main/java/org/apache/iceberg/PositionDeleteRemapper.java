@@ -550,6 +550,107 @@ public class PositionDeleteRemapper {
   }
 
   /**
+   * Remaps positions from a V3 Deletion Vector, staying in {@code int} throughout the output path.
+   *
+   * <p>DV sources have two structural guarantees the general primitive path doesn't:
+   *
+   * <ul>
+   *   <li>Positions are sorted (Roaring sub-bitmaps yield values in ascending order), so the
+   *       selector can skip its sortedness sample.
+   *   <li>Positions fit in 32 bits, so the remapped output can be materialized directly as
+   *       {@code int[]} per target without going through {@code long[]} narrowing.
+   * </ul>
+   *
+   * <p>The algorithm itself still operates in long (driven by {@link CompactionMap.Run}'s long
+   * source/target positions), so a transient widening happens at entry. The win is on the output
+   * side: each target array is built as {@code int[]} directly, avoiding both the long[] output
+   * allocation and the subsequent narrowing loop that callers used to write themselves.
+   *
+   * @param sourceFile path of the compacted source data file
+   * @param positions sorted source positions extracted from a DV
+   * @return map from target file path to sorted {@code int[]} of remapped positions
+   */
+  public Map<String, int[]> remapPositionsBulkDV(String sourceFile, int[] positions) {
+    Preconditions.checkNotNull(sourceFile, "sourceFile is null");
+    Preconditions.checkNotNull(positions, "positions is null");
+
+    if (positions.length == 0) {
+      return Collections.emptyMap();
+    }
+
+    FileMapping mapping = getMapping(sourceFile);
+
+    if (mapping == null) {
+      // File wasn't compacted; return original positions (already sorted on the DV).
+      int[] copy = positions.clone();
+      return Collections.singletonMap(sourceFile, copy);
+    }
+
+    // Widen for the algorithm. This is the one transient long[] that remains — eliminating it
+    // would require int-typed strategy implementations, which is out of scope here.
+    long[] widened = new long[positions.length];
+    for (int i = 0; i < positions.length; i++) {
+      widened[i] = positions[i] & 0xFFFFFFFFL;
+    }
+
+    RemappingAlgorithmSelector selector = new RemappingAlgorithmSelector();
+    RemappingStrategy strategy = selector.selectOptimal(mapping, widened, Boolean.TRUE);
+    CompactionMap.Run[] runs = strategy.runsForPositions(widened);
+
+    return remapWithParallelArraysInt(widened, runs, mapping);
+  }
+
+  /**
+   * Like {@link #remapWithParallelArrays} but writes target positions directly into {@code int[]}
+   * outputs instead of allocating {@code long[]} per target and then forcing callers to narrow.
+   */
+  private Map<String, int[]> remapWithParallelArraysInt(
+      long[] positions, CompactionMap.Run[] runs, FileMapping mapping) {
+
+    Map<String, Integer> countsByFile = new HashMap<>();
+    String defaultTarget = mapping.targetFile();
+
+    for (int i = 0; i < positions.length; i++) {
+      CompactionMap.Run run = runs[i];
+      if (run != null) {
+        String targetFile = run.targetFile() != null ? run.targetFile() : defaultTarget;
+        countsByFile.merge(targetFile, 1, Integer::sum);
+      }
+    }
+
+    if (countsByFile.isEmpty()) {
+      return Collections.emptyMap();
+    }
+
+    Map<String, int[]> resultArrays = new HashMap<>();
+    Map<String, Integer> writeIndices = new HashMap<>();
+    for (Map.Entry<String, Integer> entry : countsByFile.entrySet()) {
+      resultArrays.put(entry.getKey(), new int[entry.getValue()]);
+      writeIndices.put(entry.getKey(), 0);
+    }
+
+    for (int i = 0; i < positions.length; i++) {
+      CompactionMap.Run run = runs[i];
+      if (run != null) {
+        String targetFile = run.targetFile() != null ? run.targetFile() : defaultTarget;
+        long sourcePos = positions[i];
+        long targetPos = run.targetPosition() + (sourcePos - run.sourcePosition());
+
+        int[] targetArray = resultArrays.get(targetFile);
+        int idx = writeIndices.get(targetFile);
+        targetArray[idx] = (int) targetPos;
+        writeIndices.put(targetFile, idx + 1);
+      }
+    }
+
+    for (int[] arr : resultArrays.values()) {
+      java.util.Arrays.sort(arr);
+    }
+
+    return resultArrays;
+  }
+
+  /**
    * Remaps positions from a PositionDeleteIndex using the compaction map.
    *
    * <p>This overload accepts a {@link PositionDeleteIndex}, which is the same interface used

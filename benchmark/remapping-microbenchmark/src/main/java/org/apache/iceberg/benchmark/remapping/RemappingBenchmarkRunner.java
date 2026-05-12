@@ -370,25 +370,19 @@ public class RemappingBenchmarkRunner {
       String sourceFile = entry.referencedFile;
       RoaringBitmap sourceBitmap = entry.bitmap;
 
-      // Extract positions as primitive array (no boxing)
-      long[] positions = new long[sourceBitmap.getCardinality()];
+      // Extract positions as int[] directly — RoaringBitmap yields ints natively.
+      int[] positions = new int[sourceBitmap.getCardinality()];
       int idx = 0;
       for (int pos : sourceBitmap) {
         positions[idx++] = pos;
       }
 
-      // Use the optimized primitive bulk remapping API
-      Map<String, long[]> remapped = remapper.remapPositionsBulkPrimitive(sourceFile, positions);
+      // DV-typed remap: skips the selector's sortedness check, returns int[] per target,
+      // avoiding the long->int narrowing the caller used to do.
+      Map<String, int[]> remapped = remapper.remapPositionsBulkDV(sourceFile, positions);
 
-      // Bulk-add via addN: tighter loop than per-value add() and accepts any input order.
-      // bitmapOfUnordered was measurably slower at scale (sort cost outweighs the win),
-      // and bitmapOf would require a sorted-unique guarantee we don't enforce here.
-      for (Map.Entry<String, long[]> e : remapped.entrySet()) {
-        long[] longs = e.getValue();
-        int[] ints = new int[longs.length];
-        for (int i = 0; i < longs.length; i++) {
-          ints[i] = (int) longs[i];
-        }
+      for (Map.Entry<String, int[]> e : remapped.entrySet()) {
+        int[] ints = e.getValue();
         RoaringBitmap target =
             remappedByTarget.computeIfAbsent(e.getKey(), k -> new RoaringBitmap());
         target.addN(ints, 0, ints.length);
