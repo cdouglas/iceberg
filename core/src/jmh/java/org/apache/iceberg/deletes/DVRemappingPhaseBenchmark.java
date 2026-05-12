@@ -207,6 +207,14 @@ public class DVRemappingPhaseBenchmark {
     return bitmap;
   }
 
+  /** Benchmark: Build new Roaring bitmap via bulk setAll(long[]). */
+  @Benchmark
+  public RoaringPositionBitmap bitmapConstructFromArrayBulk() {
+    RoaringPositionBitmap bitmap = new RoaringPositionBitmap();
+    bitmap.setAll(positionsArray);
+    return bitmap;
+  }
+
   /**
    * Benchmark: Build raw 32-bit RoaringBitmap via per-value add() (current cloud-benchmark path).
    */
