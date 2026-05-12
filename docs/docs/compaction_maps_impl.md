@@ -842,6 +842,55 @@ See `REMAPPING_BENCHMARKS.md` for detailed documentation on running and interpre
 - Bulk high fan-in: O(m log n) with range query
 - 5-10x speedup over repeated single-position calls
 
+### Phase 8.8: Bulk Bitmap Construction and Int-Typed DV Path (Completed)
+
+**Status:** ✅ Completed May 12, 2026
+
+**Overview:**
+
+Profiling of the DV remap phase identified `RoaringPositionBitmap.set(long)` called per position as the dominant cost in the bitmap-construction step. Every call recomputed the upper-32-bit key, located the appropriate sub-bitmap, and inserted into it — work that can be amortized across the input. Three changes collectively eliminate that per-call overhead and clean up the DV remap path.
+
+**Bulk bitmap construction:**
+
+- `RoaringPositionBitmap.setAll(long[] positions)` — single-bitmap fast path when all positions fit in `bitmaps[0]` (the common case for DVs and PD files with rows under 2^32). Multi-bitmap fall-through partitions positions by upper-32-bit key and dispatches `RoaringBitmap.addN` per sub-bitmap.
+- `RoaringPositionBitmap.setAll(int[] positions)` — direct entry into `bitmaps[0]` for callers that already have positions as 32-bit ints.
+- `PositionDeleteIndex.delete(long[] positions)` — new default interface method (loop by default) overridden by `BitmapPositionDeleteIndex` to forward to `bitmap.setAll(...)`.
+- `Deletes.toPositionIndexes` and `toPositionIndex(CloseableIterable<Long>, ...)` — V2 PD read paths now accumulate per-data-file positions in a primitive `long[]` buffer with array doubling, then flush via the bulk interface call.
+
+**Measured speedup (DVRemappingPhaseBenchmark, single fork, 5 iter × 3s):**
+
+| numDeletes | `set(long)` per value | `setAll(long[])` | speedup |
+|-----------:|----------------------:|-----------------:|--------:|
+|      1,000 |     5.93 µs |     3.29 µs | 1.80× |
+|     10,000 |    64.2 µs  |    41.8 µs  | 1.54× |
+|    100,000 |     648 µs  |     446 µs  | 1.45× |
+|  1,000,000 |    6447 µs  |    4624 µs  | 1.39× |
+
+The win narrows at larger sizes because the per-call routing cost amortizes against the actual bitmap-container work, but the structural improvement (1.4–1.8×) propagates to every place a bitmap is constructed from a known list.
+
+**Selector sorted-hint:**
+
+`RemappingAlgorithmSelector.selectOptimal(mapping, positions)` samples up to 1000 elements to detect sortedness. When the caller has structural knowledge — e.g., positions iterated from a `RoaringBitmap` are sorted by construction — the new overload `selectOptimal(mapping, positions, Boolean.TRUE)` skips the sample. Negligible cycle savings on its own, but it documents an invariant that would otherwise be silently rechecked.
+
+**Int-typed DV remap entry point:**
+
+`PositionDeleteRemapper.remapPositionsBulkDV(String sourceFile, int[] positions)` exposes a DV-shaped API that takes `int[]` and returns `Map<String, int[]>`. The algorithm itself still operates on `long` internally (strategies are long-typed), but the new entry point eliminates the caller-side narrowing loop and halves the per-target output array width (`int[]` vs `long[]`). Benchmarked end-to-end against the long-typed path, this change is perf-neutral at the microbenchmark level — most conversion cost lives in the widening half, which still happens because the strategy implementations are long-typed. Producing a real measurable cycle win would require duplicating or refactoring the strategies to operate on `int[]` natively.
+
+**Files:**
+
+- `core/src/main/java/org/apache/iceberg/deletes/RoaringPositionBitmap.java` - `setAll(long[])`, `setAll(int[])`
+- `core/src/main/java/org/apache/iceberg/deletes/PositionDeleteIndex.java` - `delete(long[])` default method
+- `core/src/main/java/org/apache/iceberg/deletes/BitmapPositionDeleteIndex.java` - `delete(long[])` override
+- `core/src/main/java/org/apache/iceberg/deletes/Deletes.java` - bulk accumulation in `toPositionIndexes` / `toPositionIndex`
+- `core/src/main/java/org/apache/iceberg/RemappingAlgorithmSelector.java` - `selectOptimal(mapping, positions, sortedHint)`
+- `core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java` - `remapPositionsBulkDV(String, int[])` and `remapWithParallelArraysInt`
+- `core/src/jmh/java/org/apache/iceberg/deletes/DVRemappingPhaseBenchmark.java` - `bitmapConstructFromArrayBulk` and raw-bitmap construction benchmarks
+- `core/src/jmh/java/org/apache/iceberg/DVRemapPathBenchmark.java` - end-to-end old vs new DV remap path comparison
+
+**Tests:**
+
+- `core/src/test/java/org/apache/iceberg/deletes/TestRoaringPositionBitmap.java` - tests for `setAll(long[])`, including single-key fast path and multi-key fall-through.
+
 ### Phase 9: Chained Compaction Map Support (Completed)
 
 **Status:** ✅ Completed February 2, 2026
