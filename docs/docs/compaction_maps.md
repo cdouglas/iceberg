@@ -387,24 +387,34 @@ Compaction map: Run(0, 0, 2), Run(3, 2, 2)  // Gap at source position 2
 
 ### End-to-End Remapping Performance
 
-Benchmarks across AWS (us-west-2), GCP (us-west1), and Azure (westus2) using cloud storage (S3, GCS, ADLS Gen2) measure the complete read-remap-write cycle through `RemappingBenchmarkRunner`. Numbers below are from the May 12, 2026 sigmod-config run on `cmpmap`.
+Benchmarks across AWS (us-west-2, `m5.xlarge`), GCP (us-west1, `n2-standard-4`), and Azure (westus2, `Standard_D4s_v3`) using cloud storage (S3, GCS, ADLS Gen2) measure the complete read-remap-write cycle through `RemappingBenchmarkRunner`. Numbers below are from the May 12, 2026 `sigmod.yaml` run on `cmpmap`; the underlying result JSON files and full plot set live under [`benchmark/remapping-microbenchmark/results/`](../../benchmark/remapping-microbenchmark/results/).
 
-**At 1M deletes (largest workload tested):**
+**Pooled total latency by scale (median of `read + remap + write` across all three clouds and all run counts):**
 
-| Cloud | V2 Position Delete (total median) | V3 Deletion Vector (total median) | DV speedup |
-|-------|----------------------------------:|----------------------------------:|-----------:|
+| numDeletes | V2 Position Delete | V3 Deletion Vector | DV speedup |
+|-----------:|-------------------:|-------------------:|-----------:|
+|       1,000 |   161 ms |   162 ms | 1.0× |
+|      10,000 |   171 ms |   157 ms | 1.1× |
+|     100,000 |   355 ms |   197 ms | 1.8× |
+|   1,000,000 |  2006 ms |   313 ms | **6.4×** |
+
+**At 1M deletes, per cloud:**
+
+| Cloud | V2 PD total median | V3 DV total median | DV speedup |
+|-------|-------------------:|-------------------:|-----------:|
 | AWS   | 1963 ms | 396 ms | 5.0× |
 | GCP   | 2110 ms | 297 ms | 7.1× |
 | Azure | 2009 ms | 217 ms | 9.3× |
-| Pooled | ~2030 ms | ~300 ms | ~6.8× |
 
-**Deletion vectors are 5–9× faster** than position delete files at this scale, primarily due to:
+**Deletion vectors are 5–9× faster** than position delete files at 1M deletes, primarily due to:
 
 - Compact RoaringBitmap representation vs row-per-delete Parquet
 - Efficient bulk iteration (always sorted)
-- Smaller I/O footprint
+- Smaller I/O footprint on read and write
 
-The DV speedup spread between AWS (5.0×) and Azure (9.3×) is largely cloud-side variability — write-phase latency at this scale swings widely between runs on the same code. For comparison, the Feb 3, 2026 baseline of this benchmark gave DV totals of 424 / 430 / 285 ms (AWS / GCP / Azure) for the same scenario; the May 12 numbers shifted by tens of milliseconds in both directions per cloud, none of which can be attributed to specific code changes.
+At small scale (1K–10K deletes) the two formats are essentially tied: DV's compactness advantage on I/O is balanced by its structurally higher remap-phase cost from in-memory bitmap reconstruction. See [`results/plots/total_latency_heatmap_pd.png`](../../benchmark/remapping-microbenchmark/results/plots/total_latency_heatmap_pd.png) and [`total_latency_heatmap_dv.png`](../../benchmark/remapping-microbenchmark/results/plots/total_latency_heatmap_dv.png) for the full delete-count × run-count × cloud grid.
+
+The DV speedup spread between AWS (5.0×) and Azure (9.3×) at 1M deletes is largely cloud-side variability — write-phase latency at this scale swings widely between runs on the same code. See [Benchmarking Guide](compaction_maps_bench.md) for a longer discussion of the cloud noise floor.
 
 ### Remapping Algorithm Performance
 
