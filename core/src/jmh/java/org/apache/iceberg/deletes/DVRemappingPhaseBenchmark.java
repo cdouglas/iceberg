@@ -39,6 +39,7 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
+import org.roaringbitmap.RoaringBitmap;
 
 /**
  * A benchmark that measures the cost breakdown of DV (Deletion Vector) remapping phases.
@@ -94,6 +95,7 @@ public class DVRemappingPhaseBenchmark {
   private RoaringPositionBitmap deserializedBitmap;
   private List<Long> positions;
   private long[] positionsArray;
+  private int[] positionsAsInt;
 
   // Pre-computed lookup queries (positions to search for)
   private long[] lookupQueries;
@@ -120,6 +122,14 @@ public class DVRemappingPhaseBenchmark {
       bitmap.set(p);
     }
     deserializedBitmap = bitmap;
+
+    // Primitive int view of positions for raw RoaringBitmap construction benchmarks.
+    // Safe because synthetic positions stay within the int range; matches the
+    // 32-bit Roaring representation used in DV blob storage.
+    positionsAsInt = new int[numDeletes];
+    for (int i = 0; i < numDeletes; i++) {
+      positionsAsInt[i] = (int) positionsArray[i];
+    }
 
     // Serialize bitmap
     serializedBitmap = serializeBitmap(bitmap);
@@ -195,6 +205,38 @@ public class DVRemappingPhaseBenchmark {
       bitmap.set(pos);
     }
     return bitmap;
+  }
+
+  /**
+   * Benchmark: Build raw 32-bit RoaringBitmap via per-value add() (current cloud-benchmark path).
+   */
+  @Benchmark
+  public RoaringBitmap rawBitmapConstructPerValue() {
+    RoaringBitmap bitmap = new RoaringBitmap();
+    for (int pos : positionsAsInt) {
+      bitmap.add(pos);
+    }
+    return bitmap;
+  }
+
+  /** Benchmark: Build raw 32-bit RoaringBitmap via addN(int[], 0, n). */
+  @Benchmark
+  public RoaringBitmap rawBitmapConstructAddN() {
+    RoaringBitmap bitmap = new RoaringBitmap();
+    bitmap.addN(positionsAsInt, 0, positionsAsInt.length);
+    return bitmap;
+  }
+
+  /** Benchmark: Build raw 32-bit RoaringBitmap via bitmapOf (assumes sorted-unique). */
+  @Benchmark
+  public RoaringBitmap rawBitmapConstructBitmapOf() {
+    return RoaringBitmap.bitmapOf(positionsAsInt);
+  }
+
+  /** Benchmark: Build raw 32-bit RoaringBitmap via bitmapOfUnordered (sorts internally). */
+  @Benchmark
+  public RoaringBitmap rawBitmapConstructBitmapOfUnordered() {
+    return RoaringBitmap.bitmapOfUnordered(positionsAsInt.clone());
   }
 
   /** Benchmark: Serialize bitmap to bytes. */
