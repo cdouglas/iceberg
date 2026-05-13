@@ -256,6 +256,103 @@ public class TestFallbackMapGenerationRemoved {
         .isNotNull();
   }
 
+  /**
+   * Regression test: when a source file's rows span multiple target files (multi-target
+   * compaction caused by target-size rolls), the per-run {@code targetFile} on each {@code
+   * RewriteFileGroup.FilePositionMapping.Run} must propagate through {@code buildCompactionMap}
+   * into the produced {@code CompactionMap.Run}.
+   *
+   * <p>Before the fix, {@code RewriteDataFilesCommitManager.buildCompactionMap} called the
+   * 3-argument {@code addRun(srcOff, tgtOff, len)} which silently dropped the per-run target. The
+   * resulting map made every run inherit the FileMapping's single default {@code targetFile}, so
+   * a remapped delete position computed against one target file would be applied to a row in a
+   * different target file — different number of rows, same hash count, divergent hash. The fuzz
+   * harness (M1) caught this immediately; this hand-crafted test pins it.
+   */
+  @Test
+  public void testMultiTargetRunsPreserveTargetFile() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "multi_target_runs");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "4")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    DataFile source =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/data/source_multi.parquet")
+            .withFileSizeInBytes(2048)
+            .withRecordCount(200)
+            .build();
+    table.newAppend().appendFile(source).commit();
+    long startingSnapshotId = table.currentSnapshot().snapshotId();
+
+    DataFile targetA =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/data/target_A.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+    DataFile targetB =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/data/target_B.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+
+    RewriteFileGroup group = createFileGroup(table, List.of(source), targetA);
+    group.setOutputFiles(Set.of(targetA, targetB));
+    // Build a FilePositionMapping with TWO runs whose `targetFile` differs — this is the shape
+    // PositionMappingCoordinator produces when the writer rolls over target file midway through
+    // a source file. The FileMapping's default targetFile is targetA; the second run must NOT
+    // inherit that default and instead carry targetB.
+    group.setPositionMappings(
+        Map.of(
+            source.path().toString(),
+            new RewriteFileGroup.FilePositionMapping(
+                source.path().toString(),
+                targetA.path().toString(),
+                List.of(
+                    new RewriteFileGroup.FilePositionMapping.Run(
+                        0L, 0L, 100L, targetA.path().toString()),
+                    new RewriteFileGroup.FilePositionMapping.Run(
+                        100L, 0L, 100L, targetB.path().toString())))));
+
+    RewriteDataFilesCommitManager commitManager =
+        new RewriteDataFilesCommitManager(table, startingSnapshotId);
+    commitManager.commitFileGroups(Set.of(group));
+
+    ManifestFile addedManifest =
+        table.currentSnapshot().dataManifests(table.io()).stream()
+            .filter(ManifestFile::hasAddedFiles)
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("expected an added manifest"));
+    assertThat(addedManifest.compactionMapLocation()).isNotNull();
+
+    CompactionMap map =
+        CompactionMaps.read(table.io().newInputFile(addedManifest.compactionMapLocation()));
+    assertThat(map.fileMappings()).hasSize(1);
+    CompactionMap.FileMapping mapping = map.fileMappings().get(0);
+
+    assertThat(mapping.runs())
+        .as("two runs should be preserved (different target files prevent merging)")
+        .hasSize(2);
+
+    CompactionMap.Run runA = mapping.runs().get(0);
+    CompactionMap.Run runB = mapping.runs().get(1);
+
+    // Either targetFile is set explicitly on the run (the post-fix shape), or both runs collapse
+    // to the FileMapping's default target (the bug). The assertion below pins the post-fix shape.
+    assertThat(runA.targetFile())
+        .as("run A's per-run targetFile must propagate from FilePositionMapping.Run.targetFile()")
+        .isEqualTo(targetA.path().toString());
+    assertThat(runB.targetFile())
+        .as("run B's per-run targetFile must be the second target file, not the FileMapping default")
+        .isEqualTo(targetB.path().toString());
+  }
+
   private RewriteFileGroup createFileGroup(
       Table table, List<DataFile> sourceFiles, DataFile targetFile) {
     RewriteDataFiles.FileGroupInfo info =

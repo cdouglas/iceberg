@@ -128,6 +128,86 @@ public class TestCompactionConflictDetectionDV {
         .containsKey(fileToDelete.path().toString());
   }
 
+  /**
+   * Regression test: {@code ManifestReader.entries()} reuses one {@link ManifestEntry} (and its
+   * contained {@code DeleteFile}) across iterations for allocation reasons. If
+   * {@link CompactionConflictDetector} retains {@code entry.file()} without copying, every
+   * conflict it reports collapses to the LAST file read from the manifest — the resolver then
+   * remaps the wrong source DV against the right target and the row multiset diverges. The fix
+   * is one line: {@code entry.file().copy(false)} before retaining.
+   *
+   * <p>This test commits three DVs against three different source files in a single delete
+   * manifest (one snapshot), runs the detector, and asserts every conflicting DV carries the
+   * source-file path that matches its actual reference. Pre-fix, all three would be the same
+   * (the last-read) DV.
+   */
+  @Test
+  public void testDetectorReturnsDistinctEntriesAcrossManifest() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "detector_distinct_entries");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, "3")
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .commit();
+
+    // Three independent source files — important: they must all end up in ONE delete manifest
+    // for this test to actually exercise the entry-reuse path. A single RowDelta commit with
+    // three addDeletes() does that.
+    List<DataFile> sourceFiles = new ArrayList<>();
+    for (int i = 0; i < 3; i++) {
+      DataFile dataFile =
+          DataFiles.builder(PartitionSpec.unpartitioned())
+              .withPath(String.format("/path/to/distinct_source_%d.parquet", i))
+              .withFileSizeInBytes(1024)
+              .withRecordCount(100)
+              .build();
+      sourceFiles.add(dataFile);
+    }
+    AppendFiles append = table.newAppend();
+    sourceFiles.forEach(append::appendFile);
+    append.commit();
+
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    // Commit three DVs (one per source file) in a single RowDelta — they land in the same
+    // delete manifest, which is exactly the shape that exposed the entry-reuse bug.
+    RowDelta rowDelta = table.newRowDelta().validateFromSnapshot(startingSnapshot);
+    rowDelta.addDeletes(writeDV(table, sourceFiles.get(0).path().toString(), 10L));
+    rowDelta.addDeletes(writeDV(table, sourceFiles.get(1).path().toString(), 20L));
+    rowDelta.addDeletes(writeDV(table, sourceFiles.get(2).path().toString(), 30L));
+    rowDelta.commit();
+
+    Snapshot postDeltaSnapshot = table.currentSnapshot();
+    TableMetadata base = ((HasTableOperations) table).operations().current();
+
+    java.util.Set<String> filesToCompact = new java.util.HashSet<>();
+    sourceFiles.forEach(f -> filesToCompact.add(f.path().toString()));
+
+    CompactionConflictDetector detector =
+        new CompactionConflictDetector(table.io(), base, startingSnapshot, postDeltaSnapshot);
+    DeleteConflictInfo info = detector.detectConflicts(filesToCompact);
+
+    assertThat(info.conflictingDeleteFiles())
+        .as("detector should report one conflicting DV per source file")
+        .hasSize(3);
+
+    // The asserting evidence the fix is in place: the reported DVs must reference all three
+    // distinct source files, not three copies of whichever file the manifest reader happened
+    // to land on last. Pre-fix, this set would collapse to a single path.
+    java.util.Set<String> referencedSources = new java.util.HashSet<>();
+    for (DeleteFile dv : info.conflictingDeleteFiles()) {
+      referencedSources.add(dv.referencedDataFile());
+    }
+    assertThat(referencedSources)
+        .as("each conflicting DV must reference its own distinct source file path")
+        .containsExactlyInAnyOrder(
+            sourceFiles.get(0).path().toString(),
+            sourceFiles.get(1).path().toString(),
+            sourceFiles.get(2).path().toString());
+  }
+
   /** Helper method to write a deletion vector file. */
   private DeleteFile writeDV(Table table, String dataFilePath, Long... positions)
       throws IOException {

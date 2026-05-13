@@ -232,9 +232,14 @@ public class RewriteDataFilesCommitManager {
           CompactionMapBuilder.FileMappingBuilder fileMappingBuilder =
               builder.addFileMapping(mapping.sourceFile(), mapping.targetFile());
 
-          // Add all runs (supports both single-run and multi-run mappings)
+          // Add all runs (supports both single-run and multi-run mappings). The Run's per-run
+          // targetFile must propagate so multi-target compactions (one source file → multiple
+          // output files due to target-size rolls) remap each run to the correct target file —
+          // otherwise every run silently uses the FileMapping's default target and the remapped
+          // positions point at the wrong rows.
           for (RewriteFileGroup.FilePositionMapping.Run run : mapping.runs()) {
-            fileMappingBuilder.addRun(run.sourceOffset(), run.targetOffset(), run.length());
+            fileMappingBuilder.addRun(
+                run.sourceOffset(), run.targetOffset(), run.length(), run.targetFile());
           }
         }
       } else {

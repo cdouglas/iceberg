@@ -1,0 +1,502 @@
+# M7 Pre-flight test suite
+# Repo: /home/chris/work/iceberg
+# Run started: 2026-05-13T10:43:36-07:00
+
+============================================================
+## iceberg-core: *Compaction*
+## cmd: ./gradlew :iceberg-core:test --tests *Compaction*
+============================================================
+Configuration on demand is an incubating feature.
+> Task :iceberg-api:processResources NO-SOURCE
+> Task :iceberg-core:processResources NO-SOURCE
+> Task :iceberg-common:processResources NO-SOURCE
+> Task :iceberg-core:processTestResources UP-TO-DATE
+> Task :iceberg-bundled-guava:compileJava UP-TO-DATE
+> Task :iceberg-bundled-guava:processResources NO-SOURCE
+> Task :iceberg-bundled-guava:classes UP-TO-DATE
+> Task :iceberg-bundled-guava:compileTestJava NO-SOURCE
+> Task :iceberg-bundled-guava:shadowJar UP-TO-DATE
+> Task :iceberg-api:compileJava UP-TO-DATE
+> Task :iceberg-common:compileJava UP-TO-DATE
+> Task :iceberg-api:classes UP-TO-DATE
+> Task :iceberg-common:classes UP-TO-DATE
+> Task :iceberg-api:compileTestJava UP-TO-DATE
+> Task :iceberg-core:compileJava UP-TO-DATE
+> Task :iceberg-core:classes UP-TO-DATE
+> Task :generateGitProperties
+> Task :buildInfo
+> Task :spotlessInternalRegisterDependencies UP-TO-DATE
+> Task :iceberg-api:jar UP-TO-DATE
+> Task :iceberg-common:jar UP-TO-DATE
+> Task :iceberg-api:processTestResources
+> Task :iceberg-api:testClasses
+
+> Task :iceberg-api:testJar
+file '/home/chris/work/iceberg/build/iceberg-build.properties' will be copied to 'iceberg-build.properties', overwriting file '/home/chris/work/iceberg/api/build/resources/test/iceberg-build.properties', which has already been copied there.
+
+> Task :iceberg-core:compileTestJava UP-TO-DATE
+> Task :iceberg-core:testClasses UP-TO-DATE
+> Task :iceberg-core:test
+
+[Incubating] Problems report is available at: file:///home/chris/work/iceberg/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 10s
+15 actionable tasks: 4 executed, 11 up-to-date
+## RESULT: PASS
+
+============================================================
+## iceberg-core: *Remapping*
+## cmd: ./gradlew :iceberg-core:test --tests *Remapping*
+============================================================
+Configuration on demand is an incubating feature.
+> Task :iceberg-common:processResources NO-SOURCE
+> Task :iceberg-core:processResources NO-SOURCE
+> Task :iceberg-api:processResources NO-SOURCE
+> Task :iceberg-core:processTestResources UP-TO-DATE
+> Task :iceberg-bundled-guava:compileJava UP-TO-DATE
+> Task :iceberg-bundled-guava:processResources NO-SOURCE
+> Task :iceberg-bundled-guava:classes UP-TO-DATE
+> Task :iceberg-bundled-guava:compileTestJava NO-SOURCE
+> Task :iceberg-bundled-guava:shadowJar UP-TO-DATE
+> Task :iceberg-api:compileJava UP-TO-DATE
+> Task :iceberg-common:compileJava UP-TO-DATE
+> Task :iceberg-api:classes UP-TO-DATE
+> Task :iceberg-common:classes UP-TO-DATE
+> Task :iceberg-api:compileTestJava UP-TO-DATE
+> Task :iceberg-core:compileJava UP-TO-DATE
+> Task :iceberg-core:classes UP-TO-DATE
+> Task :generateGitProperties
+> Task :buildInfo
+> Task :spotlessInternalRegisterDependencies UP-TO-DATE
+> Task :iceberg-api:jar UP-TO-DATE
+> Task :iceberg-common:jar UP-TO-DATE
+> Task :iceberg-api:processTestResources
+> Task :iceberg-api:testClasses
+
+> Task :iceberg-api:testJar
+file '/home/chris/work/iceberg/build/iceberg-build.properties' will be copied to 'iceberg-build.properties', overwriting file '/home/chris/work/iceberg/api/build/resources/test/iceberg-build.properties', which has already been copied there.
+
+> Task :iceberg-core:compileTestJava UP-TO-DATE
+> Task :iceberg-core:testClasses UP-TO-DATE
+> Task :iceberg-core:test
+
+[Incubating] Problems report is available at: file:///home/chris/work/iceberg/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 4s
+15 actionable tasks: 4 executed, 11 up-to-date
+## RESULT: PASS
+
+============================================================
+## iceberg-spark-3.5: *Compaction*
+## cmd: ./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test --tests *Compaction*
+============================================================
+Configuration on demand is an incubating feature.
+> Task :iceberg-common:processResources NO-SOURCE
+> Task :iceberg-arrow:processResources NO-SOURCE
+> Task :iceberg-api:processResources NO-SOURCE
+> Task :iceberg-data:processResources NO-SOURCE
+> Task :iceberg-core:processResources NO-SOURCE
+> Task :iceberg-orc:processResources NO-SOURCE
+> Task :iceberg-parquet:processResources NO-SOURCE
+> Task :iceberg-core:processTestResources UP-TO-DATE
+> Task :iceberg-data:processTestResources NO-SOURCE
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:processResources UP-TO-DATE
+> Task :iceberg-hive-metastore:processResources NO-SOURCE
+> Task :iceberg-open-api:compileJava NO-SOURCE
+> Task :iceberg-hive-metastore:processTestResources UP-TO-DATE
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:processTestResources UP-TO-DATE
+> Task :iceberg-open-api:processTestFixturesResources UP-TO-DATE
+> Task :iceberg-bundled-guava:compileJava UP-TO-DATE
+> Task :iceberg-bundled-guava:processResources NO-SOURCE
+> Task :iceberg-bundled-guava:classes UP-TO-DATE
+> Task :iceberg-bundled-guava:compileTestJava NO-SOURCE
+> Task :iceberg-bundled-guava:shadowJar UP-TO-DATE
+> Task :iceberg-common:compileJava UP-TO-DATE
+> Task :iceberg-api:compileJava UP-TO-DATE
+> Task :iceberg-api:classes UP-TO-DATE
+> Task :iceberg-common:classes UP-TO-DATE
+> Task :iceberg-api:compileTestJava UP-TO-DATE
+> Task :iceberg-core:compileJava UP-TO-DATE
+> Task :iceberg-core:classes UP-TO-DATE
+> Task :iceberg-orc:compileJava UP-TO-DATE
+> Task :iceberg-orc:classes UP-TO-DATE
+> Task :iceberg-parquet:compileJava UP-TO-DATE
+> Task :iceberg-parquet:classes UP-TO-DATE
+> Task :generateGitProperties
+> Task :buildInfo
+> Task :spotlessInternalRegisterDependencies UP-TO-DATE
+> Task :iceberg-common:jar UP-TO-DATE
+> Task :iceberg-api:jar UP-TO-DATE
+> Task :iceberg-core:jar UP-TO-DATE
+> Task :iceberg-orc:jar UP-TO-DATE
+> Task :iceberg-parquet:jar UP-TO-DATE
+> Task :iceberg-api:processTestResources
+> Task :iceberg-api:testClasses
+> Task :iceberg-data:compileJava UP-TO-DATE
+> Task :iceberg-data:classes UP-TO-DATE
+> Task :iceberg-data:jar UP-TO-DATE
+
+> Task :iceberg-api:testJar
+file '/home/chris/work/iceberg/build/iceberg-build.properties' will be copied to 'iceberg-build.properties', overwriting file '/home/chris/work/iceberg/api/build/resources/test/iceberg-build.properties', which has already been copied there.
+
+> Task :iceberg-arrow:compileJava UP-TO-DATE
+> Task :iceberg-arrow:classes UP-TO-DATE
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:compileJava NO-SOURCE
+> Task :iceberg-arrow:jar UP-TO-DATE
+> Task :iceberg-gcp:compileJava UP-TO-DATE
+> Task :iceberg-azure:compileJava UP-TO-DATE
+> Task :iceberg-aws:compileJava UP-TO-DATE
+> Task :iceberg-core:compileTestJava UP-TO-DATE
+> Task :iceberg-core:testClasses UP-TO-DATE
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:compileScala UP-TO-DATE
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:classes UP-TO-DATE
+> Task :iceberg-hive-metastore:compileJava UP-TO-DATE
+> Task :iceberg-hive-metastore:classes UP-TO-DATE
+> Task :iceberg-hive-metastore:jar
+> Task :iceberg-core:testJar
+> Task :iceberg-open-api:compileTestFixturesJava UP-TO-DATE
+> Task :iceberg-open-api:testFixturesClasses UP-TO-DATE
+> Task :iceberg-open-api:testFixturesJar UP-TO-DATE
+> Task :iceberg-hive-metastore:compileTestJava UP-TO-DATE
+> Task :iceberg-hive-metastore:testClasses UP-TO-DATE
+> Task :iceberg-hive-metastore:testJar
+
+> Task :iceberg-data:compileTestJava
+Note: /home/chris/work/iceberg/data/src/test/java/org/apache/iceberg/data/FileHelpers.java uses unchecked or unsafe operations.
+Note: Recompile with -Xlint:unchecked for details.
+
+> Task :iceberg-data:testClasses
+> Task :iceberg-data:testJar
+
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:compileTestJava
+Note: Some input files use or override a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+Note: Some input files use unchecked or unsafe operations.
+Note: Recompile with -Xlint:unchecked for details.
+
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:compileTestScala NO-SOURCE
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:testClasses
+
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:test
+
+TestRewritePositionDeleteFilesAction > testRemoveDanglingDVsAfterCompaction() > catalogName = testhive, implementation = org.apache.iceberg.spark.SparkCatalog, config = {type=hive, default-namespace=default, cache-enabled=false}, fileFormat = PARQUET FAILED
+    java.lang.RuntimeException: org.apache.spark.sql.catalyst.analysis.NoSuchTableException: [TABLE_OR_VIEW_NOT_FOUND] The table or view `file:/tmp/hive15056498297557358369`.`table#rewrite` cannot be found. Verify the spelling and correctness of the schema and catalog.
+    If you did not qualify the name with a schema, verify the current_schema() output, or qualify the name with the correct schema and catalog.
+    To tolerate the error on drop use DROP VIEW IF EXISTS or DROP TABLE IF EXISTS.
+        at org.apache.iceberg.util.ExceptionUtil.castAndThrow(ExceptionUtil.java:39)
+        at org.apache.iceberg.util.Tasks.throwOne(Tasks.java:599)
+        at org.apache.iceberg.util.Tasks$Builder.runParallel(Tasks.java:394)
+        at org.apache.iceberg.util.Tasks$Builder.run(Tasks.java:201)
+        at org.apache.iceberg.util.Tasks$Builder.run(Tasks.java:196)
+        at org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.doExecute(RewriteDataFilesSparkAction.java:255)
+        at org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.execute(RewriteDataFilesSparkAction.java:180)
+        at org.apache.iceberg.spark.actions.TestRewritePositionDeleteFilesAction.testRemoveDanglingDVsAfterCompaction(TestRewritePositionDeleteFilesAction.java:428)
+
+        Caused by:
+        org.apache.spark.sql.catalyst.analysis.NoSuchTableException: [TABLE_OR_VIEW_NOT_FOUND] The table or view `file:/tmp/hive15056498297557358369`.`table#rewrite` cannot be found. Verify the spelling and correctness of the schema and catalog.
+        If you did not qualify the name with a schema, verify the current_schema() output, or qualify the name with the correct schema and catalog.
+        To tolerate the error on drop use DROP VIEW IF EXISTS or DROP TABLE IF EXISTS.
+            at app//org.apache.iceberg.spark.SparkCatalog.loadTable(SparkCatalog.java:172)
+            at app//org.apache.spark.sql.connector.catalog.CatalogV2Util$.getTable(CatalogV2Util.scala:363)
+            at app//org.apache.spark.sql.execution.datasources.v2.DataSourceV2Utils$.loadV2Source(DataSourceV2Utils.scala:137)
+            at app//org.apache.spark.sql.DataFrameReader.$anonfun$load$1(DataFrameReader.scala:210)
+            at app//scala.Option.flatMap(Option.scala:271)
+            at app//org.apache.spark.sql.DataFrameReader.load(DataFrameReader.scala:208)
+            at app//org.apache.spark.sql.DataFrameReader.load(DataFrameReader.scala:186)
+            at app//org.apache.iceberg.spark.actions.SparkBinPackFileRewriteRunner.doRewrite(SparkBinPackFileRewriteRunner.java:94)
+            at app//org.apache.iceberg.spark.actions.SparkDataFileRewriteRunner.rewrite(SparkDataFileRewriteRunner.java:54)
+            at app//org.apache.iceberg.spark.actions.SparkDataFileRewriteRunner.rewrite(SparkDataFileRewriteRunner.java:35)
+            at app//org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.lambda$rewriteFiles$0(RewriteDataFilesSparkAction.java:215)
+            at app//org.apache.iceberg.spark.JobGroupUtils.withJobGroupInfo(JobGroupUtils.java:59)
+            at app//org.apache.iceberg.spark.JobGroupUtils.withJobGroupInfo(JobGroupUtils.java:51)
+            at app//org.apache.iceberg.spark.actions.BaseSparkAction.withJobGroupInfo(BaseSparkAction.java:130)
+            at app//org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.rewriteFiles(RewriteDataFilesSparkAction.java:214)
+            at app//org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.lambda$doExecute$2(RewriteDataFilesSparkAction.java:257)
+            at app//org.apache.iceberg.util.Tasks$Builder.runTaskWithRetry(Tasks.java:413)
+            at app//org.apache.iceberg.util.Tasks$Builder$1.run(Tasks.java:315)
+            at java.base@17.0.18/java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:539)
+            at java.base@17.0.18/java.util.concurrent.FutureTask.run(FutureTask.java:264)
+            at java.base@17.0.18/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+            at java.base@17.0.18/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+            at java.base@17.0.18/java.lang.Thread.run(Thread.java:840)
+
+[shutdown-hook-0] INFO org.apache.spark.util.ShutdownHookManager - Shutdown hook called
+[shutdown-hook-0] INFO org.apache.spark.util.ShutdownHookManager - Deleting directory /tmp/spark-5c13f3b0-9df9-4958-98b7-a6b695947a27
+
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:test
+
+29 tests completed, 1 failed, 2 skipped
+
+> Task :iceberg-spark:iceberg-spark-3.5_2.12:test FAILED
+
+[Incubating] Problems report is available at: file:///home/chris/work/iceberg/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':iceberg-spark:iceberg-spark-3.5_2.12:test'.
+> There were failing tests. See the report at: file:///home/chris/work/iceberg/spark/v3.5/spark/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 59s
+42 actionable tasks: 10 executed, 32 up-to-date
+## RESULT: FAIL (see above)
+
+============================================================
+## iceberg-spark-4.0: *Compaction*
+## cmd: ./gradlew :iceberg-spark:iceberg-spark-4.0_2.13:test --tests *Compaction*
+============================================================
+Configuration on demand is an incubating feature.
+> Task :iceberg-core:processResources NO-SOURCE
+> Task :iceberg-common:processResources NO-SOURCE
+> Task :iceberg-api:processResources NO-SOURCE
+> Task :iceberg-data:processResources NO-SOURCE
+> Task :iceberg-arrow:processResources NO-SOURCE
+> Task :iceberg-data:processTestResources NO-SOURCE
+> Task :iceberg-parquet:processResources NO-SOURCE
+> Task :iceberg-hive-metastore:processResources NO-SOURCE
+> Task :iceberg-core:processTestResources UP-TO-DATE
+> Task :iceberg-hive-metastore:processTestResources UP-TO-DATE
+> Task :iceberg-open-api:compileJava NO-SOURCE
+> Task :iceberg-orc:processResources NO-SOURCE
+> Task :iceberg-open-api:processTestFixturesResources UP-TO-DATE
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:processResources UP-TO-DATE
+> Task :iceberg-bundled-guava:compileJava UP-TO-DATE
+> Task :iceberg-bundled-guava:processResources NO-SOURCE
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:processTestResources UP-TO-DATE
+> Task :iceberg-bundled-guava:classes UP-TO-DATE
+> Task :iceberg-bundled-guava:compileTestJava NO-SOURCE
+> Task :iceberg-bundled-guava:shadowJar UP-TO-DATE
+> Task :iceberg-common:compileJava UP-TO-DATE
+> Task :iceberg-api:compileJava UP-TO-DATE
+> Task :iceberg-api:classes UP-TO-DATE
+> Task :iceberg-common:classes UP-TO-DATE
+> Task :iceberg-api:compileTestJava UP-TO-DATE
+> Task :iceberg-core:compileJava UP-TO-DATE
+> Task :iceberg-core:classes UP-TO-DATE
+> Task :iceberg-orc:compileJava UP-TO-DATE
+> Task :iceberg-parquet:compileJava UP-TO-DATE
+> Task :iceberg-parquet:classes UP-TO-DATE
+> Task :iceberg-orc:classes UP-TO-DATE
+> Task :iceberg-data:compileJava UP-TO-DATE
+> Task :iceberg-data:classes UP-TO-DATE
+> Task :generateGitProperties
+> Task :buildInfo
+> Task :spotlessInternalRegisterDependencies UP-TO-DATE
+> Task :iceberg-common:jar UP-TO-DATE
+> Task :iceberg-core:jar UP-TO-DATE
+> Task :iceberg-api:jar UP-TO-DATE
+> Task :iceberg-data:jar UP-TO-DATE
+> Task :iceberg-arrow:compileJava UP-TO-DATE
+> Task :iceberg-arrow:classes UP-TO-DATE
+> Task :iceberg-orc:jar UP-TO-DATE
+> Task :iceberg-parquet:jar UP-TO-DATE
+> Task :iceberg-arrow:jar UP-TO-DATE
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:compileJava NO-SOURCE
+> Task :iceberg-api:processTestResources
+> Task :iceberg-api:testClasses
+> Task :iceberg-hive-metastore:compileJava UP-TO-DATE
+> Task :iceberg-hive-metastore:classes UP-TO-DATE
+> Task :iceberg-azure:compileJava UP-TO-DATE
+> Task :iceberg-aws:compileJava UP-TO-DATE
+> Task :iceberg-hive-metastore:jar UP-TO-DATE
+> Task :iceberg-gcp:compileJava UP-TO-DATE
+
+> Task :iceberg-api:testJar
+file '/home/chris/work/iceberg/build/iceberg-build.properties' will be copied to 'iceberg-build.properties', overwriting file '/home/chris/work/iceberg/api/build/resources/test/iceberg-build.properties', which has already been copied there.
+
+> Task :iceberg-core:compileTestJava UP-TO-DATE
+> Task :iceberg-core:testClasses UP-TO-DATE
+> Task :iceberg-core:testJar UP-TO-DATE
+> Task :iceberg-open-api:compileTestFixturesJava UP-TO-DATE
+> Task :iceberg-open-api:testFixturesClasses UP-TO-DATE
+> Task :iceberg-open-api:testFixturesJar UP-TO-DATE
+> Task :iceberg-data:compileTestJava UP-TO-DATE
+> Task :iceberg-data:testClasses UP-TO-DATE
+> Task :iceberg-data:testJar UP-TO-DATE
+> Task :iceberg-hive-metastore:compileTestJava UP-TO-DATE
+> Task :iceberg-hive-metastore:testClasses UP-TO-DATE
+> Task :iceberg-hive-metastore:testJar UP-TO-DATE
+
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:compileScala
+[Warn] : javac: [options] system modules path not set in conjunction with -source 11
+
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:classes
+
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:compileTestJava
+Note: Some input files use or override a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+Note: Some input files use unchecked or unsafe operations.
+Note: Recompile with -Xlint:unchecked for details.
+
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:compileTestScala NO-SOURCE
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:testClasses
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:test
+
+TestRewritePositionDeleteFilesAction > testRemoveDanglingDVsAfterCompaction() > catalogName = testhive, implementation = org.apache.iceberg.spark.SparkCatalog, config = {type=hive, default-namespace=default, cache-enabled=false}, fileFormat = PARQUET FAILED
+    java.lang.RuntimeException: org.apache.spark.sql.catalyst.analysis.NoSuchTableException: [TABLE_OR_VIEW_NOT_FOUND] The table or view `file:/tmp/hive11790925171607161375`.`table#rewrite` cannot be found. Verify the spelling and correctness of the schema and catalog.
+    If you did not qualify the name with a schema, verify the current_schema() output, or qualify the name with the correct schema and catalog.
+    To tolerate the error on drop use DROP VIEW IF EXISTS or DROP TABLE IF EXISTS. SQLSTATE: 42P01
+        at org.apache.iceberg.util.ExceptionUtil.castAndThrow(ExceptionUtil.java:39)
+        at org.apache.iceberg.util.Tasks.throwOne(Tasks.java:599)
+        at org.apache.iceberg.util.Tasks$Builder.runParallel(Tasks.java:394)
+        at org.apache.iceberg.util.Tasks$Builder.run(Tasks.java:201)
+        at org.apache.iceberg.util.Tasks$Builder.run(Tasks.java:196)
+        at org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.doExecute(RewriteDataFilesSparkAction.java:308)
+        at org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.execute(RewriteDataFilesSparkAction.java:182)
+        at org.apache.iceberg.spark.actions.TestRewritePositionDeleteFilesAction.testRemoveDanglingDVsAfterCompaction(TestRewritePositionDeleteFilesAction.java:428)
+
+        Caused by:
+        org.apache.spark.sql.catalyst.analysis.NoSuchTableException: [TABLE_OR_VIEW_NOT_FOUND] The table or view `file:/tmp/hive11790925171607161375`.`table#rewrite` cannot be found. Verify the spelling and correctness of the schema and catalog.
+        If you did not qualify the name with a schema, verify the current_schema() output, or qualify the name with the correct schema and catalog.
+        To tolerate the error on drop use DROP VIEW IF EXISTS or DROP TABLE IF EXISTS. SQLSTATE: 42P01
+            at app//org.apache.iceberg.spark.SparkCatalog.loadTable(SparkCatalog.java:173)
+            at app//org.apache.spark.sql.connector.catalog.CatalogV2Util$.getTable(CatalogV2Util.scala:438)
+            at app//org.apache.spark.sql.execution.datasources.v2.DataSourceV2Utils$.loadV2Source(DataSourceV2Utils.scala:144)
+            at app//org.apache.spark.sql.catalyst.analysis.ResolveDataSource$$anonfun$apply$1.$anonfun$applyOrElse$1(ResolveDataSource.scala:60)
+            at app//scala.Option.flatMap(Option.scala:283)
+            at app//org.apache.spark.sql.catalyst.analysis.ResolveDataSource$$anonfun$apply$1.applyOrElse(ResolveDataSource.scala:58)
+            at app//org.apache.spark.sql.catalyst.analysis.ResolveDataSource$$anonfun$apply$1.applyOrElse(ResolveDataSource.scala:45)
+            at app//org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper.$anonfun$resolveOperatorsUpWithPruning$3(AnalysisHelper.scala:139)
+            at app//org.apache.spark.sql.catalyst.trees.CurrentOrigin$.withOrigin(origin.scala:86)
+            at app//org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper.$anonfun$resolveOperatorsUpWithPruning$1(AnalysisHelper.scala:139)
+            at app//org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper$.allowInvokingTransformsInAnalyzer(AnalysisHelper.scala:416)
+            at app//org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper.resolveOperatorsUpWithPruning(AnalysisHelper.scala:135)
+            at app//org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper.resolveOperatorsUpWithPruning$(AnalysisHelper.scala:131)
+            at app//org.apache.spark.sql.catalyst.plans.logical.LogicalPlan.resolveOperatorsUpWithPruning(LogicalPlan.scala:37)
+            at app//org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper.resolveOperatorsUp(AnalysisHelper.scala:112)
+            at app//org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper.resolveOperatorsUp$(AnalysisHelper.scala:111)
+            at app//org.apache.spark.sql.catalyst.plans.logical.LogicalPlan.resolveOperatorsUp(LogicalPlan.scala:37)
+            at app//org.apache.spark.sql.catalyst.analysis.ResolveDataSource.apply(ResolveDataSource.scala:45)
+            at app//org.apache.spark.sql.catalyst.analysis.ResolveDataSource.apply(ResolveDataSource.scala:43)
+            at app//org.apache.spark.sql.catalyst.rules.RuleExecutor.$anonfun$execute$2(RuleExecutor.scala:242)
+            at app//scala.collection.LinearSeqOps.foldLeft(LinearSeq.scala:183)
+            at app//scala.collection.LinearSeqOps.foldLeft$(LinearSeq.scala:179)
+            at app//scala.collection.immutable.List.foldLeft(List.scala:79)
+            at app//org.apache.spark.sql.catalyst.rules.RuleExecutor.$anonfun$execute$1(RuleExecutor.scala:239)
+            at app//org.apache.spark.sql.catalyst.rules.RuleExecutor.$anonfun$execute$1$adapted(RuleExecutor.scala:231)
+            at app//scala.collection.immutable.List.foreach(List.scala:334)
+            at app//org.apache.spark.sql.catalyst.rules.RuleExecutor.execute(RuleExecutor.scala:231)
+            at app//org.apache.spark.sql.catalyst.analysis.Analyzer.org$apache$spark$sql$catalyst$analysis$Analyzer$$executeSameContext(Analyzer.scala:290)
+            at app//org.apache.spark.sql.catalyst.analysis.Analyzer.$anonfun$execute$1(Analyzer.scala:286)
+            at app//org.apache.spark.sql.catalyst.analysis.AnalysisContext$.withNewAnalysisContext(Analyzer.scala:234)
+            at app//org.apache.spark.sql.catalyst.analysis.Analyzer.execute(Analyzer.scala:286)
+            at app//org.apache.spark.sql.catalyst.analysis.Analyzer.execute(Analyzer.scala:249)
+            at app//org.apache.spark.sql.catalyst.rules.RuleExecutor.$anonfun$executeAndTrack$1(RuleExecutor.scala:201)
+            at app//org.apache.spark.sql.catalyst.QueryPlanningTracker$.withTracker(QueryPlanningTracker.scala:89)
+            at app//org.apache.spark.sql.catalyst.rules.RuleExecutor.executeAndTrack(RuleExecutor.scala:201)
+            at app//org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.resolveInFixedPoint(HybridAnalyzer.scala:190)
+            at app//org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.$anonfun$apply$1(HybridAnalyzer.scala:76)
+            at app//org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.withTrackedAnalyzerBridgeState(HybridAnalyzer.scala:111)
+            at app//org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.apply(HybridAnalyzer.scala:71)
+            at app//org.apache.spark.sql.catalyst.analysis.Analyzer.$anonfun$executeAndCheck$1(Analyzer.scala:280)
+            at app//org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper$.markInAnalyzer(AnalysisHelper.scala:423)
+            at app//org.apache.spark.sql.catalyst.analysis.Analyzer.executeAndCheck(Analyzer.scala:280)
+            at app//org.apache.spark.sql.execution.QueryExecution.$anonfun$lazyAnalyzed$2(QueryExecution.scala:110)
+            at app//org.apache.spark.sql.catalyst.QueryPlanningTracker.measurePhase(QueryPlanningTracker.scala:148)
+            at app//org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$2(QueryExecution.scala:278)
+            at app//org.apache.spark.sql.execution.QueryExecution$.withInternalError(QueryExecution.scala:654)
+            at app//org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$1(QueryExecution.scala:278)
+            at app//org.apache.spark.sql.SparkSession.withActive(SparkSession.scala:804)
+            at app//org.apache.spark.sql.execution.QueryExecution.executePhase(QueryExecution.scala:277)
+            at app//org.apache.spark.sql.execution.QueryExecution.$anonfun$lazyAnalyzed$1(QueryExecution.scala:110)
+            at app//scala.util.Try$.apply(Try.scala:217)
+            at app//org.apache.spark.util.Utils$.doTryWithCallerStacktrace(Utils.scala:1378)
+            at app//org.apache.spark.util.Utils$.getTryWithCallerStacktrace(Utils.scala:1439)
+            at app//org.apache.spark.util.LazyTry.get(LazyTry.scala:58)
+            at app//org.apache.spark.sql.execution.QueryExecution.analyzed(QueryExecution.scala:121)
+            at app//org.apache.spark.sql.execution.QueryExecution.assertAnalyzed(QueryExecution.scala:80)
+            at app//org.apache.spark.sql.classic.Dataset$.$anonfun$ofRows$1(Dataset.scala:115)
+            at app//org.apache.spark.sql.SparkSession.withActive(SparkSession.scala:804)
+            at app//org.apache.spark.sql.classic.Dataset$.ofRows(Dataset.scala:113)
+            at app//org.apache.spark.sql.classic.DataFrameReader.load(DataFrameReader.scala:109)
+            at app//org.apache.spark.sql.classic.DataFrameReader.load(DataFrameReader.scala:100)
+            at app//org.apache.spark.sql.classic.DataFrameReader.load(DataFrameReader.scala:58)
+            at app//org.apache.iceberg.spark.actions.SparkBinPackFileRewriteRunner.doRewrite(SparkBinPackFileRewriteRunner.java:94)
+            at app//org.apache.iceberg.spark.actions.SparkDataFileRewriteRunner.rewrite(SparkDataFileRewriteRunner.java:54)
+            at app//org.apache.iceberg.spark.actions.SparkDataFileRewriteRunner.rewrite(SparkDataFileRewriteRunner.java:35)
+            at app//org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.lambda$rewriteFiles$0(RewriteDataFilesSparkAction.java:217)
+            at app//org.apache.iceberg.spark.JobGroupUtils.withJobGroupInfo(JobGroupUtils.java:59)
+            at app//org.apache.iceberg.spark.JobGroupUtils.withJobGroupInfo(JobGroupUtils.java:51)
+            at app//org.apache.iceberg.spark.actions.BaseSparkAction.withJobGroupInfo(BaseSparkAction.java:130)
+            at app//org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.rewriteFiles(RewriteDataFilesSparkAction.java:216)
+            at app//org.apache.iceberg.spark.actions.RewriteDataFilesSparkAction.lambda$doExecute$2(RewriteDataFilesSparkAction.java:310)
+            at app//org.apache.iceberg.util.Tasks$Builder.runTaskWithRetry(Tasks.java:413)
+            at app//org.apache.iceberg.util.Tasks$Builder$1.run(Tasks.java:315)
+            at java.base@17.0.18/java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:539)
+            at java.base@17.0.18/java.util.concurrent.FutureTask.run(FutureTask.java:264)
+            at java.base@17.0.18/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+            at java.base@17.0.18/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+            at java.base@17.0.18/java.lang.Thread.run(Thread.java:840)
+
+[shutdown-hook-0] INFO org.apache.spark.util.ShutdownHookManager - Shutdown hook called
+[shutdown-hook-0] INFO org.apache.spark.util.ShutdownHookManager - Deleting directory /tmp/spark-ff8f1a46-bea9-4969-a6ea-43d39d59dc58
+[shutdown-hook-0] INFO org.apache.spark.util.ShutdownHookManager - Deleting directory /home/chris/work/iceberg/spark/v4.0/spark/artifacts/spark-cab1b740-2657-4570-9090-f0b8789d4de7
+
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:test
+
+45 tests completed, 1 failed, 2 skipped
+
+> Task :iceberg-spark:iceberg-spark-4.0_2.13:test FAILED
+
+[Incubating] Problems report is available at: file:///home/chris/work/iceberg/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':iceberg-spark:iceberg-spark-4.0_2.13:test'.
+> There were failing tests. See the report at: file:///home/chris/work/iceberg/spark/v4.0/spark/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 1m 45s
+42 actionable tasks: 6 executed, 36 up-to-date
+## RESULT: FAIL (see above)
+
+============================================================
+## OVERALL: FAIL (at least one command had failures)
+# Run finished: 2026-05-13T10:46:36-07:00
+
+============================================================
+## Triage of remaining failures (post-hoc, 2026-05-13)
+============================================================
+The only failing test across all four commands is
+`TestRewritePositionDeleteFilesAction.testRemoveDanglingDVsAfterCompaction`
+which fires in both iceberg-spark-3.5_2.12 and iceberg-spark-4.0_2.13 with
+NoSuchTableException ([TABLE_OR_VIEW_NOT_FOUND]). The stack lands in
+SparkBinPackFileRewriteRunner.doRewrite() at the initial DataFrameReader.load(),
+i.e., upstream of any compaction-map / remap code path touched in this
+engagement. Verified by re-running with this engagement's four production
+changes stashed (RewriteDataFilesCommitManager + Spark 3.5/4.0 commit manager
+addRun-with-targetFile fix, and CompactionConflictDetector copy-on-retain fix):
+the same failure reproduces. Tracked in KNOWN_FAILURES.md as a pre-existing
+Spark catalog-resolution issue unrelated to this engagement.
+
+All other *Compaction* and *Remapping* tests pass.

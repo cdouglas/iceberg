@@ -232,7 +232,11 @@ public class CompactionConflictDetector {
       for (ManifestEntry<DeleteFile> entry : reader.entries()) {
         // Only check ADDED entries (not EXISTING or DELETED)
         if (entry.status() == ManifestEntry.Status.ADDED) {
-          DeleteFile deleteFile = entry.file();
+          // ManifestReader.entries() reuses the same ManifestEntry instance (and therefore the
+          // same DeleteFile instance) across iterations to avoid per-row allocations. Copy
+          // before retaining so the elements we add to fileScopedConflicts / multiFileDeletes
+          // don't all collapse to the last-read file.
+          DeleteFile deleteFile = entry.file().copy(false);
           String referencedFile = getReferencedDataFile(deleteFile);
 
           if (referencedFile != null) {
