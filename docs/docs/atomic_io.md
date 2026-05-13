@@ -87,27 +87,44 @@ public interface AtomicOutputFile extends OutputFile {
 
 ### GCSFileIO
 
-Implements `SupportsAtomicOperations` using GCS generation numbers.
+Implements `SupportsAtomicOperations` using GCS generation numbers, with a separate stage-and-move path for zonal (Rapid Storage) buckets. `supportsAppend()` returns `false` — GCS objects are immutable, so APPEND has no honest implementation and the catalog format coerces its commit policy to CAS-only on this backend.
 
 ```java
 public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
     @Override
     public AtomicOutputFile newOutputFile(InputFile replace) {
         GCSInputFile gcsInputFile = (GCSInputFile) replace;
-        return GCSOutputFile.fromBlobId(
-            gcsInputFile.blobId(), storage, gcpProperties, metrics);
+        PrefixedStorage storage = clientForStoragePath(replace.location());
+        BlobId pinnedId = gcsInputFile.pinnedBlobId();
+        GCSRapidStageAndMove zonalWriter = null;
+        if (storage.isZonalBucket(gcsInputFile.blobId().getBucket())) {
+            zonalWriter = new GCSRapidStageAndMove(
+                storage.grpcStorage(), storage.gcpProperties(), metrics);
+        }
+        return GCSOutputFile.replacing(
+            gcsInputFile.blobId(), pinnedId, storage.storage(),
+            storage.gcpProperties(), metrics, zonalWriter);
+    }
+
+    @Override
+    public boolean supportsAppend() {
+        return false;
     }
 }
 ```
 
 ### GCSOutputFile
 
-Uses `BlobWriteOption.generationMatch()` for atomic writes:
+`prepare()` rejects `Strategy.APPEND` outright. `writeAtomic()` branches on bucket type:
 
 ```java
 class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
     @Override
     public CAS prepare(Supplier<InputStream> source, Strategy howto) throws IOException {
+        Preconditions.checkArgument(
+            howto == Strategy.CAS,
+            "GCS does not support append-mode atomic writes; use Strategy.CAS (got %s)",
+            howto);
         GCSChecksum checksum = new GCSChecksum();
         try (InputStream in = source.get();
              FileChecksumOutputStream chk = new FileChecksumOutputStream(
@@ -119,20 +136,24 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
     @Override
     public InputFile writeAtomic(CAS token, Supplier<InputStream> source) throws IOException {
-        // Uses GCSAtomicOutputStream with generation match precondition
-        try (GCSAtomicOutputStream dest = new GCSAtomicOutputStream(
-                storage(), blobId(), gcpProperties(), metrics(), token, result::set)) {
-            ByteStreams.copy(source.get(), dest);
+        if (zonalWriter != null) {
+            // Rapid/zonal: write to UUID temp via appendable upload, then moveBlob
+            // with source+target generation preconditions. See atomic_io_gcs_rapid.md.
+            byte[] payload = ByteStreams.toByteArray(source.get());
+            return zonalWriter.writeAtomic(
+                blobId(), pinnedSnapshot, token.contentHeaderString(), payload);
         }
-        return result[0];
+        // Standard buckets: blobWriteSession with generationMatch precondition.
+        ...
     }
 }
 ```
 
 ### GCS Preconditions
 
-- **CAS**: `BlobWriteOption.generationMatch(expectedGeneration)` - fails with 412 if generation changed
-- **APPEND**: Not directly supported; emulated with generation match
+- **Standard buckets, CAS**: `BlobWriteOption.generationMatch(expectedGeneration)` — fails with 412 if generation changed
+- **Rapid/zonal buckets, CAS**: stage-and-move via `Storage.moveBlob` with source and target generation preconditions (see [atomic_io_gcs_rapid.md](atomic_io_gcs_rapid.md))
+- **APPEND**: Rejected at `prepare()` with `IllegalArgumentException`. GCS objects are immutable.
 
 ## S3 Implementation
 
@@ -145,8 +166,17 @@ public class S3FileIO implements CredentialSupplier, DelegateFileIO,
         SupportsAtomicOperations, SupportsRecoveryOperations {
     @Override
     public AtomicOutputFile newOutputFile(InputFile replace) {
-        S3InputFile s3Input = (S3InputFile) replace;
-        return S3OutputFile.fromLocation(location, client, metrics, s3Input.etag());
+        String path = replace.location();
+        if (replace instanceof S3InputFile) {
+            // A null etag means the object did not exist when pinned; that translates
+            // to ifNoneMatch=* on commit so a stale "doesn't exist" writer cannot
+            // silently overwrite the winner of a create race.
+            String etag = ((S3InputFile) replace).etag();
+            boolean assertAbsent = etag == null;
+            return S3OutputFile.fromLocation(
+                path, clientForStoragePath(path), metrics, etag, assertAbsent);
+        }
+        return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics);
     }
 }
 ```
@@ -216,10 +246,14 @@ Implements `SupportsAtomicOperations` using Azure DataLake ETags.
 public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
     @Override
     public AtomicOutputFile newOutputFile(InputFile replace) {
-        ADLSInputFile adlsInput = (ADLSInputFile) replace;
-        DataLakeRequestConditions conditions = adlsInput.conditions();
-        return new ADLSOutputFile(path, fileClient, azureProperties,
-            adlsInput.getLength(), conditions, metrics);
+        String path = replace.location();
+        if (replace instanceof ADLSInputFile) {
+            DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
+            long objLength = replace.exists() ? replace.getLength() : -1L;
+            return new ADLSOutputFile(
+                path, fileClient(path), azureProperties, objLength, conditions, metrics);
+        }
+        return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics);
     }
 }
 ```
