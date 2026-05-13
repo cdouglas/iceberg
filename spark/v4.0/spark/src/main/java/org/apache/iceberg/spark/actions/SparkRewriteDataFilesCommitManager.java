@@ -339,7 +339,12 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
               builder.addFileMapping(mapping.sourceFile(), mapping.targetFile());
 
           for (RewriteFileGroup.FilePositionMapping.Run run : mapping.runs()) {
-            fileMappingBuilder.addRun(run.sourceOffset(), run.targetOffset(), run.length());
+            // Propagate the per-run target file so multi-target compactions (source rows
+            // spanning multiple output files due to target-size rolls) remap to the correct
+            // target file. Without this, every run silently uses the FileMapping's default
+            // target and the remapped positions point at rows in the wrong file.
+            fileMappingBuilder.addRun(
+                run.sourceOffset(), run.targetOffset(), run.length(), run.targetFile());
           }
         }
       } else {

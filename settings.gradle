@@ -46,6 +46,7 @@ include 'mr'
 
 // Benchmark modules (standalone, not part of release)
 include 'benchmark:remapping-microbenchmark'
+include 'benchmark:compaction-baseline'
 
 project(':bom').name = 'iceberg-bom'
 project(':api').name = 'iceberg-api'
