@@ -30,6 +30,8 @@ import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.ManifestFiles;
+import org.apache.iceberg.ManifestReader;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Snapshot;
@@ -45,6 +47,7 @@ import org.apache.iceberg.io.DeleteWriteResult;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
@@ -269,10 +272,19 @@ public final class WarehouseBuilder {
     table.refresh();
     snapshotIds.add(table.currentSnapshot().snapshotId());
 
-    // Compaction absorbed every per-snapshot DV. Drop the cache so the late-tx writer doesn't
-    // try to merge the now-orphan pre-compaction DV files (the metadata still points at on-disk
-    // files even though they're no longer referenced by the current snapshot).
-    currentDvByDataFile.clear();
+    // Repopulate the DV-by-data-file cache from the post-compaction snapshot rather than
+    // clearing it unconditionally.
+    //
+    // The previous implementation cleared the cache on the assumption that compaction absorbs
+    // every chain DV. That's not generally true: SizeBasedFileRewritePlanner is a per-file
+    // decision — files already at or under TARGET_FILE_SIZE_BYTES get left alone, and any DV
+    // attached to them survives compaction in the live snapshot.
+    //
+    // When the cache disagreed with the snapshot, the late-tx merger (mergingDvLoader) returned
+    // null for those still-live DVs, and the late-tx writer emitted a brand-new DV against the
+    // same data file — producing two live DVs per file and tripping V3's "one DV per file"
+    // invariant at the next planFiles. Fuzz seeds 59 and 101 reproduced this exactly.
+    refreshDvCacheFromSnapshot(table);
 
     String mapPath = locateCompactionMap(table);
     if (mapPath == null) {
@@ -338,6 +350,36 @@ public final class WarehouseBuilder {
       }
       return loader.loadPositionDeletes(Lists.newArrayList(existing), path);
     };
+  }
+
+  /**
+   * Reset {@link #currentDvByDataFile} to mirror the table's current snapshot. Used after
+   * compaction, which may absorb some chain DVs (the common case) but leaves others alone when
+   * the planner decides the underlying data file is already at target size. Walking the live
+   * delete manifests is the only reliable way to know which DVs actually survived.
+   */
+  private void refreshDvCacheFromSnapshot(Table table) {
+    currentDvByDataFile.clear();
+    Snapshot snapshot = table.currentSnapshot();
+    if (snapshot == null) {
+      return;
+    }
+    for (ManifestFile manifest : snapshot.deleteManifests(table.io())) {
+      try (ManifestReader<DeleteFile> reader =
+          ManifestFiles.readDeleteManifest(manifest, table.io(), null)) {
+        // ManifestReader.iterator() is the public read path that yields only LIVE delete files
+        // (no need to filter on entry.status() ourselves). The reader reuses one DeleteFile
+        // instance across iterations to amortize allocations, so we must copy before retaining.
+        for (DeleteFile deleteFile : reader) {
+          if (ContentFileUtil.isDV(deleteFile) && deleteFile.referencedDataFile() != null) {
+            currentDvByDataFile.put(deleteFile.referencedDataFile(), deleteFile.copy(false));
+          }
+        }
+      } catch (IOException e) {
+        throw new RuntimeException(
+            "Failed to read delete manifest " + manifest.path(), e);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
