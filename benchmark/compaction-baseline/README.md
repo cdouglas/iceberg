@@ -88,6 +88,44 @@ soundness bar.
 spec's S3 flow, fetch the tar with `aws s3 cp s3://.../states/<cell>.tar /tmp/` before invoking
 the runner.
 
+## Docker image (FuzzMain)
+
+A self-contained image for the fuzz harness. Build from the **repo root** (the Dockerfile
+needs `gradlew` and the full multi-module source tree, so the build context cannot be the
+module directory):
+
+```bash
+cd <iceberg-repo-root>
+docker build -f benchmark/compaction-baseline/Dockerfile -t cmpmap-fuzz:latest .
+```
+
+Notes:
+- BuildKit (default in Docker 23+) picks up `benchmark/compaction-baseline/Dockerfile.dockerignore`
+  to override the repo-root `.dockerignore` (which is tuned for an iceberg-core-only JMH image
+  and would exclude `spark/`, `data/`, `parquet/` — modules this image needs). If your client
+  is older and the build pulls in the full repo (multi-GB context), enable BuildKit explicitly:
+  `DOCKER_BUILDKIT=1 docker build ...`.
+- The Dockerfile injects placeholder `version.txt` and `iceberg-build.properties` so gradle
+  succeeds without `.git/` in the build context.
+- Build time: ~4 minutes on a workstation, ~310 MB final image (a shaded jar that bundles Spark
+  3.5.6 + Iceberg + all transitive dependencies).
+
+Run, mounting an output directory:
+
+```bash
+mkdir -p /tmp/fuzz-out
+docker run --rm -v /tmp/fuzz-out:/out cmpmap-fuzz:latest \
+  --seed-start 0 --seed-count 100 --workers 4 --output /out
+```
+
+The image's `ENTRYPOINT` is `FuzzMain` with all the Spark-3.5-on-Java-17 `--add-opens` flags
+baked in — additional `docker run` args become CLI args to FuzzMain. The output directory
+holds `summary.json`, `seed-N.ok.json` per passing seed, and `seed-N.fail.json` +
+`seed-N.warehouse.tar` per failing seed.
+
+The image is intentionally minimal; the perf benchmark (`RunMain`, S3-backed) is invoked
+outside Docker.
+
 ## Run the fuzz harness (Phase 5, M1)
 
 `FuzzMain` verifies confluence on randomized workloads:

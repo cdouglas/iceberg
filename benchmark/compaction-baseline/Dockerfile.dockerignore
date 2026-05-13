@@ -1,0 +1,47 @@
+# Per-Dockerfile ignore file for the compaction-baseline FuzzMain image.
+#
+# BuildKit prefers <Dockerfile>.dockerignore over the repo-root .dockerignore when the
+# Dockerfile is passed via `-f`. The root .dockerignore is JMH-image-specific (excludes spark/,
+# data/, parquet/, etc.) and would break this build, which needs those modules.
+
+# VCS and IDE noise — never needed for the build.
+.git/
+.gitignore
+.gitattributes
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# Local build outputs — regenerated inside the image.
+**/build/
+**/target/
+**/*.class
+**/.gradle/
+
+# Python / venv noise from other benchmark modules.
+**/__pycache__/
+**/*.pyc
+**/venv/
+
+# Restricted-permission and big-binary subtrees in benchmark/cloud-runner/.
+# Without these, Docker's context loader fails on legacy_credentials/ with "permission denied".
+benchmark/cloud-runner/container/output/
+benchmark/cloud-runner/**/*.tar
+benchmark/cloud-runner/**/*.tar.gz
+
+# Prior benchmark result blobs — large and not needed for the image build.
+benchmark/remapping-optimization/results_*.txt
+benchmark/remapping-optimization/results_*.csv
+benchmark/remapping-optimization/results_*.json
+benchmark/remapping-optimization/*.png
+benchmark/remapping-optimization/*.log
+
+# Generated artifacts in the working tree (not commits).
+compaction_maps.pdf
+fig.md
+
+# OS files.
+.DS_Store
+Thumbs.db
