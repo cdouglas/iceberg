@@ -23,8 +23,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.File;
 import java.io.IOException;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileContent;
+import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.ManifestFiles;
+import org.apache.iceberg.ManifestReader;
+import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.hadoop.HadoopCatalog;
+import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -67,12 +75,16 @@ class TestWarehouseBuilder {
             .config("spark.sql.catalog.default_iceberg", "org.apache.iceberg.spark.SparkCatalog")
             .config("spark.sql.catalog.default_iceberg.type", "hadoop")
             .config("spark.sql.catalog.default_iceberg.warehouse", "/tmp/compaction-baseline-tests")
+            // default_cache_iceberg backs SparkTableCache lookups for groupId-keyed
+            // PositionDeletes scans (used by SparkCompactionConflictResolver). It MUST be
+            // SparkCachedTableCatalog, not SparkCatalog — registering SparkCatalog here causes
+            // IcebergSource to route the groupId path through the file catalog, which then
+            // raises NoSuchTableException for "<uuid>#rewrite". IcebergSource auto-installs
+            // SparkCachedTableCatalog if the conf is absent, but explicit is safer when other
+            // tests in the same JVM may have already touched the SparkSession.
             .config(
-                "spark.sql.catalog.default_cache_iceberg", "org.apache.iceberg.spark.SparkCatalog")
-            .config("spark.sql.catalog.default_cache_iceberg.type", "hadoop")
-            .config(
-                "spark.sql.catalog.default_cache_iceberg.warehouse",
-                "/tmp/compaction-baseline-tests-cache")
+                "spark.sql.catalog.default_cache_iceberg",
+                "org.apache.iceberg.spark.SparkCachedTableCatalog")
             .getOrCreate();
   }
 
@@ -138,17 +150,17 @@ class TestWarehouseBuilder {
   /**
    * Regression test for the bug behind fuzz failures seed-59 and seed-101.
    *
-   * <p>The bug: {@link WarehouseBuilder#runCompactionAndCaptureMap} used to unconditionally
-   * {@code clear()} {@code currentDvByDataFile} on the assumption that compaction absorbs every
-   * chain DV. That assumption breaks when the bin-packer leaves a file alone: any chain DV
-   * attached to a skipped file survives, the stale empty cache fools the late-tx merger into
-   * emitting a brand-new DV instead of merging, and the snapshot ends up with two live DVs for
-   * one data file. The next planFiles trips {@code Can't index multiple DVs for ...}.
+   * <p>The bug: {@link WarehouseBuilder#runCompactionAndCaptureMap} used to unconditionally {@code
+   * clear()} {@code currentDvByDataFile} on the assumption that compaction absorbs every chain DV.
+   * That assumption breaks when the bin-packer leaves a file alone: any chain DV attached to a
+   * skipped file survives, the stale empty cache fools the late-tx merger into emitting a brand-new
+   * DV instead of merging, and the snapshot ends up with two live DVs for one data file. The next
+   * planFiles trips {@code Can't index multiple DVs for ...}.
    *
    * <p>This test uses {@link FuzzScenario#forSeed} with the exact two seeds the harness produced
-   * fail dumps for — they are deterministic, reproduce the bug shape, and run in tens of
-   * seconds each. With the fix applied, both seeds complete successfully and produce matching
-   * reference / treatment row hashes (the confluence property the harness is testing).
+   * fail dumps for — they are deterministic, reproduce the bug shape, and run in tens of seconds
+   * each. With the fix applied, both seeds complete successfully and produce matching reference /
+   * treatment row hashes (the confluence property the harness is testing).
    *
    * <p>Without the fix, {@code FuzzRunner.run} throws {@code ValidationException: Can't index
    * multiple DVs for ...} during the post-commit hash computation — which is what produced the
@@ -169,11 +181,11 @@ class TestWarehouseBuilder {
    *
    * <p>The hypothesis: when Spark's {@code SizeBasedFileRewritePlanner} decides a file is already
    * at target size (within {@code [0.75·target, 1.80·target]}, the "good" range), it leaves the
-   * file alone. Any chain DV attached to a skipped file survives the compaction. The pre-fix
-   * {@code WarehouseBuilder.runCompactionAndCaptureMap} cleared {@code currentDvByDataFile}
-   * unconditionally, leaving the cache empty while the snapshot still had live DVs — so the
-   * next late-tx merger saw "no existing DV", wrote a brand-new DV, and produced two live DVs
-   * for one data file.
+   * file alone. Any chain DV attached to a skipped file survives the compaction. The pre-fix {@code
+   * WarehouseBuilder.runCompactionAndCaptureMap} cleared {@code currentDvByDataFile}
+   * unconditionally, leaving the cache empty while the snapshot still had live DVs — so the next
+   * late-tx merger saw "no existing DV", wrote a brand-new DV, and produced two live DVs for one
+   * data file.
    *
    * <p>This test exercises that hypothesis directly:
    *
@@ -181,8 +193,8 @@ class TestWarehouseBuilder {
    *   <li>Build S_0 with files sized inside the "good" range so the planner provably skips them.
    *   <li>Add chain snapshots whose scatter-deletes land on those files.
    *   <li>Run compaction with the matching target size.
-   *   <li>Independently witness via the table API that the snapshot has live DVs on
-   *       not-rewritten files.
+   *   <li>Independently witness via the table API that the snapshot has live DVs on not-rewritten
+   *       files.
    *   <li>Assert {@code currentDvByDataFile} matches those live DVs exactly.
    * </ol>
    *
@@ -289,8 +301,7 @@ class TestWarehouseBuilder {
                 + "hash(compact(state ∪ tx)). Pre-fix this seed died with ValidationException "
                 + "during hash because compaction left some chain DVs alive and the late-tx "
                 + "merger then committed a second DV against the same data file.",
-            seed,
-            scenario.describe())
+            seed, scenario.describe())
         .isEqualTo(outcome.treatmentHash());
   }
 
@@ -302,8 +313,8 @@ class TestWarehouseBuilder {
 
   /**
    * Config matching the harness's pre-adversarial defaults: v3-only, deletion-vector op only,
-   * disjoint slices, 1..2 late-tx ops. Used by seed-pinned regression tests so they reproduce
-   * the original scenario shape rather than the new adversarial expansion.
+   * disjoint slices, 1..2 late-tx ops. Used by seed-pinned regression tests so they reproduce the
+   * original scenario shape rather than the new adversarial expansion.
    */
   private static FuzzConfig legacyHarnessShape() throws IOException {
     File tmp = File.createTempFile("legacy-fuzz-config", ".json");
@@ -315,5 +326,151 @@ class TestWarehouseBuilder {
             + " \"overlapProbability\": 0.0,"
             + " \"lateTxCount\": {\"min\": 1, \"max\": 2}}");
     return FuzzConfig.load(tmp.toPath());
+  }
+
+  /**
+   * Root-cause test for fuzz seeds 1 and 4 (adversarial smoke 2026-05-14).
+   *
+   * <p>{@link WorkloadCommitter#writePositionDeleteFiles} writes V2 PD files via {@code
+   * GenericAppenderFactory.newPosDeleteWriter}, whose {@code PositionDeleteWriter.toDeleteFile()}
+   * does not populate the {@code referenced_data_file} manifest field. Parquet's default 16-byte
+   * truncation of column statistics makes the {@code file_path} lower/upper bounds straddle the
+   * shared path prefix, so {@code ContentFileUtil.referencedDataFile}'s bounds fallback also
+   * returns null. The net result is that every V2 PD file the harness writes is mis-classified by
+   * {@link org.apache.iceberg.CompactionConflictDetector} as a PARTITION-granularity (multi-file)
+   * PD — and the harness's own short-circuit in {@code FuzzRunner.buildTreatment} (which only
+   * checks the file-scoped bucket) then skips the resolver entirely. The row-replacement op's
+   * deletes never get remapped onto the compacted target files.
+   *
+   * <p>The fix sets {@code withReferencedDataFile(...)} on the {@code DeleteFile} after the writer
+   * closes — recovering file-scope classification without touching upstream's writer.
+   *
+   * <p>This test runs only the chain (no spark, no compaction) and walks the resulting delete
+   * manifest. With the fix: every V2 PD file is file-scoped. Without the fix: every V2 PD file has
+   * {@code referencedDataFile() == null} and {@code ContentFileUtil.referencedDataFile} also
+   * returns null because the truncated bounds don't match.
+   */
+  @Test
+  void v2PositionDeleteFilesFromChainAreFileScoped() throws IOException {
+    HadoopCatalog catalog = newCatalog("v2-pd-scope");
+    BuildConfig config =
+        BuildConfig.builder()
+            .seed(1L)
+            .formatVersion(2)
+            .s0Rows(2_000L)
+            .snapshotChainLength(2)
+            .perSnapshotRows(200L)
+            .perSnapshotDeletes(8)
+            .lateTxDeletes(0)
+            .lateTxRunLength(1)
+            .lateTxFileFanout(0)
+            .rowsPerFile(500)
+            .build();
+    WarehouseBuilder builder =
+        new WarehouseBuilder(catalog, TableIdentifier.of("db", "v2_pd_scope"), config);
+    Table table = builder.createTable(true /* compactionMapEnabled */);
+    builder.buildSnapshotChain(table);
+
+    Snapshot current = table.currentSnapshot();
+    int pdFilesSeen = 0;
+    for (ManifestFile manifest : current.deleteManifests(table.io())) {
+      try (ManifestReader<DeleteFile> reader =
+          ManifestFiles.readDeleteManifest(manifest, table.io(), null)) {
+        for (DeleteFile df : reader) {
+          if (df.content() != FileContent.POSITION_DELETES) {
+            continue;
+          }
+          if (ContentFileUtil.isDV(df)) {
+            continue;
+          }
+          pdFilesSeen++;
+          assertThat(df.referencedDataFile())
+              .as(
+                  "V2 PD file %s must be tagged with referenced_data_file so the conflict "
+                      + "detector classifies it as file-scoped — see fuzz seed-1 / seed-4 root "
+                      + "cause notes",
+                  df.location())
+              .isNotNull();
+          assertThat(ContentFileUtil.referencedDataFile(df))
+              .as(
+                  "ContentFileUtil.referencedDataFile must resolve from referenced_data_file "
+                      + "rather than the truncated file_path bounds for V2 PD %s",
+                  df.location())
+              .isNotNull();
+        }
+      }
+    }
+    assertThat(pdFilesSeen)
+        .as("expected the V2 chain to produce at least one PD file under this microConfig")
+        .isGreaterThan(0);
+  }
+
+  /**
+   * Confluence regression for the adversarial smoke run of 2026-05-14.
+   *
+   * <p>Seed 1 exercises the V2-only row-replacement bug (Bug 1): the late-tx {@code
+   * RowReplacementOp} writes a V2 PD file that the pre-fix harness emits without {@code
+   * referenced_data_file} metadata. {@code CompactionConflictDetector} routes it into the
+   * multi-file bucket; {@code FuzzRunner.buildTreatment}'s pre-fix short-circuit (checking only
+   * file-scoped conflicts) skips the resolver; the row-replacement's 12 deletes never reach the
+   * compacted output. Treatment ends up with exactly {@code deletesPerOp} more rows than reference.
+   */
+  @Test
+  void fuzzSeed1IsReproducible() throws IOException {
+    runAdversarialFuzzSeedAndAssertConfluence(1L);
+  }
+
+  /**
+   * Confluence regression for the adversarial smoke run of 2026-05-14.
+   *
+   * <p>Seed 2 exercises the V2_THEN_UPGRADE_TO_V3 bug (Bug 2): chain V2 PD files attached to a data
+   * file are silently superseded by any subsequent V3 DV against the same file (Iceberg's "DV is
+   * the sole source of position deletes" planning rule — {@code
+   * TestRowDelta.testManifestMergingAfterUpgradeToV3}). The pre-fix harness wrote the late-tx DV
+   * without absorbing the chain PD content, so the reference path (which compacts AFTER the DV is
+   * written) dropped the chain deletes entirely while the treatment path (which compacts BEFORE the
+   * DV is written) honoured them. The divergence is {@code chain * perSnapshotDeletes} rows.
+   */
+  @Test
+  void fuzzSeed2IsReproducible() throws IOException {
+    runAdversarialFuzzSeedAndAssertConfluence(2L);
+  }
+
+  /**
+   * Confluence regression for the adversarial smoke run of 2026-05-14.
+   *
+   * <p>Seed 4 is the multi-row-replacement variant of Bug 1: two row-replacement ops in the late-tx
+   * (deletesPerOp 7 and 8) plus an equality delete, on a V2-only table. Same root cause as seed 1 —
+   * included separately because it stresses the per-op cumulative behaviour and provides a second
+   * deterministic witness in case seed 1's shape ever regresses out of the adversarial config's
+   * default frequencies.
+   */
+  @Test
+  void fuzzSeed4IsReproducible() throws IOException {
+    runAdversarialFuzzSeedAndAssertConfluence(4L);
+  }
+
+  private void runAdversarialFuzzSeedAndAssertConfluence(long seed) throws IOException {
+    // Use FuzzConfig.defaults() directly — these seeds were captured from the adversarial smoke
+    // run, where the format/op/overlap distributions are the loaded-by-default mix.
+    FuzzConfig cfg = FuzzConfig.defaults();
+    FuzzScenario scenario = FuzzScenario.forSeed(seed, cfg);
+    File workspace = new File(warehouseDir, "adversarial-fuzz-seed-" + seed);
+    if (!workspace.mkdirs() && !workspace.isDirectory()) {
+      throw new IOException("Could not create fuzz workspace at " + workspace);
+    }
+    FuzzRunner runner = new FuzzRunner(spark);
+    FuzzRunner.Outcome outcome = runner.run(scenario, workspace);
+    assertThat(outcome.referenceRows())
+        .as(
+            "seed %d (FuzzScenario: %s): reference and treatment must agree on visible row count",
+            seed, scenario.describe())
+        .isEqualTo(outcome.treatmentRows());
+    assertThat(outcome.referenceHash())
+        .as(
+            "seed %d (FuzzScenario: %s): row-multiset hash must match across reference and "
+                + "treatment after applying the same workload",
+            seed, scenario.describe())
+        .isEqualTo(outcome.treatmentHash());
   }
 }

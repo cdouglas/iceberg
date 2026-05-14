@@ -27,6 +27,7 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.FileMetadata;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
@@ -206,7 +207,18 @@ public final class WorkloadCommitter {
       } finally {
         writer.close();
       }
-      outputs.add(writer.toDeleteFile());
+      // PositionDeleteWriter does not populate referencedDataFile, and Parquet's 16-byte
+      // bound truncation makes lower_bound != upper_bound for any realistic data path — so
+      // ContentFileUtil.referencedDataFile falls back to null and CompactionConflictDetector
+      // mis-classifies this file as PARTITION-granularity (multi-file). Set it explicitly so
+      // the detector reports the file-scoped conflict the resolver expects.
+      DeleteFile written = writer.toDeleteFile();
+      DeleteFile fileScoped =
+          FileMetadata.deleteFileBuilder(table.spec())
+              .copy(written)
+              .withReferencedDataFile(dataFilePath)
+              .build();
+      outputs.add(fileScoped);
     }
     return new DeleteWriteResult(outputs);
   }

@@ -31,7 +31,11 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.DeleteConflictInfo;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileContent;
 import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.ManifestFiles;
+import org.apache.iceberg.ManifestReader;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
@@ -51,18 +55,19 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.actions.SparkCompactionConflictResolver;
+import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Executes a {@link FuzzScenario} via both reconciliation paths and returns the resulting row
- * hashes. The fuzz harness drives this with one fresh catalog per seed so concurrent workers
- * cannot collide.
+ * hashes. The fuzz harness drives this with one fresh catalog per seed so concurrent workers cannot
+ * collide.
  *
  * <p>{@code applyLateTx} dispatches on op kind ({@link PositionDeleteOp}, {@link AppendOp}, {@link
- * RowReplacementOp}, {@link EqualityDeleteOp}). The dispatcher also branches on the table's
- * current format version, so a single scenario can run identically across v2-only, v3-only, and
+ * RowReplacementOp}, {@link EqualityDeleteOp}). The dispatcher also branches on the table's current
+ * format version, so a single scenario can run identically across v2-only, v3-only, and
  * v2-then-upgrade-to-v3 tables: the same {@link PositionDeleteOp} writes a V2 PD file before
  * upgrade and a V3 DV after.
  */
@@ -148,8 +153,7 @@ public final class FuzzRunner {
             .option(SizeBasedFileRewritePlanner.TARGET_FILE_SIZE_BYTES, "1048576")
             .execute();
     if (result.rewrittenDataFilesCount() == 0) {
-      throw new IOException(
-          "Reference rewrite produced no output for seed " + scenario.seed());
+      throw new IOException("Reference rewrite produced no output for seed " + scenario.seed());
     }
     table.refresh();
     return CorrectnessCheck.hash(spark, table.location());
@@ -188,7 +192,11 @@ public final class FuzzRunner {
     DeleteConflictInfo conflicts =
         new CompactionConflictDetector(table.io(), base, startingSnapshotId, currentSnapshot)
             .detectConflicts(mapSourceFiles);
-    if (conflicts.conflictingDeleteFiles().isEmpty()) {
+    // Use hasConflicts() rather than conflictingDeleteFiles().isEmpty(): the latter ignores
+    // PARTITION-granularity (multi-file) PD files, which the resolver handles via the
+    // multiFilePositionDeletes() bucket. Skipping the resolver when only multi-file conflicts
+    // exist drops deletes silently.
+    if (!conflicts.hasConflicts()) {
       return CorrectnessCheck.hash(spark, table.location());
     }
 
@@ -196,8 +204,7 @@ public final class FuzzRunner {
     List<DeleteFile> newDeletes = resolver.resolve(map, conflicts);
     List<DeleteFile> commitable = mergePerTargetFile(table, newDeletes);
 
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     commitable.forEach(delta::addDeletes);
     delta.commit();
     return CorrectnessCheck.hash(spark, table.location());
@@ -205,10 +212,10 @@ public final class FuzzRunner {
 
   /**
    * Dispatch a single late-tx op against the table. Concrete writer is selected by the table's
-   * current format version: {@link PositionDeleteOp} writes a DV in v3 and a parquet PD file in
-   * v2; {@link RowReplacementOp} mixes either delete shape into a RowDelta alongside fresh data
-   * rows. {@link AppendOp} and {@link EqualityDeleteOp} are format-invariant in their output
-   * shape but {@link EqualityDeleteOp} is still safe to apply on either format.
+   * current format version: {@link PositionDeleteOp} writes a DV in v3 and a parquet PD file in v2;
+   * {@link RowReplacementOp} mixes either delete shape into a RowDelta alongside fresh data rows.
+   * {@link AppendOp} and {@link EqualityDeleteOp} are format-invariant in their output shape but
+   * {@link EqualityDeleteOp} is still safe to apply on either format.
    */
   private void applyLateTx(
       Table table, List<DataFile> sourceFiles, LateTxOp op, Map<String, DeleteFile> liveDvByPath)
@@ -219,8 +226,7 @@ public final class FuzzRunner {
     } else if (op instanceof AppendOp) {
       applyAppend(table, sourceFiles, (AppendOp) op);
     } else if (op instanceof RowReplacementOp) {
-      applyRowReplacement(
-          table, sourceFiles, (RowReplacementOp) op, liveDvByPath, formatVersion);
+      applyRowReplacement(table, sourceFiles, (RowReplacementOp) op, liveDvByPath, formatVersion);
     } else if (op instanceof EqualityDeleteOp) {
       applyEqualityDelete(table, (EqualityDeleteOp) op);
     } else {
@@ -237,7 +243,10 @@ public final class FuzzRunner {
       throws IOException {
     Map<String, long[]> positions =
         clusteredPositionsForSlice(
-            sourceFiles, op.sliceOffsetFraction(), op.sliceWidthFraction(), op.opSeed(),
+            sourceFiles,
+            op.sliceOffsetFraction(),
+            op.sliceWidthFraction(),
+            op.opSeed(),
             op.deletesPerOp());
     if (positions.isEmpty()) {
       return;
@@ -307,21 +316,14 @@ public final class FuzzRunner {
               table,
               dvFactory,
               positions,
-              path -> {
-                DeleteFile existing = liveDvByPath.get(path);
-                if (existing == null) {
-                  return null;
-                }
-                return loader.loadPositionDeletes(Lists.newArrayList(existing), path);
-              });
+              path -> loadAllExistingPositionDeletes(table, loader, liveDvByPath, path));
     } else {
       OutputFileFactory pdFactory =
           WorkloadCommitter.parquetFileFactory(table, 0, (op.opSeed() & 0xFFFFL) + 2_000_000L);
       deleteResult = WorkloadCommitter.writePositionDeleteFiles(table, pdFactory, positions);
     }
 
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     addedRows.forEach(delta::addRows);
     deleteResult.deleteFiles().forEach(delta::addDeletes);
     if (formatVersion >= 3) {
@@ -332,7 +334,9 @@ public final class FuzzRunner {
 
     sourceFiles.addAll(addedRows);
     if (formatVersion >= 3) {
-      deleteResult.rewrittenDeleteFiles().forEach(df -> liveDvByPath.remove(df.referencedDataFile()));
+      deleteResult
+          .rewrittenDeleteFiles()
+          .forEach(df -> liveDvByPath.remove(df.referencedDataFile()));
       for (DeleteFile newDv : deleteResult.deleteFiles()) {
         liveDvByPath.put(newDv.referencedDataFile(), newDv);
       }
@@ -345,9 +349,13 @@ public final class FuzzRunner {
         WorkloadCommitter.parquetFileFactory(table, 0, (op.opSeed() & 0xFFFFL) + 3_000_000L);
     DeleteFile eqFile =
         WorkloadCommitter.writeEqualityDeleteFile(
-            table, factory, new int[] {EQ_DELETE_FIELD_ID}, eqRowSchema, op.opSeed(), op.rowsPerOp());
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+            table,
+            factory,
+            new int[] {EQ_DELETE_FIELD_ID},
+            eqRowSchema,
+            op.opSeed(),
+            op.rowsPerOp());
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     delta.addDeletes(eqFile);
     delta.commit();
     table.refresh();
@@ -355,9 +363,8 @@ public final class FuzzRunner {
 
   /**
    * Compute per-source-file position arrays for a slice {@code [offset, offset+width)} of {@code
-   * sourceFiles}. Slice bounds are clamped to the available file list; each in-slice file
-   * receives {@code min(deletesPerOp, recordCount)} clustered positions seeded from {@code
-   * opSeed}.
+   * sourceFiles}. Slice bounds are clamped to the available file list; each in-slice file receives
+   * {@code min(deletesPerOp, recordCount)} clustered positions seeded from {@code opSeed}.
    */
   private static Map<String, long[]> clusteredPositionsForSlice(
       List<DataFile> sourceFiles,
@@ -396,22 +403,14 @@ public final class FuzzRunner {
       Table table, Map<String, long[]> positions, long opSeed, Map<String, DeleteFile> liveDvByPath)
       throws IOException {
     DeleteLoader loader = new BaseDeleteLoader(table.io()::newInputFile);
-    OutputFileFactory factory =
-        WorkloadCommitter.puffinFileFactory(table, 0, opSeed & 0xFFFFL);
+    OutputFileFactory factory = WorkloadCommitter.puffinFileFactory(table, 0, opSeed & 0xFFFFL);
     DeleteWriteResult result =
         WorkloadCommitter.writeDeletionVectors(
             table,
             factory,
             positions,
-            path -> {
-              DeleteFile existing = liveDvByPath.get(path);
-              if (existing == null) {
-                return null;
-              }
-              return loader.loadPositionDeletes(Lists.newArrayList(existing), path);
-            });
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+            path -> loadAllExistingPositionDeletes(table, loader, liveDvByPath, path));
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     result.deleteFiles().forEach(delta::addDeletes);
     result.rewrittenDeleteFiles().forEach(delta::removeDeletes);
     delta.commit();
@@ -423,6 +422,59 @@ public final class FuzzRunner {
     }
   }
 
+  /**
+   * Load all position-delete content (both V2 PD files and V3 DVs) currently attached to {@code
+   * dataFilePath} in the table's current snapshot, so a newly-written V3 DV can absorb them.
+   *
+   * <p>V3 planning treats a DV as the sole source of position deletes for its data file; any
+   * pre-upgrade V2 PD file for the same data file is silently superseded by the DV (see {@code
+   * TestRowDelta.testManifestMergingAfterUpgradeToV3} for the upstream contract). Without merging
+   * those positions into the new DV, the chain V2 PD deletes are dropped on the floor. The
+   * in-memory {@code liveDvByPath} cache only knows about DVs the harness itself committed, so
+   * scenarios that upgrade after a V2 chain (e.g. {@link
+   * BuildConfig.FormatMix#V2_THEN_UPGRADE_TO_V3}) need a second pass over the manifest tree.
+   */
+  private static PositionDeleteIndex loadAllExistingPositionDeletes(
+      Table table,
+      DeleteLoader loader,
+      Map<String, DeleteFile> liveDvByPath,
+      CharSequence dataFilePath) {
+    String pathStr = dataFilePath.toString();
+    List<DeleteFile> existing = Lists.newArrayList();
+    DeleteFile dv = liveDvByPath.get(pathStr);
+    if (dv != null) {
+      existing.add(dv);
+    }
+    Snapshot current = table.currentSnapshot();
+    if (current != null) {
+      for (ManifestFile manifest : current.deleteManifests(table.io())) {
+        try (ManifestReader<DeleteFile> reader =
+            ManifestFiles.readDeleteManifest(manifest, table.io(), null)) {
+          // ManifestReader.iterator() iterates LIVE entries (skipping DELETED) and copies each
+          // file, so we don't need package-private ManifestEntry access here.
+          for (DeleteFile df : reader) {
+            if (df.content() != FileContent.POSITION_DELETES) {
+              continue;
+            }
+            if (ContentFileUtil.isDV(df)) {
+              continue; // already handled via liveDvByPath above
+            }
+            String referenced = ContentFileUtil.referencedDataFileLocation(df);
+            if (pathStr.equals(referenced)) {
+              existing.add(df);
+            }
+          }
+        } catch (IOException e) {
+          throw new java.io.UncheckedIOException(e);
+        }
+      }
+    }
+    if (existing.isEmpty()) {
+      return null;
+    }
+    return loader.loadPositionDeletes(existing, pathStr);
+  }
+
   private void writePdFileAndCommit(Table table, Map<String, long[]> positions, long opSeed)
       throws IOException {
     OutputFileFactory factory =
@@ -432,8 +484,7 @@ public final class FuzzRunner {
     if (result.deleteFiles().isEmpty()) {
       return;
     }
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     result.deleteFiles().forEach(delta::addDeletes);
     delta.commit();
     table.refresh();
@@ -441,12 +492,23 @@ public final class FuzzRunner {
 
   private List<DeleteFile> mergePerTargetFile(Table table, List<DeleteFile> dvs)
       throws IOException {
+    // Only DVs need per-target merging — V3 enforces "one DV per data file" and the harness must
+    // collapse multiple remapped DVs targeting the same file before committing. V2 PD files have
+    // no uniqueness invariant, can coexist freely against the same data file, and (when written
+    // by the resolver's PositionDeletesTable Spark write path) often arrive WITHOUT
+    // referenced_data_file populated. Bucketing those by referencedDataFile() collapses them all
+    // under a null key and then crashes BaseDeleteLoader.loadPositionDeletes("...file_path=null")
+    // when the bucket has size > 1. Skip merging for non-DV inputs entirely.
+    List<DeleteFile> merged = Lists.newArrayList();
     Map<String, List<DeleteFile>> groups = new LinkedHashMap<>();
-    for (DeleteFile dv : dvs) {
-      groups.computeIfAbsent(dv.referencedDataFile(), k -> Lists.newArrayList()).add(dv);
+    for (DeleteFile df : dvs) {
+      if (ContentFileUtil.isDV(df)) {
+        groups.computeIfAbsent(df.referencedDataFile(), k -> Lists.newArrayList()).add(df);
+      } else {
+        merged.add(df);
+      }
     }
 
-    List<DeleteFile> merged = Lists.newArrayList();
     DeleteLoader loader = new BaseDeleteLoader(table.io()::newInputFile);
     for (Map.Entry<String, List<DeleteFile>> entry : groups.entrySet()) {
       if (entry.getValue().size() == 1) {
