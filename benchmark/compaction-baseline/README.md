@@ -132,9 +132,27 @@ outside Docker.
 `hash(compact(state) + remap(tx, map)) == hash(compact(state ∪ tx))` for any seeded plan.
 
 ```bash
-# 100 seeds, single worker, default 60 s per-seed timeout
-scripts/fuzz.sh --seed-start 0 --seed-count 100 --workers 1 --output ./fuzz-out
+# 100 seeds, single worker, default 300 s per-seed timeout. With no --seed-start, the
+# harness picks a random anchor and logs it in summary.json so the sweep is reproducible.
+scripts/fuzz.sh --seed-count 100 --workers 1 --output ./fuzz-out
 ```
+
+### Seed selection
+
+The harness tests pseudorandomly-sampled seeds drawn from a `Random` instance, not the
+sequential range `0..seedCount-1`. Adjacent seed values share most of their entropy, so a
+sequential sweep produces highly similar scenario shapes and wastes CPU on near-duplicates;
+pseudorandom sampling spreads coverage across the seed space.
+
+Three modes, in precedence order:
+
+| Mode | Use when | Reproducibility |
+|---|---|---|
+| `--seeds N1,N2,...` | Replaying specific failing seeds (used by `reproduce.sh`). | Deterministic. |
+| `--seed-start <N>` | Reproducing a prior sweep — the anchor logged in its `summary.json`. | Deterministic. |
+| neither | A fresh exploratory sweep. | Anchor is logged in `summary.json.seedAnchor` (with `seedAnchorRandom=true`); rerun with `--seed-start <that>` to reproduce. |
+
+`--seeds` and `--seed-start` are mutually exclusive.
 
 ### Adversarial config (--config)
 
@@ -143,7 +161,7 @@ kinds (position delete, append, row replacement, equality delete), probabilistic
 (p=0.5), and 1..8 late-tx ops per seed. Pass `--config <path.json>` to override any of these:
 
 ```bash
-scripts/fuzz.sh --seed-start 0 --seed-count 100 --config my-config.json --output ./fuzz-out
+scripts/fuzz.sh --seed-count 100 --config my-config.json --output ./fuzz-out
 ```
 
 Sample config (omit any field to fall back to its default):
@@ -174,16 +192,41 @@ seeds 59 and 101 were originally captured), use:
 }
 ```
 
+### Concurrent execution
+
+`--workers N` runs up to N seeds concurrently in one Spark JVM (driver mode `local[N]`). Per-seed
+wall time scales roughly with N because seeds contend for the same task slots, so the default
+per-seed timeout is 300 s — tight enough to flush hangs, loose enough that a 10–15 s solo seed
+doesn't get aborted under 8-way contention. Override with `--timeout-seconds`.
+
 Output:
-- `summary.json` — `{seedsRun, seedsFailed, failedSeedList, totalElapsedMs, …}`.
-- `seed-N.ok.json` — one per passing seed: hashes, ops count, row counts, elapsed ms.
-- `seed-N.fail.json` + `seed-N.warehouse.tar` — one per failing seed: the operation sequence,
+- `summary.json` — `{seedAnchor, seedAnchorRandom, seedsRun, seedsFailed, failedSeedList,
+  totalElapsedMs, …}`. When `seedAnchorRandom=true`, `seedAnchor` is the value the harness drew;
+  passing it back via `--seed-start <seedAnchor>` reproduces the sweep.
+- `seed-<N>.ok.json` — one per passing seed: hashes, ops count, row counts, elapsed ms. `N` is
+  the actual seed value (can be a large negative or positive `long`).
+- `seed-<N>.fail.json` + `seed-<N>.warehouse.tar` — one per failing seed: the operation sequence,
   both hashes, both row counts, and a tar of both reference and treatment workspaces. Either
   the tarball OR the seed alone is enough to replay (the harness is deterministic).
 
-The pre-handoff bar is **1,000 seeds without unexplained failure**. Any non-confluent seed is
-triaged into `KNOWN_FAILURES.md` per the spec's Failure Protocol — fixes are out of scope for
-the harness engagement.
+The pre-handoff bar is **1,000 seeds without unexplained failure**. The current `cmpmap` branch
+clears a **2,048-seed sweep** (anchor=0, `default-cmpmap-seeds-0..2047`). Any non-confluent seed
+is triaged into `KNOWN_FAILURES.md` per the spec's Failure Protocol.
+
+### Coverage audit
+
+After a green sweep, `analyze_seeds.py` confirms the seeds you drew actually covered the
+workload variants the config intended, not just one corner of the seed space:
+
+```bash
+python3 analyze_seeds.py ./fuzz-out/
+```
+
+It tallies format bucket, op kind, chain length, and late-tx count distributions against
+`FuzzConfig.defaults()`'s expected uniform priors, and prints a format × op-kind matrix so
+under-paired cells get flagged explicitly (rather than hiding inside an apparently-fine
+marginal). Exits non-zero if any expected bucket has zero hits or any matrix cell falls below
+25 % of its expected count — suitable as a CI post-sweep gate.
 
 ## Reproduce a fuzz failure
 
@@ -240,8 +283,10 @@ benchmark/compaction-baseline/
 ├── build.gradle
 ├── Dockerfile                    # FuzzMain container
 ├── README.md                     # this file
+├── TODO.md                       # follow-up coverage extensions (not yet implemented)
 ├── KNOWN_FAILURES.md             # fuzz triage log (Failure Protocol)
-├── analyze.py                    # results parser + plot generator
+├── analyze.py                    # RunMain perf results parser + plot generator
+├── analyze_seeds.py              # fuzz-sweep coverage audit
 ├── scripts/
 │   ├── setup.sh                  # SetupMain wrapper
 │   ├── run.sh                    # RunMain wrapper
@@ -265,14 +310,25 @@ benchmark/compaction-baseline/
     │   ├── BaselineTimedRegion.java
     │   ├── TreatmentTimedRegion.java
     │   ├── CorrectnessCheck.java           # xxhash64 row-multiset hash
-    │   ├── FuzzMain.java                   # Phase 5 — M1 confluence fuzz
+    │   ├── FuzzMain.java                   # Phase 5 — M1 confluence fuzz CLI
+    │   ├── FuzzConfig.java                 # weighted distributions for adversarial mode
     │   ├── FuzzScenario.java               # deterministic plan per seed
-    │   └── FuzzRunner.java                 # both reconciliation paths
+    │   ├── FuzzRunner.java                 # both reconciliation paths
+    │   ├── LateTxOp.java                   # base for the four op kinds
+    │   ├── PositionDeleteOp.java
+    │   ├── AppendOp.java
+    │   ├── RowReplacementOp.java
+    │   └── EqualityDeleteOp.java
     └── test/java/org/apache/iceberg/benchmark/compaction/
         ├── TestWorkloadGeneratorDeterminism.java
         ├── TestWarehouseBuilder.java
+        ├── TestWarehouseBuilderFormatMix.java
         ├── TestTarUtils.java
         ├── TestRunMain.java
+        ├── TestFuzzConfig.java
+        ├── TestFuzzMainArgs.java                # arg parser (--seeds / --seed-start modes)
+        ├── TestFuzzScenarioOpKinds.java
+        ├── TestFuzzScenarioOverlap.java
         ├── TestMultiTransactionRace.java        # M2
         ├── TestConcurrentCompactions.java       # M3
         ├── TestCodePathVerification.java        # M4
@@ -282,19 +338,11 @@ benchmark/compaction-baseline/
 
 ## Bugs caught by this harness
 
-Two correctness bugs in `cmpmap` were caught and fixed during the development of this
-benchmark, both regression-tested in `iceberg-core`:
+`git log -p benchmark/compaction-baseline/KNOWN_FAILURES.md` reconstructs the full history —
+every failure that has lived in that ledger was added with a Resolution paragraph at fix time
+and then deleted in a follow-up commit, so the file itself stays a tidy list of currently-open
+issues while git preserves the bug → fix → regression-test linkage.
 
-1. `RewriteDataFilesCommitManager.buildCompactionMap()` (core + Spark 3.5 / 4.0 overrides) was
-   discarding `RewriteFileGroup.FilePositionMapping.Run.targetFile()` — every multi-target
-   compaction map silently routed all remapped positions through `FileMapping.targetFile`,
-   pointing deletes at the wrong rows. Fixed by passing `run.targetFile()` to the 4-argument
-   `CompactionMapBuilder.FileMappingBuilder.addRun`. See
-   `TestFallbackMapGenerationRemoved.testMultiTargetRunsPreserveTargetFile`.
-
-2. `CompactionConflictDetector.findConflictsInManifest()` was retaining `entry.file()` directly,
-   collapsing N entries to N copies of the last-read `DeleteFile` because `ManifestReader.entries()`
-   reuses one `ManifestEntry` instance across iterations. Fixed by `entry.file().copy(false)`.
-   See `TestCompactionConflictDetectionDV.testDetectorReturnsDistinctEntriesAcrossManifest`.
-
-Both bugs are also documented in `KNOWN_FAILURES.md` (which then notes their fixes landed).
+Possible follow-up coverage extensions (compaction-map chains in the fuzzer, partitioned tables,
+SERIALIZABLE soundness checks, Spark 4.0 CI parity) are listed in [TODO.md](TODO.md) — they are
+not blockers for any spec milestone, just candidates if the fuzzer is invested in further.
