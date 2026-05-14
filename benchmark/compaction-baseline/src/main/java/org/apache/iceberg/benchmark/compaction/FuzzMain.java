@@ -66,7 +66,7 @@ public final class FuzzMain {
   public static void main(String[] argv) throws Exception {
     Args args = Args.parse(argv);
     FuzzConfig config = FuzzConfig.load(args.configPath());
-    SparkSession spark = buildSpark(args.outputDir());
+    SparkSession spark = buildSpark(args.outputDir(), args.workers());
     try {
       runWithSpark(args, config, spark);
     } finally {
@@ -85,26 +85,34 @@ public final class FuzzMain {
         args.configPath(),
         outputDir);
 
-    // The --workers flag controls the executor pool, but Spark itself isn't safely shared by
-    // simultaneous heavy operations in this single-process local mode, so we rely on the pool
-    // to serialize through whatever Spark contention exists. The pool's primary value is
-    // giving us a per-seed Future for clean timeout enforcement.
-    ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, args.workers()));
+    // Run `workers` seeds concurrently. The shared SparkSession is configured with
+    // local[workers] (see buildSpark) so the in-JVM executor has enough task slots to overlap
+    // them. Per-seed timeout is enforced via future.get(timeout) measured from batch
+    // submission: within a batch all `workers` seeds start ~simultaneously (no queueing,
+    // since pool size == batch size), so submission-time ≈ start-time.
+    int workers = Math.max(1, args.workers());
+    ExecutorService pool = Executors.newFixedThreadPool(workers);
     int failures = 0;
     int timeouts = 0;
     List<Long> failedSeeds = Lists.newArrayList();
     long t0 = System.nanoTime();
     try {
-      for (long s = 0; s < args.seedCount(); s++) {
-        long seed = args.seedStart() + s;
-        SeedOutcome outcome =
-            runOneSeed(spark, config, seed, args.timeoutSeconds(), outputDir, pool);
-        if (outcome.kind() == SeedOutcomeKind.FAILED) {
-          failures++;
-          failedSeeds.add(seed);
-        } else if (outcome.kind() == SeedOutcomeKind.TIMEOUT) {
-          timeouts++;
-          failedSeeds.add(seed);
+      for (long s = 0; s < args.seedCount(); s += workers) {
+        int batchCount = (int) Math.min((long) workers, args.seedCount() - s);
+        List<SeedJob> jobs = new ArrayList<>(batchCount);
+        for (int b = 0; b < batchCount; b++) {
+          long seed = args.seedStart() + s + b;
+          jobs.add(submitSeed(spark, config, seed, outputDir, pool));
+        }
+        for (SeedJob job : jobs) {
+          SeedOutcome outcome = collectSeed(job, args.timeoutSeconds(), outputDir);
+          if (outcome.kind() == SeedOutcomeKind.FAILED) {
+            failures++;
+            failedSeeds.add(job.seed);
+          } else if (outcome.kind() == SeedOutcomeKind.TIMEOUT) {
+            timeouts++;
+            failedSeeds.add(job.seed);
+          }
         }
       }
     } finally {
@@ -134,57 +142,87 @@ public final class FuzzMain {
     }
   }
 
-  private static SeedOutcome runOneSeed(
+  private static SeedJob submitSeed(
       SparkSession spark,
       FuzzConfig config,
       long seed,
-      long timeoutSeconds,
       Path outputDir,
       ExecutorService pool) {
     FuzzScenario scenario = FuzzScenario.forSeed(seed, config);
     File workspace = outputDir.resolve("workspace-seed-" + seed).toFile();
     if (!workspace.mkdirs() && !workspace.isDirectory()) {
       LOG.error("failed to create workspace for seed {}", seed);
-      return new SeedOutcome(SeedOutcomeKind.FAILED, "workspace-create-failed");
+      return new SeedJob(seed, scenario, workspace, null, System.nanoTime(),
+          "workspace-create-failed");
     }
     FuzzRunner runner = new FuzzRunner(spark);
-
     long t0 = System.nanoTime();
     Callable<FuzzRunner.Outcome> task = () -> runner.run(scenario, workspace);
     Future<FuzzRunner.Outcome> future = pool.submit(task);
+    return new SeedJob(seed, scenario, workspace, future, t0, null);
+  }
+
+  private static SeedOutcome collectSeed(SeedJob job, long timeoutSeconds, Path outputDir) {
+    if (job.preSubmitError != null) {
+      return new SeedOutcome(SeedOutcomeKind.FAILED, job.preSubmitError);
+    }
     try {
-      FuzzRunner.Outcome outcome = future.get(timeoutSeconds, TimeUnit.SECONDS);
-      long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
+      FuzzRunner.Outcome outcome = job.future.get(timeoutSeconds, TimeUnit.SECONDS);
+      long elapsedMs = (System.nanoTime() - job.t0) / 1_000_000L;
       if (outcome.passed()) {
         try {
-          writeOk(outputDir, seed, scenario, outcome, elapsedMs);
+          writeOk(outputDir, job.seed, job.scenario, outcome, elapsedMs);
         } catch (IOException e) {
-          LOG.warn("failed to write ok record for seed {}", seed, e);
+          LOG.warn("failed to write ok record for seed {}", job.seed, e);
         }
-        deleteRecursive(workspace);
+        deleteRecursive(job.workspace);
         return new SeedOutcome(SeedOutcomeKind.OK, null);
       } else {
-        writeFail(outputDir, seed, scenario, outcome, elapsedMs, null);
+        writeFail(outputDir, job.seed, job.scenario, outcome, elapsedMs, null);
         try {
-          File tarball = outputDir.resolve("seed-" + seed + ".warehouse.tar").toFile();
+          File tarball = outputDir.resolve("seed-" + job.seed + ".warehouse.tar").toFile();
           TarUtils.tarDirectory(
-              workspace.toPath(), tarball.toPath(), "workspace-seed-" + seed);
-          deleteRecursive(workspace);
+              job.workspace.toPath(), tarball.toPath(), "workspace-seed-" + job.seed);
+          deleteRecursive(job.workspace);
         } catch (IOException e) {
-          LOG.warn("failed to tar workspace for failing seed {}", seed, e);
+          LOG.warn("failed to tar workspace for failing seed {}", job.seed, e);
         }
         return new SeedOutcome(SeedOutcomeKind.FAILED, null);
       }
     } catch (TimeoutException e) {
-      future.cancel(true);
-      writeFail(outputDir, seed, scenario, null, timeoutSeconds * 1000, "timeout");
+      job.future.cancel(true);
+      writeFail(outputDir, job.seed, job.scenario, null, timeoutSeconds * 1000, "timeout");
       return new SeedOutcome(SeedOutcomeKind.TIMEOUT, "timeout");
     } catch (ExecutionException e) {
-      writeFail(outputDir, seed, scenario, null, 0, throwableToString(e.getCause()));
+      writeFail(outputDir, job.seed, job.scenario, null, 0, throwableToString(e.getCause()));
       return new SeedOutcome(SeedOutcomeKind.FAILED, e.getMessage());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return new SeedOutcome(SeedOutcomeKind.FAILED, "interrupted");
+    }
+  }
+
+  private static final class SeedJob {
+    final long seed;
+    final FuzzScenario scenario;
+    final File workspace;
+    final Future<FuzzRunner.Outcome> future;
+    final long t0;
+    final String preSubmitError;
+
+    SeedJob(
+        long seed,
+        FuzzScenario scenario,
+        File workspace,
+        Future<FuzzRunner.Outcome> future,
+        long t0,
+        String preSubmitError) {
+      this.seed = seed;
+      this.scenario = scenario;
+      this.workspace = workspace;
+      this.future = future;
+      this.t0 = t0;
+      this.preSubmitError = preSubmitError;
     }
   }
 
@@ -265,9 +303,13 @@ public final class FuzzMain {
     }
   }
 
-  private static SparkSession buildSpark(Path workspaceRoot) {
+  private static SparkSession buildSpark(Path workspaceRoot, int workers) {
+    // One task slot per concurrent seed: each seed runs sequentially internally, so this is
+    // the level of parallelism the harness actually exploits. Cross-seed Spark contention on
+    // the driver is fine — the seeds are small.
+    int slots = Math.max(1, workers);
     return SparkSession.builder()
-        .master("local[2]")
+        .master("local[" + slots + "]")
         .appName("compaction-baseline-fuzz")
         .config("spark.driver.host", "localhost")
         .config("spark.driver.bindAddress", "127.0.0.1")
