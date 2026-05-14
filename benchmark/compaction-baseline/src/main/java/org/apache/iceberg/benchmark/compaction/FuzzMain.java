@@ -31,6 +31,8 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.OptionalLong;
+import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -46,12 +48,29 @@ import org.slf4j.LoggerFactory;
 /**
  * M1 fuzz harness CLI per {@code COMPACT_SPEC.md} §M1.
  *
- * <p>Runs {@code --seed-count} consecutive scenarios starting at {@code --seed-start} and writes
- * one JSON file per seed plus an aggregate {@code summary.json}. Failing seeds get a full
- * operation dump and a warehouse tarball so the failure can be replayed without the harness JAR.
+ * <p>Tests {@code --seed-count} scenarios drawn pseudorandomly from the seed space and writes one
+ * JSON file per seed plus an aggregate {@code summary.json}. Failing seeds get a full operation
+ * dump and a warehouse tarball so the failure can be replayed without the harness JAR.
+ *
+ * <p>Seed selection:
+ *
+ * <ul>
+ *   <li>{@code --seed-start <N>} — anchor the pseudorandom sequence at {@code N}. Same anchor →
+ *       same seed list, so a sweep is reproducible.
+ *   <li>{@code --seeds <N1,N2,...>} — test exactly the listed seeds (used by {@code
+ *       reproduce.sh} to replay a single failure).
+ *   <li>Neither — pick a fresh anchor via {@link java.security.SecureRandom} and log it in {@code
+ *       summary.json} so a follow-up {@code --seed-start <that>} run reproduces this sweep.
+ * </ul>
+ *
+ * <p>Sequential 0..N-1 sweeps are intentionally avoided: neighbouring seeds share most of their
+ * entropy and produce highly similar scenario shapes, so increasing {@code --seed-count} mostly
+ * burns CPU on near-duplicates rather than widening coverage.
  *
  * <pre>
- *   java -jar fuzz.jar --seed-start 0 --seed-count 100 --workers 1 --output ./out
+ *   java -jar fuzz.jar --seed-count 100 --workers 4 --output ./out
+ *   java -jar fuzz.jar --seeds 1369,42 --output ./out          # reproduce specific failures
+ *   java -jar fuzz.jar --seed-start 12345 --seed-count 100 ... # reproduce a prior sweep
  * </pre>
  *
  * <p>Property tested: {@code hash(compact(state) + remap(tx, map)) == hash(compact(state ∪ tx))}.
@@ -81,10 +100,42 @@ public final class FuzzMain {
 
   static void runWithSpark(Args args, FuzzConfig config, SparkSession spark) throws IOException {
     Path outputDir = Files.createDirectories(args.outputDir());
+
+    // Build the list of seeds to test. Three precedence rules:
+    //   1. --seeds <list>      → test exactly those seed values (used by reproduce.sh).
+    //   2. --seed-start <N>    → anchor a pseudorandom sequence at N. Same N → same seeds, so
+    //                            a full sweep stays reproducible.
+    //   3. neither given       → pick a random anchor (logged to summary so a future run with
+    //                            --seed-start <that> reproduces this sweep).
+    // Sequential 0..N exploration is no good for a fuzz sweep: neighbouring seeds share most of
+    // their entropy and produce highly similar scenario shapes, so cranking --seed-count just
+    // wastes CPU on near-duplicates. Pseudorandom sampling spreads coverage across the seed
+    // space.
+    long anchor;
+    long[] testedSeeds;
+    String seedSource;
+    if (args.seeds() != null) {
+      testedSeeds = args.seeds();
+      anchor = 0L; // unused when seeds() is explicit
+      seedSource = "explicit-list(" + testedSeeds.length + ")";
+    } else {
+      anchor =
+          args.seedStart().isPresent() ? args.seedStart().getAsLong() : pickRandomAnchor();
+      Random rng = new Random(anchor);
+      testedSeeds = new long[args.seedCount()];
+      for (int i = 0; i < testedSeeds.length; i++) {
+        testedSeeds[i] = rng.nextLong();
+      }
+      seedSource =
+          args.seedStart().isPresent()
+              ? "anchor=" + anchor + " (specified)"
+              : "anchor=" + anchor + " (random — reproduce with --seed-start " + anchor + ")";
+    }
+
     LOG.info(
-        "fuzz harness: seedStart={} seedCount={} workers={} timeoutS={} configPath={} output={}",
-        args.seedStart(),
-        args.seedCount(),
+        "fuzz harness: seedSource={} seedCount={} workers={} timeoutS={} configPath={} output={}",
+        seedSource,
+        testedSeeds.length,
         args.workers(),
         args.timeoutSeconds(),
         args.configPath(),
@@ -102,11 +153,11 @@ public final class FuzzMain {
     List<Long> failedSeeds = Lists.newArrayList();
     long t0 = System.nanoTime();
     try {
-      for (long s = 0; s < args.seedCount(); s += workers) {
-        int batchCount = (int) Math.min((long) workers, args.seedCount() - s);
+      for (int s = 0; s < testedSeeds.length; s += workers) {
+        int batchCount = Math.min(workers, testedSeeds.length - s);
         List<SeedJob> jobs = new ArrayList<>(batchCount);
         for (int b = 0; b < batchCount; b++) {
-          long seed = args.seedStart() + s + b;
+          long seed = testedSeeds[s + b];
           jobs.add(submitSeed(spark, config, seed, outputDir, pool));
         }
         for (SeedJob job : jobs) {
@@ -133,8 +184,9 @@ public final class FuzzMain {
     long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
 
     Summary summary = new Summary();
-    summary.seedStart = args.seedStart();
-    summary.seedsRun = args.seedCount();
+    summary.seedAnchor = args.seeds() == null ? anchor : null;
+    summary.seedAnchorRandom = args.seeds() == null && !args.seedStart().isPresent();
+    summary.seedsRun = testedSeeds.length;
     summary.seedsFailed = failures;
     summary.seedsTimedOut = timeouts;
     summary.failedSeedList = failedSeeds;
@@ -229,6 +281,16 @@ public final class FuzzMain {
       this.t0 = t0;
       this.preSubmitError = preSubmitError;
     }
+  }
+
+  /**
+   * Pick a fresh anchor for the seed RNG when --seed-start isn't given. Uses {@link
+   * java.security.SecureRandom} so successive runs without --seed-start explore independent
+   * portions of the seed space (no risk of two unattended sweeps colliding on the same anchor
+   * because {@code System.currentTimeMillis()} only just rolled forward).
+   */
+  private static long pickRandomAnchor() {
+    return new java.security.SecureRandom().nextLong();
   }
 
   private static String throwableToString(Throwable t) {
@@ -330,7 +392,8 @@ public final class FuzzMain {
 
   /** CLI argument bundle. */
   public static final class Args {
-    private final long seedStart;
+    private final OptionalLong seedStart;
+    private final long[] seeds;
     private final int seedCount;
     private final int workers;
     private final long timeoutSeconds;
@@ -338,13 +401,15 @@ public final class FuzzMain {
     private final Path configPath;
 
     private Args(
-        long seedStart,
+        OptionalLong seedStart,
+        long[] seeds,
         int seedCount,
         int workers,
         long timeoutSeconds,
         Path outputDir,
         Path configPath) {
       this.seedStart = seedStart;
+      this.seeds = seeds;
       this.seedCount = seedCount;
       this.workers = workers;
       this.timeoutSeconds = timeoutSeconds;
@@ -357,8 +422,14 @@ public final class FuzzMain {
       return configPath;
     }
 
-    public long seedStart() {
+    /** Anchor for the pseudorandom seed sequence; empty means "pick a random anchor". */
+    public OptionalLong seedStart() {
       return seedStart;
+    }
+
+    /** Explicit seed list (overrides {@link #seedStart()}/{@link #seedCount()}), or null. */
+    public long[] seeds() {
+      return seeds;
     }
 
     public int seedCount() {
@@ -379,7 +450,8 @@ public final class FuzzMain {
 
     @SuppressWarnings("checkstyle:CyclomaticComplexity")
     public static Args parse(String[] argv) {
-      long seedStart = 0L;
+      OptionalLong seedStart = OptionalLong.empty();
+      long[] seeds = null;
       int seedCount = 100;
       int workers = 1;
       long timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
@@ -389,7 +461,10 @@ public final class FuzzMain {
         String arg = argv[i];
         switch (arg) {
           case "--seed-start":
-            seedStart = Long.parseLong(argv[++i]);
+            seedStart = OptionalLong.of(Long.parseLong(argv[++i]));
+            break;
+          case "--seeds":
+            seeds = parseSeedList(argv[++i]);
             break;
           case "--seed-count":
             seedCount = Integer.parseInt(argv[++i]);
@@ -410,7 +485,26 @@ public final class FuzzMain {
             throw new IllegalArgumentException("Unknown argument: " + arg);
         }
       }
-      return new Args(seedStart, seedCount, workers, timeoutSeconds, outputDir, configPath);
+      if (seeds != null && seedStart.isPresent()) {
+        throw new IllegalArgumentException(
+            "--seeds and --seed-start are mutually exclusive (--seeds takes an explicit list, "
+                + "--seed-start anchors the pseudorandom sequence)");
+      }
+      return new Args(
+          seedStart, seeds, seedCount, workers, timeoutSeconds, outputDir, configPath);
+    }
+
+    private static long[] parseSeedList(String csv) {
+      List<String> parts =
+          org.apache.iceberg.relocated.com.google.common.base.Splitter.on(',')
+              .trimResults()
+              .omitEmptyStrings()
+              .splitToList(csv);
+      long[] out = new long[parts.size()];
+      for (int i = 0; i < parts.size(); i++) {
+        out[i] = Long.parseLong(parts.get(i));
+      }
+      return out;
     }
   }
 
@@ -443,7 +537,15 @@ public final class FuzzMain {
 
   /** Aggregate written to {@code summary.json}. */
   public static final class Summary {
-    public long seedStart;
+    /**
+     * RNG anchor used to draw the seed sequence — null when {@code --seeds} (explicit list) was
+     * passed. When {@code seedAnchorRandom} is true the anchor was generated by
+     * {@link #pickRandomAnchor()}, so a future {@code --seed-start <seedAnchor>} reproduces this
+     * sweep exactly.
+     */
+    public Long seedAnchor;
+
+    public boolean seedAnchorRandom;
     public int seedsRun;
     public int seedsFailed;
     public int seedsTimedOut;

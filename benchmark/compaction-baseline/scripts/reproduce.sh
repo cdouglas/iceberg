@@ -6,8 +6,12 @@
 #
 # What it does:
 #   1. Reads the failure record to extract the seed.
-#   2. Re-runs FuzzMain with --seed-start <N> --seed-count 1 in a fresh output dir.
+#   2. Re-runs FuzzMain with --seeds <N> in a fresh output dir.
 #   3. Asserts the same failure (hashes diverge again, or same error).
+#
+# --seeds bypasses the pseudorandom sequence used in normal sweeps and tests exactly the listed
+# seed values. --seed-start would instead anchor a *new* pseudorandom sequence starting from N,
+# which is not what reproducing a single failure wants.
 #
 # The warehouse tarball alongside the .fail.json is preserved for post-mortem manual inspection
 # (`tar -xf seed-N.warehouse.tar` recreates the state at the moment of divergence). Because
@@ -38,7 +42,7 @@ fi
 
 OUT_DIR="$(mktemp -d -t reproduce-seed-XXXX)"
 echo "Reproducing seed $SEED into $OUT_DIR"
-"$SCRIPT_DIR/fuzz.sh" --seed-start "$SEED" --seed-count 1 --workers 1 \
+"$SCRIPT_DIR/fuzz.sh" --seeds "$SEED" --workers 1 \
   --output "$OUT_DIR" --timeout-seconds 120
 
 if [[ -f "$OUT_DIR/seed-${SEED}.fail.json" ]]; then
