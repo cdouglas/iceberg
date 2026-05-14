@@ -5,6 +5,33 @@ linkage is captured in git history. See "Lifecycle" at the bottom of this file.
 
 ## Open failures from FuzzMain
 
+### 3. Resolver crashes on remapping positions that compaction filtered (V2 PD path)
+- **Seeds**: 970, 1179, 1369, 1985 on the default adversarial config (expanded run
+  2026-05-14, seeds 0..2000ish). All four are V2-only and combine chain V2 PDs with
+  late-tx PDs that target overlapping slices.
+- **Manifest**: the compaction commit aborts with
+  `org.apache.spark.SparkException: Job aborted due to stage failure: ... NullPointerException: Null value appeared in non-nullable field: top level Product or row object`
+  raised at `serializefromobject_doConsume_0` inside
+  `SparkCompactionConflictResolver.remapAndWriteDeletesWithRemapper`'s
+  `validRemapped...write().save(groupId)`. No row-count mismatch — the run never
+  completes.
+- **Suspected code path**: chain V2 PD positions are applied during compaction, so the
+  rows they target don't survive into the compacted output. When a subsequent late-tx
+  PD position points at one of those already-deleted rows, the position has no entry in
+  the compaction map. `PositionDeleteRemapper.remapDelete` correctly throws
+  `IllegalStateException("position not found in compaction map")`. The pre-fix
+  `RemapFunctionWithRemapper.remapRow` caught that and returned a null Row; the
+  downstream `filter(file_path.isNotNull())` was meant to drop those, but Spark's
+  whole-stage codegen runs `serializefromobject` on the map's output before the filter
+  and `RowEncoder` rejects a null top-level Row.
+- **Resolution**: replaced the resolver's `map` + `filter(isNotNull)` with `flatMap`
+  (zero-or-one emission per input) and switched the inner remap call from
+  `remapDelete` (throws) to `remapDeleteOrNull` (returns null for filtered positions).
+  Applied identically to `spark/v3.5` and `spark/v4.0`. Pinned by
+  `TestWarehouseBuilder.fuzzSeed1369IsReproducible` (seed 1369 is the smallest of the
+  four; the same fix takes 970, 1179, and 1985 back to confluence too, verified inline
+  during the fix).
+
 ### 1. Row-replacement deletes don't get remapped on v2 tables
 - **Seeds**: 1 (12-row diff), 4 (39-row diff) on the default adversarial config (smoke run
   2026-05-14, seeds 0..4). Both are V2-only format with one or more `rowReplacement` ops in

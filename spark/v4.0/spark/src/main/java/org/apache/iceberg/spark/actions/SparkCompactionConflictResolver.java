@@ -20,6 +20,8 @@ package org.apache.iceberg.spark.actions;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -48,6 +50,7 @@ import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.SparkTableCache;
 import org.apache.iceberg.spark.SparkWriteOptions;
 import org.apache.iceberg.util.ContentFileUtil;
+import org.apache.spark.api.java.function.FlatMapFunction;
 import org.apache.spark.api.java.function.MapFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Encoder;
@@ -357,15 +360,17 @@ public class SparkCompactionConflictResolver implements Serializable {
     int filePathIndex = schema.fieldIndex("file_path");
     int posIndex = schema.fieldIndex("pos");
 
-    // Remap positions using a map function that preserves the schema
-    // Use chain-aware RemapFunction that works with the remapper
-    Dataset<Row> remapped =
-        filteredDeletes.map(
-            new RemapFunctionWithRemapper(remapper, compactedSourceFiles, filePathIndex, posIndex),
+    // Remap positions using flatMap so unmappable rows (positions filtered during merge
+    // compaction — e.g., the row was already deleted by an earlier PD that compaction applied)
+    // can be dropped by emitting an empty iterator. The earlier map+filter(isNotNull) pattern
+    // crashed Spark's whole-stage codegen: the encoder's serializefromobject step ran before
+    // the filter and rejected a null top-level Row with "Null value appeared in non-nullable
+    // field: top level Product or row object".
+    Dataset<Row> validRemapped =
+        filteredDeletes.flatMap(
+            new RemapFlatMapFunctionWithRemapper(
+                remapper, compactedSourceFiles, filePathIndex, posIndex),
             encoder);
-
-    // Filter out null rows (positions that weren't found in compaction map)
-    Dataset<Row> validRemapped = remapped.filter(remapped.col("file_path").isNotNull());
 
     // If no remapped deletes, return empty
     if (validRemapped.isEmpty()) {
@@ -507,6 +512,33 @@ public class SparkCompactionConflictResolver implements Serializable {
     }
   }
 
+  /**
+   * FlatMap function that remaps position deletes and emits zero or one row per input — used by the
+   * resolver's Spark write pipeline so that "no mapping for this position" can be signalled by an
+   * empty iterator instead of a null Row. The latter crashes Spark's whole-stage codegen encoder
+   * (see remapAndWriteDeletesWithRemapper for context).
+   */
+  static class RemapFlatMapFunctionWithRemapper implements FlatMapFunction<Row, Row>, Serializable {
+    private final RemapFunctionWithRemapper delegate;
+
+    RemapFlatMapFunctionWithRemapper(
+        PositionDeleteRemapper remapper,
+        Set<String> compactedSourceFiles,
+        int filePathIndex,
+        int posIndex) {
+      this.delegate =
+          new RemapFunctionWithRemapper(remapper, compactedSourceFiles, filePathIndex, posIndex);
+    }
+
+    @Override
+    public Iterator<Row> call(Row row) {
+      Row remapped = delegate.call(row);
+      return remapped == null
+          ? Collections.emptyIterator()
+          : Collections.singletonList(remapped).iterator();
+    }
+  }
+
   /** Shared remapping logic for both RemapFunction and RemapFunctionWithRemapper. */
   private static Row remapRow(
       Row row,
@@ -524,26 +556,29 @@ public class SparkCompactionConflictResolver implements Serializable {
     PositionDelete<?> delete = PositionDelete.create();
     delete.set(filePath, position, null);
 
-    try {
-      PositionDelete<?> remappedDelete = remapper.remapDelete(delete);
-      String targetFile = remappedDelete.path().toString();
-      long targetPos = remappedDelete.pos();
-
-      Object[] values = new Object[row.size()];
-      for (int i = 0; i < row.size(); i++) {
-        if (i == filePathIndex) {
-          values[i] = targetFile;
-        } else if (i == posIndex) {
-          values[i] = targetPos;
-        } else {
-          values[i] = row.get(i);
-        }
-      }
-
-      return RowFactory.create(values);
-    } catch (IllegalStateException e) {
+    // Use the lenient remapper: positions that aren't in the compaction map (because the row was
+    // already deleted by a chain PD that compaction applied and filtered out) return null. The
+    // caller's flatMap wrapper turns that into an empty iterator. The earlier remapDelete +
+    // try/catch pattern returned a null Row, which Spark's RowEncoder cannot serialize.
+    PositionDelete<?> remappedDelete = remapper.remapDeleteOrNull(delete);
+    if (remappedDelete == null) {
       LOG.debug("Position {} in {} not found in compaction map, skipping", position, filePath);
       return null;
     }
+    String targetFile = remappedDelete.path().toString();
+    long targetPos = remappedDelete.pos();
+
+    Object[] values = new Object[row.size()];
+    for (int i = 0; i < row.size(); i++) {
+      if (i == filePathIndex) {
+        values[i] = targetFile;
+      } else if (i == posIndex) {
+        values[i] = targetPos;
+      } else {
+        values[i] = row.get(i);
+      }
+    }
+
+    return RowFactory.create(values);
   }
 }
