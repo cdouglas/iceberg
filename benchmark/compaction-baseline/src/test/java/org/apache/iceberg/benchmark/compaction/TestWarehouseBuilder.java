@@ -450,6 +450,39 @@ class TestWarehouseBuilder {
     runAdversarialFuzzSeedAndAssertConfluence(4L);
   }
 
+  /**
+   * Regression for the next-layer bug uncovered by the expanded fuzz run of 2026-05-14 — seeds
+   * 970, 1179, 1369, and 1985 all crash with the same shape.
+   *
+   * <p>Seed 1369 is the smallest reproducer: V2-only, {@code chain × perSnapshotDeletes = 3 × 16 =
+   * 48} chain V2 PD positions, then a single {@code rowReplacement} (7 PD positions) followed by
+   * a single {@code positionDelete} (11 PD positions) — the late-tx PD slices overlap the chain's
+   * scatter region. Chain positions are applied during compaction, so rows those positions
+   * filtered no longer exist in the post-compaction target. When a late-tx PD targets one of
+   * those already-filtered positions, {@link
+   * org.apache.iceberg.PositionDeleteRemapper#remapDelete} correctly throws {@code
+   * IllegalStateException} ("position not found in compaction map").
+   *
+   * <p>Pre-fix {@code SparkCompactionConflictResolver.remapAndWriteDeletesWithRemapper} caught
+   * that exception and returned a null {@code Row} from its {@code MapFunction}, intending to
+   * filter the null one step later via {@code remapped.col("file_path").isNotNull()}. But Spark's
+   * whole-stage codegen runs {@code serializefromobject} on the {@code MapFunction}'s output
+   * before the filter, and {@code RowEncoder} rejects a null top-level Row with {@code "Null
+   * value appeared in non-nullable field: top level Product or row object"}. The compaction
+   * commit aborts with a {@code SparkException} during {@code DataFrameWriter.save}.
+   *
+   * <p>The fix switches the remap step from {@code map} (which can't safely return null) to
+   * {@code flatMap} (which returns an empty iterator instead of a null row) and uses {@link
+   * org.apache.iceberg.PositionDeleteRemapper#remapDeleteOrNull} so the no-mapping case is
+   * signalled by an absent row rather than a thrown exception. Pinned to seed 1369 because it's
+   * the smallest of the four failing seeds (6 ops total, 2 late-tx); the same fix takes the
+   * other three seeds back to confluence.
+   */
+  @Test
+  void fuzzSeed1369IsReproducible() throws IOException {
+    runAdversarialFuzzSeedAndAssertConfluence(1369L);
+  }
+
   private void runAdversarialFuzzSeedAndAssertConfluence(long seed) throws IOException {
     // Use FuzzConfig.defaults() directly — these seeds were captured from the adversarial smoke
     // run, where the format/op/overlap distributions are the loaded-by-default mix.
