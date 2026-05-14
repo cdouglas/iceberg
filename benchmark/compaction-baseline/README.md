@@ -136,6 +136,44 @@ outside Docker.
 scripts/fuzz.sh --seed-start 0 --seed-count 100 --workers 1 --output ./fuzz-out
 ```
 
+### Adversarial config (--config)
+
+By default the harness randomizes across three format buckets (v2, v3, v2→v3-upgraded), four op
+kinds (position delete, append, row replacement, equality delete), probabilistic slice overlap
+(p=0.5), and 1..8 late-tx ops per seed. Pass `--config <path.json>` to override any of these:
+
+```bash
+scripts/fuzz.sh --seed-start 0 --seed-count 100 --config my-config.json --output ./fuzz-out
+```
+
+Sample config (omit any field to fall back to its default):
+
+```json
+{
+  "formatWeights":          { "v2": 1.0, "v3": 1.0, "v2ThenUpgradeToV3": 1.0 },
+  "opKindWeights":          { "positionDelete": 1.0, "append": 1.0,
+                              "rowReplacement": 1.0, "equalityDelete": 1.0 },
+  "lateTxCount":            { "min": 1, "max": 8 },
+  "overlapProbability":     0.5,
+  "deletesPerOp":           { "min": 5,  "max": 14 },
+  "appendRowsPerOp":        { "min": 500, "max": 3000 },
+  "replacementRows":        { "min": 50,  "max": 500 },
+  "equalityDeleteRowsPerOp":{ "min": 1,  "max": 20 }
+}
+```
+
+To reproduce the harness's pre-adversarial v3-DV-only-disjoint shape (the shape under which
+seeds 59 and 101 were originally captured), use:
+
+```json
+{
+  "formatWeights": { "v3": 1.0 },
+  "opKindWeights": { "positionDelete": 1.0 },
+  "overlapProbability": 0.0,
+  "lateTxCount": { "min": 1, "max": 2 }
+}
+```
+
 Output:
 - `summary.json` — `{seedsRun, seedsFailed, failedSeedList, totalElapsedMs, …}`.
 - `seed-N.ok.json` — one per passing seed: hashes, ops count, row counts, elapsed ms.

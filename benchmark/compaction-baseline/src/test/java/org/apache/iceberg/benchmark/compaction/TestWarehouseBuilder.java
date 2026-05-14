@@ -265,7 +265,15 @@ class TestWarehouseBuilder {
   }
 
   private void runFuzzSeedAndAssertConfluence(long seed) throws IOException {
-    FuzzScenario scenario = FuzzScenario.forSeed(seed);
+    // Pin to the v3-PD-disjoint baseline config. Seeds 59 and 101 were captured under the
+    // pre-adversarial harness shape (v3 only, deletion-vector only, disjoint slices, 1..2 ops).
+    // After the adversarial extension, the default config no longer reproduces those exact
+    // scenarios. This regression test still wants the SAME shape it was designed for, so it
+    // loads a constrained config and asserts confluence under it. The principled root-cause
+    // test {@code chainDvsThatSurviveCompactionStayInTheCache} (no fuzz seed) covers the bug
+    // independent of seed selection.
+    FuzzConfig cfg = legacyHarnessShape();
+    FuzzScenario scenario = FuzzScenario.forSeed(seed, cfg);
     File workspace = new File(warehouseDir, "fuzz-seed-" + seed);
     if (!workspace.mkdirs() && !workspace.isDirectory()) {
       throw new IOException("Could not create fuzz workspace at " + workspace);
@@ -290,5 +298,22 @@ class TestWarehouseBuilder {
     File catalogRoot = new File(warehouseDir, relativePath);
     HadoopCatalog catalog = new HadoopCatalog(new Configuration(), catalogRoot.toURI().toString());
     return catalog;
+  }
+
+  /**
+   * Config matching the harness's pre-adversarial defaults: v3-only, deletion-vector op only,
+   * disjoint slices, 1..2 late-tx ops. Used by seed-pinned regression tests so they reproduce
+   * the original scenario shape rather than the new adversarial expansion.
+   */
+  private static FuzzConfig legacyHarnessShape() throws IOException {
+    File tmp = File.createTempFile("legacy-fuzz-config", ".json");
+    tmp.deleteOnExit();
+    java.nio.file.Files.writeString(
+        tmp.toPath(),
+        "{\"formatWeights\": {\"v3\": 1.0},"
+            + " \"opKindWeights\": {\"positionDelete\": 1.0},"
+            + " \"overlapProbability\": 0.0,"
+            + " \"lateTxCount\": {\"min\": 1, \"max\": 2}}");
+    return FuzzConfig.load(tmp.toPath());
   }
 }

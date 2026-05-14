@@ -65,22 +65,24 @@ public final class FuzzMain {
 
   public static void main(String[] argv) throws Exception {
     Args args = Args.parse(argv);
+    FuzzConfig config = FuzzConfig.load(args.configPath());
     SparkSession spark = buildSpark(args.outputDir());
     try {
-      runWithSpark(args, spark);
+      runWithSpark(args, config, spark);
     } finally {
       spark.stop();
     }
   }
 
-  static void runWithSpark(Args args, SparkSession spark) throws IOException {
+  static void runWithSpark(Args args, FuzzConfig config, SparkSession spark) throws IOException {
     Path outputDir = Files.createDirectories(args.outputDir());
     LOG.info(
-        "fuzz harness: seedStart={} seedCount={} workers={} timeoutS={} output={}",
+        "fuzz harness: seedStart={} seedCount={} workers={} timeoutS={} configPath={} output={}",
         args.seedStart(),
         args.seedCount(),
         args.workers(),
         args.timeoutSeconds(),
+        args.configPath(),
         outputDir);
 
     // The --workers flag controls the executor pool, but Spark itself isn't safely shared by
@@ -95,7 +97,8 @@ public final class FuzzMain {
     try {
       for (long s = 0; s < args.seedCount(); s++) {
         long seed = args.seedStart() + s;
-        SeedOutcome outcome = runOneSeed(spark, seed, args.timeoutSeconds(), outputDir, pool);
+        SeedOutcome outcome =
+            runOneSeed(spark, config, seed, args.timeoutSeconds(), outputDir, pool);
         if (outcome.kind() == SeedOutcomeKind.FAILED) {
           failures++;
           failedSeeds.add(seed);
@@ -132,8 +135,13 @@ public final class FuzzMain {
   }
 
   private static SeedOutcome runOneSeed(
-      SparkSession spark, long seed, long timeoutSeconds, Path outputDir, ExecutorService pool) {
-    FuzzScenario scenario = FuzzScenario.forSeed(seed);
+      SparkSession spark,
+      FuzzConfig config,
+      long seed,
+      long timeoutSeconds,
+      Path outputDir,
+      ExecutorService pool) {
+    FuzzScenario scenario = FuzzScenario.forSeed(seed, config);
     File workspace = outputDir.resolve("workspace-seed-" + seed).toFile();
     if (!workspace.mkdirs() && !workspace.isDirectory()) {
       LOG.error("failed to create workspace for seed {}", seed);
@@ -280,13 +288,26 @@ public final class FuzzMain {
     private final int workers;
     private final long timeoutSeconds;
     private final Path outputDir;
+    private final Path configPath;
 
-    private Args(long seedStart, int seedCount, int workers, long timeoutSeconds, Path outputDir) {
+    private Args(
+        long seedStart,
+        int seedCount,
+        int workers,
+        long timeoutSeconds,
+        Path outputDir,
+        Path configPath) {
       this.seedStart = seedStart;
       this.seedCount = seedCount;
       this.workers = workers;
       this.timeoutSeconds = timeoutSeconds;
       this.outputDir = outputDir;
+      this.configPath = configPath;
+    }
+
+    /** Path to a JSON {@link FuzzConfig}, or {@code null} for defaults. */
+    public Path configPath() {
+      return configPath;
     }
 
     public long seedStart() {
@@ -316,6 +337,7 @@ public final class FuzzMain {
       int workers = 1;
       long timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
       Path outputDir = Paths.get("fuzz-out");
+      Path configPath = null;
       for (int i = 0; i < argv.length; i++) {
         String arg = argv[i];
         switch (arg) {
@@ -334,11 +356,14 @@ public final class FuzzMain {
           case "--output":
             outputDir = Paths.get(argv[++i]);
             break;
+          case "--config":
+            configPath = Paths.get(argv[++i]);
+            break;
           default:
             throw new IllegalArgumentException("Unknown argument: " + arg);
         }
       }
-      return new Args(seedStart, seedCount, workers, timeoutSeconds, outputDir);
+      return new Args(seedStart, seedCount, workers, timeoutSeconds, outputDir, configPath);
     }
   }
 

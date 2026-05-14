@@ -33,6 +33,8 @@ public final class BuildConfig {
   private final int lateTxRunLength;
   private final int lateTxFileFanout;
   private final int rowsPerFile;
+  private final int formatVersion;
+  private final boolean upgradeAfterChain;
 
   private BuildConfig(Builder builder) {
     this.seed = builder.seed;
@@ -44,6 +46,8 @@ public final class BuildConfig {
     this.lateTxRunLength = builder.lateTxRunLength;
     this.lateTxFileFanout = builder.lateTxFileFanout;
     this.rowsPerFile = builder.rowsPerFile;
+    this.formatVersion = builder.formatVersion;
+    this.upgradeAfterChain = builder.upgradeAfterChain;
   }
 
   /** Master seed; all per-stage seeds derive deterministically from this value. */
@@ -99,6 +103,27 @@ public final class BuildConfig {
     return rowsPerFile;
   }
 
+  /**
+   * Iceberg format version the table is created with (2 or 3). Production builds default to 3.
+   * Fuzz scenarios may select 2 to exercise position-delete-file write paths, or set this to 2
+   * together with {@link #upgradeAfterChain()} to construct a table whose chain history was
+   * written as v2 but whose late transactions land after an upgrade to v3.
+   */
+  public int formatVersion() {
+    return formatVersion;
+  }
+
+  /**
+   * When {@code true} and {@link #formatVersion()} is less than 3, the table is upgraded to v3
+   * after the snapshot chain is built and before any late-transaction ops are applied. Has no
+   * effect when {@code formatVersion == 3}. Used by the fuzz harness's {@code v2ThenUpgradeToV3}
+   * bucket so the chain history contains position-delete files while late ops commit DVs against
+   * the same table.
+   */
+  public boolean upgradeAfterChain() {
+    return upgradeAfterChain;
+  }
+
   public static Builder builder() {
     return new Builder();
   }
@@ -132,6 +157,8 @@ public final class BuildConfig {
     private int lateTxRunLength = 10;
     private int lateTxFileFanout = 0;
     private int rowsPerFile = 5_000;
+    private int formatVersion = 3;
+    private boolean upgradeAfterChain = false;
 
     private Builder() {}
 
@@ -180,6 +207,16 @@ public final class BuildConfig {
       return this;
     }
 
+    public Builder formatVersion(int value) {
+      this.formatVersion = value;
+      return this;
+    }
+
+    public Builder upgradeAfterChain(boolean value) {
+      this.upgradeAfterChain = value;
+      return this;
+    }
+
     public BuildConfig build() {
       if (snapshotChainLength < 0) {
         throw new IllegalArgumentException("snapshotChainLength must be >= 0");
@@ -195,6 +232,13 @@ public final class BuildConfig {
       }
       if (rowsPerFile <= 0) {
         throw new IllegalArgumentException("rowsPerFile must be > 0");
+      }
+      if (formatVersion != 2 && formatVersion != 3) {
+        throw new IllegalArgumentException("formatVersion must be 2 or 3, got " + formatVersion);
+      }
+      if (upgradeAfterChain && formatVersion >= 3) {
+        throw new IllegalArgumentException(
+            "upgradeAfterChain only makes sense when formatVersion < 3");
       }
       return new BuildConfig(this);
     }
