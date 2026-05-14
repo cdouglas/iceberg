@@ -59,7 +59,12 @@ import org.slf4j.LoggerFactory;
 public final class FuzzMain {
 
   private static final Logger LOG = LoggerFactory.getLogger(FuzzMain.class);
-  private static final long DEFAULT_TIMEOUT_SECONDS = 60L;
+  // Default chosen so a single seed running solo (~10-15s wall) has ~20x headroom under the
+  // concurrent execution mode added in `Actually run --workers seeds concurrently`. With N
+  // workers contending for `local[N]` task slots in a shared SparkSession, per-seed wall time
+  // scales roughly with N — a 60s default was tight at workers=4 and reliably tripped at
+  // workers=8+ for normal-shape scenarios. Override with --timeout-seconds.
+  private static final long DEFAULT_TIMEOUT_SECONDS = 300L;
 
   private FuzzMain() {}
 
