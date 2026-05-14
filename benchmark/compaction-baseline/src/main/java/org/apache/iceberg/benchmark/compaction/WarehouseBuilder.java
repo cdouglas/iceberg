@@ -144,15 +144,37 @@ public final class WarehouseBuilder {
 
   Table createTable(boolean compactionMapEnabled) {
     Map<String, String> props = Maps.newHashMap();
-    props.put(TableProperties.FORMAT_VERSION, "3");
+    props.put(TableProperties.FORMAT_VERSION, Integer.toString(config.formatVersion()));
     if (compactionMapEnabled) {
       props.put(TableProperties.COMPACTION_MAP_ENABLED, "true");
     }
     Table table =
         catalog.createTable(
             tableIdent, WorkloadGenerator.SCHEMA, PartitionSpec.unpartitioned(), null, props);
-    LOG.info("Created table {} (compactionMapEnabled={})", tableIdent, compactionMapEnabled);
+    LOG.info(
+        "Created table {} (formatVersion={}, compactionMapEnabled={})",
+        tableIdent,
+        config.formatVersion(),
+        compactionMapEnabled);
     return table;
+  }
+
+  /**
+   * Upgrade {@code table} to format-version 3 when {@link BuildConfig#upgradeAfterChain()} is set
+   * and the table is currently below v3. Called by callers (typically the fuzz runner) between
+   * {@link #buildSnapshotChain} and any post-chain operations so the chain history contains
+   * position-delete files while later writes can commit DVs. No-op otherwise.
+   */
+  void maybeUpgradeFormat(Table table) {
+    if (!config.upgradeAfterChain()) {
+      return;
+    }
+    if (config.formatVersion() >= 3) {
+      return;
+    }
+    LOG.info("Upgrading table {} from v{} to v3", tableIdent, config.formatVersion());
+    table.updateProperties().set(TableProperties.FORMAT_VERSION, "3").commit();
+    table.refresh();
   }
 
   /**
@@ -188,8 +210,6 @@ public final class WarehouseBuilder {
 
       OutputFileFactory dataFactory =
           WorkloadCommitter.parquetFileFactory(table, PARTITION_ID, (long) i);
-      OutputFileFactory dvFactory =
-          WorkloadCommitter.puffinFileFactory(table, PARTITION_ID, (long) i);
 
       List<DataFile> dataFiles =
           WorkloadCommitter.writeDataFiles(
@@ -205,33 +225,68 @@ public final class WarehouseBuilder {
               config.perSnapshotDeletes(),
               derive(config.seed(), i, SALT_DELETE),
               derive(config.seed(), i, SALT_DISTRIBUTION));
-      DeleteWriteResult deleteResult =
-          WorkloadCommitter.writeDeletionVectors(
-              table, dvFactory, deletePositions, mergingDvLoader(table));
 
-      // validateFromSnapshot limits validateAddedDVs to commits AFTER the current snapshot.
-      // Without it the validator walks every ancestor manifest, finds the prior S_i DV adds, and
-      // rejects this commit even though we're sequential. This is the same pattern Spark uses in
-      // SparkPositionDeltaWrite (see scan.snapshotId() comment there).
-      RowDelta delta =
-          table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
-      dataFiles.forEach(delta::addRows);
-      deleteResult.deleteFiles().forEach(delta::addDeletes);
-      // V3 only allows one DV per data file, so any DV the writer absorbed must be retired in
-      // the same commit, otherwise validateAddedDVs rejects with "Found concurrently added DV".
-      deleteResult.rewrittenDeleteFiles().forEach(delta::removeDeletes);
-      delta.commit();
+      if (config.formatVersion() >= 3) {
+        commitChainSnapshotV3(table, i, dataFiles, deletePositions);
+      } else {
+        commitChainSnapshotV2(table, i, dataFiles, deletePositions);
+      }
       table.refresh();
       preCompactionDataFiles.addAll(dataFiles);
-      // Refresh our DV-by-data-file map: drop the ones we replaced, register the new ones.
-      deleteResult
-          .rewrittenDeleteFiles()
-          .forEach(df -> currentDvByDataFile.remove(df.referencedDataFile()));
-      for (DeleteFile newDv : deleteResult.deleteFiles()) {
-        currentDvByDataFile.put(newDv.referencedDataFile(), newDv);
-      }
       snapshotIds.add(table.currentSnapshot().snapshotId());
     }
+  }
+
+  /**
+   * V3 chain commit: writes a Puffin DV for the snapshot's deletes (merging into any pre-existing
+   * DV on the same data file) and commits via {@code RowDelta.addRows + addDeletes + removeDeletes}.
+   * The {@code removeDeletes} step retires any DV the writer absorbed, since V3 only allows one
+   * DV per data file.
+   */
+  private void commitChainSnapshotV3(
+      Table table, int i, List<DataFile> dataFiles, Map<String, long[]> deletePositions)
+      throws IOException {
+    OutputFileFactory dvFactory =
+        WorkloadCommitter.puffinFileFactory(table, PARTITION_ID, (long) i);
+    DeleteWriteResult deleteResult =
+        WorkloadCommitter.writeDeletionVectors(
+            table, dvFactory, deletePositions, mergingDvLoader(table));
+
+    // validateFromSnapshot limits validateAddedDVs to commits AFTER the current snapshot.
+    // Without it the validator walks every ancestor manifest, finds the prior S_i DV adds, and
+    // rejects this commit even though we're sequential.
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    dataFiles.forEach(delta::addRows);
+    deleteResult.deleteFiles().forEach(delta::addDeletes);
+    deleteResult.rewrittenDeleteFiles().forEach(delta::removeDeletes);
+    delta.commit();
+
+    deleteResult
+        .rewrittenDeleteFiles()
+        .forEach(df -> currentDvByDataFile.remove(df.referencedDataFile()));
+    for (DeleteFile newDv : deleteResult.deleteFiles()) {
+      currentDvByDataFile.put(newDv.referencedDataFile(), newDv);
+    }
+  }
+
+  /**
+   * V2 chain commit: writes one parquet position-delete file per source data file (FILE-
+   * granularity, so {@link org.apache.iceberg.CompactionConflictDetector} can resolve them later)
+   * and commits via {@code RowDelta.addRows + addDeletes}. V2 has no DV uniqueness invariant, so
+   * there is no rewrite/remove step — multiple PD files referencing the same data file are legal.
+   */
+  private void commitChainSnapshotV2(
+      Table table, int i, List<DataFile> dataFiles, Map<String, long[]> deletePositions)
+      throws IOException {
+    OutputFileFactory pdFactory =
+        WorkloadCommitter.parquetFileFactory(table, PARTITION_ID, (long) i + 1_000_000L);
+    DeleteWriteResult deleteResult =
+        WorkloadCommitter.writePositionDeleteFiles(table, pdFactory, deletePositions);
+
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    dataFiles.forEach(delta::addRows);
+    deleteResult.deleteFiles().forEach(delta::addDeletes);
+    delta.commit();
   }
 
   /**

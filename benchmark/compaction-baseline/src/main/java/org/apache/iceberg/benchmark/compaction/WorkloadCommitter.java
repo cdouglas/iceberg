@@ -27,12 +27,18 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.data.GenericAppenderFactory;
 import org.apache.iceberg.data.GenericRecord;
+import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
 import org.apache.iceberg.deletes.DVFileWriter;
+import org.apache.iceberg.deletes.EqualityDeleteWriter;
+import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
+import org.apache.iceberg.deletes.PositionDeleteWriter;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.io.DeleteWriteResult;
 import org.apache.iceberg.io.FileAppender;
@@ -161,5 +167,89 @@ public final class WorkloadCommitter {
     return OutputFileFactory.builderFor(table, partitionId, taskId)
         .format(FileFormat.PUFFIN)
         .build();
+  }
+
+  /**
+   * Write file-scoped V2 parquet position-delete files — one output file per source data file in
+   * {@code deletesByDataFile}. File scope is load-bearing: {@link
+   * org.apache.iceberg.CompactionConflictDetector} short-circuits PARTITION-granularity PD files
+   * (it relies on {@code referencedDataFile()}). The fuzz harness must therefore always emit FILE-
+   * granularity outputs so the detector reports each conflict the resolver needs to remap.
+   *
+   * <p>Unlike {@link #writeDeletionVectors}, V2 has no "one PD file per data file" invariant, so
+   * there is no merge/rewrite path here — callers simply add the returned files via {@code
+   * RowDelta.addDeletes}.
+   */
+  public static DeleteWriteResult writePositionDeleteFiles(
+      Table table, OutputFileFactory fileFactory, Map<String, long[]> deletesByDataFile)
+      throws IOException {
+    if (deletesByDataFile.isEmpty()) {
+      return new DeleteWriteResult(Lists.newArrayList());
+    }
+
+    GenericAppenderFactory appenderFactory = new GenericAppenderFactory(table.schema());
+    List<DeleteFile> outputs = Lists.newArrayListWithCapacity(deletesByDataFile.size());
+    for (Map.Entry<String, long[]> entry : deletesByDataFile.entrySet()) {
+      String dataFilePath = entry.getKey();
+      long[] positions = entry.getValue();
+      if (positions.length == 0) {
+        continue;
+      }
+      EncryptedOutputFile encrypted = fileFactory.newOutputFile();
+      PositionDeleteWriter<Record> writer =
+          appenderFactory.newPosDeleteWriter(encrypted, FileFormat.PARQUET, null /* partition */);
+      PositionDelete<Record> pd = PositionDelete.create();
+      try {
+        for (long pos : positions) {
+          writer.write(pd.set(dataFilePath, pos, null));
+        }
+      } finally {
+        writer.close();
+      }
+      outputs.add(writer.toDeleteFile());
+    }
+    return new DeleteWriteResult(outputs);
+  }
+
+  /**
+   * Write a single equality-delete file targeting {@code equalityFieldIds} (typically just {@code
+   * long_0}'s field id, {@code 5}). Values come from the supplied seeded RNG — they are random
+   * 64-bit longs and almost certainly do not match real row content. This is intentional: the op
+   * exercises the equality-delete commit + conflict-detection + resolver code paths without
+   * coupling predicate selection to the row-generation seed.
+   */
+  public static DeleteFile writeEqualityDeleteFile(
+      Table table,
+      OutputFileFactory fileFactory,
+      int[] equalityFieldIds,
+      Schema eqDeleteRowSchema,
+      long opSeed,
+      int rowsPerOp)
+      throws IOException {
+    if (rowsPerOp <= 0) {
+      throw new IllegalArgumentException("rowsPerOp must be > 0, got " + rowsPerOp);
+    }
+    GenericAppenderFactory factory =
+        new GenericAppenderFactory(
+            table.schema(),
+            PartitionSpec.unpartitioned(),
+            equalityFieldIds,
+            eqDeleteRowSchema,
+            null);
+    EncryptedOutputFile encrypted = fileFactory.newOutputFile();
+    EqualityDeleteWriter<Record> writer =
+        factory.newEqDeleteWriter(encrypted, FileFormat.PARQUET, null /* partition */);
+    java.util.Random rng = new java.util.Random(opSeed);
+    GenericRecord template = GenericRecord.create(eqDeleteRowSchema);
+    try {
+      for (int i = 0; i < rowsPerOp; i++) {
+        GenericRecord row = template.copy();
+        row.set(0, rng.nextLong());
+        writer.write(row);
+      }
+    } finally {
+      writer.close();
+    }
+    return writer.toDeleteFile();
   }
 }
