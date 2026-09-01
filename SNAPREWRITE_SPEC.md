@@ -329,10 +329,16 @@ writers have no path for it, though the *read* path handles materialized values
 
 The blocker is narrower than it first appears, and only bites on recovery:
 
-- **Rows that survived the compaction keep their identity for free.** A rewritten snapshot points at
-  the compaction's own data files at the same offsets, so `first_row_id + pos` yields exactly what it
-  always did. Whether that matches the row's original id is the *compactor's* obligation, not the
-  rewrite's.
+- **Rows that survived the compaction carry the identity the compaction gave them.** A rewritten
+  snapshot points at the compaction's own data files at the same offsets and invents nothing, so it
+  reports exactly what the compaction reports (`TestSnapshotRewriteV3#dataFileRowIdRangesSurviveTheRewrite`,
+  `#rewrittenSnapshotsReportTheCompactionsIdentities`). **This is weaker than "ids are unchanged."**
+  Whether the compaction preserved the row's original id is the compaction's obligation, and a
+  compaction preserves lineage only by carrying `first_row_id` forward or materializing `_row_id`.
+  Iceberg's Spark rewrite action does; the generic writers cannot, and `LocalCompactor` does not --
+  it lets Iceberg assign a fresh range, renumbering every row at every compaction. So **end-to-end
+  identity across a history is untested here, because the harness cannot supply a lineage-preserving
+  compaction.**
 - **A recovered row is different.** It lands in a file the rewrite writes, so its id would derive
   from that file's `first_row_id`. Preserving it needs a materialized `_row_id`, which the generic
   writers cannot produce.
@@ -348,14 +354,24 @@ reconstruction -- buys only the recovery case.
 it references. Same mistake, opposite failure mode: v3 gets from the format what v2's oracle has to
 work for.
 
-### 4.5.1 Why 5b is probably not worth building
+### 4.5.1 What 5b would buy: a reversible inversion
 
-The remaining v3 work buys identity for recovered rows only, and that population is narrow: a
-recovered row is **dead at the compaction**, so it appears in no snapshot a live query reads. The id
-churn is observable only by someone who reads a *historical* snapshot, records ids, and reads it again
-after a rewrite -- and §4.6 has already told that reader the changesets are wrong. The consumer
-`_row_id` exists for, incremental processing that distinguishes an update from an insert, is gone
-before identity becomes the problem.
+The obvious arguments for preserving a recovered row's `_row_id` are weak. That population is narrow
+-- a recovered row is **dead at the compaction**, so no live query sees it -- and the id churn is
+observable only by someone who reads a historical snapshot, records ids, and reads it again after a
+rewrite, a reader §4.6 has already told the changesets are wrong. The consumer `_row_id` exists for,
+incremental processing distinguishing an update from an insert, is gone before identity becomes the
+problem.
+
+**The strong argument is reversibility.** While the detached layout survives, undoing a rewrite is
+trivial and needs no ids at all: each rewritten snapshot records the manifest list it came from and
+the summary it carried, so restoring is a matter of pointing back --- byte-identical, no reads, no
+copies (`SnapshotRewriteRestore`, `TestSnapshotRewriteRoundTrip`). After reclaim that route is gone,
+and the only remaining description of what a historical snapshot held is the surviving files. At that
+point `_row_id` is the last thing tying a recovered row to what it was: with materialized ids the
+inversion is information-preserving and a historical state can still be described by identity; without
+them it is merely value-preserving. That is a real property to trade away knowingly rather than by
+omission.
 
 What makes `_row_id` worth protecting at all is that it is the *only* row metadata designed to be
 layout-independent. `_file` and `_pos` are physical by definition -- ordinary compaction changes them
@@ -381,9 +397,9 @@ Option 2 is not "lossy but workable": it produces metadata whose snapshot-level 
 contradicts its own files. The choice was never strict-versus-drift. It is **materialize, or do not
 support recovery on v3** -- which is what P1b does.
 
-Revisit only for a concrete consumer of identity across historical states. GDPR purge verification is
-the plausible one, and it cuts both ways: a purge wants the row *gone*, not faithfully carried forward
-under a stable id.
+Note that the same writer capability is a prerequisite for a lineage-preserving *compaction* in the
+generic path, for the same reason: merging files whose row-id ranges are not contiguous cannot be
+expressed by one `first_row_id`. So materializing `_row_id` is not a rewrite-specific cost.
 
 ### 4.6 What the rewrite legitimately destroys
 
