@@ -4,7 +4,7 @@ Companion to `COMPACT_SPEC.md`. Implements the design sketched in
 [Inverting Iceberg Snapshots with Compaction Maps](https://cdouglas.github.io/posts/2026/08/rewriting-snapshots)
 (source: `../cdouglas.github.io/_posts/2026-08-31-snaprewrite.md`).
 
-**Status:** design only. No code written. Awaiting review.
+**Status:** design only. No code written. Iterating on review.
 
 ---
 
@@ -19,6 +19,11 @@ amount of newly materialized data.
 The payoff is that `C_A`'s outputs and every interstitial data/delete file in the window
 become unreachable and can be reclaimed.
 
+**The prototype is non-destructive** (§4.4): it builds the rewritten snapshots for real and
+exposes them as a shadow table for verification, but does not commit them back. Its primary
+output is a report of what *would* be reclaimed, since reclaim is the point of the design
+and the quantity we most want to establish.
+
 ### Non-goals for the prototype
 
 - Sorted / Z-ordered compactions (out of scope for compaction maps generally).
@@ -26,7 +31,8 @@ become unreachable and can be reclaimed.
 - Schema or partition-spec evolution inside the rewrite window.
 - Preserving CDC / changelog semantics. The rewrite deliberately destroys them
   (see §4.6); this is the design's acknowledged cost, not a bug to fix.
-- REST catalog support (see §5.1).
+- Committing the rewrite back to the source table (deferred to phase 4; see §4.4).
+- REST catalog support (see §5.2).
 
 ---
 
@@ -123,7 +129,7 @@ refusals, not warnings.
 
 | # | Condition | Why |
 |---|---|---|
-| P1 | Format version == 2 | Phase 1 scope; v3 row lineage is unsolved (§5.4) |
+| P1 | Format version == 2 | Phase 1 scope; v3 row lineage is unsolved (§4.5) |
 | P2 | No equality deletes anywhere in the window | `D_k` is not positionally computable |
 | P3 | `schema-id` identical across the window and `C_B` | A column dropped after `S_k` would read as null from `C_B`'s files |
 | P4 | `spec-id` identical across the window and `C_B` | Resurrection files must be partition-aligned to the snapshot's spec |
@@ -147,68 +153,154 @@ rather than trying to classify changes.
 duplicate snapshot id and requires `sequenceNumber > lastSequenceNumber`. Neither can be
 satisfied by an in-place rewrite.
 
-**Decision:** construct `TableMetadata` through its package-private constructor
-(`TableMetadata.java:273`) — the same path `TableMetadataParser.fromJson` uses
-(`TableMetadataParser.java:565`), so a JSON round-trip does not re-run builder validation.
-Commit with `TableOperations.commit(base, rewritten)`.
+**Decision:** treat the rewrite as an `unsafe` block in the Rust sense — we assert soundness
+rather than satisfying what the framework can prove — and confine every such assertion to a
+single accessor:
 
-Consequence: the implementation must live in package `org.apache.iceberg`
-(`ManifestLists.write` and `DeleteFileIndex` are package-private too).
+```
+core/src/main/java/org/apache/iceberg/SnapshotRewriteUnsafe.java
+```
+
+It wraps the package-private surface the rewrite needs, one method per escape hatch, each
+carrying the invariant the caller must uphold:
+
+| Accessor | Wraps | Invariant asserted |
+|---|---|---|
+| `newMetadata(...)` | `TableMetadata` constructor (`TableMetadata.java:273`) | snapshot identity fields preserved; `nextRowId` self-consistent |
+| `writeManifestList(...)` | `ManifestLists.write` | entries reference only files written by this rewrite or by `C_B` |
+| `liveEntries(...)` | `DeleteFileIndex` | used only for live-set computation, never for commit validation |
+| `stampExisting(...)` | `ManifestWriter.existing` | §4.2 stamping rule |
+
+Nothing outside this class touches package-private state, so the audit surface for "what
+did we assert that Iceberg would otherwise check" is one file. The class is deliberately
+*not* exported through the public API.
+
+The constructor path is the same one `TableMetadataParser.fromJson` uses
+(`TableMetadataParser.java:565`), so a JSON round-trip does not re-run builder validation —
+which is why §8.4's round-trip test is a real check and not a formality.
+
+Consequence: the implementation must live in package `org.apache.iceberg`.
 
 ### 4.2 Data sequence numbers must be re-stamped
 
-Within a rewritten snapshot `S_k`, the data files are `C_B`'s (data-seq `σ_B`) and the
-delete files are new. Iceberg applies a positional delete to a data file only when
-`delete.dataSeq >= data.dataSeq`. Stamping the new deletes at `σ_k < σ_B` would leave them
-**inert** — deleted rows would silently reappear. This is the single most dangerous failure
-mode in the design and it fails *open*.
+**What the check actually enforces.** A positional delete applies to a data file only when
+`data.dataSequenceNumber <= delete.dataSequenceNumber`. This is not a structural check —
+it is how Iceberg makes a concurrent append and a concurrent position-delete *commute*. A
+delete file written at sequence number `N` was prepared against a snapshot whose data files
+all have sequence number `<= N`. Any data file with sequence number `> N` was added by a
+transaction the delete's author never saw, so applying the delete to it would tombstone
+rows that were never examined. The sequence number is the delete's "as-of" watermark.
 
-**Decision:** in every rewritten snapshot, write
+The rewrite deliberately inverts that invariant: its delete vectors reference `C_B`'s files,
+written long *after* the snapshot they are being stamped into. The check is doing its job
+by rejecting them. What licenses the bypass is exactly the compaction map — it proves the
+target rows are the *same rows*, relocated, not rows the original transaction never saw.
+That is the assertion §4.1 confines to `SnapshotRewriteUnsafe`.
 
-- data files (both `C_B`'s and resurrection files) as `EXISTING` entries with
-  `dataSequenceNumber = baseSeq`, where `baseSeq` = the sequence number of the oldest
-  snapshot in the window;
-- delete files with `dataSequenceNumber = σ_k`, the rewritten snapshot's own sequence
-  number.
+**The failure mode differs by format version, and v2 — our phase-1 target — fails silently:**
 
-Since `baseSeq <= σ_0 < σ_k` for every rewritten snapshot, every delete applies. This also
-handles the cross-step case: resurrection file `g_k` is created by `T_k⁻¹` but deleted from
-by `T_j⁻¹` for `j < k`, i.e. by a delete stamped `σ_{j-1} < σ_{k-1}`; stamping all data at
-`baseSeq` keeps that ordering valid.
+- **v2 position deletes**: `DeleteFileIndex.PositionDeletes.filter(seq)`
+  (`DeleteFileIndex.java:659`) slices a sequence-sorted array from `findStartIndex`
+  (`DeleteFileIndex.java:620`). Delete files with `seq < dataFile.seq` are simply not in
+  the returned slice. No exception, no log line — the deletes are dropped and the deleted
+  rows reappear in the scan.
+- **v3 DVs**: `findDV` (`DeleteFileIndex.java:199`) raises `ValidationException` when
+  `dv.dataSequenceNumber() < seq` (`:207`). Loud failure.
 
-`ManifestWriter.existing(file, snapshotId, dataSeq, fileSeq)` (`ManifestWriter.java:154`)
-gives the required control.
+Because phase 1 is v2, a mis-stamped rewrite produces a *plausible table that reads wrong*.
+This makes the §8.2 oracle and the §8.4 round-trip load-bearing rather than confirmatory,
+and it is the single strongest argument for the non-destructive default in §4.4.
 
-**This is a spec deviation** and must be documented: one physical data file carries
+**Decision (per-snapshot stamping):** in each rewritten snapshot `S_k`, stamp *everything* —
+`C_B`'s data files, the resurrection files, and the delete files — at `σ_k`, that snapshot's
+own sequence number. Since the comparison is `<=`, equality passes, and every delete
+applies to every data file in the snapshot, which is precisely what a rewritten snapshot
+wants. The rule states in one line: **a rewritten snapshot stamps its entire contents at its
+own sequence number**, as though every file had been added by it. `ManifestWriter.existing(
+file, snapshotId, dataSeq, fileSeq)` (`ManifestWriter.java:154`) provides the control.
+
+This also handles the cross-step case without a special rule: resurrection file `g_k` is
+created by `T_k⁻¹` but deleted from by `T_j⁻¹` for `j < k`; in snapshot `S_{j-1}` both are
+stamped `σ_{j-1}` and the delete applies.
+
+**This is a spec deviation** and is documented as such: one physical data file carries
 different `data_sequence_number` values in different snapshots. It is correct for
-single-snapshot reads (readers only compare within one snapshot's file set) and meaningless
-for incremental scans across the window — which the design already breaks (§4.6).
+single-snapshot reads — readers only compare within one snapshot's file set — and
+meaningless for incremental scans across the window, which the design already breaks (§4.6).
 
 ### 4.3 `D_k` is a set difference, not the commit delta
 
-A transaction may re-delete an already-dead position; delete files are idempotent and
-overlapping delete sets are legal. Taking `D_k` = "positions in the delete files `T_k`
-added" would resurrect rows that were *already dead* at `S_{k-1}`, **adding rows that never
-existed in that state**. `D_k` must be computed as `live(S_{k-1}) \ live(S_k)` from
-materialized live sets, via `DeleteFileIndex` at each snapshot.
+*This is reconstruction arithmetic, not a claim about isolation.* Whatever produced the
+history, the delete sets recorded in it can overlap, so `D_k` must be computed as
+`live(S_{k-1}) \ live(S_k)` from materialized live sets rather than read off the delete
+files `T_k` added. Taking the commit delta would resurrect rows that were *already dead* at
+`S_{k-1}`, **inserting rows that never existed in that state**. The same reasoning applies
+to whole-file removal: if `T_k` drops a data file outright, `D_k` gains the file's rows
+*live at `S_{k-1}`*, not all of its rows.
 
-Same reasoning for whole-file removal: if `T_k` drops a data file outright, `D_k` gains the
-file's rows *live at `S_{k-1}`*, not all of its rows.
+Overlapping delete sets are not exotic. They arise from a single writer (a `MERGE` that
+deletes an already-deleted row, a retry after partial failure, a
+`DeleteGranularity.PARTITION` rewrite), and they arise from concurrency.
 
-### 4.4 Reclaim needs its own step
+**Background, since the concurrency case invites the question:** Iceberg does not implement
+item-level write-write conflict detection for row deletes at any isolation level. Under
+`snapshot` isolation a `RowDelta` validates `validateDataFilesExist` — that the data files
+it references are still present — and optionally `validateDeletedFiles`; it never compares
+positions, so two concurrent deletes of the same row both commit. Textbook SI, under
+first-committer-wins on the same item, would abort the second. Iceberg is weaker here.
+Under `serializable` it adds `validateNoNewDeleteFiles` / `validateAddedDataFiles`
+(`MergingSnapshotProducer.java:658`, `:366`), which are *coarser*, not finer: any delete
+file added since the base snapshot that could apply to records matching the conflict filter
+aborts the commit, at file/partition granularity. So the row-level overlap is never
+detected, and the file-level check over-approximates.
 
-`ExpireSnapshots`/`RemoveSnapshots` only delete files reachable from *expired* snapshots.
-After a rewrite the detached files are reachable from *no* snapshot, so nothing ever deletes
-them. Additionally, entries in `TableMetadata.previousFiles` (the metadata log) still point
-at metadata JSONs that reference the old manifest lists.
+**Validation cost**, since it was asked: it is a manifest scan, not a data scan.
+`validationHistory` (`MergingSnapshotProducer.java:972`) walks snapshots from the base to
+the current head collecting `DELETES`-content manifests from the relevant operations, then
+builds a `DeleteFileIndex` over their entries with partition-set and expression pruning. Cost
+is roughly *(snapshots since base) × (delete manifests per snapshot)* manifest reads, with
+no data file access. Cheap next to the write itself; it degrades when a writer holds a stale
+base across many commits, which is the same condition that makes compaction maps worth
+having.
 
-**Decision:** the rewriter returns an explicit reclaim manifest — old data files, delete
-files, manifests, and manifest lists — and deletion is a separate, opt-in call. The reclaim
-step must refuse to delete anything still referenced by a retained metadata-log entry, or
-the rewrite must trim the metadata log; the prototype does the former and reports what it
-withheld.
+### 4.4 The prototype does not commit — it reports
 
-### 4.5 Row lineage blocks v3 (deferred to phase 2)
+Reclaim was the motivation for the design, so what the prototype most needs to establish is
+*how much there is to reclaim*, not that it can mutate a table in place. Committing a
+whole-metadata swap is also where the §4.2 silent-failure mode does its damage.
+
+**Decision: the prototype is non-destructive by default.** It builds the rewritten snapshots
+for real — resurrection data files, delete files, manifests, manifest lists, and a complete
+`TableMetadata` — but never calls `TableOperations.commit`. The synthesized metadata is
+exposed as a read-only `Table` so the full oracle runs against genuine Iceberg scan planning:
+
+```java
+SnapshotRewriteResult result = SnapshotRewrite.forTable(table).plan().materialize();
+Table shadow = result.asTable();      // BaseTable over synthesized metadata, never committed
+result.report();                       // savings, per-snapshot breakdown
+result.commit();                       // opt-in, phase 4
+```
+
+The source table is untouched, so a failed or wrong rewrite costs only scratch files.
+
+**The report is the phase-1 deliverable.** Per window and per snapshot:
+
+```
+window  C_A(snap 8812…) .. C_B(snap 9930…)   6 snapshots
+  reclaimable   -412.6 MiB   (C_A outputs 388.1, interstitial data 21.3, deletes 3.2)
+  resurrected   + 31.4 MiB   (2 files, 41,802 rows)
+  delete files  +  0.9 MiB   (6 files, 118,447 positions)
+  net           -380.3 MiB   (92.2% of reclaimable)
+  rows          inserted 512,338   deleted 41,802   dead-ratio 0.076
+```
+
+`net ≈ |C_B| − |deletes|` is the §2.3 prediction; printing both the prediction and the
+measurement makes the accounting claim falsifiable on real tables rather than only in tests.
+A `--dry-run` mode stops after planning and estimates from manifest metadata alone
+(`record_count`, `file_size_in_bytes`), writing nothing at all — cheap enough to run across
+a whole table's history to find windows worth rewriting.
+
+### 4.5 Row lineage blocks v3 (deferred)
 
 `TableMetadata.Builder.addSnapshot` requires `firstRowId != null` for format ≥ 3, and
 materialized `_row_id` write support exists only in the Spark layer
@@ -239,17 +331,19 @@ The post accepts all of these. P7's age threshold is the operational mitigation.
 
 ```
 core (package org.apache.iceberg — package-private access required)
-  SnapshotRewrite.java            public entry point + Result
+  SnapshotRewrite.java            public entry point; fluent builder
+  SnapshotRewriteUnsafe.java      §4.1 — the ONLY file touching package-private state
   SnapshotRewritePlanner.java     metadata-only planning; produces SnapshotRewritePlan
   SnapshotRewritePlan.java        immutable: per-snapshot deletes, resurrection requests,
                                   manifest layout, reclaim list, cost estimate
+  SnapshotRewriteResult.java      materialized output: asTable(), report(), commit()
+  SnapshotRewriteReport.java      §4.4 savings accounting, predicted vs measured
   LiveRowIndex.java               live positions per data file at a snapshot (DeleteFileIndex)
   RowLocator.java                 loc_k; run-compressed (start dense, optimize later)
   ResurrectionRequest.java        (spec, partition, schema, ordered List<SourceRowRef>)
   RowResurrector.java             SPI: materialize(ResurrectionRequest) -> DataFile
   SnapshotRewriteWriter.java      writes delete files, manifests, manifest lists
-  SnapshotRewriteCommitter.java   rebuilds TableMetadata; TableOperations.commit
-  SnapshotRewriteReclaim.java     opt-in deletion of the detached file set
+  SnapshotRewriteReclaim.java     opt-in deletion of the detached file set (phase 4)
 
 data (iceberg-data)
   data/src/main/java/org/apache/iceberg/data/GenericRowResurrector.java
@@ -260,21 +354,34 @@ data (iceberg-data)
 
 Layering rationale: core cannot read data rows (no Parquet/ORC record reader), so
 materialization is an SPI. `GenericRowResurrector` serves the local tests; a Spark
-implementation is the obvious phase-3 follow-on for scale.
+implementation is the obvious follow-on for scale.
 
-### 5.1 Catalog compatibility
+### 5.1 The shadow table
 
-Direct `TableMetadata` reconstruction works with `HadoopTables`, `HadoopCatalog`,
-`TestTables`, and any `TableOperations` that accepts a whole-metadata swap. It is **not**
+`SnapshotRewriteResult.asTable()` returns a `BaseTable` over a `TableOperations` that serves
+the synthesized `TableMetadata` and refuses `commit`. Reads go through unmodified Iceberg
+scan planning — `DeleteFileIndex`, manifest filtering, sequence-number matching — so the
+oracle exercises exactly the code paths that would run against a committed table, including
+the §4.2 stamping rule, without ever mutating the source table.
+
+This is what makes the §4.2 silent-failure mode testable: a mis-stamped delete file is
+dropped by `PositionDeletes.filter` during shadow-table planning exactly as it would be on a
+real table, and the oracle catches the reappearing rows.
+
+### 5.2 Catalog compatibility
+
+`commit()` (phase 4) needs a whole-metadata swap, which works with `HadoopTables`,
+`HadoopCatalog`, `TestTables`, and any `TableOperations` accepting one. It is **not**
 expressible in the REST catalog protocol, which has no `MetadataUpdate` for replacing a
 snapshot. A production version would need a new update type (`replace-snapshot`) — worth
-noting in the post as a spec-level ask.
+raising in the post as a concrete spec-level ask. The non-destructive path (§4.4) has no
+such constraint and works against any catalog.
 
 ---
 
 ## 6. Algorithm
 
-**Phase A — plan (metadata only, no IO beyond manifests):**
+**Phase A — plan (metadata only; this is all `--dry-run` executes):**
 
 1. Locate `C_B`: newest snapshot whose manifests carry a `compactionMapLocation`
    (`ManifestFile.compactionMapLocation()`, field 521). Load via `CompactionMaps.read`.
@@ -283,28 +390,31 @@ noting in the post as a spec-level ask.
 4. Build `loc_n` from the map, composing through `CompactionMapChain` /
    `CompactionMaps.compose` if the window contains more than one compaction.
 5. For `k = n .. 1`: compute `live(S_k)`, `live(S_{k-1})` via `LiveRowIndex`; derive `I_k`,
-   `D_k`; emit position deletes at `loc_k(I_k)`; emit a `ResurrectionRequest` per
+   `D_k` (§4.3); emit position deletes at `loc_k(I_k)`; emit a `ResurrectionRequest` per
    (spec, partition) for `D_k`; update `loc`.
-6. Accumulate per-snapshot file sets and the reclaim list.
+6. Accumulate per-snapshot file sets, the reclaim list, and the estimated report from
+   manifest metadata (`record_count`, `file_size_in_bytes`) — no data read.
 
 **Phase B — materialize:** call the `RowResurrector` for each request. Resurrection files
 are grouped by partition and ordered deterministically (source path, then position) so runs
 are reproducible and diffable.
 
 **Phase C — write deletes:** one position-delete file per rewritten snapshot per partition,
-sorted by `(path, pos)` via `SortingPositionOnlyDeleteWriter`. (Phase 2: a DV per data file
+sorted by `(path, pos)` via `SortingPositionOnlyDeleteWriter`. (Later: a DV per data file
 per snapshot.)
 
 **Phase D — write manifests:** per rewritten snapshot, a data manifest and a delete
-manifest, then a manifest list. Sequence-number stamping per §4.2.
+manifest, then a manifest list. Everything stamped at `σ_k` per §4.2.
 
-**Phase E — swap:** rebuild `TableMetadata`, preserving for every rewritten snapshot its
-`snapshot-id`, `parent-snapshot-id`, `sequence-number`, `timestamp-ms`, `schema-id`, and
-`operation`; replacing `manifest-list`; recomputing `total-*` summary fields; adding
-`snapshot-rewritten-from` = the original manifest-list location. Commit.
+**Phase E — synthesize metadata (no commit):** build `TableMetadata` preserving for every
+rewritten snapshot its `snapshot-id`, `parent-snapshot-id`, `sequence-number`,
+`timestamp-ms`, `schema-id`, and `operation`; replacing `manifest-list`; recomputing
+`total-*` summary fields; adding `snapshot-rewritten-from` = the original manifest-list
+location. Return it as `SnapshotRewriteResult`. **Stop here by default.**
 
-**Phase F — reclaim (opt-in, separate call):** delete the detached set, minus anything
-still reachable from a retained metadata-log entry.
+**Phase F — commit + reclaim (opt-in, phase 4):** `TableOperations.commit(base, rewritten)`,
+then delete the detached set minus anything still reachable from a retained metadata-log
+entry.
 
 ---
 
@@ -314,7 +424,8 @@ still reachable from a retained metadata-log entry.
 snapshot-rewrite.enabled                 = false
 snapshot-rewrite.min-age-ms              = 86400000   # P7: don't rewrite recent snapshots
 snapshot-rewrite.max-dead-ratio          = 0.5        # P8 cost guard
-snapshot-rewrite.reclaim                 = false      # phase F is opt-in
+snapshot-rewrite.commit                  = false      # §4.4 — non-destructive by default
+snapshot-rewrite.reclaim                 = false      # phase F is separately opt-in
 ```
 
 ---
@@ -326,6 +437,10 @@ end-to-end row-level tests in `data/src/test/java/org/apache/iceberg/data/snapre
 (the `data` module already depends on `iceberg-core` `testArtifacts`, so `TestTables` is
 available alongside `IcebergGenerics`, `FileHelpers`, and `GenericAppenderHelper`).
 
+Because the rewrite is non-destructive, **no test mutates its source table** — every case
+compares the original against the shadow table (§5.1). A bug costs scratch files, not a
+corrupted fixture, and a failing test leaves both representations intact for inspection.
+
 ### 8.1 Harness
 
 - `LocalCompactor` — test utility performing a real bin-pack compaction: reads each source
@@ -333,17 +448,17 @@ available alongside `IcebergGenerics`, `FileHelpers`, and `GenericAppenderHelper
   and commits through `RewriteDataFilesCommitManager` with `FilePositionMapping`s so a
   **real** compaction map is produced and attached. Not a hand-built map.
 - `SnapshotRewriteTestBase` — builds a table, runs a scripted or generated workload,
-  compacts, rewrites, and diffs.
+  compacts, rewrites into a shadow table, and diffs.
 
 ### 8.2 The oracle
 
 For **every** snapshot id in the table, not just the window:
 
-```
-before = { id -> multiset(IcebergGenerics.read(t).useSnapshot(id)) }   # pre-rewrite
-rewrite()
-after  = { id -> multiset(IcebergGenerics.read(t).useSnapshot(id)) }   # post-rewrite
-assert before.equals(after)
+```java
+for (long id : allSnapshotIds(original)) {
+  assertThat(multiset(IcebergGenerics.read(shadow).useSnapshot(id).build()))
+      .isEqualTo(multiset(IcebergGenerics.read(original).useSnapshot(id).build()));
+}
 ```
 
 Multiset, not set — Iceberg tables may contain duplicate rows and the rewrite preserves
@@ -366,36 +481,55 @@ rows by position, not by value. Plus, per snapshot: `total-records` summary unch
 | 10 | A transaction whose every inserted row dies before `C_B` | Full resurrection of an interstitial file |
 | 11 | Delete of every row in a file (file empty in `C_B`) | Empty-mapping edge case |
 | 12 | Partial compaction — `C_B` leaves some files untouched | `loc` identity for unmapped files |
-| 13 | Two compactions inside the window (chained maps) | `CompactionMapChain` composition (phase 3) |
+| 13 | Two compactions inside the window (chained maps) | `CompactionMapChain` composition |
 | 14 | Empty / no-op commit in the window | Degenerate step |
 | 15 | Interleaved appends from two writers | Ordering independence |
 | 16 | Duplicate rows across snapshots | Multiset oracle |
 
-### 8.4 Structural assertions (`TestSnapshotRewriteReclaim`)
+### 8.4 Structural assertions (`TestSnapshotRewriteStructure`)
 
+- **Sequence-number stamping** (`TestSnapshotRewriteSequenceNumbers`) — the §4.2 mechanism
+  gets its own test rather than relying on the oracle to catch it indirectly:
+  - every delete file in a rewritten snapshot is returned by
+    `DeleteFileIndex.forDataFile` for every data file it references — asserted directly,
+    not inferred from row counts;
+  - a deliberately mis-stamped variant (deletes at `σ_k`, data left at `σ_B`) is
+    constructed in the test and asserted to **fail** the oracle, proving the oracle can
+    see the silent-drop failure mode and is not vacuously green.
 - **No remaining dependency:** for every rewritten snapshot, the set of referenced files
   intersected with (`C_A`'s outputs ∪ interstitial adds) is empty.
-- **Storage:** reachable bytes after ≈ `|C_B| + |dead rows| + |deletes|`, and the saving
-  vs. before is within tolerance of `|C_B|` (§2.3).
-- **Reclaim safety:** every file in the reclaim list is unreachable from every snapshot and
-  from every retained metadata-log entry.
-- **Expire interop:** `ExpireSnapshots` on the oldest rewritten snapshot deletes nothing
-  still needed; re-run the oracle afterward.
-- **Round-trip:** `TableMetadataParser.toJson` → `fromJson` → re-run the oracle, proving
-  the synthesized metadata survives a real reload.
+- **Storage:** measured `net` matches the §2.3 prediction `|C_B| − |deletes|` within
+  tolerance; the report's own predicted-vs-measured line is asserted consistent.
+- **Reclaim safety:** every file in the reclaim list is unreachable from every snapshot in
+  the shadow metadata and from every retained metadata-log entry.
+- **Round-trip:** `TableMetadataParser.toJson` → `fromJson` → re-run the oracle, proving the
+  synthesized metadata survives a real reload (§4.1: the parser does not re-validate, so
+  this is a genuine check).
+- **Source untouched:** the original table's metadata file and every reachable file are
+  byte-identical after the rewrite.
+- **Expire interop** (phase 4, once `commit()` exists): `ExpireSnapshots` on the oldest
+  rewritten snapshot deletes nothing still needed; re-run the oracle afterward.
 
 ### 8.5 Refusal tests (`TestSnapshotRewriteSkips`)
 
 One test per precondition P1–P8: construct the violating history, assert the rewrite
-refuses, assert **the table is byte-identical to before** (nothing partially committed),
-and assert the reported reason names the right precondition.
+refuses, assert nothing was written outside the scratch location, and assert the reported
+reason names the right precondition.
 
-### 8.6 Fuzz (`TestSnapshotRewriteFuzz`)
+### 8.6 Report tests (`TestSnapshotRewriteReport`)
+
+- `--dry-run` estimate is within tolerance of the materialized measurement on the same
+  workload, across the §8.3 matrix.
+- Degenerate windows report honestly: an insert-only window reports `resurrected = 0`; a
+  window that deletes nearly everything reports a `net` near zero and trips P8.
+
+### 8.7 Fuzz (`TestSnapshotRewriteFuzz`)
 
 Seeded random workloads over the op mix in §8.3, modeled on
 `benchmark/compaction-baseline`'s `WorkloadGenerator` but local and v2. Per seed: generate,
-compact, rewrite, run the full oracle over all snapshots. Log the anchor seed so failures
-reproduce, following the convention already established in the compaction-baseline fuzzer.
+compact, rewrite into a shadow table, run the full oracle over all snapshots, and check the
+report's predicted-vs-measured accounting. Log the anchor seed so failures reproduce,
+following the convention already established in the compaction-baseline fuzzer.
 
 ---
 
@@ -403,11 +537,15 @@ reproduce, following the convention already established in the compaction-baseli
 
 | Phase | Content | Exit criterion |
 |-------|---------|----------------|
-| 1 | v2, unpartitioned, single window, no chaining. Planner + committer + `GenericRowResurrector`. Tests 8.3 #1–11, 14–16; 8.4; 8.5 | Oracle green; figure example reproduces |
-| 2 | Partitioned tables; partial compaction (#12); reclaim step wired | 8.4 reclaim assertions green |
-| 3 | Chained maps inside the window (#13); recursive windows back through older compactions | Multi-window oracle green |
-| 4 | v3 / DVs: materialized `_row_id` in the resurrection writer, `first-row-id` reconstruction, P1 lifted | v3 oracle green including `_row_id` stability |
-| 5 | Spark `RowResurrector` for scale; cost model measurement | — |
+| 1 | v2, unpartitioned, single window, no chaining. Planner + shadow materialization + `GenericRowResurrector` + report. Non-destructive throughout. Tests 8.3 #1–11, 14–16; 8.4; 8.5; 8.6 | Oracle green against shadow table; figure example reproduces; mis-stamp test fails as designed |
+| 2 | Partitioned tables; partial compaction (#12); chained maps in-window (#13); recursive windows back through older compactions | Multi-window oracle green |
+| 3 | Fuzz (8.7) at volume; `--dry-run` swept across a real table's history to characterize which windows are worth rewriting | Predicted-vs-measured accounting holds on generated workloads |
+| 4 | `commit()` + reclaim: metadata swap, detached-file deletion, `ExpireSnapshots` interop | Committed table passes the same oracle; expire interop green |
+| 5 | v3 / DVs: materialized `_row_id` in the resurrection writer, `first-row-id` reconstruction, P1 lifted | v3 oracle green including `_row_id` stability |
+| 6 | Spark `RowResurrector` for scale; cost model measurement on real tables | — |
+
+Phases 1–3 never write to a user's table. `commit()` does not exist as a code path until
+phase 4, by which point the oracle, the mis-stamp test, and the fuzzer are all in place.
 
 ---
 
@@ -415,11 +553,17 @@ reproduce, following the convention already established in the compaction-baseli
 
 1. **Should `total-records` be the invariant, or full summary fidelity?** The prototype
    asserts `total-records` and recomputes the rest. Anything stricter conflicts with §4.6.
-2. **Metadata-log trimming.** Reclaim is blocked by retained metadata JSONs. Trim the log
-   as part of the rewrite, or accept delayed reclaim? Prototype accepts delay and reports.
+2. **Metadata-log trimming.** Reclaim (phase 4) is blocked by retained metadata JSONs. Trim
+   the log as part of the rewrite, or accept delayed reclaim? Prototype accepts delay and
+   reports what it withheld.
 3. **REST catalog.** A production design needs a `replace-snapshot` metadata update. Worth
    raising in the post as a concrete spec ask.
 4. **Recursion depth.** Rewriting back through many compactions accumulates resurrection
    files; each older window resurrects rows that died in *its* window. The §2.3 accounting
-   holds per window, but the aggregate should be measured before recommending deep
+   holds per window, but the aggregate should be measured (phase 3) before recommending deep
    recursion.
+5. **Is per-snapshot stamping the right choice over a single `baseSeq`?** Both satisfy
+   `data.seq <= delete.seq`. Per-snapshot is simpler to state and makes each rewritten
+   snapshot internally uniform; a shared `baseSeq` would give each physical file only two
+   distinct sequence numbers table-wide instead of one per rewritten snapshot. Neither is
+   spec-legal; the choice is about which is easier to audit.
