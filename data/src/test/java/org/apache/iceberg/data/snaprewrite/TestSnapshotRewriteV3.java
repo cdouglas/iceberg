@@ -222,6 +222,40 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
   }
 
   /**
+   * The end-to-end property: identities unchanged across the whole history.
+   *
+   * <p>This is what the rewrite is ultimately claiming, and until the harness could preserve row
+   * lineage through a compaction it was not testable -- {@link LocalCompactor} let Iceberg assign a
+   * fresh range and renumbered every row at every compaction, so the ids differed for reasons that
+   * had nothing to do with rewriting. With the compaction materializing ids, this compares what each
+   * snapshot reported before the rewrite against what it reports after.
+   */
+  @Test
+  public void rowIdentitiesAreUnchangedAcrossTheHistory() throws IOException {
+    useFormatVersion(3);
+
+    append(records(1, 6, "base"));
+    compact();
+    append(records(10, 3, "alpha"));
+    append(records(20, 3, "beta"));
+    compact();
+
+    Map<Long, List<String>> before = Maps.newLinkedHashMap();
+    for (Snapshot snapshot : table.snapshots()) {
+      before.put(snapshot.snapshotId(), identitiesAt(table, snapshot.snapshotId()));
+    }
+
+    SnapshotRewriteResult result = rewrite();
+    Table shadow = result.asTable();
+
+    for (Map.Entry<Long, List<String>> entry : before.entrySet()) {
+      assertThat(identitiesAt(shadow, entry.getKey()))
+          .as("snapshot %s must report the same row ids after the rewrite", entry.getKey())
+          .isEqualTo(entry.getValue());
+    }
+  }
+
+  /**
    * A v3 window that would have to recover rows is refused.
    *
    * <p>Recovering a row means writing it into a new file, and without a materialized {@code _row_id}

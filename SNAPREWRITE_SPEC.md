@@ -399,7 +399,19 @@ support recovery on v3** -- which is what P1b does.
 
 Note that the same writer capability is a prerequisite for a lineage-preserving *compaction* in the
 generic path, for the same reason: merging files whose row-id ranges are not contiguous cannot be
-expressed by one `first_row_id`. So materializing `_row_id` is not a rewrite-specific cost.
+expressed by one `first_row_id`. So materializing `_row_id` is not a rewrite-specific cost -- which is
+why it was built first (`GenericRowLineage`), and why `LocalCompactor` now uses it. With a
+lineage-preserving compaction in the harness, the end-to-end property is finally testable and holds
+(`TestSnapshotRewriteV3#rowIdentitiesAreUnchangedAcrossTheHistory`).
+
+Two mechanics the read path imposes on any writer doing this:
+
+- A materialized `_row_id` is only honoured when the file *also* carries a `first_row_id`.
+  `ParquetValueReaders.rowIds` returns nulls without one, so the column is written but never read.
+  Any value works; nothing derives from it.
+- Reading `_row_id` back out of a file needs that same `first_row_id` supplied as a constant
+  (`buildReader(schema, fileSchema, idToConstant)`). A plain projection silently discards the column,
+  which is why the harness's raw reader has to pass it explicitly.
 
 ### 4.6 What the rewrite legitimately destroys
 
@@ -645,7 +657,8 @@ the fuzzer is not passing by declining to work.
 | 3 | Fuzz at volume; `--dry-run` accounting | **done** -- 20 seeds, all rewrite (none trivially refuse), windows of 4-8 snapshots |
 | 4 | `commit()` + reclaim; `ExpireSnapshots` interop | **done** -- `TestSnapshotRewriteCommit` |
 | 5a | v3 with deletion vectors, gated on windows that recover nothing | **done** -- `TestSnapshotRewriteV3` |
-| 5b | v3 recovery: materialized `_row_id`, `first-row-id` reconstruction, P1b lifted | not started |
+| 5b | Generic materialized `_row_id` (`GenericRowLineage`), lineage-preserving compaction in the harness, end-to-end identity oracle | **done** |
+| 5c | v3 recovery: resurrection files with materialized ids, P1b lifted | not started |
 | 6 | Spark `RowResurrector` for scale; cost model on real tables | not started |
 
 ---
