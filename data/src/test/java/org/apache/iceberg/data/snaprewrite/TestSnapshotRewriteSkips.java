@@ -29,7 +29,10 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.PartitionKey;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.StructLike;
+import org.apache.iceberg.data.InternalRecordWrapper;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
@@ -97,13 +100,17 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
 
   @Test
   public void refusesPartitionSpecChange() throws IOException {
-    append(records(1, 4, "base"));
+    usePartitionSpec(PartitionSpec.builderFor(SCHEMA).identity("data").build());
+    append(partitionValue("east"), records(1, 3, "east"));
     compact();
 
-    append(records(10, 2, "alpha"));
-    table.updateSpec().addField("id").commit();
+    append(partitionValue("east"), records(10, 2, "east"));
+    table.updateSpec().removeField("data").commit();
     table.refresh();
-    append(records(20, 2, "beta"));
+
+    // Written under the new spec, so the window spans two layouts. A resurrection file can only be
+    // partitioned one way, and rows recovered from the old layout have no place in the new one.
+    append(records(20, 2, "flat"));
     compact();
 
     assertRefusedWith(table, RewriteRefusal.SPEC_CHANGED);
@@ -206,6 +213,12 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
   }
 
   // ------------------------------------------------------------------ helpers
+
+  private StructLike partitionValue(String value) {
+    PartitionKey key = new PartitionKey(table.spec(), SCHEMA);
+    key.partition(new InternalRecordWrapper(SCHEMA.asStruct()).wrap(record(0, value)));
+    return key;
+  }
 
   private void assertRefusedWith(Table target, RewriteRefusal expected) {
     List<String> before = filesUnder(target.location());
