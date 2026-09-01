@@ -112,17 +112,47 @@ and      |C_A| + |window inserts| = |C_B| + |dead|
 **Retaining the history costs one full copy of the table less than it did**, less what the
 delete vectors cost.
 
-That second term is not a rounding error, and measuring it changed the picture. Every rewritten
-snapshot must delete every row inserted after it, so over a window of `m` transactions each
-inserting `r` rows the total is on the order of `r · m² / 2` positions. On a measured 30k-row
-window (`TestSnapshotRewriteReport`) the deletes came to well over half the saving. Two
-consequences: **rewrite often rather than letting history pile up between compactions**, and the
-economics are a per-window question the report has to answer, not a property of the design.
+Every rewritten snapshot must delete every row inserted after it, so over a window of `m`
+transactions each inserting `r` rows the delete vectors hold on the order of `r · m² / 2` positions.
+That growth is real, but **whether it matters is decided by bytes per row, not by window length.** A
+delete position costs about a byte however wide the row is:
+
+| rows | schema | delete positions | delete bytes / saving |
+|---|---|---|---|
+| 30k (`TestSnapshotRewriteReport`) | 2 columns, ~3 B/row | 20k | **57%** |
+| 80k (`TestSnapshotRewriteScale`) | 20 columns, ~300 B/row | 100k | **0.7%** |
+
+So on narrow rows the delete term dominates and short windows matter; on realistic row widths it
+disappears. The economics are a per-window, per-table question the report has to answer, not a
+property of the design.
 
 Below a certain scale the rewrite simply loses. Each rewritten snapshot needs a manifest and a
 manifest list -- several KiB of Avro apiece -- so a table whose data files are smaller than its
 metadata pays more than it reclaims. The report prints the negative rather than hiding it
 (`TestSnapshotRewriteReport#insertOnlyWindowReportsNoResurrection`).
+
+**Measured, at the largest scale that runs in a unit test** (`TestSnapshotRewriteScale`: 60k base
+rows, five transactions inserting 4k each, clustered deletes, 20-column rows):
+
+```
+died 854   resurrected 854          each dead row materialized exactly once
+reclaimable  18.39 MiB
+added         0.58 MiB              resurrected 0.22 + deletes 0.12 + metadata 0.24
+saved        17.81 MiB
+predicted    18.02 MiB              one copy of the compacted table
+             -> saved is 98.8% of the prediction
+plan + materialize   1.7 s
+```
+
+The accounting argument holds to about one percent once data outweighs metadata. This is not a
+substitute for a real history -- 80k rows in one file is not a production layout, and nothing here
+exercises object-store latency or a table whose window is hundreds of commits deep -- but it does move
+the claim off arithmetic and toy tables.
+
+**The induction is row-at-a-time.** 1.7 s for an 80k-row window is fine; it is also linear in rows,
+because each inserted row is located individually through the compaction map. `PositionDeleteRemapper`
+already offers bulk remapping (`remapPositionsBulk`), and switching the planner to it is the change a
+distributed implementation needs -- more than it needs distribution.
 
 The corollary is the cost model: the rewrite reads and rewrites every row that died in the
 window. A window whose transactions delete most of the table is expensive and saves
@@ -670,7 +700,8 @@ the fuzzer is not passing by declining to work.
 | 5a | v3 with deletion vectors, gated on windows that recover nothing | **done** -- `TestSnapshotRewriteV3` |
 | 5b | Generic materialized `_row_id` (`GenericRowLineage`), lineage-preserving compaction in the harness, end-to-end identity oracle | **done** |
 | 5c | v3 recovery: resurrection files with materialized ids, P1b gated on capability | **done** |
-| 6 | Spark `RowResurrector` for scale; cost model on real tables; window discovery for a recurring pass (§12) | not started |
+| 6 | Window discovery and pricing for a recurring pass (§12.3); accounting measured where data outweighs metadata | **done** -- `SnapshotRewriteSurvey`, `TestSnapshotRewriteScale` |
+| 7 | Bulk remapping in the planner; Spark `RowResurrector`; evidence from a real history | not started (§13) |
 
 ---
 
@@ -834,3 +865,25 @@ real implementation has to answer, and the report is what answers it per table.
 - **Idempotence that is not "skip if rewritten".** `SnapshotRewriteRestore.isRewritten` says a
   snapshot has been moved, but a moved snapshot may still need moving again. The condition to skip on
   is whether it is already expressed against the newest compaction.
+
+---
+
+## 13. What is left, and what is blocked
+
+**Bulk remapping in the planner.** The induction locates every inserted row individually, so its cost
+is linear in rows rather than in runs -- which is the whole point of a compaction map.
+`PositionDeleteRemapper.remapPositionsBulk` and the strategy selector already exist for exactly this.
+This is a bigger lever on scale than distribution is, and it is local work.
+
+**Spark `RowResurrector`.** Deliberately not started. The Spark path needs to read specific
+`(file, position)` rows, and `SparkCompactionConflictResolver` is not a template for it -- that reads
+position-delete metadata tables, not data files by offset. So it is new code, and until there is a
+real history to run it against it cannot be validated for the only thing it buys, which is scale. The
+SPI is three methods and the generic implementation is proven against all of them, so nothing about
+the interface is at risk while this waits.
+
+**Evidence from a real history: blocked here, not blocked for you.** This needs tables this session
+does not have. What phase 6 delivers instead is the tooling to get it: `SnapshotRewriteSurvey.survey`
+prices every available reach on a real table, writing nothing, and each candidate carries a full
+report. Pointing that at a production history is the measurement that would settle §2.3, §12.2, and
+whether any of this pays.
