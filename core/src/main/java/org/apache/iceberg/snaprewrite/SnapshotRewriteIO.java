@@ -32,6 +32,20 @@ import org.apache.iceberg.deletes.PositionDeleteIndex;
 public interface SnapshotRewriteIO {
 
   /**
+   * Whether {@link #resurrect} preserves each row's {@code _row_id}.
+   *
+   * <p>Recovering a row means writing it into a new file, and under v3 its identity survives only if
+   * the id is written out per row. An implementation that cannot do that is still usable on v2, where
+   * there is no lineage to lose; the planner refuses a v3 window that would recover rows rather than
+   * letting it through with silently renumbered rows.
+   *
+   * <p>Defaults to false so that an implementation has to claim the capability deliberately.
+   */
+  default boolean preservesRowLineage() {
+    return false;
+  }
+
+  /**
    * Loads the positions deleted in a data file by the given delete files.
    *
    * @param deleteFiles delete files that apply to the data file
