@@ -252,9 +252,9 @@ layers.
 | The locator (`loc_k`): compaction maps plus a recovery overlay | `core/.../snaprewrite/RowLocator.java` |
 | Live positions per data file at a snapshot | `core/.../snaprewrite/PositionSet.java` |
 | Which map a snapshot actually wrote | `core/.../snaprewrite/CompactionMapLookup.java` |
-| Manifests, manifest lists, sequence-number stamping | `core/.../snaprewrite/SnapshotRewriteWriter.java` |
+| Manifests, manifest lists, sequence-number stamping, dropping statistics | `core/.../snaprewrite/SnapshotRewriteWriter.java` |
 | Shadow table, `commit()`, `reclaim()`, `discard()` | `core/.../snaprewrite/SnapshotRewriteResult.java` |
-| Undo | `core/.../snaprewrite/SnapshotRewriteRestore.java` |
+| Undo, and re-attaching detached statistics | `core/.../snaprewrite/SnapshotRewriteRestore.java` |
 | Pricing every reach | `core/.../snaprewrite/SnapshotRewriteSurvey.java` |
 | Savings accounting | `core/.../snaprewrite/SnapshotRewriteReport.java` |
 | Package-private escape hatches, one per assertion | `core/.../SnapshotRewriteUnsafe.java` |
@@ -374,6 +374,35 @@ Two read-path mechanics worth knowing:
 What the rewrite guarantees is that a rewritten snapshot reports the identities *the compaction*
 reports; whether those match a row's original ids is the compaction's obligation.
 
+### Statistics
+
+Statistics are keyed by snapshot id, and a rewrite preserves snapshot ids, so every statistics file
+stays attached to the snapshot it names unless something detaches it. Nothing in Iceberg validates a
+statistics file against the snapshot it describes -- statistics are advisory, and a reader may ignore
+them -- so a stale entry is not rejected. It is believed.
+
+The two kinds part company, and the split is exactly the row/layout split that runs through the rest
+of this design:
+
+| Kind | Derived from | A rewrite |
+|---|---|---|
+| Table-level (`statisticsFiles`) | the rows live at the snapshot -- the standard blob type is a theta sketch, i.e. distinct-value counts | **keeps them.** A rewrite preserves the live row set exactly, which is the property a sketch summarises |
+| Partition (`partitionStatisticsFiles`) | the layout: per-partition file counts, byte totals, delete counts, `dvCount` | **drops them.** A rewritten snapshot holds the whole compaction with most of it masked, so every one of those numbers is wrong |
+
+Dropping has to be reversible, and partition statistics live in table metadata rather than in a
+snapshot, so there is nowhere in the manifest tree to point back at. Each dropped entry is instead
+recorded in the summary of the snapshot that replaced it, under keys deliberately outside the
+`snapshot-rewritten-from.` prefix -- everything under that prefix is replayed verbatim into the
+restored summary, and these keys describe the rewrite rather than the snapshot it replaced. A
+`PartitionStatisticsFile` is three fields and one of them is the snapshot's own id, so a path and a
+size are enough to rebuild it exactly. Undo stays self-contained: everything needed to reverse a
+rewrite is in the snapshots the rewrite wrote.
+
+Reclaim deletes the detached statistics file, because it describes the old layout as surely as its
+manifests do. Reachability for it needs one extra step: statistics hang off table metadata rather
+than off a snapshot, so walking snapshots does not find them, and a retained metadata-log entry that
+still names a detached file would otherwise not count as a reference to it.
+
 ## Errata
 
 Expedient choices and known limitations, not bugs.
@@ -418,6 +447,9 @@ rewritten snapshot holds the whole compaction and masks most of it, so its `tota
 `total-*` fields are recomputed for the new layout. The invariant is the set of rows a scan returns,
 which only a scan can check — which is why the tests compare every snapshot's contents rather than its
 summary.
+
+Partition statistics are the same kind of number and get the same treatment, except that they are
+dropped rather than recomputed — see [Statistics](#statistics) and errata 11.
 
 ### 5. Reclaim is delayed by the metadata log
 
@@ -476,3 +508,18 @@ Persisting both -- a reverse map written alongside the rewrite -- would make the
 without the old files. Even then it could only be lossless up to file identity: reconstruction writes
 new files at new paths, so the result would match the original in rows, per-file grouping, row order,
 and row ids, but not in bytes or in manifest-list location.
+
+### 11. Partition statistics are dropped, not recomputed
+
+A rewritten snapshot ends up with no partition statistics at all. Recomputing them is possible --
+`PartitionStatsHandler.computeAndWriteStatsFile(table, snapshotId)` does exactly that -- but it costs
+a scan per rewritten snapshot, and it lives in `iceberg-data`, which `core` cannot call. If it is
+ever wanted it belongs behind the `SnapshotRewriteIO` SPI. Until then a reader that relied on
+partition statistics for a rewritten snapshot falls back to planning without them, which is slower
+but not wrong.
+
+Table-level statistics are kept on the strength of an argument about the *only blob type that exists*
+(a theta sketch, which counts distinct values among live rows). That argument is about the blob's
+semantics, not about anything the format enforces: a future layout-derived blob type registered as a
+table-level statistic would be carried forward and silently believed. Nothing here inspects blob
+types.

@@ -24,7 +24,9 @@ import java.util.Set;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.PartitionStatisticsFile;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.StatisticsFile;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
@@ -159,8 +161,11 @@ public class SnapshotRewriteResult {
    */
   public ReclaimResult reclaim(TableOperations ops) {
     TableMetadata current = ops.refresh();
-    Set<String> retained = Sets.newHashSet();
+    Set<String> candidates = Sets.newLinkedHashSet(plan.detachedFiles().keySet());
+    candidates.addAll(detachedStatisticsPaths());
 
+    Set<String> retained = Sets.newHashSet();
+    collectStatistics(current, retained);
     for (Snapshot snapshot : current.snapshots()) {
       collect(snapshot, current, retained);
     }
@@ -168,6 +173,7 @@ public class SnapshotRewriteResult {
     for (TableMetadata.MetadataLogEntry entry : current.previousFiles()) {
       try {
         TableMetadata previous = TableMetadataParser.read(io, entry.file());
+        collectStatistics(previous, retained);
         for (Snapshot snapshot : previous.snapshots()) {
           collect(snapshot, previous, retained);
         }
@@ -175,13 +181,13 @@ public class SnapshotRewriteResult {
         // An unreadable metadata document is not proof that nothing references these files.
         // Withhold
         // the whole detached set rather than risk deleting something still reachable.
-        return new ReclaimResult(ImmutableList.of(), plan.detachedFiles().keySet());
+        return new ReclaimResult(ImmutableList.of(), candidates);
       }
     }
 
     List<String> deleted = Lists.newArrayList();
     Set<String> withheld = Sets.newHashSet();
-    for (String path : plan.detachedFiles().keySet()) {
+    for (String path : candidates) {
       if (retained.contains(path)) {
         withheld.add(path);
       } else {
@@ -193,10 +199,48 @@ public class SnapshotRewriteResult {
     return new ReclaimResult(deleted, withheld);
   }
 
+  /**
+   * Statistics files the rewrite detached, read back from the snapshots that replaced them.
+   *
+   * <p>These describe the old layout as surely as its manifests do, so they belong to the set
+   * reclaim deletes. Restoring re-attaches them, which is why they survive until reclaim and not
+   * past it.
+   */
+  private List<String> detachedStatisticsPaths() {
+    List<String> paths = Lists.newArrayList();
+    for (Snapshot snapshot : rewritten.snapshots()) {
+      if (SnapshotRewriteRestore.isRewritten(snapshot)) {
+        String path = snapshot.summary().get(SnapshotRewriteRestore.DETACHED_PARTITION_STATS_PATH);
+        if (path != null) {
+          paths.add(path);
+        }
+      }
+    }
+
+    return paths;
+  }
+
   private void collect(Snapshot snapshot, TableMetadata metadata, Set<String> paths) {
     Map<String, Long> sizes = Maps.newHashMap();
     SnapshotFiles.collect(snapshot, io, metadata.specsById(), sizes);
     paths.addAll(sizes.keySet());
+  }
+
+  /**
+   * Adds the statistics files a metadata document references.
+   *
+   * <p>Statistics hang off table metadata rather than off a snapshot, so walking snapshots does not
+   * find them. Without this a retained metadata-log entry that still names a detached statistics
+   * file would not count as a reference to it.
+   */
+  private void collectStatistics(TableMetadata metadata, Set<String> paths) {
+    for (StatisticsFile file : metadata.statisticsFiles()) {
+      paths.add(file.path());
+    }
+
+    for (PartitionStatisticsFile file : metadata.partitionStatisticsFiles()) {
+      paths.add(file.path());
+    }
   }
 
   /** Deletes everything this rewrite wrote, leaving the source table as it was. */
