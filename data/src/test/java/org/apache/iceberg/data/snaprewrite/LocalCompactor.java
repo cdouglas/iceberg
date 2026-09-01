@@ -39,11 +39,11 @@ import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileAppender;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
@@ -53,60 +53,64 @@ import org.apache.iceberg.util.StructLikeMap;
  * A bin-pack compaction that records where every surviving row went.
  *
  * <p>This is the workload the rewrite is built on, so the tests use a real one: it reads live rows
- * in position order, concatenates them into a single target file, and emits a compaction map built
- * by {@link CompactionMapBuilder} and attached through the normal rewrite commit path. The map is
- * not hand-written, so a bug in run merging or in map attachment shows up in these tests rather
- * than being assumed away.
+ * in position order, concatenates them, and emits a compaction map built by {@link
+ * CompactionMapBuilder} and attached through the normal rewrite commit path. The map is not
+ * hand-written, so a bug in run merging or in map attachment surfaces in these tests rather than
+ * being assumed away.
  */
 class LocalCompactor {
+  /** No target size limit: one output file per partition. */
+  private static final long UNLIMITED = Long.MAX_VALUE;
+
   private LocalCompactor() {}
 
-  /** Compacts every live data file into one target file and commits, attaching a compaction map. */
+  /** Compacts every live data file into one target file per partition, attaching a map. */
   static Snapshot compact(Table table) {
     return compact(table, true);
   }
 
   /**
-   * Compacts every live data file into one target file and commits.
+   * Compacts every live data file, optionally attaching a compaction map.
    *
-   * @param attachMap whether to emit and attach a compaction map. A compaction without one is what
-   *     a rewrite must refuse to see inside its window, since it has no way to follow rows through
-   *     it.
+   * @param attachMap whether to emit and attach a map. A replace without one cannot be followed,
+   *     and the rewrite falls back to copying rows through it.
    */
   static Snapshot compact(Table table, boolean attachMap) {
-    return compact(table, attachMap, file -> true);
+    return compact(table, attachMap, file -> true, UNLIMITED);
   }
 
   /**
    * Compacts the live data files a predicate selects.
    *
    * <p>A partial compaction leaves files untouched, and the rewrite has to treat those as already
-   * in place: the compaction map says nothing about them because nothing moved.
+   * in place: the map says nothing about them because nothing moved.
    */
   static Snapshot compact(Table table, boolean attachMap, Predicate<DataFile> include) {
-    Snapshot startingSnapshot = table.currentSnapshot();
-    List<FileScanTask> tasks = Lists.newArrayList();
-    try (CloseableIterable<FileScanTask> planned = table.newScan().planFiles()) {
-      for (FileScanTask task : planned) {
-        tasks.add(task);
-      }
-    } catch (IOException e) {
-      throw new RuntimeException(e);
-    }
+    return compact(table, attachMap, include, UNLIMITED);
+  }
 
+  /**
+   * Compacts with a cap on rows per output file.
+   *
+   * <p>A cap makes the output roll mid-source-file, so one source file's rows land in two targets
+   * and its runs carry per-run target paths. That is the multi-target shape real compactions
+   * produce when they hit a target size, and it is the case where a map that recorded only one
+   * target per source file would send a remapped position into the wrong file.
+   */
+  static Snapshot compact(
+      Table table, boolean attachMap, Predicate<DataFile> include, long maxRowsPerTarget) {
+    Snapshot startingSnapshot = table.currentSnapshot();
+    List<FileScanTask> tasks = planFiles(table);
     tasks.sort(Comparator.comparing(task -> task.file().location()));
 
     CompactionMapBuilder mapBuilder =
         new CompactionMapBuilder(startingSnapshot.snapshotId(), startingSnapshot.snapshotId() + 1);
 
     Set<DataFile> replacedData = Sets.newHashSet();
-    Set<DeleteFile> replacedDeletes = Sets.newHashSet();
-    Map<String, DeleteFile> deletesByPath = Maps.newHashMap();
     Set<DataFile> targets = Sets.newHashSet();
+    Map<String, DeleteFile> deletesByPath = Maps.newHashMap();
 
-    // One target file per partition: a data file belongs to exactly one partition, so rows cannot
-    // be
-    // concatenated across them.
+    // One target per partition (before any rolling): rows cannot be concatenated across partitions.
     StructLikeMap<List<FileScanTask>> byPartition =
         StructLikeMap.create(table.spec().partitionType());
     for (FileScanTask task : tasks) {
@@ -118,95 +122,129 @@ class LocalCompactor {
     }
 
     for (Map.Entry<StructLike, List<FileScanTask>> partition : byPartition.entrySet()) {
-      String targetPath =
-          table.location()
-              + "/data/"
-              + FileFormat.PARQUET.addExtension("compaction-" + UUID.randomUUID());
-      OutputFile output = table.io().newOutputFile(targetPath);
-
-      long targetPosition = 0;
-      long recordCount = 0;
-      GenericAppenderFactory factory =
-          new GenericAppenderFactory(table.schema(), table.spec()).setAll(table.properties());
-      FileAppender<Record> appender = factory.newAppender(output, FileFormat.PARQUET);
-
-      try {
-        for (FileScanTask task : partition.getValue()) {
-          DataFile file = task.file();
-          replacedData.add(file);
-          for (DeleteFile delete : task.deletes()) {
-            deletesByPath.put(delete.location(), delete);
-          }
-
-          // Equality deletes are not applied here. A window containing them cannot be rewritten
-          // anyway, and these tests only need such a history to reach the refusal.
-          List<DeleteFile> positionDeletes = Lists.newArrayList();
-          for (DeleteFile delete : task.deletes()) {
-            if (delete.content() == FileContent.POSITION_DELETES) {
-              positionDeletes.add(delete);
-            }
-          }
-
-          PositionDeleteIndex deleted =
-              positionDeletes.isEmpty()
-                  ? null
-                  : new org.apache.iceberg.data.GenericSnapshotRewriteIO(table)
-                      .loadPositionDeletes(positionDeletes, file.location());
-
-          List<Record> rows = RawFiles.readAll(table.io(), file.location(), table.schema());
-          CompactionMapBuilder.FileMappingBuilder mapping =
-              mapBuilder.addFileMapping(file.location(), targetPath);
-
-          // Surviving rows keep their relative order, so consecutive live positions form one run
-          // and
-          // the map stays small. A run breaks wherever a delete interrupts the sequence.
-          long runStart = -1;
-          long runTargetStart = -1;
-          long runLength = 0;
-          for (long position = 0; position < rows.size(); position += 1) {
-            if (deleted != null && deleted.isDeleted(position)) {
-              if (runLength > 0) {
-                mapping.addRun(runStart, runTargetStart, runLength);
-                runLength = 0;
-              }
-
-              continue;
-            }
-
-            if (runLength == 0) {
-              runStart = position;
-              runTargetStart = targetPosition;
-            }
-
-            runLength += 1;
-            appender.add(rows.get((int) position));
-            targetPosition += 1;
-            recordCount += 1;
-          }
-
-          if (runLength > 0) {
-            mapping.addRun(runStart, runTargetStart, runLength);
-          }
-        }
-      } finally {
-        close(appender);
-      }
-
-      DataFiles.Builder builder =
-          DataFiles.builder(table.spec())
-              .withPath(targetPath)
-              .withFormat(FileFormat.PARQUET)
-              .withFileSizeInBytes(appender.length())
-              .withMetrics(appender.metrics())
-              .withRecordCount(recordCount);
-      if (table.spec().isPartitioned()) {
-        builder.withPartition(partition.getKey());
-      }
-
-      targets.add(builder.build());
+      targets.addAll(
+          compactPartition(
+              table,
+              partition.getKey(),
+              partition.getValue(),
+              mapBuilder,
+              replacedData,
+              deletesByPath,
+              maxRowsPerTarget));
     }
 
-    // A delete file left applying to a file this compaction did not touch must stay. Dropping it
+    return commit(
+        table,
+        startingSnapshot,
+        mapBuilder,
+        replacedData,
+        targets,
+        deletesByPath,
+        tasks,
+        include,
+        attachMap);
+  }
+
+  private static List<DataFile> compactPartition(
+      Table table,
+      StructLike partition,
+      List<FileScanTask> tasks,
+      CompactionMapBuilder mapBuilder,
+      Set<DataFile> replacedData,
+      Map<String, DeleteFile> deletesByPath,
+      long maxRowsPerTarget) {
+    List<DataFile> written = Lists.newArrayList();
+    GenericAppenderFactory factory =
+        new GenericAppenderFactory(table.schema(), table.spec()).setAll(table.properties());
+
+    String targetPath = newTargetPath(table);
+    FileAppender<Record> appender =
+        factory.newAppender(table.io().newOutputFile(targetPath), FileFormat.PARQUET);
+    long targetPosition = 0;
+
+    try {
+      for (FileScanTask task : tasks) {
+        DataFile file = task.file();
+        replacedData.add(file);
+        for (DeleteFile delete : task.deletes()) {
+          deletesByPath.put(delete.location(), delete);
+        }
+
+        PositionDeleteIndex deleted = positionDeletes(table, task);
+        List<Record> rows = RawFiles.readAll(table.io(), file.location(), table.schema());
+        CompactionMapBuilder.FileMappingBuilder mapping =
+            mapBuilder.addFileMapping(file.location(), targetPath);
+        Run run = new Run();
+
+        for (long position = 0; position < rows.size(); position += 1) {
+          if (deleted != null && deleted.isDeleted(position)) {
+            // A delete breaks the run: surviving rows on either side are no longer contiguous.
+            run.flush(mapping);
+            continue;
+          }
+
+          if (targetPosition >= maxRowsPerTarget) {
+            // Rolling also breaks the run, and everything after it belongs to a different file.
+            run.flush(mapping);
+            close(appender);
+            written.add(finish(table, partition, targetPath, appender));
+            targetPath = newTargetPath(table);
+            appender =
+                factory.newAppender(table.io().newOutputFile(targetPath), FileFormat.PARQUET);
+            targetPosition = 0;
+          }
+
+          run.open(position, targetPosition, targetPath);
+          appender.add(rows.get((int) position));
+          targetPosition += 1;
+        }
+
+        run.flush(mapping);
+      }
+    } finally {
+      close(appender);
+    }
+
+    written.add(finish(table, partition, targetPath, appender));
+    return written;
+  }
+
+  /** A contiguous stretch of surviving rows landing contiguously in one target file. */
+  private static class Run {
+    private long sourceStart = -1;
+    private long targetStart = -1;
+    private long length = 0;
+    private String target = null;
+
+    void open(long sourcePosition, long targetPosition, String targetPath) {
+      if (length == 0) {
+        this.sourceStart = sourcePosition;
+        this.targetStart = targetPosition;
+        this.target = targetPath;
+      }
+
+      length += 1;
+    }
+
+    void flush(CompactionMapBuilder.FileMappingBuilder mapping) {
+      if (length > 0) {
+        mapping.addRun(sourceStart, targetStart, length, target);
+        length = 0;
+      }
+    }
+  }
+
+  private static Snapshot commit(
+      Table table,
+      Snapshot startingSnapshot,
+      CompactionMapBuilder mapBuilder,
+      Set<DataFile> replacedData,
+      Set<DataFile> targets,
+      Map<String, DeleteFile> deletesByPath,
+      List<FileScanTask> tasks,
+      Predicate<DataFile> include,
+      boolean attachMap) {
+    // A delete file still applying to a file this compaction did not touch must stay. Dropping it
     // would lose those deletes, which a partial compaction makes possible.
     Set<String> stillNeeded = Sets.newHashSet();
     for (FileScanTask task : tasks) {
@@ -217,6 +255,7 @@ class LocalCompactor {
       }
     }
 
+    Set<DeleteFile> replacedDeletes = Sets.newHashSet();
     for (Map.Entry<String, DeleteFile> entry : deletesByPath.entrySet()) {
       if (!stillNeeded.contains(entry.getKey())) {
         replacedDeletes.add(entry.getValue());
@@ -244,15 +283,13 @@ class LocalCompactor {
     }
 
     rewrite.commit();
-
     table.refresh();
     Snapshot committed = table.currentSnapshot();
 
     if (attachMap) {
-      // Rewrite the map with its real target snapshot id. Composing two maps requires the first's
-      // target to be the second's source, and the id a compaction will be assigned is not known
-      // until it commits. Production code has the same gap and stamps a placeholder; chaining only
-      // works once the ids are real.
+      // Rewrite the map with its real target snapshot id. Applying two maps in sequence does not
+      // need the ids to agree, but the recorded ids should still describe what happened, and the id
+      // a compaction will be assigned is not known until it commits.
       table.io().deleteFile(mapPath);
       writeMap(table, mapBuilder, startingSnapshot.snapshotId(), committed.snapshotId(), mapPath);
     }
@@ -260,6 +297,12 @@ class LocalCompactor {
     return committed;
   }
 
+  /**
+   * Rebuilds a map with corrected snapshot ids, preserving per-run target files.
+   *
+   * <p>Dropping the per-run target would leave every run inheriting the mapping's single default,
+   * and a position remapped against one target file would be applied to a row in another.
+   */
   private static void writeMap(
       Table table,
       CompactionMapBuilder source,
@@ -272,7 +315,7 @@ class LocalCompactor {
       CompactionMapBuilder.FileMappingBuilder target =
           rebuilt.addFileMapping(mapping.sourceFile(), mapping.targetFile());
       for (CompactionMap.Run run : mapping.runs()) {
-        target.addRun(run.sourcePosition(), run.targetPosition(), run.length());
+        target.addRun(run.sourcePosition(), run.targetPosition(), run.length(), run.targetFile());
       }
     }
 
@@ -281,6 +324,57 @@ class LocalCompactor {
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
+  }
+
+  private static PositionDeleteIndex positionDeletes(Table table, FileScanTask task) {
+    // Equality deletes are not applied here. A window containing them cannot be rewritten anyway,
+    // and those tests only need such a history to reach the refusal.
+    List<DeleteFile> positional = Lists.newArrayList();
+    for (DeleteFile delete : task.deletes()) {
+      if (delete.content() == FileContent.POSITION_DELETES) {
+        positional.add(delete);
+      }
+    }
+
+    return positional.isEmpty()
+        ? null
+        : new GenericSnapshotRewriteIO(table)
+            .loadPositionDeletes(positional, task.file().location());
+  }
+
+  /** Builds the data file for an appender the caller has already closed. */
+  private static DataFile finish(
+      Table table, StructLike partition, String path, FileAppender<Record> appender) {
+    DataFiles.Builder builder =
+        DataFiles.builder(table.spec())
+            .withPath(path)
+            .withFormat(FileFormat.PARQUET)
+            .withFileSizeInBytes(appender.length())
+            .withMetrics(appender.metrics());
+    if (table.spec().isPartitioned()) {
+      builder.withPartition(partition);
+    }
+
+    return builder.build();
+  }
+
+  private static List<FileScanTask> planFiles(Table table) {
+    List<FileScanTask> tasks = Lists.newArrayList();
+    try (CloseableIterable<FileScanTask> planned = table.newScan().planFiles()) {
+      for (FileScanTask task : planned) {
+        tasks.add(task);
+      }
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+
+    return tasks;
+  }
+
+  private static String newTargetPath(Table table) {
+    return table.location()
+        + "/data/"
+        + FileFormat.PARQUET.addExtension("compaction-" + UUID.randomUUID());
   }
 
   private static void close(FileAppender<?> appender) {

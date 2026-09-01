@@ -43,8 +43,11 @@ import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
+import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -204,9 +207,14 @@ public abstract class SnapshotRewriteTestBase {
    * about table contents rather than about read plumbing.
    */
   protected static List<String> rowsAt(Table target, long snapshotId) {
+    return rowsAt(target, snapshotId, Expressions.alwaysTrue());
+  }
+
+  /** Rows a snapshot returns under a filter. */
+  protected static List<String> rowsAt(Table target, long snapshotId, Expression filter) {
     List<String> rows = Lists.newArrayList();
     try (CloseableIterable<Record> records =
-        IcebergGenerics.read(target).useSnapshot(snapshotId).build()) {
+        IcebergGenerics.read(target).useSnapshot(snapshotId).where(filter).build()) {
       for (Record record : records) {
         StringBuilder row = new StringBuilder();
         for (Types.NestedField field : SCHEMA.columns()) {
@@ -246,7 +254,53 @@ public abstract class SnapshotRewriteTestBase {
       assertThat(rowsAt(shadow, id))
           .as("snapshot %s must read the same after the rewrite", id)
           .isEqualTo(rowsAt(table, id));
+
+      for (Expression probe : probes(table, id)) {
+        assertThat(rowsAt(shadow, id, probe))
+            .as("snapshot %s under filter %s", id, probe)
+            .isEqualTo(rowsAt(table, id, probe));
+      }
     }
+  }
+
+  /**
+   * Filters to compare in addition to the full scan.
+   *
+   * <p>A full scan reads every file, so it cannot see a pruning mistake. The rewritten layout has
+   * entirely different file statistics -- one large compaction plus a few small resurrection files,
+   * where the original had many files with narrow ranges -- and a rewritten snapshot's bounds must
+   * still admit every row it contains. A file wrongly skipped on a predicate would return fewer
+   * rows while the unfiltered scan stayed correct.
+   *
+   * <p>Bounds are drawn from the data actually present, so the equality probes hit real rows and
+   * the range probes split them.
+   */
+  private static List<Expression> probes(Table target, long snapshotId) {
+    List<Integer> ids = Lists.newArrayList();
+    try (CloseableIterable<Record> records =
+        IcebergGenerics.read(target).useSnapshot(snapshotId).build()) {
+      for (Record record : records) {
+        ids.add((Integer) record.getField("id"));
+      }
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+
+    if (ids.isEmpty()) {
+      return ImmutableList.of(Expressions.greaterThan("id", 0));
+    }
+
+    Collections.sort(ids);
+    int lowest = ids.get(0);
+    int middle = ids.get(ids.size() / 2);
+    int highest = ids.get(ids.size() - 1);
+
+    return ImmutableList.of(
+        Expressions.equal("id", lowest),
+        Expressions.equal("id", highest),
+        Expressions.lessThan("id", middle),
+        Expressions.greaterThanOrEqual("id", middle),
+        Expressions.isNull("data"));
   }
 
   /**

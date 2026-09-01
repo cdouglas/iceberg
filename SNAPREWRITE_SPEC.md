@@ -150,7 +150,7 @@ refusals, not warnings.
 | P2 | No equality deletes anywhere in the window | `D_k` is not positionally computable |
 | P3 | `schema-id` identical across the window and `C_B` | A column dropped after `S_k` would read as null from `C_B`'s files |
 | P4 | `spec-id` identical across the window and `C_B` | Resurrection files must be partition-aligned to the snapshot's spec |
-| P5 | Every REPLACE snapshot in the window carries a compaction map | Otherwise `loc` has holes |
+| P5 | The *target* compaction carries a compaction map | Without one there is nothing to rewrite onto. A map-less replace *inside* the window is not refused -- see §11.6 |
 | P6 | Every source data file needed for resurrection still exists | Cannot materialize a row from a GC'd file |
 | P7 | `C_B` is older than `snapshot-rewrite.min-age-ms` | An in-flight transaction based on a rewritten snapshot would validate against nonsense (§4.6) |
 | P8 | `dead-bytes / reclaimable-bytes` below threshold | Cost guard, not correctness |
@@ -499,7 +499,10 @@ rows by position, not by value. Plus, per snapshot: `total-records` summary unch
 | 10 | A transaction whose every inserted row dies before `C_B` | Full resurrection of an interstitial file |
 | 11 | Delete of every row in a file (file empty in `C_B`) | Empty-mapping edge case |
 | 12 | Partial compaction — `C_B` leaves some files untouched | `loc` identity for unmapped files |
-| 13 | Two compactions inside the window (chained maps) | `CompactionMapChain` composition |
+| 13 | Two compactions inside the window (chained maps) | Sequential map application (§11.2) |
+| 17 | Compaction rolling mid-source-file (multi-target runs) | Per-run `targetFile`; borrowed from the existing compaction-map suite, which pins this at the map level -- here it runs end to end |
+| 18 | Rolling on a partitioned table | Each partition rolls independently |
+| 19 | A map-less replace inside the window | Falls back to copying rows through it rather than refusing (§11.6) |
 | 14 | Empty / no-op commit in the window | Degenerate step |
 | 15 | Interleaved appends from two writers | Ordering independence |
 | 16 | Duplicate rows across snapshots | Multiset oracle |
@@ -637,7 +640,34 @@ snapshot looked unreachable. Harmless in the report; on the reclaim path it mean
 rather than as of the rewrite, since how much of the metadata log is retained changes with every
 commit.
 
-### 11.5 The oracle had to project explicitly
+### 11.5 A full scan cannot see a pruning bug
+
+The oracle originally compared full scans only. But a rewritten snapshot holds a whole compaction
+plus resurrection files, with file statistics nothing like the originals, and pruning decisions are
+made from those statistics. A rewrite that produced bounds excluding rows the file actually contains
+would pass every full-scan comparison and fail the first predicate a user wrote. The oracle now
+compares filtered scans as well, with bounds drawn from the data present.
+
+### 11.6 A compaction is identified by its map, not by its operation
+
+`DataOperations.REPLACE` covers rewrites that are not compactions, and what actually matters is
+whether rows can be followed through the snapshot -- which is exactly what having a map means. The
+window floor, the induction's skip, and map collection are all keyed on map presence now.
+
+Changing this removed a refusal rather than adding one. A map-less replace inside the window used to
+abort the whole rewrite; it is now diffed like any other transaction, which is correct: every row it
+moved is recovered into a resurrection file and every row it wrote becomes a delete, reconstructing
+the preceding state from copies instead of by following a map. That costs a full copy of the live
+table at that boundary, which is a question for the dead-ratio guard, not a reason to refuse.
+
+**Redundancy not yet exploited.** A compaction is state-identical to its parent (P10 asserts it), so
+their rewritten forms have identical file sets and identical deletes -- and the rewrite still writes
+two full manifest sets, roughly 12 KiB of Avro per duplicated snapshot. They cannot simply share
+manifests because §4.2 stamps each snapshot's contents at its own sequence number, so the two differ
+in exactly that field. Sharing would need either a relaxed stamping rule for this case or two
+snapshots pointing at one manifest list. Worth doing on a long history; not done here.
+
+### 11.7 The oracle had to project explicitly
 
 `IcebergGenerics` reads with the schema the delete filter requires and never strips the extra `_pos`
 column, so a snapshot carrying deletes yields wider records than one without. A rewrite turns

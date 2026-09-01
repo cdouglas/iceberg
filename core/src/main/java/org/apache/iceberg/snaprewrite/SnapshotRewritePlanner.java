@@ -29,7 +29,6 @@ import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.DataFile;
-import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
@@ -97,10 +96,10 @@ public class SnapshotRewritePlanner {
           RewriteRefusal.NO_COMPACTION, "unknown snapshot " + compactionSnapshotId);
     }
 
-    List<Snapshot> window = resolveWindow(compaction, floorSnapshotId);
+    CompactionMapLookup lookup = new CompactionMapLookup(io);
+    List<Snapshot> window = resolveWindow(compaction, floorSnapshotId, lookup);
     checkStaticPreconditions(compaction, window);
 
-    CompactionMapLookup lookup = new CompactionMapLookup(io);
     RowLocator locator = new RowLocator(loadRemappers(compaction, window, lookup));
 
     PartitionSpec spec = base.spec();
@@ -135,7 +134,7 @@ public class SnapshotRewritePlanner {
       SnapshotState currentState = states.get(current.snapshotId());
       SnapshotState previousState = states.get(previous.snapshotId());
 
-      if (isCompaction(current) && lookup.forSnapshot(current) != null) {
+      if (lookup.forSnapshot(current) != null) {
         // A compaction is a logical no-op: it relocated rows without changing which rows exist,
         // and its map already says where they went. Diffing it by file and position would see every
         // old reference as deleted and every new one as inserted, copying the whole live table
@@ -273,7 +272,8 @@ public class SnapshotRewritePlanner {
 
   // ---------------------------------------------------------------- window and preconditions
 
-  private List<Snapshot> resolveWindow(Snapshot compaction, Long floorSnapshotId) {
+  private List<Snapshot> resolveWindow(
+      Snapshot compaction, Long floorSnapshotId, CompactionMapLookup lookup) {
     List<Snapshot> ancestors = Lists.newArrayList();
     for (Snapshot ancestor : SnapshotUtil.ancestorsOf(compaction.snapshotId(), base::snapshot)) {
       if (ancestor.snapshotId() == compaction.snapshotId()) {
@@ -285,7 +285,10 @@ public class SnapshotRewritePlanner {
         break;
       }
 
-      if (floorSnapshotId == null && isCompaction(ancestor)) {
+      // The default floor is the previous compaction, and what makes a snapshot a compaction here
+      // is that it left a map: that is the only thing that lets rows be followed through it. A
+      // replace operation without one is not a boundary the rewrite can use.
+      if (floorSnapshotId == null && lookup.forSnapshot(ancestor) != null) {
         break;
       }
     }
@@ -297,10 +300,6 @@ public class SnapshotRewritePlanner {
 
     // ancestorsOf walks newest to oldest; the induction runs the other way.
     return ImmutableList.copyOf(Lists.reverse(ancestors));
-  }
-
-  private boolean isCompaction(Snapshot snapshot) {
-    return DataOperations.REPLACE.equals(snapshot.operation());
   }
 
   private void checkStaticPreconditions(Snapshot compaction, List<Snapshot> window) {
@@ -415,13 +414,18 @@ public class SnapshotRewritePlanner {
       Snapshot compaction, List<Snapshot> window, CompactionMapLookup lookup) {
     List<CompactionMap> maps = Lists.newArrayList();
 
-    // Compactions inside the window relocate rows before the final compaction does, so their maps
-    // compose with it. The window's oldest snapshot is the previous compaction; its own map
-    // describes a layout change before the window and is not needed here.
+    // Compactions inside the window relocated rows before the final compaction did, so their maps
+    // apply first. The window's oldest snapshot is the previous compaction; its own map describes a
+    // layout change from before the window and is not needed here.
+    //
+    // A replace operation inside the window with no map is not refused. Diffing it by file and
+    // position is correct, just expensive: every row it moved is recovered into a resurrection file
+    // and every row it wrote is deleted, which reconstructs the preceding state from copies rather
+    // than by following the map. Whether that is worth doing is what the dead-ratio guard decides.
     for (int i = 1; i < window.size(); i += 1) {
-      Snapshot snapshot = window.get(i);
-      if (isCompaction(snapshot)) {
-        maps.add(requireMap(snapshot, lookup));
+      CompactionMap map = lookup.forSnapshot(window.get(i));
+      if (map != null) {
+        maps.add(map);
       }
     }
 

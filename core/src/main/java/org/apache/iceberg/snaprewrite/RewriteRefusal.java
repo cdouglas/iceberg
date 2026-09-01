@@ -30,7 +30,7 @@ public enum RewriteRefusal {
   EQUALITY_DELETES("window contains equality deletes"),
   SCHEMA_CHANGED("schema changed across the window"),
   SPEC_CHANGED("partition spec changed across the window"),
-  MISSING_COMPACTION_MAP("a replace operation in the window has no compaction map"),
+  MISSING_COMPACTION_MAP("the target compaction has no compaction map"),
   MISSING_SOURCE_FILE("a data file needed for resurrection no longer exists"),
   TOO_RECENT("the compaction is newer than the configured minimum age"),
   DEAD_RATIO("too little would be reclaimed relative to the rows to be rewritten"),
