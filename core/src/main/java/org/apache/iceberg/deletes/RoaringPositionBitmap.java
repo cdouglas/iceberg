@@ -93,10 +93,10 @@ class RoaringPositionBitmap {
   /**
    * Sets all positions from a primitive {@code int[]} into the first sub-bitmap (key 0).
    *
-   * <p>This is the natural bulk path for V3 Deletion Vectors, where all positions for a single data
-   * file's row positions live in {@code bitmaps[0]} (the upper-32-bit key is zero) and positions
-   * are already known to fit in 32 bits. Skips the per-element validation and the upper-32-bit key
-   * recomputation that {@link #setAll(long[])} pays.
+   * <p>This is the natural bulk path for V3 Deletion Vectors, where all positions for a single
+   * data file's row positions live in {@code bitmaps[0]} (the upper-32-bit key is zero) and
+   * positions are already known to fit in 32 bits. Skips the per-element validation and the
+   * upper-32-bit key recomputation that {@link #setAll(long[])} pays.
    *
    * @param positions the positions to set, all interpreted as unsigned 32-bit values
    */
@@ -111,10 +111,10 @@ class RoaringPositionBitmap {
   /**
    * Sets all positions from a primitive {@code long[]} in this bitmap.
    *
-   * <p>Equivalent to calling {@link #set(long)} for each element of the array, but groups positions
-   * by their upper-32-bit key and batches the insertion into each underlying 32-bit Roaring bitmap
-   * via {@link RoaringBitmap#addN}. This amortizes the per-call key computation and sub-bitmap
-   * location work over the whole input.
+   * <p>Equivalent to calling {@link #set(long)} for each element of the array, but groups
+   * positions by their upper-32-bit key and batches the insertion into each underlying 32-bit
+   * Roaring bitmap via {@link RoaringBitmap#addN}. This amortizes the per-call key computation
+   * and sub-bitmap location work over the whole input.
    *
    * @param positions the positions to set
    */
