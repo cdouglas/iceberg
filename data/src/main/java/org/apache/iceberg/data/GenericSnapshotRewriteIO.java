@@ -32,17 +32,12 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.TableUtil;
-import org.apache.iceberg.deletes.BaseDVFileWriter;
-import org.apache.iceberg.deletes.DVFileWriter;
-import org.apache.iceberg.io.OutputFileFactory;
-import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
-import org.apache.iceberg.snaprewrite.PositionSet;
 import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.data.avro.PlannedDataReader;
 import org.apache.iceberg.data.orc.GenericOrcReader;
 import org.apache.iceberg.data.parquet.GenericParquetReaders;
+import org.apache.iceberg.deletes.BaseDVFileWriter;
+import org.apache.iceberg.deletes.DVFileWriter;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
@@ -52,13 +47,18 @@ import org.apache.iceberg.io.FileAppender;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.orc.ORC;
 import org.apache.iceberg.orc.OrcRowReader;
 import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.parquet.ParquetValueReader;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.snaprewrite.PositionDeleteRequest;
+import org.apache.iceberg.snaprewrite.PositionSet;
 import org.apache.iceberg.snaprewrite.ResurrectionRequest;
 import org.apache.iceberg.snaprewrite.RowRef;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteIO;
@@ -156,7 +156,10 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
     return builder.build();
   }
 
-  /** The identity of a recovered row: written into its source file, or derived from that file's range. */
+  /**
+   * The identity of a recovered row: written into its source file, or derived from that file's
+   * range.
+   */
   private Long rowIdOf(Record record, RowRef source, ResurrectionRequest request) {
     Object materialized = record.getField(MetadataColumns.ROW_ID.name());
     if (materialized != null) {
@@ -221,10 +224,10 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
   /**
    * Writes one deletion vector.
    *
-   * <p>A deletion vector references exactly one data file, so the planner emits one request per file
-   * rather than per partition, and this asserts that shape rather than silently writing the first
-   * entry. The Puffin writer allocates the output location itself, so the request's path is an
-   * identifier and the returned file's location is the real one.
+   * <p>A deletion vector references exactly one data file, so the planner emits one request per
+   * file rather than per partition, and this asserts that shape rather than silently writing the
+   * first entry. The Puffin writer allocates the output location itself, so the request's path is
+   * an identifier and the returned file's location is the real one.
    */
   private DeleteFile writeDeletionVector(PositionDeleteRequest request) {
     Preconditions.checkArgument(
@@ -232,8 +235,7 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
         "A deletion vector references one data file, got %s",
         request.deletes().size());
 
-    Map.Entry<String, PositionSet> entry =
-        request.deletes().entrySet().iterator().next();
+    Map.Entry<String, PositionSet> entry = request.deletes().entrySet().iterator().next();
     OutputFileFactory files =
         OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PUFFIN).build();
 

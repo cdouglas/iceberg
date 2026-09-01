@@ -557,8 +557,8 @@ public class PositionDeleteRemapper {
    * <ul>
    *   <li>Positions are sorted (Roaring sub-bitmaps yield values in ascending order), so the
    *       selector can skip its sortedness sample.
-   *   <li>Positions fit in 32 bits, so the remapped output can be materialized directly as
-   *       {@code int[]} per target without going through {@code long[]} narrowing.
+   *   <li>Positions fit in 32 bits, so the remapped output can be materialized directly as {@code
+   *       int[]} per target without going through {@code long[]} narrowing.
    * </ul>
    *
    * <p>The algorithm itself still operates in long (driven by {@link CompactionMap.Run}'s long

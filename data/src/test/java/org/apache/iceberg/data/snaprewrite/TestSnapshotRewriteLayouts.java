@@ -273,7 +273,9 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
 
   // ------------------------------------------------------------------ helpers
 
-  /** The first compacted file belonging to a partition, chosen by content rather than path order. */
+  /**
+   * The first compacted file belonging to a partition, chosen by content rather than path order.
+   */
   private DataFile inPartition(List<DataFile> files, String value) {
     for (DataFile file : files) {
       if (value.equals(file.partition().get(0, String.class))) {

@@ -130,16 +130,16 @@ public class TestCompactionConflictDetectionDV {
 
   /**
    * Regression test: {@code ManifestReader.entries()} reuses one {@link ManifestEntry} (and its
-   * contained {@code DeleteFile}) across iterations for allocation reasons. If
-   * {@link CompactionConflictDetector} retains {@code entry.file()} without copying, every
-   * conflict it reports collapses to the LAST file read from the manifest — the resolver then
-   * remaps the wrong source DV against the right target and the row multiset diverges. The fix
-   * is one line: {@code entry.file().copy(false)} before retaining.
+   * contained {@code DeleteFile}) across iterations for allocation reasons. If {@link
+   * CompactionConflictDetector} retains {@code entry.file()} without copying, every conflict it
+   * reports collapses to the LAST file read from the manifest — the resolver then remaps the wrong
+   * source DV against the right target and the row multiset diverges. The fix is one line: {@code
+   * entry.file().copy(false)} before retaining.
    *
-   * <p>This test commits three DVs against three different source files in a single delete
-   * manifest (one snapshot), runs the detector, and asserts every conflicting DV carries the
-   * source-file path that matches its actual reference. Pre-fix, all three would be the same
-   * (the last-read) DV.
+   * <p>This test commits three DVs against three different source files in a single delete manifest
+   * (one snapshot), runs the detector, and asserts every conflicting DV carries the source-file
+   * path that matches its actual reference. Pre-fix, all three would be the same (the last-read)
+   * DV.
    */
   @Test
   public void testDetectorReturnsDistinctEntriesAcrossManifest() throws IOException {
