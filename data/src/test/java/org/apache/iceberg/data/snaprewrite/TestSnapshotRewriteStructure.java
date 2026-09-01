@@ -95,7 +95,8 @@ public class TestSnapshotRewriteStructure extends SnapshotRewriteTestBase {
 
     assertThatThrownBy(() -> assertLossless(broken))
         .as("a mis-stamped rewrite resurrects rows that should stay hidden")
-        .isInstanceOf(AssertionError.class);
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining("must read the same after the rewrite");
 
     broken.discard();
   }
