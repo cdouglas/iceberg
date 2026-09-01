@@ -670,7 +670,7 @@ the fuzzer is not passing by declining to work.
 | 5a | v3 with deletion vectors, gated on windows that recover nothing | **done** -- `TestSnapshotRewriteV3` |
 | 5b | Generic materialized `_row_id` (`GenericRowLineage`), lineage-preserving compaction in the harness, end-to-end identity oracle | **done** |
 | 5c | v3 recovery: resurrection files with materialized ids, P1b gated on capability | **done** |
-| 6 | Spark `RowResurrector` for scale; cost model on real tables | not started |
+| 6 | Spark `RowResurrector` for scale; cost model on real tables; window discovery for a recurring pass (§12) | not started |
 
 ---
 
@@ -780,3 +780,57 @@ snapshots pointing at one manifest list. Worth doing on a long history; not done
 column, so a snapshot carrying deletes yields wider records than one without. A rewrite turns
 delete-free snapshots into delete-bearing ones, so comparing raw records measured read plumbing
 instead of table contents. The oracle compares the schema's own columns.
+
+---
+
+## 12. Running it as a recurring pass
+
+The deployment this points at is a pass that runs *after* a compaction and switches the snapshots it
+superseded over to the newer layout. Two reasons that is the right shape, and one correction to an
+earlier note in this document.
+
+**Keeping it separate from the compaction is what lets the age threshold hold.** A fused pass would
+rewrite the moment the compaction commits, which is precisely what P7 exists to prevent: a snapshot
+that could still be an in-flight transaction's base, or that replication and audit have not consumed
+yet, must be left alone for a while. Fusing and deferring are not compatible.
+
+**The standalone resurrector is unconditionally required, so a sidecar is a cache, not a fork.** Any
+table adopting this is already full of compactions that predate the feature, and a `--dry-run` sweep
+over its history targets exactly those. No sidecar exists for them, so the ability to recover rows by
+reading the old files can never be optional. A compaction that emits the rows it drops -- which it
+already reads, and could hand over at near-zero marginal cost -- would only let the pass skip that
+read when the sidecar happens to be there. That is an accelerator behind an existing interface, and
+adding it later costs nothing. An earlier draft of this document suggested the choice had to be made
+before a Spark implementation; it does not.
+
+### 12.1 A pass has to run over its own output
+
+A snapshot rewritten onto one compaction still pins that compaction's files, so when a newer
+compaction supersedes them the same snapshot has to move again. Nothing makes it special to the
+planner -- it references data and delete files like any other, and the newer map covers them -- and
+`TestSnapshotRewriteSwitchOver` pins that a second pass re-expresses what the first pass wrote, with
+every snapshot still reading what it always did.
+
+### 12.2 Windows reach back by extending the floor, not by chaining
+
+Rewriting `[C_A, C_B)` and later `[C_B, C_C)` as independent windows does **not** release `C_A`'s
+outputs: the first pass moved those snapshots onto `C_B`, and the second pass's default window starts
+at `C_B`, so they are left pinning it. Reaching back means one window with an older floor, which is
+what `floor()` is for.
+
+This puts §2.3's advice in tension with itself. The quadratic delete term says prefer short windows;
+releasing an older layout says reach back over everything already rewritten. Both are true, and the
+resolution is not a rule but a measurement: `repeatedPassesPayForTheirReach` shows a second pass
+writing strictly more delete positions than the first over the same table, because it covers more
+snapshots against a newer compaction. **The cost of continuing to reclaim grows with retained
+history, not just with the new window.** How far back to reach on each pass is the policy question a
+real implementation has to answer, and the report is what answers it per table.
+
+### 12.3 What a pass still needs
+
+- **Window discovery.** The entry point takes a compaction and an optional floor; a pass needs to
+  enumerate candidate windows across a history, price each with `estimate()`, and choose.
+- **A reach policy**, per §12.2.
+- **Idempotence that is not "skip if rewritten".** `SnapshotRewriteRestore.isRewritten` says a
+  snapshot has been moved, but a moved snapshot may still need moving again. The condition to skip on
+  is whether it is already expressed against the newest compaction.
