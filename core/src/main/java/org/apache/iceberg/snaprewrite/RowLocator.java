@@ -18,9 +18,11 @@
  */
 package org.apache.iceberg.snaprewrite;
 
+import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.PositionDeleteRemapper;
 import org.apache.iceberg.deletes.PositionDelete;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 /**
@@ -40,13 +42,19 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  *
  * <p>Entries are never removed. A row inserted by {@code T_k} cannot be inserted again by an
  * earlier transaction, so an entry that has gone stale is never queried again.
+ *
+ * <p>Several compactions in one window are handled by applying their maps in order rather than by
+ * composing them. {@code CompactionMaps.compose} requires the first map's target snapshot to be the
+ * second's source, which holds only for back-to-back compactions; a window normally has
+ * transactions between them. Applying in sequence needs no such agreement, since each map either
+ * relocates a reference or passes it through untouched.
  */
 public class RowLocator {
-  private final PositionDeleteRemapper compactionMap;
+  private final List<PositionDeleteRemapper> compactionMaps;
   private final Map<String, Map<Long, RowRef>> overlay = Maps.newHashMap();
 
-  RowLocator(PositionDeleteRemapper compactionMap) {
-    this.compactionMap = compactionMap;
+  RowLocator(List<PositionDeleteRemapper> compactionMaps) {
+    this.compactionMaps = ImmutableList.copyOf(compactionMaps);
   }
 
   /**
@@ -65,17 +73,17 @@ public class RowLocator {
       }
     }
 
-    if (compactionMap == null) {
-      return new RowRef(path, position);
+    PositionDelete<?> current = PositionDelete.create().set(path, position);
+    for (PositionDeleteRemapper remapper : compactionMaps) {
+      // Null means the map covers this file but not this position: the row was already dead when
+      // that compaction ran and no later map can place it.
+      current = remapper.remapDeleteOrNull(current);
+      if (current == null) {
+        return null;
+      }
     }
 
-    PositionDelete<?> remapped =
-        compactionMap.remapDeleteOrNull(PositionDelete.create().set(path, position));
-    if (remapped == null) {
-      return null;
-    }
-
-    return new RowRef(remapped.path().toString(), remapped.pos());
+    return new RowRef(current.path().toString(), current.pos());
   }
 
   /** Records that a row of the original layout was recovered into a resurrection file. */

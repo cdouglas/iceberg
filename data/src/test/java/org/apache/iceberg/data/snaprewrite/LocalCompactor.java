@@ -45,6 +45,9 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.util.StructLikeMap;
+import org.apache.iceberg.StructLike;
+import java.util.function.Predicate;
 
 /**
  * A bin-pack compaction that records where every surviving row went.
@@ -71,6 +74,16 @@ class LocalCompactor {
    *     it.
    */
   static Snapshot compact(Table table, boolean attachMap) {
+    return compact(table, attachMap, file -> true);
+  }
+
+  /**
+   * Compacts the live data files a predicate selects.
+   *
+   * <p>A partial compaction leaves files untouched, and the rewrite has to treat those as already in
+   * place: the compaction map says nothing about them because nothing moved.
+   */
+  static Snapshot compact(Table table, boolean attachMap, Predicate<DataFile> include) {
     Snapshot startingSnapshot = table.currentSnapshot();
     List<FileScanTask> tasks = Lists.newArrayList();
     try (CloseableIterable<FileScanTask> planned = table.newScan().planFiles()) {
@@ -83,27 +96,41 @@ class LocalCompactor {
 
     tasks.sort(Comparator.comparing(task -> task.file().location()));
 
-    String targetPath =
-        table.location()
-            + "/data/"
-            + FileFormat.PARQUET.addExtension("compaction-" + UUID.randomUUID());
-    OutputFile output = table.io().newOutputFile(targetPath);
-
     CompactionMapBuilder mapBuilder =
         new CompactionMapBuilder(startingSnapshot.snapshotId(), startingSnapshot.snapshotId() + 1);
 
     Set<DataFile> replacedData = Sets.newHashSet();
     Set<DeleteFile> replacedDeletes = Sets.newHashSet();
     Map<String, DeleteFile> deletesByPath = Maps.newHashMap();
+    Set<DataFile> targets = Sets.newHashSet();
 
-    long targetPosition = 0;
-    long recordCount = 0;
-    GenericAppenderFactory factory =
-        new GenericAppenderFactory(table.schema(), table.spec()).setAll(table.properties());
-    FileAppender<Record> appender = factory.newAppender(output, FileFormat.PARQUET);
+    // One target file per partition: a data file belongs to exactly one partition, so rows cannot be
+    // concatenated across them.
+    StructLikeMap<List<FileScanTask>> byPartition =
+        StructLikeMap.create(table.spec().partitionType());
+    for (FileScanTask task : tasks) {
+      if (include.test(task.file())) {
+        byPartition
+            .computeIfAbsent(task.file().partition(), ignored -> Lists.newArrayList())
+            .add(task);
+      }
+    }
 
-    try {
-      for (FileScanTask task : tasks) {
+    for (Map.Entry<StructLike, List<FileScanTask>> partition : byPartition.entrySet()) {
+      String targetPath =
+          table.location()
+              + "/data/"
+              + FileFormat.PARQUET.addExtension("compaction-" + UUID.randomUUID());
+      OutputFile output = table.io().newOutputFile(targetPath);
+
+      long targetPosition = 0;
+      long recordCount = 0;
+      GenericAppenderFactory factory =
+          new GenericAppenderFactory(table.schema(), table.spec()).setAll(table.properties());
+      FileAppender<Record> appender = factory.newAppender(output, FileFormat.PARQUET);
+
+      try {
+        for (FileScanTask task : partition.getValue()) {
         DataFile file = task.file();
         replacedData.add(file);
         for (DeleteFile delete : task.deletes()) {
@@ -158,36 +185,51 @@ class LocalCompactor {
         if (runLength > 0) {
           mapping.addRun(runStart, runTargetStart, runLength);
         }
+        }
+      } finally {
+        close(appender);
       }
-    } finally {
-      close(appender);
+
+      DataFiles.Builder builder =
+          DataFiles.builder(table.spec())
+              .withPath(targetPath)
+              .withFormat(FileFormat.PARQUET)
+              .withFileSizeInBytes(appender.length())
+              .withMetrics(appender.metrics())
+              .withRecordCount(recordCount);
+      if (table.spec().isPartitioned()) {
+        builder.withPartition(partition.getKey());
+      }
+
+      targets.add(builder.build());
     }
 
-    replacedDeletes.addAll(deletesByPath.values());
+    // A delete file left applying to a file this compaction did not touch must stay. Dropping it
+    // would lose those deletes, which a partial compaction makes possible.
+    Set<String> stillNeeded = Sets.newHashSet();
+    for (FileScanTask task : tasks) {
+      if (!include.test(task.file())) {
+        for (DeleteFile delete : task.deletes()) {
+          stillNeeded.add(delete.location());
+        }
+      }
+    }
 
-    DataFile target =
-        DataFiles.builder(table.spec())
-            .withPath(targetPath)
-            .withFormat(FileFormat.PARQUET)
-            .withFileSizeInBytes(appender.length())
-            .withMetrics(appender.metrics())
-            .withRecordCount(recordCount)
-            .build();
+    for (Map.Entry<String, DeleteFile> entry : deletesByPath.entrySet()) {
+      if (!stillNeeded.contains(entry.getKey())) {
+        replacedDeletes.add(entry.getValue());
+      }
+    }
 
     String mapPath =
         table.location() + "/metadata/" + FileFormat.AVRO.addExtension("cmap-" + UUID.randomUUID());
     if (attachMap) {
-      CompactionMap map = mapBuilder.build();
-      try {
-        CompactionMaps.write(map, table.io().newOutputFile(mapPath));
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      }
+      writeMap(table, mapBuilder, startingSnapshot.snapshotId(), startingSnapshot.snapshotId() + 1, mapPath);
     }
 
     BaseRewriteFiles rewrite =
         (BaseRewriteFiles) table.newRewrite().validateFromSnapshot(startingSnapshot.snapshotId());
-    rewrite.rewriteFiles(replacedData, replacedDeletes, Sets.newHashSet(target), Sets.newHashSet());
+    rewrite.rewriteFiles(replacedData, replacedDeletes, targets, Sets.newHashSet());
     if (attachMap) {
       rewrite.setCompactionMapLocation(mapPath);
     } else {
@@ -197,7 +239,42 @@ class LocalCompactor {
     rewrite.commit();
 
     table.refresh();
-    return table.currentSnapshot();
+    Snapshot committed = table.currentSnapshot();
+
+    if (attachMap) {
+      // Rewrite the map with its real target snapshot id. Composing two maps requires the first's
+      // target to be the second's source, and the id a compaction will be assigned is not known
+      // until it commits. Production code has the same gap and stamps a placeholder; chaining only
+      // works once the ids are real.
+      table.io().deleteFile(mapPath);
+      writeMap(
+          table, mapBuilder, startingSnapshot.snapshotId(), committed.snapshotId(), mapPath);
+    }
+
+    return committed;
+  }
+
+  private static void writeMap(
+      Table table,
+      CompactionMapBuilder source,
+      long sourceSnapshotId,
+      long targetSnapshotId,
+      String path) {
+    CompactionMap built = source.build();
+    CompactionMapBuilder rebuilt = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
+    for (CompactionMap.FileMapping mapping : built.fileMappings()) {
+      CompactionMapBuilder.FileMappingBuilder target =
+          rebuilt.addFileMapping(mapping.sourceFile(), mapping.targetFile());
+      for (CompactionMap.Run run : mapping.runs()) {
+        target.addRun(run.sourcePosition(), run.targetPosition(), run.length());
+      }
+    }
+
+    try {
+      CompactionMaps.write(rebuilt.build(), table.io().newOutputFile(path));
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   private static void close(FileAppender<?> appender) {

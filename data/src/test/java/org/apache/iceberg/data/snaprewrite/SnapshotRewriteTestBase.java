@@ -34,6 +34,7 @@ import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.Tables;
@@ -75,18 +76,26 @@ public abstract class SnapshotRewriteTestBase {
 
   @BeforeEach
   public void createTable() {
-    this.table =
-        TABLES.create(
-            SCHEMA,
-            PartitionSpec.unpartitioned(),
-            ImmutableMap.of(
-                TableProperties.FORMAT_VERSION,
-                "2",
-                TableProperties.DEFAULT_FILE_FORMAT,
-                "parquet",
-                "write.compaction-map.enabled",
-                "true"),
-            tempDir.toString() + "/tbl");
+    this.table = newTable(PartitionSpec.unpartitioned(), "tbl");
+  }
+
+  /** Recreates the table under test with a different partition spec. */
+  protected void usePartitionSpec(PartitionSpec spec) {
+    this.table = newTable(spec, "tbl-" + UUID.randomUUID());
+  }
+
+  private Table newTable(PartitionSpec spec, String name) {
+    return TABLES.create(
+        SCHEMA,
+        spec,
+        ImmutableMap.of(
+            TableProperties.FORMAT_VERSION,
+            "2",
+            TableProperties.DEFAULT_FILE_FORMAT,
+            "parquet",
+            "write.compaction-map.enabled",
+            "true"),
+        tempDir.toString() + "/" + name);
   }
 
   // ------------------------------------------------------------------ building a history
@@ -110,6 +119,27 @@ public abstract class SnapshotRewriteTestBase {
   /** Writes a data file without committing it. */
   protected DataFile writeData(List<Record> rows) throws IOException {
     return FileHelpers.writeDataFile(table, newOutput("data"), rows);
+  }
+
+  /** Writes a data file for one partition without committing it. */
+  protected DataFile writeData(StructLike partition, List<Record> rows) throws IOException {
+    return FileHelpers.writeDataFile(table, newOutput("data"), partition, rows);
+  }
+
+  /** Commits an append into one partition. */
+  protected DataFile append(StructLike partition, List<Record> rows) throws IOException {
+    DataFile file = writeData(partition, rows);
+    table.newFastAppend().appendFile(file).commit();
+    return file;
+  }
+
+  /** Commits position deletes scoped to one partition. */
+  protected void delete(StructLike partition, List<Pair<CharSequence, Long>> positions)
+      throws IOException {
+    table
+        .newRowDelta()
+        .addDeletes(FileHelpers.writeDeleteFile(table, newOutput("deletes"), partition, positions).first())
+        .commit();
   }
 
   /** Writes a position delete file without committing it. */

@@ -28,7 +28,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.CompactionMap;
-import org.apache.iceberg.CompactionMapChain;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.DeleteFile;
@@ -101,8 +100,8 @@ public class SnapshotRewritePlanner {
     List<Snapshot> window = resolveWindow(compaction, floorSnapshotId);
     checkStaticPreconditions(compaction, window);
 
-    PositionDeleteRemapper remapper = loadRemapper(compaction, window);
-    RowLocator locator = new RowLocator(remapper);
+    CompactionMapLookup lookup = new CompactionMapLookup(io);
+    RowLocator locator = new RowLocator(loadRemappers(compaction, window, lookup));
 
     PartitionSpec spec = base.spec();
     Map<Long, SnapshotState> states = Maps.newHashMap();
@@ -139,6 +138,23 @@ public class SnapshotRewritePlanner {
       Snapshot previous = window.get(k - 1);
       SnapshotState currentState = states.get(current.snapshotId());
       SnapshotState previousState = states.get(previous.snapshotId());
+
+      if (isCompaction(current) && lookup.forSnapshot(current) != null) {
+        // A compaction is a logical no-op: it relocated rows without changing which rows exist, and
+        // its map already describes where they went. Diffing it by file and position would see
+        // every
+        // old reference as deleted and every new one as inserted, and would copy the entire live
+        // table forward at each compaction boundary -- which is exactly what a window reaching back
+        // through several compactions is trying to avoid.
+        checkLiveRowsUnchanged(current, previousState, currentState);
+        rewritten.put(
+            previous.snapshotId(),
+            new SnapshotRewritePlan.RewrittenSnapshot(
+                previous,
+                ImmutableList.copyOf(presentResurrections),
+                deleteRequests(previous, spec, deletes, partitionByPath)));
+        continue;
+      }
 
       RowDelta delta = diff(previousState, currentState);
 
@@ -400,7 +416,8 @@ public class SnapshotRewritePlanner {
 
   // ---------------------------------------------------------------- compaction maps
 
-  private PositionDeleteRemapper loadRemapper(Snapshot compaction, List<Snapshot> window) {
+  private List<PositionDeleteRemapper> loadRemappers(
+      Snapshot compaction, List<Snapshot> window, CompactionMapLookup lookup) {
     List<CompactionMap> maps = Lists.newArrayList();
 
     // Compactions inside the window relocate rows before the final compaction does, so their maps
@@ -409,21 +426,22 @@ public class SnapshotRewritePlanner {
     for (int i = 1; i < window.size(); i += 1) {
       Snapshot snapshot = window.get(i);
       if (isCompaction(snapshot)) {
-        maps.add(requireMap(snapshot));
+        maps.add(requireMap(snapshot, lookup));
       }
     }
 
-    maps.add(requireMap(compaction));
+    maps.add(requireMap(compaction, lookup));
 
-    if (maps.size() == 1) {
-      return new PositionDeleteRemapper(maps.get(0));
+    List<PositionDeleteRemapper> remappers = Lists.newArrayList();
+    for (CompactionMap map : maps) {
+      remappers.add(new PositionDeleteRemapper(map));
     }
 
-    return new PositionDeleteRemapper(CompactionMapChain.build(maps));
+    return remappers;
   }
 
-  private CompactionMap requireMap(Snapshot snapshot) {
-    CompactionMap map = new CompactionMapLookup(io).forSnapshot(snapshot);
+  private CompactionMap requireMap(Snapshot snapshot, CompactionMapLookup lookup) {
+    CompactionMap map = lookup.forSnapshot(snapshot);
     if (map == null) {
       throw new RewriteRefusedException(
           RewriteRefusal.MISSING_COMPACTION_MAP, "snapshot " + snapshot.snapshotId());
@@ -496,6 +514,35 @@ public class SnapshotRewritePlanner {
     return delta;
   }
 
+  /**
+   * Confirms a replace operation left the table's contents alone.
+   *
+   * <p>Skipping the diff over a compaction assumes it is a logical no-op. A replace that also
+   * changed data would break that assumption silently, so it is checked rather than trusted.
+   */
+  private void checkLiveRowsUnchanged(
+      Snapshot compaction, SnapshotState previous, SnapshotState current) {
+    long before = liveRows(previous);
+    long after = liveRows(current);
+    if (before != after) {
+      throw new RewriteRefusedException(
+          RewriteRefusal.REPLACE_CHANGED_DATA,
+          String.format(
+              "snapshot %s has %s live rows, its parent has %s",
+              compaction.snapshotId(), after, before));
+    }
+  }
+
+  private long liveRows(SnapshotState state) {
+    long total = 0;
+    for (Map.Entry<String, DataFile> entry : state.files.entrySet()) {
+      PositionSet deleted = state.deleted.get(entry.getKey());
+      total += entry.getValue().recordCount() - (deleted == null ? 0 : deleted.size());
+    }
+
+    return total;
+  }
+
   private void addLive(List<RowRef> target, String path, long recordCount, PositionSet deleted) {
     for (long pos = 0; pos < recordCount; pos += 1) {
       if (deleted == null || !deleted.contains(pos)) {
@@ -556,35 +603,18 @@ public class SnapshotRewritePlanner {
 
     Map<String, Long> inWindow = Maps.newHashMap();
     for (Snapshot snapshot : window) {
-      collectFiles(snapshot, inWindow);
+      SnapshotFiles.collect(snapshot, io, base.specsById(), inWindow);
     }
 
     for (Snapshot snapshot : base.snapshots()) {
       if (!windowIds.contains(snapshot.snapshotId())) {
         Map<String, Long> elsewhere = Maps.newHashMap();
-        collectFiles(snapshot, elsewhere);
+        SnapshotFiles.collect(snapshot, io, base.specsById(), elsewhere);
         inWindow.keySet().removeAll(elsewhere.keySet());
       }
     }
 
     return inWindow;
-  }
-
-  private void collectFiles(Snapshot snapshot, Map<String, Long> sizes) {
-    sizes.put(
-        snapshot.manifestListLocation(),
-        io.newInputFile(snapshot.manifestListLocation()).getLength());
-    for (ManifestFile manifest : snapshot.allManifests(io)) {
-      sizes.put(manifest.path(), manifest.length());
-    }
-
-    for (DataFile file : snapshot.addedDataFiles(io)) {
-      sizes.put(file.location(), file.fileSizeInBytes());
-    }
-
-    for (DeleteFile file : snapshot.addedDeleteFiles(io)) {
-      sizes.put(file.location(), file.fileSizeInBytes());
-    }
   }
 
   private String newDataPath(long snapshotId) {
