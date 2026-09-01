@@ -111,10 +111,6 @@ public class SnapshotRewritePlanner {
 
     SnapshotState targetState = buildState(compaction);
     List<DataFile> targetFiles = ImmutableList.copyOf(targetState.files.values());
-    Map<String, DataFile> newFilesByPath = Maps.newHashMap();
-    for (DataFile file : targetFiles) {
-      newFilesByPath.put(file.location(), file);
-    }
 
     // The newest snapshot in the window has the same state as the compaction, so its rewritten form
     // is the compaction's files with nothing deleted and nothing resurrected.
@@ -140,12 +136,11 @@ public class SnapshotRewritePlanner {
       SnapshotState previousState = states.get(previous.snapshotId());
 
       if (isCompaction(current) && lookup.forSnapshot(current) != null) {
-        // A compaction is a logical no-op: it relocated rows without changing which rows exist, and
-        // its map already describes where they went. Diffing it by file and position would see
-        // every
-        // old reference as deleted and every new one as inserted, and would copy the entire live
-        // table forward at each compaction boundary -- which is exactly what a window reaching back
-        // through several compactions is trying to avoid.
+        // A compaction is a logical no-op: it relocated rows without changing which rows exist,
+        // and its map already says where they went. Diffing it by file and position would see every
+        // old reference as deleted and every new one as inserted, copying the whole live table
+        // forward at each compaction boundary -- exactly what a window reaching back through
+        // several compactions is trying to avoid.
         checkLiveRowsUnchanged(current, previousState, currentState);
         rewritten.put(
             previous.snapshotId(),

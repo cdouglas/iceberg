@@ -40,10 +40,10 @@ import org.roaringbitmap.RoaringBitmap;
  * Compares the old long-typed remap-and-bitmap path against the new int-typed DV path end-to-end.
  *
  * <p>Both paths start from a {@link RoaringBitmap} of source positions (the natural form of a V3
- * deletion vector) and finish by depositing the remapped positions into a target {@link
- * RoaringBitmap} via {@code addN}. The difference is whether the remapping API exposes {@code
- * long[]} (with widening at entry and narrowing at exit) or {@code int[]} (skipping the narrowing
- * entirely and using the new sorted-hint path through the selector).
+ * deletion vector) and finish by depositing the remapped positions into a target
+ * {@link RoaringBitmap} via {@code addN}. The difference is whether the remapping API exposes
+ * {@code long[]} (with widening at entry and narrowing at exit) or {@code int[]} (skipping the
+ * narrowing entirely and using the new sorted-hint path through the selector).
  */
 @State(Scope.Benchmark)
 @Warmup(iterations = 3, time = 2)
@@ -70,8 +70,7 @@ public class DVRemapPathBenchmark {
     List<Run> runs = RemappingBenchmarkUtils.createRunsWithGaps(numRuns, 0.0);
     CompactionMap.FileMapping mapping =
         new GenericCompactionMap.GenericFileMapping(SOURCE, TARGET, runs);
-    GenericCompactionMap map =
-        new GenericCompactionMap(1L, 2L, java.util.Collections.singletonList(mapping));
+    GenericCompactionMap map = new GenericCompactionMap(1L, 2L, java.util.Collections.singletonList(mapping));
     this.remapper = new PositionDeleteRemapper(map);
 
     // Build a sorted DV-shaped source bitmap covering positions within run coverage.

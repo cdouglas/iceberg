@@ -233,8 +233,4 @@ public class SnapshotRewriteResult {
       return withheld;
     }
   }
-
-  static Map<String, DataFile> emptyDataFiles() {
-    return Maps.newHashMap();
-  }
 }
