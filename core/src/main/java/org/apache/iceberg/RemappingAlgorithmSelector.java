@@ -94,9 +94,9 @@ public class RemappingAlgorithmSelector {
    * Selects the optimal strategy, accepting a hint about the input's sortedness.
    *
    * <p>Used when the caller has structural knowledge that positions are sorted (e.g., positions
-   * extracted from a {@link org.apache.iceberg.deletes.RoaringPositionBitmap}-backed DV are
-   * sorted by construction). Skipping the sortedness sample avoids touching the input array on
-   * a path that would otherwise immediately consume it.
+   * extracted from a {@link org.apache.iceberg.deletes.RoaringPositionBitmap}-backed DV are sorted
+   * by construction). Skipping the sortedness sample avoids touching the input array on a path that
+   * would otherwise immediately consume it.
    *
    * @param mapping the file mapping containing runs
    * @param positions the positions to remap
@@ -104,7 +104,8 @@ public class RemappingAlgorithmSelector {
    *     known unsorted, or {@code null} to detect via sampling
    * @return the optimal remapping strategy
    */
-  public RemappingStrategy selectOptimal(FileMapping mapping, long[] positions, Boolean sortedHint) {
+  public RemappingStrategy selectOptimal(
+      FileMapping mapping, long[] positions, Boolean sortedHint) {
     Preconditions.checkNotNull(mapping, "mapping is null");
     Preconditions.checkNotNull(positions, "positions is null");
 
