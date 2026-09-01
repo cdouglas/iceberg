@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import org.apache.iceberg.BaseRewriteFiles;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMapBuilder;
@@ -35,6 +36,7 @@ import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.data.GenericAppenderFactory;
 import org.apache.iceberg.data.Record;
@@ -46,8 +48,6 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.StructLikeMap;
-import org.apache.iceberg.StructLike;
-import java.util.function.Predicate;
 
 /**
  * A bin-pack compaction that records where every surviving row went.
@@ -80,8 +80,8 @@ class LocalCompactor {
   /**
    * Compacts the live data files a predicate selects.
    *
-   * <p>A partial compaction leaves files untouched, and the rewrite has to treat those as already in
-   * place: the compaction map says nothing about them because nothing moved.
+   * <p>A partial compaction leaves files untouched, and the rewrite has to treat those as already
+   * in place: the compaction map says nothing about them because nothing moved.
    */
   static Snapshot compact(Table table, boolean attachMap, Predicate<DataFile> include) {
     Snapshot startingSnapshot = table.currentSnapshot();
@@ -104,7 +104,8 @@ class LocalCompactor {
     Map<String, DeleteFile> deletesByPath = Maps.newHashMap();
     Set<DataFile> targets = Sets.newHashSet();
 
-    // One target file per partition: a data file belongs to exactly one partition, so rows cannot be
+    // One target file per partition: a data file belongs to exactly one partition, so rows cannot
+    // be
     // concatenated across them.
     StructLikeMap<List<FileScanTask>> byPartition =
         StructLikeMap.create(table.spec().partitionType());
@@ -131,60 +132,61 @@ class LocalCompactor {
 
       try {
         for (FileScanTask task : partition.getValue()) {
-        DataFile file = task.file();
-        replacedData.add(file);
-        for (DeleteFile delete : task.deletes()) {
-          deletesByPath.put(delete.location(), delete);
-        }
-
-        // Equality deletes are not applied here. A window containing them cannot be rewritten
-        // anyway, and these tests only need such a history to reach the refusal.
-        List<DeleteFile> positionDeletes = Lists.newArrayList();
-        for (DeleteFile delete : task.deletes()) {
-          if (delete.content() == FileContent.POSITION_DELETES) {
-            positionDeletes.add(delete);
+          DataFile file = task.file();
+          replacedData.add(file);
+          for (DeleteFile delete : task.deletes()) {
+            deletesByPath.put(delete.location(), delete);
           }
-        }
 
-        PositionDeleteIndex deleted =
-            positionDeletes.isEmpty()
-                ? null
-                : new org.apache.iceberg.data.GenericSnapshotRewriteIO(table)
-                    .loadPositionDeletes(positionDeletes, file.location());
+          // Equality deletes are not applied here. A window containing them cannot be rewritten
+          // anyway, and these tests only need such a history to reach the refusal.
+          List<DeleteFile> positionDeletes = Lists.newArrayList();
+          for (DeleteFile delete : task.deletes()) {
+            if (delete.content() == FileContent.POSITION_DELETES) {
+              positionDeletes.add(delete);
+            }
+          }
 
-        List<Record> rows = RawFiles.readAll(table.io(), file.location(), table.schema());
-        CompactionMapBuilder.FileMappingBuilder mapping =
-            mapBuilder.addFileMapping(file.location(), targetPath);
+          PositionDeleteIndex deleted =
+              positionDeletes.isEmpty()
+                  ? null
+                  : new org.apache.iceberg.data.GenericSnapshotRewriteIO(table)
+                      .loadPositionDeletes(positionDeletes, file.location());
 
-        // Surviving rows keep their relative order, so consecutive live positions form one run and
-        // the map stays small. A run breaks wherever a delete interrupts the sequence.
-        long runStart = -1;
-        long runTargetStart = -1;
-        long runLength = 0;
-        for (long position = 0; position < rows.size(); position += 1) {
-          if (deleted != null && deleted.isDeleted(position)) {
-            if (runLength > 0) {
-              mapping.addRun(runStart, runTargetStart, runLength);
-              runLength = 0;
+          List<Record> rows = RawFiles.readAll(table.io(), file.location(), table.schema());
+          CompactionMapBuilder.FileMappingBuilder mapping =
+              mapBuilder.addFileMapping(file.location(), targetPath);
+
+          // Surviving rows keep their relative order, so consecutive live positions form one run
+          // and
+          // the map stays small. A run breaks wherever a delete interrupts the sequence.
+          long runStart = -1;
+          long runTargetStart = -1;
+          long runLength = 0;
+          for (long position = 0; position < rows.size(); position += 1) {
+            if (deleted != null && deleted.isDeleted(position)) {
+              if (runLength > 0) {
+                mapping.addRun(runStart, runTargetStart, runLength);
+                runLength = 0;
+              }
+
+              continue;
             }
 
-            continue;
+            if (runLength == 0) {
+              runStart = position;
+              runTargetStart = targetPosition;
+            }
+
+            runLength += 1;
+            appender.add(rows.get((int) position));
+            targetPosition += 1;
+            recordCount += 1;
           }
 
-          if (runLength == 0) {
-            runStart = position;
-            runTargetStart = targetPosition;
+          if (runLength > 0) {
+            mapping.addRun(runStart, runTargetStart, runLength);
           }
-
-          runLength += 1;
-          appender.add(rows.get((int) position));
-          targetPosition += 1;
-          recordCount += 1;
-        }
-
-        if (runLength > 0) {
-          mapping.addRun(runStart, runTargetStart, runLength);
-        }
         }
       } finally {
         close(appender);
@@ -224,7 +226,12 @@ class LocalCompactor {
     String mapPath =
         table.location() + "/metadata/" + FileFormat.AVRO.addExtension("cmap-" + UUID.randomUUID());
     if (attachMap) {
-      writeMap(table, mapBuilder, startingSnapshot.snapshotId(), startingSnapshot.snapshotId() + 1, mapPath);
+      writeMap(
+          table,
+          mapBuilder,
+          startingSnapshot.snapshotId(),
+          startingSnapshot.snapshotId() + 1,
+          mapPath);
     }
 
     BaseRewriteFiles rewrite =
@@ -247,8 +254,7 @@ class LocalCompactor {
       // until it commits. Production code has the same gap and stamps a placeholder; chaining only
       // works once the ids are real.
       table.io().deleteFile(mapPath);
-      writeMap(
-          table, mapBuilder, startingSnapshot.snapshotId(), committed.snapshotId(), mapPath);
+      writeMap(table, mapBuilder, startingSnapshot.snapshotId(), committed.snapshotId(), mapPath);
     }
 
     return committed;
