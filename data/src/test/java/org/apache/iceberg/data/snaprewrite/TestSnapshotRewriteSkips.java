@@ -61,15 +61,21 @@ import org.junit.jupiter.api.Test;
  */
 public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
 
+  /**
+   * An unsupported format version is refused outright.
+   *
+   * <p>v2 and v3 are handled; v3 additionally requires that the window recover nothing, which {@code
+   * TestSnapshotRewriteV3} covers. v4 is simply not reasoned about here.
+   */
   @Test
-  public void refusesFormatVersionThree() throws IOException {
-    Table v3 = createTableWith(ImmutableMap.of(TableProperties.FORMAT_VERSION, "3"));
-    appendTo(v3, records(1, 4, "base"));
-    LocalCompactor.compact(v3);
-    appendTo(v3, records(10, 2, "alpha"));
-    LocalCompactor.compact(v3);
+  public void refusesUnsupportedFormatVersion() throws IOException {
+    Table v4 = createTableWith(ImmutableMap.of(TableProperties.FORMAT_VERSION, "4"));
+    appendTo(v4, records(1, 4, "base"));
+    LocalCompactor.compact(v4);
+    appendTo(v4, records(10, 2, "alpha"));
+    LocalCompactor.compact(v4);
 
-    assertRefusedWith(v3, RewriteRefusal.FORMAT_VERSION);
+    assertRefusedWith(v4, RewriteRefusal.FORMAT_VERSION);
   }
 
   @Test

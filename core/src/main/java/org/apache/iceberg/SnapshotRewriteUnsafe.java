@@ -52,8 +52,10 @@ public class SnapshotRewriteUnsafe {
    * rewritten history remains addressable by the same ids and timestamps. Only {@code manifestList}
    * and the summary totals may change.
    *
-   * <p>Format v2 only: row lineage fields are null, which {@code TableMetadata} would reject for
-   * v3.
+   * <p>{@code firstRowId} and {@code addedRows} are carried through from the snapshot being
+   * rewritten. A rewritten snapshot must not disturb row lineage: the rows it holds are the same
+   * rows, and under v3 their ids derive from the data files' own {@code first_row_id}, which the
+   * rewrite does not change. Anything else here would renumber history.
    */
   public static Snapshot newSnapshot(
       long sequenceNumber,
@@ -63,7 +65,9 @@ public class SnapshotRewriteUnsafe {
       String operation,
       Map<String, String> summary,
       Integer schemaId,
-      String manifestList) {
+      String manifestList,
+      Long firstRowId,
+      Long addedRows) {
     return new BaseSnapshot(
         sequenceNumber,
         snapshotId,
@@ -73,8 +77,8 @@ public class SnapshotRewriteUnsafe {
         summary,
         schemaId,
         manifestList,
-        null,
-        null,
+        firstRowId,
+        addedRows,
         null);
   }
 
@@ -137,11 +141,12 @@ public class SnapshotRewriteUnsafe {
       long snapshotId,
       Long parentSnapshotId,
       long sequenceNumber,
+      Long firstRowId,
       List<ManifestFile> manifests)
       throws IOException {
     try (ManifestListWriter writer =
         ManifestLists.write(
-            formatVersion, out, snapshotId, parentSnapshotId, sequenceNumber, null)) {
+            formatVersion, out, snapshotId, parentSnapshotId, sequenceNumber, firstRowId)) {
       writer.addAll(manifests);
     }
   }

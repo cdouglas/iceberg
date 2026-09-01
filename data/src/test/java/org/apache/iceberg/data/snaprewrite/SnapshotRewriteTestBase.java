@@ -78,9 +78,11 @@ public abstract class SnapshotRewriteTestBase {
   @TempDir protected File tempDir;
 
   protected Table table;
+  private int formatVersion = 2;
 
   @BeforeEach
   public void createTable() {
+    this.formatVersion = 2;
     this.table = newTable(SCHEMA, PartitionSpec.unpartitioned(), "tbl");
   }
 
@@ -94,13 +96,19 @@ public abstract class SnapshotRewriteTestBase {
     this.table = newTable(schema, spec, "tbl-" + UUID.randomUUID());
   }
 
+  /** Recreates the table under test at a different format version. */
+  protected void useFormatVersion(int version) {
+    this.formatVersion = version;
+    this.table = newTable(SCHEMA, PartitionSpec.unpartitioned(), "tbl-v" + version + "-" + UUID.randomUUID());
+  }
+
   private Table newTable(Schema schema, PartitionSpec spec, String name) {
     return TABLES.create(
         schema,
         spec,
         ImmutableMap.of(
             TableProperties.FORMAT_VERSION,
-            "2",
+            String.valueOf(formatVersion),
             TableProperties.DEFAULT_FILE_FORMAT,
             "parquet",
             "write.compaction-map.enabled",
@@ -155,7 +163,8 @@ public abstract class SnapshotRewriteTestBase {
 
   /** Writes a position delete file without committing it. */
   protected DeleteFile writeDeletes(List<Pair<CharSequence, Long>> positions) throws IOException {
-    return FileHelpers.writeDeleteFile(table, newOutput("deletes"), positions).first();
+    return FileHelpers.writeDeleteFile(table, newOutput("deletes"), null, positions, formatVersion)
+        .first();
   }
 
   /** Commits an append. */

@@ -45,6 +45,7 @@ import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
@@ -172,6 +173,7 @@ public class SnapshotRewritePlanner {
               deleteRequests(previous, spec, deletes, partitionByPath)));
     }
 
+    checkRowLineage(resurrections);
     checkSourceFilesExist(resurrections);
 
     long targetRows = 0;
@@ -313,7 +315,7 @@ public class SnapshotRewritePlanner {
   }
 
   private void checkFormatAndAge(Snapshot compaction) {
-    if (base.formatVersion() != 2) {
+    if (base.formatVersion() != 2 && base.formatVersion() != 3) {
       throw new RewriteRefusedException(
           RewriteRefusal.FORMAT_VERSION, "format version " + base.formatVersion());
     }
@@ -373,6 +375,33 @@ public class SnapshotRewritePlanner {
     if (specIds.size() > 1) {
       throw new RewriteRefusedException(
           RewriteRefusal.SPEC_CHANGED, "partition spec ids in window: " + specIds);
+    }
+  }
+
+  /**
+   * Refuses a v3 window that would have to recover rows.
+   *
+   * <p>Rows that survived the compaction keep their identity for free: a rewritten snapshot points at
+   * the compaction's own files at the same offsets, so {@code first_row_id + pos} yields what it
+   * always did. A recovered row is different -- it lands in a file this rewrite writes, and its id
+   * would be derived from that file's {@code first_row_id} instead. Preserving it needs a
+   * materialized {@code _row_id}, which the generic writers cannot produce.
+   *
+   * <p>So v3 is supported exactly as far as it is lossless, and refused past that, rather than being
+   * allowed through with silently renumbered rows.
+   */
+  private void checkRowLineage(List<ResurrectionRequest> requests) {
+    if (base.formatVersion() >= 3 && !requests.isEmpty()) {
+      long rows = 0;
+      for (ResurrectionRequest request : requests) {
+        rows += request.rowCount();
+      }
+
+      throw new RewriteRefusedException(
+          RewriteRefusal.ROW_LINEAGE,
+          String.format(
+              "%s rows in %s files would be recovered into new files under format version %s",
+              rows, requests.size(), base.formatVersion()));
     }
   }
 
@@ -565,6 +594,26 @@ public class SnapshotRewritePlanner {
       return ImmutableList.of();
     }
 
+    List<PositionDeleteRequest> requests = Lists.newArrayList();
+
+    if (base.formatVersion() >= 3) {
+      // A deletion vector references exactly one data file, so a snapshot needs one per file it
+      // deletes from rather than one per partition.
+      List<String> paths = Lists.newArrayList(deletes.keySet());
+      paths.sort(String::compareTo);
+      for (String path : paths) {
+        requests.add(
+            new PositionDeleteRequest(
+                snapshot.snapshotId(),
+                spec,
+                partitionByPath.get(path),
+                ImmutableMap.of(path, deletes.get(path).copy()),
+                newDeletePath(snapshot.snapshotId())));
+      }
+
+      return requests;
+    }
+
     StructLikeMap<Map<String, PositionSet>> byPartition =
         StructLikeMap.create(spec.partitionType());
     for (Map.Entry<String, PositionSet> entry : deletes.entrySet()) {
@@ -573,7 +622,6 @@ public class SnapshotRewritePlanner {
           .put(entry.getKey(), entry.getValue().copy());
     }
 
-    List<PositionDeleteRequest> requests = Lists.newArrayList();
     for (Map.Entry<StructLike, Map<String, PositionSet>> entry : byPartition.entrySet()) {
       requests.add(
           new PositionDeleteRequest(
@@ -623,9 +671,10 @@ public class SnapshotRewritePlanner {
   }
 
   private String newDeletePath(long snapshotId) {
+    FileFormat format = base.formatVersion() >= 3 ? FileFormat.PUFFIN : fileFormat();
     return dataLocation()
         + "/"
-        + fileFormat().addExtension("snaprewrite-deletes-" + snapshotId + "-" + UUID.randomUUID());
+        + format.addExtension("snaprewrite-deletes-" + snapshotId + "-" + UUID.randomUUID());
   }
 
   private String dataLocation() {
