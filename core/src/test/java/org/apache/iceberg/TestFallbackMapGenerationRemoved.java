@@ -257,15 +257,15 @@ public class TestFallbackMapGenerationRemoved {
   }
 
   /**
-   * Regression test: when a source file's rows span multiple target files (multi-target
-   * compaction caused by target-size rolls), the per-run {@code targetFile} on each {@code
+   * Regression test: when a source file's rows span multiple target files (multi-target compaction
+   * caused by target-size rolls), the per-run {@code targetFile} on each {@code
    * RewriteFileGroup.FilePositionMapping.Run} must propagate through {@code buildCompactionMap}
    * into the produced {@code CompactionMap.Run}.
    *
    * <p>Before the fix, {@code RewriteDataFilesCommitManager.buildCompactionMap} called the
    * 3-argument {@code addRun(srcOff, tgtOff, len)} which silently dropped the per-run target. The
-   * resulting map made every run inherit the FileMapping's single default {@code targetFile}, so
-   * a remapped delete position computed against one target file would be applied to a row in a
+   * resulting map made every run inherit the FileMapping's single default {@code targetFile}, so a
+   * remapped delete position computed against one target file would be applied to a row in a
    * different target file — different number of rows, same hash count, divergent hash. The fuzz
    * harness (M1) caught this immediately; this hand-crafted test pins it.
    */
@@ -349,7 +349,8 @@ public class TestFallbackMapGenerationRemoved {
         .as("run A's per-run targetFile must propagate from FilePositionMapping.Run.targetFile()")
         .isEqualTo(targetA.path().toString());
     assertThat(runB.targetFile())
-        .as("run B's per-run targetFile must be the second target file, not the FileMapping default")
+        .as(
+            "run B's per-run targetFile must be the second target file, not the FileMapping default")
         .isEqualTo(targetB.path().toString());
   }
 
