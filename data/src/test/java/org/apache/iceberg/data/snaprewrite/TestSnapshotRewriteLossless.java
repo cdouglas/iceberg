@@ -43,9 +43,9 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
    *
    * <p>Inverting the second transaction turns its inserts into deletes against the new compaction
    * and recovers the two rows it deleted. Inverting the first then has to find one of its own
-   * inserted rows -- the one the second transaction killed -- inside that recovered file rather than
-   * in the compaction. That cross-reference is the part of the design that does not follow from the
-   * compaction map alone.
+   * inserted rows -- the one the second transaction killed -- inside that recovered file rather
+   * than in the compaction. That cross-reference is the part of the design that does not follow
+   * from the compaction map alone.
    */
   @Test
   public void figureExample() throws IOException {
@@ -56,8 +56,7 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
     // T-alpha: insert {d, e}, delete c
     DataFile alpha =
         appendAndDelete(
-            ImmutableList.of(record(4, "d"), record(5, "e")),
-            ImmutableList.of(at(compacted, 2)));
+            ImmutableList.of(record(4, "d"), record(5, "e")), ImmutableList.of(at(compacted, 2)));
 
     // T-beta: insert {f, g}, delete b (from the compaction) and d (from T-alpha)
     appendAndDelete(
@@ -65,8 +64,7 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
         ImmutableList.of(at(compacted, 1), at(alpha, 0)));
 
     assertThat(rowsAt(table, table.currentSnapshot().snapshotId()))
-        .containsExactlyInAnyOrder(
-            "id=1 data=a ", "id=5 data=e ", "id=6 data=f ", "id=7 data=g ");
+        .containsExactlyInAnyOrder("id=1 data=a ", "id=5 data=e ", "id=6 data=f ", "id=7 data=g ");
 
     compact();
 
@@ -106,7 +104,9 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
     assertThat(result.report().resurrectedRows()).isZero();
   }
 
-  /** An insert whose rows are killed later must be recovered by the transaction that killed them. */
+  /**
+   * An insert whose rows are killed later must be recovered by the transaction that killed them.
+   */
   @Test
   public void insertsDeletedBeforeTheCompaction() throws IOException {
     append(records(1, 3, "base"));
@@ -136,7 +136,9 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
     assertThat(result.plan().resurrectedRows()).isEqualTo(2);
   }
 
-  /** Inserting and deleting in one commit: rows dead on arrival are not "inserted" by the induction. */
+  /**
+   * Inserting and deleting in one commit: rows dead on arrival are not "inserted" by the induction.
+   */
   @Test
   public void insertAndDeleteInOneCommit() throws IOException {
     append(records(1, 3, "base"));
@@ -168,7 +170,8 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
     SnapshotRewriteResult result = rewrite();
     assertLossless(result);
 
-    // Every row of the removed file dies inside the window, but by two different transactions and so
+    // Every row of the removed file dies inside the window, but by two different transactions and
+    // so
     // through two different inverses: the delete kills one, the removal kills the other three. Each
     // is materialized exactly once, which is what bounds the cost of a rewrite.
     assertThat(result.plan().resurrectedRows()).isEqualTo(4);
@@ -179,9 +182,9 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
    * Re-deleting an already-dead position must not resurrect it.
    *
    * <p>Delete files are idempotent and overlapping delete sets are legal, so the rows a transaction
-   * removed have to be computed as a difference of live sets rather than read off the delete files it
-   * added. Taking the commit delta here would recover a row that was not live in the preceding state
-   * and insert it into a state it never belonged to.
+   * removed have to be computed as a difference of live sets rather than read off the delete files
+   * it added. Taking the commit delta here would recover a row that was not live in the preceding
+   * state and insert it into a state it never belonged to.
    */
   @Test
   public void reDeleteOfAnAlreadyDeadPosition() throws IOException {
@@ -291,10 +294,10 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
     List<DataFile> files = Lists.newArrayList();
     for (ManifestFile manifest : snapshot.dataManifests(table.io())) {
       try (ManifestReader<DataFile> reader =
-          ManifestFiles.read(manifest, table.io(), ((org.apache.iceberg.HasTableOperations) table)
-              .operations()
-              .current()
-              .specsById())) {
+          ManifestFiles.read(
+              manifest,
+              table.io(),
+              ((org.apache.iceberg.HasTableOperations) table).operations().current().specsById())) {
         for (DataFile file : reader) {
           files.add(file);
         }
@@ -307,8 +310,8 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
   /**
    * Asserts the rewritten window references none of the layout it replaced.
    *
-   * <p>Reclaiming the old layout is the point of the rewrite, so a rewrite that still pins any of it
-   * has not done its job even if it reads correctly.
+   * <p>Reclaiming the old layout is the point of the rewrite, so a rewrite that still pins any of
+   * it has not done its job even if it reads correctly.
    */
   private void assertNoDependencyOnOldLayout(SnapshotRewriteResult result, DataFile... obsolete)
       throws IOException {
@@ -331,5 +334,4 @@ public class TestSnapshotRewriteLossless extends SnapshotRewriteTestBase {
       }
     }
   }
-
 }

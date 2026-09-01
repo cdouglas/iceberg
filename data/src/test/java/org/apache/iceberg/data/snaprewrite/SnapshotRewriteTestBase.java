@@ -37,9 +37,9 @@ import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.Tables;
+import org.apache.iceberg.data.FileHelpers;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.GenericSnapshotRewriteIO;
-import org.apache.iceberg.data.FileHelpers;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.hadoop.HadoopTables;
@@ -57,14 +57,14 @@ import org.junit.jupiter.api.io.TempDir;
  * Scaffolding for snapshot rewrite tests: build a history, compact it, rewrite it, and check that
  * every snapshot still reads the same.
  *
- * <p>Nothing here mutates a table under test after the rewrite runs. The rewrite materializes into a
- * shadow table, so a failing case leaves both the original and the rewritten representation intact.
+ * <p>Nothing here mutates a table under test after the rewrite runs. The rewrite materializes into
+ * a shadow table, so a failing case leaves both the original and the rewritten representation
+ * intact.
  */
 public abstract class SnapshotRewriteTestBase {
   protected static final Schema SCHEMA =
       new Schema(
-          required(1, "id", Types.IntegerType.get()),
-          optional(2, "data", Types.StringType.get()));
+          required(1, "id", Types.IntegerType.get()), optional(2, "data", Types.StringType.get()));
 
   private static final Configuration CONF = new Configuration();
   private static final Tables TABLES = new HadoopTables(CONF);
@@ -80,9 +80,12 @@ public abstract class SnapshotRewriteTestBase {
             SCHEMA,
             PartitionSpec.unpartitioned(),
             ImmutableMap.of(
-                TableProperties.FORMAT_VERSION, "2",
-                TableProperties.DEFAULT_FILE_FORMAT, "parquet",
-                "write.compaction-map.enabled", "true"),
+                TableProperties.FORMAT_VERSION,
+                "2",
+                TableProperties.DEFAULT_FILE_FORMAT,
+                "parquet",
+                "write.compaction-map.enabled",
+                "true"),
             tempDir.toString() + "/tbl");
   }
 
@@ -162,11 +165,11 @@ public abstract class SnapshotRewriteTestBase {
   /**
    * Rows a snapshot returns, as a multiset. Duplicate rows are legal and must be preserved.
    *
-   * <p>Only the schema's own columns are compared. {@code IcebergGenerics} reads with the schema the
-   * delete filter requires and does not strip the extra {@code _pos} column afterwards, so a
-   * snapshot that carries deletes yields wider records than one that does not -- and a rewrite turns
-   * delete-free snapshots into delete-bearing ones. Projecting explicitly keeps the oracle about
-   * table contents rather than about read plumbing.
+   * <p>Only the schema's own columns are compared. {@code IcebergGenerics} reads with the schema
+   * the delete filter requires and does not strip the extra {@code _pos} column afterwards, so a
+   * snapshot that carries deletes yields wider records than one that does not -- and a rewrite
+   * turns delete-free snapshots into delete-bearing ones. Projecting explicitly keeps the oracle
+   * about table contents rather than about read plumbing.
    */
   protected static List<String> rowsAt(Table target, long snapshotId) {
     List<String> rows = Lists.newArrayList();
@@ -191,8 +194,8 @@ public abstract class SnapshotRewriteTestBase {
   /**
    * Asserts that every snapshot in the table reads identically before and after the rewrite.
    *
-   * <p>Every snapshot, not just the rewritten window: a rewrite that corrupted an untouched snapshot
-   * would otherwise go unnoticed.
+   * <p>Every snapshot, not just the rewritten window: a rewrite that corrupted an untouched
+   * snapshot would otherwise go unnoticed.
    */
   protected void assertLossless(SnapshotRewriteResult result) {
     Table shadow = result.asTable();
@@ -204,7 +207,9 @@ public abstract class SnapshotRewriteTestBase {
     }
   }
 
-  /** Asserts the rewritten snapshots keep their identity: id, parent, sequence number, timestamp. */
+  /**
+   * Asserts the rewritten snapshots keep their identity: id, parent, sequence number, timestamp.
+   */
   protected void assertIdentityPreserved(SnapshotRewriteResult result) {
     for (Snapshot original : table.snapshots()) {
       Snapshot rewritten = result.metadata().snapshot(original.snapshotId());
