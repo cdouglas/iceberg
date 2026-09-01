@@ -16,15 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.iceberg.benchmark.compaction;
+package org.apache.iceberg.data;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
 import org.apache.iceberg.Schema;
-import org.apache.iceberg.data.GenericRecord;
-import org.apache.iceberg.data.Record;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 
@@ -37,6 +35,11 @@ import org.apache.iceberg.types.Types;
  *
  * <p>See {@code COMPACT_SPEC.md} §Schema and §Workload for the row contract and the GDPR-style
  * clustered-delete shape this implements.
+ *
+ * <p>Lives here rather than in the benchmark module because two suites generate workloads from it:
+ * the compaction baseline benchmark and the snapshot-rewrite fuzzer. The benchmark hard-targets
+ * Spark 3.5, so depending on it from {@code iceberg-data} would make this module's tests require
+ * Spark; sharing through test fixtures keeps both callers on the same generator without that.
  */
 public final class WorkloadGenerator {
 
@@ -85,8 +88,13 @@ public final class WorkloadGenerator {
     return rows;
   }
 
-  /** Generate a single row using the supplied RNG. Mutates {@code rng}. */
-  static Record nextRow(Random rng, GenericRecord template) {
+  /**
+   * Generate a single row using the supplied RNG. Mutates {@code rng}.
+   *
+   * <p>Public because callers outside this package stream rows one at a time rather than
+   * materializing a list; it was package-private when the generator and its callers shared a package.
+   */
+  public static Record nextRow(Random rng, GenericRecord template) {
     GenericRecord row = template.copy();
     int idx = 0;
     for (int i = 0; i < 4; i++) {
