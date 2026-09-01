@@ -61,7 +61,7 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
 
     append(records(nextId, 6 + random.nextInt(6), "base"));
     nextId += 100;
-    compact();
+    compactMaybeRolling(random);
 
     int operations = 3 + random.nextInt(5);
     for (int i = 0; i < operations; i += 1) {
@@ -76,17 +76,7 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
           break;
 
         case 2:
-          {
-            List<Pair<CharSequence, Long>> targets = liveSample(random, 1 + random.nextInt(2));
-            if (targets.isEmpty()) {
-              append(records(nextId, 2, "ins" + i));
-              nextId += 100;
-            } else {
-              appendAndDelete(records(nextId, 1 + random.nextInt(3), "mix" + i), targets);
-              nextId += 100;
-            }
-          }
-
+          nextId = insertAndDelete(random, nextId, i);
           break;
 
         case 3:
@@ -110,7 +100,7 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
       append(records(nextId, 3, "tail"));
     }
 
-    compact();
+    compactMaybeRolling(random);
 
     try {
       SnapshotRewriteResult result = rewrite();
@@ -124,6 +114,32 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
       // A refusal is a valid outcome for a generated history; it must never be a silent wrong
       // answer.
       assertThat(e.refusal()).isNotNull();
+    }
+  }
+
+  /** Inserts and deletes in one commit, falling back to a plain insert when nothing is live. */
+  private int insertAndDelete(Random random, int nextId, int step) throws IOException {
+    List<Pair<CharSequence, Long>> targets = liveSample(random, 1 + random.nextInt(2));
+    if (targets.isEmpty()) {
+      append(records(nextId, 2, "ins" + step));
+    } else {
+      appendAndDelete(records(nextId, 1 + random.nextInt(3), "mix" + step), targets);
+    }
+
+    return nextId + 100;
+  }
+
+  /**
+   * Compacts, sometimes with a row cap so the output rolls.
+   *
+   * <p>Rolling makes one source file's rows land in several targets, which is the shape real
+   * compactions produce at a target size and the one where per-run target files matter.
+   */
+  private void compactMaybeRolling(Random random) {
+    if (random.nextBoolean()) {
+      LocalCompactor.compact(table, true, file -> true, 2 + random.nextInt(4));
+    } else {
+      compact();
     }
   }
 
