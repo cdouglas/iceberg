@@ -214,7 +214,7 @@ public class SnapshotRewriteResult {
     }
   }
 
-  /** What {@link #reclaim()} deleted, and what it declined to delete. */
+  /** What {@link #reclaim(TableOperations)} deleted, and what it declined to delete. */
   public static class ReclaimResult {
     private final List<String> deleted;
     private final Set<String> withheld;

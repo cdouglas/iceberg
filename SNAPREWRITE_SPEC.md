@@ -882,6 +882,14 @@ real history to run it against it cannot be validated for the only thing it buys
 SPI is three methods and the generic implementation is proven against all of them, so nothing about
 the interface is at risk while this waits.
 
+**Reconstructing the old layout without the old files.** Undo is implemented as pointing back at the
+original manifest lists, so it dies at reclaim. The inverse rewrite -- rebuilding the pre-compaction
+layout from the rewritten layout alone -- is not implemented. The compaction map is already the
+invertible half; what is missing is persisting the resurrection half, which the planner computes and
+throws away (`ResurrectionRequest.sources()` and `sourceFirstRowIds()`). This is the case the v3
+row-lineage decision in phase 5a was justified by, so it is an accepted requirement that has not been
+built. Errata 10 in the user doc states the limit and what it would take.
+
 **Evidence from a real history: blocked here, not blocked for you.** This needs tables this session
 does not have. What phase 6 delivers instead is the tooling to get it: `SnapshotRewriteSurvey.survey`
 prices every available reach on a real table, writing nothing, and each candidate carries a full
