@@ -53,6 +53,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.snaprewrite.SnapshotRewrite;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.Pair;
 import org.junit.jupiter.api.BeforeEach;
@@ -80,17 +81,22 @@ public abstract class SnapshotRewriteTestBase {
 
   @BeforeEach
   public void createTable() {
-    this.table = newTable(PartitionSpec.unpartitioned(), "tbl");
+    this.table = newTable(SCHEMA, PartitionSpec.unpartitioned(), "tbl");
   }
 
   /** Recreates the table under test with a different partition spec. */
   protected void usePartitionSpec(PartitionSpec spec) {
-    this.table = newTable(spec, "tbl-" + UUID.randomUUID());
+    this.table = newTable(SCHEMA, spec, "tbl-" + UUID.randomUUID());
   }
 
-  private Table newTable(PartitionSpec spec, String name) {
+  /** Recreates the table under test with a different schema. */
+  protected void useSchema(Schema schema, PartitionSpec spec) {
+    this.table = newTable(schema, spec, "tbl-" + UUID.randomUUID());
+  }
+
+  private Table newTable(Schema schema, PartitionSpec spec, String name) {
     return TABLES.create(
-        SCHEMA,
+        schema,
         spec,
         ImmutableMap.of(
             TableProperties.FORMAT_VERSION,
@@ -217,7 +223,7 @@ public abstract class SnapshotRewriteTestBase {
         IcebergGenerics.read(target).useSnapshot(snapshotId).where(filter).build()) {
       for (Record record : records) {
         StringBuilder row = new StringBuilder();
-        for (Types.NestedField field : SCHEMA.columns()) {
+        for (Types.NestedField field : target.schema().columns()) {
           row.append(field.name()).append('=').append(record.getField(field.name())).append(' ');
         }
 
@@ -276,36 +282,48 @@ public abstract class SnapshotRewriteTestBase {
    * the range probes split them.
    */
   private static List<Expression> probes(Table target, long snapshotId) {
-    List<Integer> ids = Lists.newArrayList();
+    String numeric = firstColumnOfType(target.schema(), Types.IntegerType.get(), Types.LongType.get());
+    String text = firstColumnOfType(target.schema(), Types.StringType.get());
+    if (numeric == null) {
+      return ImmutableList.of();
+    }
+
+    List<Comparable<Object>> values = Lists.newArrayList();
     try (CloseableIterable<Record> records =
         IcebergGenerics.read(target).useSnapshot(snapshotId).build()) {
       for (Record record : records) {
-        ids.add((Integer) record.getField("id"));
+        Object value = record.getField(numeric);
+        if (value instanceof Comparable) {
+          values.add((Comparable<Object>) value);
+        }
       }
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
 
-    if (ids.isEmpty()) {
-      return ImmutableList.of(Expressions.greaterThan("id", 0));
+    if (values.isEmpty()) {
+      return ImmutableList.of(Expressions.notNull(numeric));
     }
 
-    Collections.sort(ids);
-    int lowest = ids.get(0);
-    int middle = ids.get(ids.size() / 2);
-    int highest = ids.get(ids.size() - 1);
+    Collections.sort(values);
+    Object lowest = values.get(0);
+    Object middle = values.get(values.size() / 2);
+    Object highest = values.get(values.size() - 1);
 
-    return ImmutableList.of(
-        Expressions.equal("id", lowest),
-        Expressions.equal("id", highest),
-        Expressions.lessThan("id", middle),
-        Expressions.greaterThanOrEqual("id", middle),
-        Expressions.isNull("data"));
+    List<Expression> built =
+        Lists.newArrayList(
+            Expressions.equal(numeric, lowest),
+            Expressions.equal(numeric, highest),
+            Expressions.lessThan(numeric, middle),
+            Expressions.greaterThanOrEqual(numeric, middle));
+    if (text != null) {
+      built.add(Expressions.isNull(text));
+    }
+
+    return built;
   }
 
-  /**
-   * Asserts the rewritten snapshots keep their identity: id, parent, sequence number, timestamp.
-   */
+  /** Asserts the rewritten snapshots keep their identity: id, parent, sequence number, timestamp. */
   protected void assertIdentityPreserved(SnapshotRewriteResult result) {
     for (Snapshot original : table.snapshots()) {
       Snapshot rewritten = result.metadata().snapshot(original.snapshotId());
@@ -314,6 +332,18 @@ public abstract class SnapshotRewriteTestBase {
       assertThat(rewritten.parentId()).isEqualTo(original.parentId());
       assertThat(rewritten.timestampMillis()).isEqualTo(original.timestampMillis());
     }
+  }
+
+  private static String firstColumnOfType(Schema schema, Type... types) {
+    for (Types.NestedField field : schema.columns()) {
+      for (Type wanted : types) {
+        if (field.type().equals(wanted)) {
+          return field.name();
+        }
+      }
+    }
+
+    return null;
   }
 
   private org.apache.iceberg.io.OutputFile newOutput(String prefix) {
