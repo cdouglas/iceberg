@@ -523,3 +523,23 @@ Table-level statistics are kept on the strength of an argument about the *only b
 semantics, not about anything the format enforces: a future layout-derived blob type registered as a
 table-level statistic would be carried forward and silently believed. Nothing here inspects blob
 types.
+
+### 12. Validated against one reader
+
+Every claim in this document was checked against the Java reference implementation and against
+nothing else. The oracle is a scan through unmodified Iceberg scan planning, which is the right way
+to ask "does the reference client return the same rows" and is not evidence about any other client.
+
+Not tried: PyIceberg, iceberg-rust, Trino's native Iceberg reader, DuckDB's iceberg extension, or
+anything that reads manifests directly instead of going through `DeleteFileIndex`.
+
+That gap matters more here than the usual portability caveat, because the load-bearing trick is a
+sequence-number rule and every implementation applies that rule in its own code. The stamping is
+known to satisfy `DeleteFileIndex.findDV` and `DeleteFileIndex.PositionDeletes.filter`. It is not
+known to satisfy anything else. A reader that treats one physical file appearing at two different
+sequence numbers as corruption, or that trusts `total-records`, or that checks a manifest entry's
+snapshot id against the snapshot that actually added the file, would be within its rights to reject a
+rewritten table — and would arguably be right to.
+
+Satisfying the reference implementation is not the same as satisfying the specification. Treat a
+rewritten table as unportable until each reader that has to read it has actually been tried.
