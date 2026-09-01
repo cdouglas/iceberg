@@ -348,6 +348,43 @@ reconstruction -- buys only the recovery case.
 it references. Same mistake, opposite failure mode: v3 gets from the format what v2's oracle has to
 work for.
 
+### 4.5.1 Why 5b is probably not worth building
+
+The remaining v3 work buys identity for recovered rows only, and that population is narrow: a
+recovered row is **dead at the compaction**, so it appears in no snapshot a live query reads. The id
+churn is observable only by someone who reads a *historical* snapshot, records ids, and reads it again
+after a rewrite -- and §4.6 has already told that reader the changesets are wrong. The consumer
+`_row_id` exists for, incremental processing that distinguishes an update from an insert, is gone
+before identity becomes the problem.
+
+What makes `_row_id` worth protecting at all is that it is the *only* row metadata designed to be
+layout-independent. `_file` and `_pos` are physical by definition -- ordinary compaction changes them
+today with no rewrite involved, and nothing promised otherwise. `_row_id` exists so that relocation is
+invisible. That argument fully covers surviving rows, and the rewrite already preserves those for free
+(asserted in `TestSnapshotRewriteV3#dataFileRowIdRangesSurviveTheRewrite`, at the file's
+`first_row_id` rather than only at the snapshot's accounting). It does not extend to rows nothing live
+can see.
+
+**And "accept drift" turns out not to be on the menu.** `ManifestListWriter.V3Writer` assigns
+`first_row_id` to any data manifest that lacks one, sequentially from the snapshot's `first-row-id`,
+advancing by the manifest's total row count; `TableMetadata.Builder.addSnapshot` accumulates
+`nextRowId += addedRows` and requires `firstRowId >= nextRowId` for each snapshot in order. So a
+resurrection file added to a historical snapshot must either
+
+1. carry materialized `_row_id`s, leaving `addedRows` at 0 -- internally consistent, needs writer
+   support; or
+2. take a fresh `first_row_id` from the head -- in which case the snapshot claims to have assigned
+   range `[X, X + addedRows)` while holding a file with ids far above it, and the consumed id space is
+   never reflected in `addedRows`, because growing it would shift every later snapshot's range.
+
+Option 2 is not "lossy but workable": it produces metadata whose snapshot-level row-id accounting
+contradicts its own files. The choice was never strict-versus-drift. It is **materialize, or do not
+support recovery on v3** -- which is what P1b does.
+
+Revisit only for a concrete consumer of identity across historical states. GDPR purge verification is
+the plausible one, and it cuts both ways: a purge wants the row *gone*, not faithfully carried forward
+under a stable id.
+
 ### 4.6 What the rewrite legitimately destroys
 
 Stated plainly so tests do not chase it:

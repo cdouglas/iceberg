@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.HasTableOperations;
@@ -34,6 +35,7 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.snaprewrite.RewriteRefusal;
 import org.apache.iceberg.snaprewrite.RewriteRefusedException;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
@@ -110,6 +112,44 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
   }
 
   /**
+   * The row ids themselves, not just the snapshot-level accounting.
+   *
+   * <p>A row's id derives from its data file's {@code first_row_id} plus its offset. A rewritten
+   * snapshot holds the compaction's own files at their own offsets, so the claim is that the derived
+   * ids are identical -- but that depends on the manifest writer emitting each file's
+   * {@code first_row_id} explicitly rather than letting the manifest list re-assign it from the
+   * snapshot's range, which would renumber every surviving row. Checked directly.
+   */
+  @Test
+  public void dataFileRowIdRangesSurviveTheRewrite() throws IOException {
+    useFormatVersion(3);
+
+    append(records(1, 6, "base"));
+    compact();
+    append(records(10, 3, "alpha"));
+    append(records(20, 3, "beta"));
+    Snapshot compaction = compact();
+
+    Map<String, Long> beforeRewrite = Maps.newHashMap();
+    TableMetadata metadata = ((HasTableOperations) table).operations().current();
+    for (DataFile file : dataFilesOf(compaction, metadata)) {
+      assertThat(file.firstRowId()).as("the compaction assigns row ids").isNotNull();
+      beforeRewrite.put(file.location(), file.firstRowId());
+    }
+
+    SnapshotRewriteResult result = rewrite();
+
+    for (Snapshot original : result.plan().window()) {
+      Snapshot rewritten = result.metadata().snapshot(original.snapshotId());
+      for (DataFile file : dataFilesOf(rewritten, result.metadata())) {
+        assertThat(file.firstRowId())
+            .as("file %s in rewritten snapshot %s", file.location(), original.snapshotId())
+            .isEqualTo(beforeRewrite.get(file.location()));
+      }
+    }
+  }
+
+  /**
    * A v3 window that would have to recover rows is refused.
    *
    * <p>Recovering a row means writing it into a new file, and without a materialized {@code _row_id}
@@ -160,6 +200,20 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
         .hasMessageContaining("DV data sequence number");
 
     broken.discard();
+  }
+
+  private List<DataFile> dataFilesOf(Snapshot snapshot, TableMetadata metadata) throws IOException {
+    List<DataFile> files = Lists.newArrayList();
+    for (ManifestFile manifest : snapshot.dataManifests(table.io())) {
+      try (ManifestReader<DataFile> reader =
+          ManifestFiles.read(manifest, table.io(), metadata.specsById())) {
+        for (DataFile file : reader) {
+          files.add(file);
+        }
+      }
+    }
+
+    return files;
   }
 
   private List<DeleteFile> deleteFilesOf(Snapshot snapshot, TableMetadata metadata)
