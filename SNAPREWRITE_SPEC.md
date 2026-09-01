@@ -562,6 +562,11 @@ entry.
 
 ## 7. Configuration
 
+**Proposed, not implemented.** None of these property names exist in the code: the prototype takes
+`minAgeMs` and `maxDeadRatio` as builder arguments on `SnapshotRewrite`, and committing and
+reclaiming are separate method calls rather than flags. They are recorded here as what a production
+version would need to expose.
+
 ```
 snapshot-rewrite.enabled                 = false
 snapshot-rewrite.min-age-ms              = 86400000   # P7: don't rewrite recent snapshots
@@ -739,7 +744,7 @@ the fuzzer is not passing by declining to work.
 
 ## 11. What the implementation changed
 
-Five things the design got wrong or left out, all found by tests rather than by reading.
+Seven things the design got wrong or left out, all found by tests rather than by reading.
 
 ### 11.1 Inverting a compaction must use its map, not resurrection
 
