@@ -154,6 +154,7 @@ class SnapshotRewriteWriter {
           original.snapshotId(),
           original.parentId(),
           sequenceNumber,
+          original.firstRowId(),
           manifests);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
@@ -169,7 +170,9 @@ class SnapshotRewriteWriter {
         original.operation(),
         summary(original, dataFiles, deletes),
         original.schemaId(),
-        manifestListPath);
+        manifestListPath,
+        original.firstRowId(),
+        original.addedRows());
   }
 
   private ManifestFile writeDataManifest(
