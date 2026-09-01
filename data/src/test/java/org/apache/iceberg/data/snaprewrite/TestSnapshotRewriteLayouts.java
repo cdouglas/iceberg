@@ -22,6 +22,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
+import org.apache.iceberg.CompactionMap;
+import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.ManifestFile;
@@ -35,6 +38,7 @@ import org.apache.iceberg.data.InternalRecordWrapper;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.snaprewrite.SnapshotRewrite;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.junit.jupiter.api.Test;
@@ -167,7 +171,132 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
     assertThat(firstCompaction.location()).isNotEqualTo(secondCompaction.location());
   }
 
+  /**
+   * A replace inside the window with no map is copied through rather than refused.
+   *
+   * <p>Nothing can follow rows across a layout change that left no record of it, but diffing the
+   * snapshot by file and position is still correct: every row it moved is recovered into a
+   * resurrection file and every row it wrote becomes a delete. The result reconstructs the
+   * preceding state from copies instead of from the map. It costs a full copy of the live table at
+   * that boundary, which is what the dead-ratio guard exists to price -- so this is a cost
+   * question, not a correctness one, and refusing outright would have been the wrong answer.
+   */
+  @Test
+  public void mapLessReplaceInsideTheWindowFallsBackToCopying() throws IOException {
+    append(records(1, 6, "base"));
+    Snapshot floor = compact();
+
+    append(records(10, 3, "alpha"));
+    LocalCompactor.compact(table, false);
+    append(records(20, 2, "beta"));
+    compact();
+
+    SnapshotRewriteResult result =
+        SnapshotRewrite.forTable(table, new GenericSnapshotRewriteIO(table))
+            .onLatestCompaction()
+            .floor(floor.snapshotId())
+            .maxDeadRatio(Double.MAX_VALUE)
+            .materialize();
+
+    assertLossless(result);
+    assertIdentityPreserved(result);
+
+    // Nine rows were live when the map-less replace ran, and all nine had to be copied because no
+    // map describes where it put them.
+    assertThat(result.plan().resurrectedRows()).isEqualTo(9);
+  }
+
+  /**
+   * A compaction that rolls its output mid-source-file.
+   *
+   * <p>Real compactions roll at a target size, so one source file's rows routinely land in two
+   * output files and the map records a per-run {@code targetFile}. A rewrite that read only the
+   * mapping's default target would send a remapped position into the wrong file -- same arithmetic,
+   * different file, and the row it hides is not the row it meant to hide. The existing
+   * compaction-map suite pins that shape at the map level; this pins it end to end through a
+   * rewrite.
+   */
+  @Test
+  public void multiTargetCompaction() throws IOException {
+    append(records(1, 9, "base"));
+
+    // Roll every four rows, so the nine base rows span three target files.
+    LocalCompactor.compact(table, true, file -> true, 4);
+    List<DataFile> rolled = dataFiles(table.currentSnapshot());
+    assertThat(rolled).as("the compaction must actually roll").hasSizeGreaterThan(1);
+    assertMultiTargetMap(table.currentSnapshot());
+
+    DataFile alpha = append(records(20, 5, "alpha"));
+    delete(ImmutableList.of(at(rolled.get(0), 1), at(rolled.get(1), 0), at(alpha, 2)));
+    append(records(30, 3, "beta"));
+
+    // Roll again, so the window's rows are relocated across a multi-target boundary twice.
+    LocalCompactor.compact(table, true, file -> true, 5);
+    assertThat(dataFiles(table.currentSnapshot())).hasSizeGreaterThan(1);
+    assertMultiTargetMap(table.currentSnapshot());
+
+    SnapshotRewriteResult result = rewrite();
+    assertLossless(result);
+    assertIdentityPreserved(result);
+    assertThat(result.plan().resurrectedRows()).isEqualTo(3);
+  }
+
+  /** Rolling and partitioning together: each partition rolls independently. */
+  @Test
+  public void multiTargetCompactionOnAPartitionedTable() throws IOException {
+    usePartitionSpec(PartitionSpec.builderFor(SCHEMA).identity("data").build());
+
+    append(partition("east"), rows(1, 6, "east"));
+    append(partition("west"), rows(10, 6, "west"));
+    LocalCompactor.compact(table, true, file -> true, 4);
+
+    List<DataFile> compacted = dataFiles(table.currentSnapshot());
+    assertThat(compacted).as("two partitions, each rolled").hasSizeGreaterThan(2);
+
+    append(partition("east"), rows(20, 2, "east"));
+    delete(partition("east"), ImmutableList.of(at(compacted.get(0), 0)));
+    LocalCompactor.compact(table, true, file -> true, 4);
+
+    SnapshotRewriteResult result = rewrite();
+    assertLossless(result);
+    assertThat(result.plan().resurrectedRows()).isEqualTo(1);
+  }
+
   // ------------------------------------------------------------------ helpers
+
+  /**
+   * Asserts the compaction really produced a map where one source file spans several targets.
+   *
+   * <p>Without this the rolling tests could pass while every run still carried the mapping's single
+   * default target, which is the shape that hides the bug they exist to catch.
+   */
+  private void assertMultiTargetMap(Snapshot snapshot) {
+    CompactionMap map = null;
+    for (ManifestFile manifest : snapshot.allManifests(table.io())) {
+      if (manifest.compactionMapLocation() != null) {
+        map = CompactionMaps.read(table.io().newInputFile(manifest.compactionMapLocation()));
+        break;
+      }
+    }
+
+    assertThat(map).as("the compaction must have written a map").isNotNull();
+
+    boolean spansTargets = false;
+    for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+      Set<String> targets = Sets.newHashSet();
+      for (CompactionMap.Run run : mapping.runs()) {
+        targets.add(run.targetFile() != null ? run.targetFile() : mapping.targetFile());
+      }
+
+      if (targets.size() > 1) {
+        spansTargets = true;
+      }
+    }
+
+    assertThat(spansTargets)
+        .as("at least one source file's rows must land in more than one target")
+        .isTrue();
+  }
 
   private org.apache.iceberg.StructLike partition(String value) {
     PartitionSpec spec = table.spec();

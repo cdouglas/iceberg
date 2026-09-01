@@ -117,29 +117,27 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
   }
 
   /**
-   * A compaction inside the window with no map leaves the induction with nowhere to look.
+   * The target compaction must carry a map; there is nothing to rewrite onto without one.
    *
-   * <p>Reachable only with an explicit floor: by default the window stops at the previous
-   * compaction, so an intermediate one exists only when the caller asks to reach further back.
+   * <p>A map-less replace *inside* the window is a different matter and is not refused: see {@code
+   * TestSnapshotRewriteLayouts#mapLessReplaceInsideTheWindowFallsBackToCopying}.
    */
   @Test
-  public void refusesCompactionWithoutAMapInsideTheWindow() throws IOException {
+  public void refusesATargetCompactionWithoutAMap() throws IOException {
     append(records(1, 4, "base"));
-    Snapshot floor = compact();
+    compact();
 
     append(records(10, 2, "alpha"));
-    LocalCompactor.compact(table, false);
-    append(records(20, 2, "beta"));
-    compact();
+    Snapshot mapless = LocalCompactor.compact(table, false);
 
     assertThatThrownBy(
             () ->
                 SnapshotRewrite.forTable(table, new GenericSnapshotRewriteIO(table))
-                    .onLatestCompaction()
-                    .floor(floor.snapshotId())
+                    .onCompaction(mapless.snapshotId())
                     .maxDeadRatio(Double.MAX_VALUE)
                     .plan())
         .isInstanceOf(RewriteRefusedException.class)
+        .hasMessageContaining("Cannot rewrite snapshots")
         .extracting(e -> ((RewriteRefusedException) e).refusal())
         .isEqualTo(RewriteRefusal.MISSING_COMPACTION_MAP);
   }
@@ -174,6 +172,7 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
                     .minAgeMs(Long.MAX_VALUE)
                     .plan())
         .isInstanceOf(RewriteRefusedException.class)
+        .hasMessageContaining("Cannot rewrite snapshots")
         .extracting(e -> ((RewriteRefusedException) e).refusal())
         .isEqualTo(RewriteRefusal.TOO_RECENT);
   }
@@ -194,6 +193,7 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
                     .maxDeadRatio(0.01)
                     .plan())
         .isInstanceOf(RewriteRefusedException.class)
+        .hasMessageContaining("Cannot rewrite snapshots")
         .extracting(e -> ((RewriteRefusedException) e).refusal())
         .isEqualTo(RewriteRefusal.DEAD_RATIO);
   }
@@ -208,6 +208,7 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
                 SnapshotRewrite.forTable(table, new GenericSnapshotRewriteIO(table))
                     .onLatestCompaction())
         .isInstanceOf(RewriteRefusedException.class)
+        .hasMessageContaining("Cannot rewrite snapshots")
         .extracting(e -> ((RewriteRefusedException) e).refusal())
         .isEqualTo(RewriteRefusal.NO_COMPACTION);
   }
@@ -230,6 +231,7 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
                     .maxDeadRatio(Double.MAX_VALUE)
                     .plan())
         .isInstanceOf(RewriteRefusedException.class)
+        .hasMessageContaining(expected.description())
         .extracting(e -> ((RewriteRefusedException) e).refusal())
         .isEqualTo(expected);
 
