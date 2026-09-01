@@ -890,6 +890,13 @@ throws away (`ResurrectionRequest.sources()` and `sourceFirstRowIds()`). This is
 row-lineage decision in phase 5a was justified by, so it is an accepted requirement that has not been
 built. Errata 10 in the user doc states the limit and what it would take.
 
+**A second reader.** Everything is validated against the Java reference implementation and nothing
+else. The stamping is known to satisfy `DeleteFileIndex` and is not known to satisfy PyIceberg,
+iceberg-rust, Trino's native reader, or anything that reads manifests without going through
+`DeleteFileIndex`. This is a separate gap from the missing real-history evidence below, and the more
+likely of the two to bite: a reader is within its rights to reject a table where one physical file
+appears at two different sequence numbers. Errata 12 in the user doc states it.
+
 **Evidence from a real history: blocked here, not blocked for you.** This needs tables this session
 does not have. What phase 6 delivers instead is the tooling to get it: `SnapshotRewriteSurvey.survey`
 prices every available reach on a real table, writing nothing, and each candidate carries a full
