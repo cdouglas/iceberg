@@ -23,7 +23,6 @@ import java.util.Map;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.HasTableOperations;
-import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
@@ -171,6 +170,10 @@ public class SnapshotRewrite {
 
   /** Runs the induction, writes the rewritten layout, and returns it uncommitted. */
   public SnapshotRewriteResult materialize() {
+    return materialize(SnapshotRewriteWriter.Stamping.OWN);
+  }
+
+  SnapshotRewriteResult materialize(SnapshotRewriteWriter.Stamping stamping) {
     SnapshotRewritePlan materialized = plan();
 
     Map<String, DataFile> resurrected = Maps.newHashMap();
@@ -186,7 +189,7 @@ public class SnapshotRewrite {
     }
 
     SnapshotRewriteWriter writer =
-        new SnapshotRewriteWriter(base, io, materialized, resurrected, deleteFiles);
+        new SnapshotRewriteWriter(base, io, materialized, resurrected, deleteFiles, stamping);
     TableMetadata rewritten = writer.rewriteMetadata();
 
     return new SnapshotRewriteResult(
@@ -212,12 +215,6 @@ public class SnapshotRewrite {
   }
 
   private boolean hasCompactionMap(Snapshot snapshot) {
-    for (ManifestFile manifest : snapshot.allManifests(io)) {
-      if (manifest.compactionMapLocation() != null) {
-        return true;
-      }
-    }
-
-    return false;
+    return new CompactionMapLookup(io).forSnapshot(snapshot) != null;
   }
 }

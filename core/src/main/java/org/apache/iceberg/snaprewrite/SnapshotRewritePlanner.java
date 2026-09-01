@@ -29,7 +29,6 @@ import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMapChain;
-import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.DeleteFile;
@@ -424,14 +423,13 @@ public class SnapshotRewritePlanner {
   }
 
   private CompactionMap requireMap(Snapshot snapshot) {
-    for (ManifestFile manifest : snapshot.allManifests(io)) {
-      if (manifest.compactionMapLocation() != null) {
-        return CompactionMaps.read(io.newInputFile(manifest.compactionMapLocation()));
-      }
+    CompactionMap map = new CompactionMapLookup(io).forSnapshot(snapshot);
+    if (map == null) {
+      throw new RewriteRefusedException(
+          RewriteRefusal.MISSING_COMPACTION_MAP, "snapshot " + snapshot.snapshotId());
     }
 
-    throw new RewriteRefusedException(
-        RewriteRefusal.MISSING_COMPACTION_MAP, "snapshot " + snapshot.snapshotId());
+    return map;
   }
 
   // ---------------------------------------------------------------- snapshot state and diffs

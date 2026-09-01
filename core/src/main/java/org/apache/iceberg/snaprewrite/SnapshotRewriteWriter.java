@@ -62,11 +62,26 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  * uniform: it reads as though every file it holds had been added by it.
  */
 class SnapshotRewriteWriter {
+
+  /**
+   * How data files are stamped in a rewritten snapshot.
+   *
+   * <p>{@link #OWN} is the only correct setting. {@link #SOURCE} exists so tests can build the
+   * mistake on purpose and confirm the oracle catches it: because v2 drops inert deletes without
+   * complaint, a suite that only ever exercises the correct stamping cannot tell whether it would
+   * notice the incorrect one.
+   */
+  enum Stamping {
+    OWN,
+    SOURCE
+  }
+
   private final TableMetadata base;
   private final FileIO io;
   private final SnapshotRewritePlan plan;
   private final Map<String, DataFile> resurrected;
   private final Map<String, DeleteFile> deleteFiles;
+  private final Stamping stamping;
   private final List<String> writtenPaths = Lists.newArrayList();
 
   SnapshotRewriteWriter(
@@ -74,12 +89,14 @@ class SnapshotRewriteWriter {
       FileIO io,
       SnapshotRewritePlan plan,
       Map<String, DataFile> resurrected,
-      Map<String, DeleteFile> deleteFiles) {
+      Map<String, DeleteFile> deleteFiles,
+      Stamping stamping) {
     this.base = base;
     this.io = io;
     this.plan = plan;
     this.resurrected = resurrected;
     this.deleteFiles = deleteFiles;
+    this.stamping = stamping;
   }
 
   /**
@@ -163,7 +180,8 @@ class SnapshotRewriteWriter {
             base.formatVersion(), spec, io.newOutputFile(path), original.snapshotId());
     try {
       for (DataFile file : files) {
-        writer.existing(file, original.snapshotId(), sequenceNumber, sequenceNumber);
+        long dataSequenceNumber = dataSequenceNumber(file, sequenceNumber);
+        writer.existing(file, original.snapshotId(), dataSequenceNumber, dataSequenceNumber);
       }
     } finally {
       close(writer);
@@ -171,6 +189,14 @@ class SnapshotRewriteWriter {
 
     writtenPaths.add(path);
     return writer.toManifestFile();
+  }
+
+  private long dataSequenceNumber(DataFile file, long snapshotSequenceNumber) {
+    if (stamping == Stamping.SOURCE && file.dataSequenceNumber() != null) {
+      return file.dataSequenceNumber();
+    }
+
+    return snapshotSequenceNumber;
   }
 
   private ManifestFile writeDeleteManifest(
