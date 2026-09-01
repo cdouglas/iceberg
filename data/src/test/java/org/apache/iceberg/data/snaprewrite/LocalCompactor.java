@@ -35,10 +35,12 @@ import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.GenericRowLineage;
 import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
@@ -57,6 +59,12 @@ import org.apache.iceberg.util.StructLikeMap;
  * CompactionMapBuilder} and attached through the normal rewrite commit path. The map is not
  * hand-written, so a bug in run merging or in map attachment surfaces in these tests rather than
  * being assumed away.
+ *
+ * <p>Under v3 it also preserves row lineage, writing each surviving row's {@code _row_id} out
+ * explicitly. A compaction gathers rows from files whose id ranges are unrelated, so a single
+ * {@code first_row_id} cannot describe the result and derived ids would renumber every row. Without
+ * this the rewrite's identity guarantee cannot be tested end to end, because the compaction would be
+ * the thing losing identities.
  */
 class LocalCompactor {
   /** No target size limit: one output file per partition. */
@@ -154,13 +162,17 @@ class LocalCompactor {
       Map<String, DeleteFile> deletesByPath,
       long maxRowsPerTarget) {
     List<DataFile> written = Lists.newArrayList();
+    boolean lineage = GenericRowLineage.tracked(table);
+    Schema writeSchema =
+        lineage ? GenericRowLineage.writeSchema(table.schema()) : table.schema();
     GenericAppenderFactory factory =
-        new GenericAppenderFactory(table.schema(), table.spec()).setAll(table.properties());
+        new GenericAppenderFactory(writeSchema, table.spec()).setAll(table.properties());
 
     String targetPath = newTargetPath(table);
     FileAppender<Record> appender =
         factory.newAppender(table.io().newOutputFile(targetPath), FileFormat.PARQUET);
     long targetPosition = 0;
+    Long firstRowId = null;
 
     try {
       for (FileScanTask task : tasks) {
@@ -171,7 +183,13 @@ class LocalCompactor {
         }
 
         PositionDeleteIndex deleted = positionDeletes(table, task);
-        List<Record> rows = RawFiles.readAll(table.io(), file.location(), table.schema());
+        List<Record> rows =
+            lineage
+                ? RawFiles.readAllWithLineage(table.io(), file, table.schema())
+                : RawFiles.readAll(table.io(), file.location(), table.schema());
+        if (lineage && firstRowId == null) {
+          firstRowId = file.firstRowId();
+        }
         CompactionMapBuilder.FileMappingBuilder mapping =
             mapBuilder.addFileMapping(file.location(), targetPath);
         Run run = new Run();
@@ -187,7 +205,7 @@ class LocalCompactor {
             // Rolling also breaks the run, and everything after it belongs to a different file.
             run.flush(mapping);
             close(appender);
-            written.add(finish(table, partition, targetPath, appender));
+            written.add(finish(table, partition, targetPath, appender, firstRowId));
             targetPath = newTargetPath(table);
             appender =
                 factory.newAppender(table.io().newOutputFile(targetPath), FileFormat.PARQUET);
@@ -195,7 +213,16 @@ class LocalCompactor {
           }
 
           run.open(position, targetPosition, targetPath);
-          appender.add(rows.get((int) position));
+          Record row = rows.get((int) position);
+          if (lineage) {
+            // The row keeps the id it already had; a derived id would renumber it, because this
+            // file's rows come from ranges that have nothing to do with each other.
+            row =
+                GenericRowLineage.withRowId(
+                    writeSchema, row, GenericRowLineage.resolveRowId(row, file, position));
+          }
+
+          appender.add(row);
           targetPosition += 1;
         }
 
@@ -205,7 +232,7 @@ class LocalCompactor {
       close(appender);
     }
 
-    written.add(finish(table, partition, targetPath, appender));
+    written.add(finish(table, partition, targetPath, appender, firstRowId));
     return written;
   }
 
@@ -342,9 +369,19 @@ class LocalCompactor {
             .loadPositionDeletes(positional, task.file().location());
   }
 
-  /** Builds the data file for an appender the caller has already closed. */
+  /**
+   * Builds the data file for an appender the caller has already closed.
+   *
+   * <p>A lineage-preserving output still needs a {@code first_row_id}: the reader will not read the
+   * materialized column without one, even though nothing derives from it. Any value would do; using
+   * a source file's keeps the numbers recognisable.
+   */
   private static DataFile finish(
-      Table table, StructLike partition, String path, FileAppender<Record> appender) {
+      Table table,
+      StructLike partition,
+      String path,
+      FileAppender<Record> appender,
+      Long firstRowId) {
     DataFiles.Builder builder =
         DataFiles.builder(table.spec())
             .withPath(path)
@@ -353,6 +390,10 @@ class LocalCompactor {
             .withMetrics(appender.metrics());
     if (table.spec().isPartitioned()) {
       builder.withPartition(partition);
+    }
+
+    if (GenericRowLineage.tracked(table)) {
+      builder.withFirstRowId(firstRowId != null ? firstRowId : 0L);
     }
 
     return builder.build();
