@@ -20,6 +20,7 @@ package org.apache.iceberg.benchmark.compaction;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import org.apache.iceberg.data.WorkloadGenerator;
 
 /**
  * Equality-delete op — commits an equality-delete file on {@code long_0} (schema field id 5)
