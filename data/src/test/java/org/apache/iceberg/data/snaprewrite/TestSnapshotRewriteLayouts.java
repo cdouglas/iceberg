@@ -21,6 +21,7 @@ package org.apache.iceberg.data.snaprewrite;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import org.apache.iceberg.CompactionMap;
@@ -222,8 +223,13 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
 
     // Roll every four rows, so the nine base rows span three target files.
     LocalCompactor.compact(table, true, file -> true, 4);
+    // Ordered by row count, not by path: paths carry random UUIDs, so picking by sort order would
+    // sometimes land a position past the end of the short trailing file.
     List<DataFile> rolled = dataFiles(table.currentSnapshot());
+    rolled.sort(Comparator.comparingLong(DataFile::recordCount).reversed());
     assertThat(rolled).as("the compaction must actually roll").hasSizeGreaterThan(1);
+    assertThat(rolled.get(0).recordCount()).isGreaterThanOrEqualTo(2);
+    assertThat(rolled.get(1).recordCount()).isGreaterThanOrEqualTo(1);
     assertMultiTargetMap(table.currentSnapshot());
 
     DataFile alpha = append(records(20, 5, "alpha"));
@@ -253,8 +259,11 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
     List<DataFile> compacted = dataFiles(table.currentSnapshot());
     assertThat(compacted).as("two partitions, each rolled").hasSizeGreaterThan(2);
 
+    // The delete is partition-scoped, so it has to name a file in that partition. Path order says
+    // nothing about which partition a file belongs to.
+    DataFile east = inPartition(compacted, "east");
     append(partition("east"), rows(20, 2, "east"));
-    delete(partition("east"), ImmutableList.of(at(compacted.get(0), 0)));
+    delete(partition("east"), ImmutableList.of(at(east, 0)));
     LocalCompactor.compact(table, true, file -> true, 4);
 
     SnapshotRewriteResult result = rewrite();
@@ -263,6 +272,17 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
   }
 
   // ------------------------------------------------------------------ helpers
+
+  /** The first compacted file belonging to a partition, chosen by content rather than path order. */
+  private DataFile inPartition(List<DataFile> files, String value) {
+    for (DataFile file : files) {
+      if (value.equals(file.partition().get(0, String.class))) {
+        return file;
+      }
+    }
+
+    throw new IllegalStateException("No compacted file in partition " + value);
+  }
 
   /**
    * Asserts the compaction really produced a map where one source file spans several targets.

@@ -41,6 +41,7 @@ import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.data.BaseDeleteLoader;
 import org.apache.iceberg.data.DeleteLoader;
+import org.apache.iceberg.data.WorkloadGenerator;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.hadoop.HadoopCatalog;
 import org.apache.iceberg.io.DeleteWriteResult;

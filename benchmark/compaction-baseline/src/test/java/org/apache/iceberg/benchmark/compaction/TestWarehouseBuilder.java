@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.benchmark.compaction;
 
+import org.apache.iceberg.data.WorkloadGenerator;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;

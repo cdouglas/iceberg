@@ -27,6 +27,7 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.data.GenericSnapshotRewriteIO;
+import org.apache.iceberg.data.WorkloadGenerator;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -37,12 +38,19 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Random histories over the same operation mix, checked by the full oracle.
+ * Random histories checked by the full oracle.
  *
- * <p>The hand-written cases each pin down one situation the design has to handle. This looks for
- * the combinations nobody thought to write down: a delete landing on rows another commit already
- * removed, a file emptied and then removed, an insert whose rows die across two different
- * transactions. Seeds are fixed so a failure reproduces.
+ * <p>Rows and delete positions come from {@link WorkloadGenerator}, the same generator the compaction
+ * baseline benchmark uses, so the two harnesses explore the same data. Its clustered deletes matter
+ * more here than the row shape: deleting contiguous runs rather than scattered singletons produces
+ * long runs in the compaction map and contiguous stretches in the resurrection files, which is the
+ * shape real "right to be forgotten" workloads have and the one a hand-rolled uniform sample never
+ * generates.
+ *
+ * <p>The op sequence is this suite's own. {@code FuzzScenario} builds one compaction plus concurrent
+ * late transactions over ~100k rows, which is a different question at a scale no unit test can carry;
+ * a rewrite needs a window of interstitial commits between two compactions. Its weighted op mix --
+ * position delete, append, row replacement -- is what is mirrored here.
  */
 public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
 
@@ -53,30 +61,28 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
         4181L, 6765L, 10946L
       })
   public void randomHistory(long seed) throws IOException {
-    // A fresh location per seed, so a failure leaves the offending table behind for inspection.
-    usePartitionSpec(PartitionSpec.unpartitioned());
+    // The generator's schema, and a fresh location per seed so a failure leaves the table behind.
+    useSchema(WorkloadGenerator.SCHEMA, PartitionSpec.unpartitioned());
 
     Random random = new Random(seed);
-    int nextId = 1;
+    long rowSeed = seed;
 
-    append(records(nextId, 6 + random.nextInt(6), "base"));
-    nextId += 100;
+    append(WorkloadGenerator.generateRows(rowSeed++, 8 + random.nextInt(8)));
     compactMaybeRolling(random);
 
     int operations = 3 + random.nextInt(5);
     for (int i = 0; i < operations; i += 1) {
       switch (random.nextInt(6)) {
         case 0:
-          append(records(nextId, 1 + random.nextInt(4), "ins" + i));
-          nextId += 100;
+          append(WorkloadGenerator.generateRows(rowSeed++, 1 + random.nextInt(4)));
           break;
 
         case 1:
-          deleteSome(random, 1 + random.nextInt(3));
+          deleteClustered(random, rowSeed++);
           break;
 
         case 2:
-          nextId = insertAndDelete(random, nextId, i);
+          rowSeed = replaceRows(random, rowSeed);
           break;
 
         case 3:
@@ -84,10 +90,11 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
           break;
 
         case 4:
-          // Re-delete positions that may already be dead: legal, and the induction has to compute
-          // liveness by difference rather than trusting the commit's delete set.
-          deleteSome(random, 1 + random.nextInt(3));
-          deleteSome(random, 1 + random.nextInt(3));
+          // Two delete commits in a row will often overlap on positions the first already removed.
+          // That is legal, and the induction has to compute liveness by difference rather than
+          // trusting a commit's delete set.
+          deleteClustered(random, rowSeed++);
+          deleteClustered(random, rowSeed++);
           break;
 
         default:
@@ -96,8 +103,8 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
       }
     }
 
-    if (table.currentSnapshot() == null || liveFileCount() == 0) {
-      append(records(nextId, 3, "tail"));
+    if (liveFiles().isEmpty()) {
+      append(WorkloadGenerator.generateRows(rowSeed++, 3));
     }
 
     compactMaybeRolling(random);
@@ -111,22 +118,76 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
       // exceed the rows that ever existed.
       assertThat(result.plan().resurrectedRows()).isLessThanOrEqualTo(totalRowsEverWritten());
     } catch (RewriteRefusedException e) {
-      // A refusal is a valid outcome for a generated history; it must never be a silent wrong
-      // answer.
+      // A refusal is a valid outcome for a generated history; it must never be a silent wrong answer.
       assertThat(e.refusal()).isNotNull();
     }
   }
 
-  /** Inserts and deletes in one commit, falling back to a plain insert when nothing is live. */
-  private int insertAndDelete(Random random, int nextId, int step) throws IOException {
-    List<Pair<CharSequence, Long>> targets = liveSample(random, 1 + random.nextInt(2));
-    if (targets.isEmpty()) {
-      append(records(nextId, 2, "ins" + step));
-    } else {
-      appendAndDelete(records(nextId, 1 + random.nextInt(3), "mix" + step), targets);
+  // ------------------------------------------------------------------ workload
+
+  /**
+   * Deletes a clustered run of live positions from one file.
+   *
+   * <p>{@link WorkloadGenerator#generateClusteredPositions} produces contiguous runs, so the
+   * surviving rows on either side stay contiguous too and the compaction map records few, long runs
+   * rather than one run per row.
+   */
+  private void deleteClustered(Random random, long seed) throws IOException {
+    List<FileScanTask> tasks = liveTasks();
+    if (tasks.isEmpty()) {
+      return;
     }
 
-    return nextId + 100;
+    FileScanTask task = tasks.get(random.nextInt(tasks.size()));
+    List<Pair<CharSequence, Long>> targets =
+        livePositions(task, clusteredPositions(random, seed, task, 1 + random.nextInt(4)));
+    if (!targets.isEmpty()) {
+      delete(targets);
+    }
+  }
+
+  /** A row replacement: delete some rows and insert others in one commit. */
+  private long replaceRows(Random random, long rowSeed) throws IOException {
+    List<FileScanTask> tasks = liveTasks();
+    if (tasks.isEmpty()) {
+      append(WorkloadGenerator.generateRows(rowSeed, 2));
+      return rowSeed + 1;
+    }
+
+    FileScanTask task = tasks.get(random.nextInt(tasks.size()));
+    List<Pair<CharSequence, Long>> targets =
+        livePositions(task, clusteredPositions(random, rowSeed, task, 1 + random.nextInt(2)));
+    if (targets.isEmpty()) {
+      append(WorkloadGenerator.generateRows(rowSeed, 2));
+    } else {
+      appendAndDelete(WorkloadGenerator.generateRows(rowSeed, 1 + random.nextInt(3)), targets);
+    }
+
+    return rowSeed + 1;
+  }
+
+  /**
+   * Clustered positions inside one file, clamped to what the file can supply.
+   *
+   * <p>A rolled compaction leaves short trailing files -- sometimes a single row -- and the generator
+   * rejects a request for more deletes than the file has positions.
+   */
+  private long[] clusteredPositions(Random random, long seed, FileScanTask task, int wanted) {
+    long recordCount = task.file().recordCount();
+    int capped = (int) Math.min(recordCount, wanted);
+    if (capped <= 0) {
+      return new long[0];
+    }
+
+    return WorkloadGenerator.generateClusteredPositions(
+        seed, recordCount, capped, 1 + random.nextInt(3));
+  }
+
+  private void removeRandomFile(Random random) {
+    List<DataFile> files = liveFiles();
+    if (files.size() > 1) {
+      removeFile(files.get(random.nextInt(files.size())));
+    }
   }
 
   /**
@@ -143,67 +204,47 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
     }
   }
 
-  // ------------------------------------------------------------------ workload helpers
+  // ------------------------------------------------------------------ table inspection
 
-  private void deleteSome(Random random, int count) throws IOException {
-    List<Pair<CharSequence, Long>> targets = liveSample(random, count);
-    if (!targets.isEmpty()) {
-      delete(targets);
+  /** Keeps only the generated positions that are still live, so deletes reference real rows. */
+  private List<Pair<CharSequence, Long>> livePositions(FileScanTask task, long[] positions) {
+    PositionDeleteIndex deleted =
+        task.deletes().isEmpty()
+            ? null
+            : new GenericSnapshotRewriteIO(table)
+                .loadPositionDeletes(task.deletes(), task.file().location());
+
+    List<Pair<CharSequence, Long>> live = Lists.newArrayList();
+    for (long position : positions) {
+      if (position < task.file().recordCount() && (deleted == null || !deleted.isDeleted(position))) {
+        live.add(Pair.of(task.file().location(), position));
+      }
     }
+
+    return live;
   }
 
-  private void removeRandomFile(Random random) {
-    List<DataFile> files = liveFiles();
-    if (files.size() > 1) {
-      removeFile(files.get(random.nextInt(files.size())));
-    }
-  }
-
-  /** Samples live positions, so generated deletes reference rows that actually exist. */
-  private List<Pair<CharSequence, Long>> liveSample(Random random, int count) {
-    List<Pair<CharSequence, Long>> candidates = Lists.newArrayList();
-    GenericSnapshotRewriteIO io = new GenericSnapshotRewriteIO(table);
-
-    try (CloseableIterable<FileScanTask> tasks = table.newScan().planFiles()) {
-      for (FileScanTask task : tasks) {
-        PositionDeleteIndex deleted =
-            task.deletes().isEmpty()
-                ? null
-                : io.loadPositionDeletes(task.deletes(), task.file().location());
-        for (long position = 0; position < task.file().recordCount(); position += 1) {
-          if (deleted == null || !deleted.isDeleted(position)) {
-            candidates.add(Pair.of(task.file().location(), position));
-          }
-        }
+  private List<FileScanTask> liveTasks() {
+    List<FileScanTask> tasks = Lists.newArrayList();
+    try (CloseableIterable<FileScanTask> planned = table.newScan().planFiles()) {
+      for (FileScanTask task : planned) {
+        tasks.add(task);
       }
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
 
-    List<Pair<CharSequence, Long>> chosen = Lists.newArrayList();
-    for (int i = 0; i < count && !candidates.isEmpty(); i += 1) {
-      chosen.add(candidates.remove(random.nextInt(candidates.size())));
-    }
-
-    return chosen;
+    tasks.sort(java.util.Comparator.comparing(task -> task.file().location()));
+    return tasks;
   }
 
   private List<DataFile> liveFiles() {
     List<DataFile> files = Lists.newArrayList();
-    try (CloseableIterable<FileScanTask> tasks = table.newScan().planFiles()) {
-      for (FileScanTask task : tasks) {
-        files.add(task.file());
-      }
-    } catch (IOException e) {
-      throw new RuntimeException(e);
+    for (FileScanTask task : liveTasks()) {
+      files.add(task.file());
     }
 
-    files.sort(java.util.Comparator.comparing(DataFile::location));
     return files;
-  }
-
-  private int liveFileCount() {
-    return liveFiles().size();
   }
 
   private long totalRowsEverWritten() {

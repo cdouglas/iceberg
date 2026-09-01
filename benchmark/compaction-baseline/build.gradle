@@ -33,6 +33,9 @@ dependencies {
   implementation project(':iceberg-core')
   implementation project(':iceberg-parquet')
   implementation project(':iceberg-data')
+  // WorkloadGenerator lives in iceberg-data's test fixtures: the snapshot-rewrite fuzzer generates
+  // from it too, and depending the other way would make :iceberg-data:test require Spark 3.5.
+  implementation project(path: ':iceberg-data', configuration: 'testArtifacts')
   // Iceberg's relocated Guava (Lists, Sets, Maps, Preconditions, etc.) is required by checkstyle.
   implementation project(path: ':iceberg-bundled-guava', configuration: 'shadow')
 
