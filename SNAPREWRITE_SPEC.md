@@ -4,7 +4,12 @@ Companion to `COMPACT_SPEC.md`. Implements the design sketched in
 [Inverting Iceberg Snapshots with Compaction Maps](https://cdouglas.github.io/posts/2026/08/rewriting-snapshots)
 (source: `../cdouglas.github.io/_posts/2026-08-31-snaprewrite.md`).
 
-**Status:** design only. No code written. Iterating on review.
+**Status:** phases 1-4 implemented and passing. Core planner/writer in
+`core/src/main/java/org/apache/iceberg/snaprewrite/`, generic IO in
+`data/src/main/java/org/apache/iceberg/data/GenericSnapshotRewriteIO.java`, tests in
+`data/src/test/java/org/apache/iceberg/data/snaprewrite/` (62 cases: 12 lossless, 7 structural,
+9 refusal, 7 report, 4 layout, 5 commit/reclaim, 20 fuzz seeds). Section 11 records what the
+implementation changed about the design.
 
 ---
 
@@ -104,8 +109,20 @@ and      |C_A| + |window inserts| = |C_B| + |dead|
 =>       saving ≈ |C_B| − |position deletes|
 ```
 
-**Retaining the history costs one full copy of the table less than it did.** This is a
-strong result and it is directly assertable in tests (§8.4).
+**Retaining the history costs one full copy of the table less than it did**, less what the
+delete vectors cost.
+
+That second term is not a rounding error, and measuring it changed the picture. Every rewritten
+snapshot must delete every row inserted after it, so over a window of `m` transactions each
+inserting `r` rows the total is on the order of `r · m² / 2` positions. On a measured 30k-row
+window (`TestSnapshotRewriteReport`) the deletes came to well over half the saving. Two
+consequences: **rewrite often rather than letting history pile up between compactions**, and the
+economics are a per-window question the report has to answer, not a property of the design.
+
+Below a certain scale the rewrite simply loses. Each rewritten snapshot needs a manifest and a
+manifest list -- several KiB of Avro apiece -- so a table whose data files are smaller than its
+metadata pays more than it reclaims. The report prints the negative rather than hiding it
+(`TestSnapshotRewriteReport#insertOnlyWindowReportsNoResurrection`).
 
 The corollary is the cost model: the rewrite reads and rewrites every row that died in the
 window. A window whose transactions delete most of the table is expensive and saves
@@ -138,6 +155,7 @@ refusals, not warnings.
 | P7 | `C_B` is older than `snapshot-rewrite.min-age-ms` | An in-flight transaction based on a rewritten snapshot would validate against nonsense (§4.6) |
 | P8 | `dead-bytes / reclaimable-bytes` below threshold | Cost guard, not correctness |
 | P9 | No branch/tag ref points *into* the window in a way the caller excluded | Refs are preserved by id, so this is informational; asserted for clarity |
+| P10 | Every REPLACE in the window leaves the live row count unchanged | §11.1 skips diffing over a compaction on the assumption it is a logical no-op; a replace that also changed data would break that silently |
 
 P3 deserves a note: field-id based reads make *additive* schema change harmless, but a
 dropped column is not. The prototype takes the conservative rule (identical `schema-id`)
@@ -535,35 +553,93 @@ following the convention already established in the compaction-baseline fuzzer.
 
 ## 9. Milestones
 
-| Phase | Content | Exit criterion |
-|-------|---------|----------------|
-| 1 | v2, unpartitioned, single window, no chaining. Planner + shadow materialization + `GenericRowResurrector` + report. Non-destructive throughout. Tests 8.3 #1–11, 14–16; 8.4; 8.5; 8.6 | Oracle green against shadow table; figure example reproduces; mis-stamp test fails as designed |
-| 2 | Partitioned tables; partial compaction (#12); chained maps in-window (#13); recursive windows back through older compactions | Multi-window oracle green |
-| 3 | Fuzz (8.7) at volume; `--dry-run` swept across a real table's history to characterize which windows are worth rewriting | Predicted-vs-measured accounting holds on generated workloads |
-| 4 | `commit()` + reclaim: metadata swap, detached-file deletion, `ExpireSnapshots` interop | Committed table passes the same oracle; expire interop green |
-| 5 | v3 / DVs: materialized `_row_id` in the resurrection writer, `first-row-id` reconstruction, P1 lifted | v3 oracle green including `_row_id` stability |
-| 6 | Spark `RowResurrector` for scale; cost model measurement on real tables | — |
-
-Phases 1–3 never write to a user's table. `commit()` does not exist as a code path until
-phase 4, by which point the oracle, the mis-stamp test, and the fuzzer are all in place.
+| Phase | Content | Status |
+|-------|---------|--------|
+| 1 | v2, unpartitioned, single window. Planner + shadow materialization + `GenericRowResurrector` + report. Non-destructive throughout | **done** -- oracle green, figure example reproduces, mis-stamp test fails as designed |
+| 2 | Partitioned tables; partial compaction; chained maps in-window; recursive windows | **done** -- `TestSnapshotRewriteLayouts` |
+| 3 | Fuzz at volume; `--dry-run` accounting | **done** -- 20 seeds, all rewrite (none trivially refuse), windows of 4-8 snapshots |
+| 4 | `commit()` + reclaim; `ExpireSnapshots` interop | **done** -- `TestSnapshotRewriteCommit` |
+| 5 | v3 / DVs: materialized `_row_id`, `first-row-id` reconstruction, P1 lifted | not started |
+| 6 | Spark `RowResurrector` for scale; cost model on real tables | not started |
 
 ---
 
 ## 10. Open questions
 
-1. **Should `total-records` be the invariant, or full summary fidelity?** The prototype
-   asserts `total-records` and recomputes the rest. Anything stricter conflicts with §4.6.
+1. ~~**Should `total-records` be the invariant?**~~ **Resolved, and the premise was wrong.**
+   `total-records` counts records in live data files, so it is a property of the *layout*, not the
+   state: a rewritten snapshot holds the whole compaction and masks most of it with deletes, and its
+   `total-records` legitimately rises. The invariant is the set of rows a scan returns, which only a
+   scan can check -- which is why §8.2's oracle reads every snapshot rather than comparing summaries.
+   All `total-*` fields are recomputed for the new layout; per-commit `added-*`/`deleted-*` are
+   dropped rather than fabricated.
 2. **Metadata-log trimming.** Reclaim (phase 4) is blocked by retained metadata JSONs. Trim
    the log as part of the rewrite, or accept delayed reclaim? Prototype accepts delay and
    reports what it withheld.
 3. **REST catalog.** A production design needs a `replace-snapshot` metadata update. Worth
    raising in the post as a concrete spec ask.
-4. **Recursion depth.** Rewriting back through many compactions accumulates resurrection
-   files; each older window resurrects rows that died in *its* window. The §2.3 accounting
-   holds per window, but the aggregate should be measured (phase 3) before recommending deep
-   recursion.
+4. **Recursion depth.** Rewriting back through many compactions accumulates resurrection files,
+   and §11.1 keeps the cost linear in dead rows rather than in table copies. The remaining limit is
+   the quadratic delete term in §2.3: a long window costs more than proportionally, so deep recursion
+   should be done as a series of short windows rather than one long one. Worth measuring on a real
+   history.
 5. **Is per-snapshot stamping the right choice over a single `baseSeq`?** Both satisfy
    `data.seq <= delete.seq`. Per-snapshot is simpler to state and makes each rewritten
    snapshot internally uniform; a shared `baseSeq` would give each physical file only two
    distinct sequence numbers table-wide instead of one per rewritten snapshot. Neither is
    spec-legal; the choice is about which is easier to audit.
+
+6. **Should there be a minimum-saving guard?** P8 bounds the dead ratio, which is about the cost of
+   resurrection, but the metadata and delete terms decide whether a small window is worth anything at
+   all. The report answers this per window; whether the planner should also refuse on it is a policy
+   question, not a correctness one, so nothing was added.
+
+---
+
+## 11. What the implementation changed
+
+Five things the design got wrong or left out, all found by tests rather than by reading.
+
+### 11.1 Inverting a compaction must use its map, not resurrection
+
+The induction diffs adjacent states by file and position. Applied to a compaction *inside* the
+window, that sees every old reference as deleted and every new one as inserted, and copies the entire
+live table forward at that boundary -- turning a window that spans three compactions into three full
+copies of the table. A compaction is a logical no-op whose map already says where the rows went, so
+the step is skipped entirely; the maps of the compactions in a window are what the locator consults.
+Guarded by P10, since a REPLACE that also changed data would break the assumption silently.
+
+Without this, deep recursion (§10.4) would have been useless rather than merely expensive.
+
+### 11.2 Chained maps cannot be composed, only applied in sequence
+
+`CompactionMaps.compose` requires the first map's target snapshot to equal the second's source, which
+holds only for back-to-back compactions. A rewrite window normally has transactions between its
+compactions, so composition rejects exactly the case the rewrite needs. `RowLocator` applies the maps
+in order instead: each either relocates a reference or passes it through, and a null result means the
+row was already dead when that compaction ran. No snapshot-id agreement required.
+
+### 11.3 A snapshot's compaction map has to be identified semantically
+
+Reading `compactionMapLocation` off any manifest a snapshot holds finds the wrong map. Manifest
+rewriting carries the location forward onto copies (`ManifestFilterManager.java:489`), and the copy
+is stamped with the rewriting snapshot's id -- so a compaction that wrote no map appears to own one
+describing a layout change it had nothing to do with, and checking the snapshot id does not help.
+`CompactionMapLookup` tests what the map says instead: a snapshot's own map targets the data files
+that snapshot added.
+
+### 11.4 Reachability means all referenced files, not added files
+
+`detachedFiles` first used `Snapshot.addedDataFiles`, which misses files a snapshot references but
+did not write -- exactly what a partial compaction leaves behind. A file still held by a later
+snapshot looked unreachable. Harmless in the report; on the reclaim path it means deleting live data.
+`SnapshotFiles` now enumerates manifests. Reclaim also evaluates reachability *at reclaim time*
+rather than as of the rewrite, since how much of the metadata log is retained changes with every
+commit.
+
+### 11.5 The oracle had to project explicitly
+
+`IcebergGenerics` reads with the schema the delete filter requires and never strips the extra `_pos`
+column, so a snapshot carrying deletes yields wider records than one without. A rewrite turns
+delete-free snapshots into delete-bearing ones, so comparing raw records measured read plumbing
+instead of table contents. The oracle compares the schema's own columns.

@@ -147,27 +147,34 @@ public class SnapshotRewriteResult {
   }
 
   /**
-   * Deletes the files the rewrite detached, withholding any that an older metadata document still
-   * references.
+   * Deletes the files the rewrite detached, withholding any that are still reachable.
    *
-   * <p>Expiring snapshots does not clean these up: it only deletes files reachable from snapshots
-   * being expired, and after a rewrite the old files are reachable from no snapshot at all. But the
-   * table's metadata log still points at metadata documents whose snapshots reference the old
-   * layout, so anything reachable from a retained entry has to stay until the log ages out.
+   * <p>Expiring snapshots does not clean these up: it deletes only what the snapshots being expired
+   * reach, and after a rewrite the old files are reached by no snapshot at all.
+   *
+   * <p>Reachability is evaluated now, not as of the rewrite. The table's metadata log still points
+   * at documents whose snapshots describe the old layout, and how many of those are retained
+   * changes with every commit, so a file safe to delete today was not safe yesterday. Anything
+   * still reachable is reported rather than deleted.
    */
-  public ReclaimResult reclaim() {
+  public ReclaimResult reclaim(TableOperations ops) {
+    TableMetadata current = ops.refresh();
     Set<String> retained = Sets.newHashSet();
-    for (TableMetadata.MetadataLogEntry entry : rewritten.previousFiles()) {
+
+    for (Snapshot snapshot : current.snapshots()) {
+      collect(snapshot, current, retained);
+    }
+
+    for (TableMetadata.MetadataLogEntry entry : current.previousFiles()) {
       try {
         TableMetadata previous = TableMetadataParser.read(io, entry.file());
         for (Snapshot snapshot : previous.snapshots()) {
-          Map<String, Long> sizes = Maps.newHashMap();
-          SnapshotFiles.collect(snapshot, io, previous.specsById(), sizes);
-          retained.addAll(sizes.keySet());
+          collect(snapshot, previous, retained);
         }
       } catch (RuntimeException e) {
-        // An unreadable metadata document is not proof that nothing references the files. Treat the
-        // whole detached set as retained rather than risk deleting something still reachable.
+        // An unreadable metadata document is not proof that nothing references these files.
+        // Withhold
+        // the whole detached set rather than risk deleting something still reachable.
         return new ReclaimResult(ImmutableList.of(), plan.detachedFiles().keySet());
       }
     }
@@ -184,6 +191,12 @@ public class SnapshotRewriteResult {
     }
 
     return new ReclaimResult(deleted, withheld);
+  }
+
+  private void collect(Snapshot snapshot, TableMetadata metadata, Set<String> paths) {
+    Map<String, Long> sizes = Maps.newHashMap();
+    SnapshotFiles.collect(snapshot, io, metadata.specsById(), sizes);
+    paths.addAll(sizes.keySet());
   }
 
   /** Deletes everything this rewrite wrote, leaving the source table as it was. */
