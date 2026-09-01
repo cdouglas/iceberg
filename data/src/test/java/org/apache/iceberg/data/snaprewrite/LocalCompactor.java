@@ -29,7 +29,9 @@ import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMapBuilder;
 import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.Snapshot;
@@ -43,22 +45,32 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
-import org.apache.iceberg.DataFiles;
 
 /**
  * A bin-pack compaction that records where every surviving row went.
  *
- * <p>This is the workload the rewrite is built on, so the tests use a real one: it reads live rows in
- * position order, concatenates them into a single target file, and emits a compaction map built by
- * {@link CompactionMapBuilder} and attached through the normal rewrite commit path. The map is not
- * hand-written, so a bug in run merging or in map attachment shows up in these tests rather than
- * being assumed away.
+ * <p>This is the workload the rewrite is built on, so the tests use a real one: it reads live rows
+ * in position order, concatenates them into a single target file, and emits a compaction map built
+ * by {@link CompactionMapBuilder} and attached through the normal rewrite commit path. The map is
+ * not hand-written, so a bug in run merging or in map attachment shows up in these tests rather
+ * than being assumed away.
  */
 class LocalCompactor {
   private LocalCompactor() {}
 
   /** Compacts every live data file into one target file and commits, attaching a compaction map. */
   static Snapshot compact(Table table) {
+    return compact(table, true);
+  }
+
+  /**
+   * Compacts every live data file into one target file and commits.
+   *
+   * @param attachMap whether to emit and attach a compaction map. A compaction without one is what
+   *     a rewrite must refuse to see inside its window, since it has no way to follow rows through
+   *     it.
+   */
+  static Snapshot compact(Table table, boolean attachMap) {
     Snapshot startingSnapshot = table.currentSnapshot();
     List<FileScanTask> tasks = Lists.newArrayList();
     try (CloseableIterable<FileScanTask> planned = table.newScan().planFiles()) {
@@ -78,8 +90,7 @@ class LocalCompactor {
     OutputFile output = table.io().newOutputFile(targetPath);
 
     CompactionMapBuilder mapBuilder =
-        new CompactionMapBuilder(
-            startingSnapshot.snapshotId(), startingSnapshot.snapshotId() + 1);
+        new CompactionMapBuilder(startingSnapshot.snapshotId(), startingSnapshot.snapshotId() + 1);
 
     Set<DataFile> replacedData = Sets.newHashSet();
     Set<DeleteFile> replacedDeletes = Sets.newHashSet();
@@ -99,11 +110,20 @@ class LocalCompactor {
           deletesByPath.put(delete.location(), delete);
         }
 
+        // Equality deletes are not applied here. A window containing them cannot be rewritten
+        // anyway, and these tests only need such a history to reach the refusal.
+        List<DeleteFile> positionDeletes = Lists.newArrayList();
+        for (DeleteFile delete : task.deletes()) {
+          if (delete.content() == FileContent.POSITION_DELETES) {
+            positionDeletes.add(delete);
+          }
+        }
+
         PositionDeleteIndex deleted =
-            task.deletes().isEmpty()
+            positionDeletes.isEmpty()
                 ? null
                 : new org.apache.iceberg.data.GenericSnapshotRewriteIO(table)
-                    .loadPositionDeletes(task.deletes(), file.location());
+                    .loadPositionDeletes(positionDeletes, file.location());
 
         List<Record> rows = RawFiles.readAll(table.io(), file.location(), table.schema());
         CompactionMapBuilder.FileMappingBuilder mapping =
@@ -154,19 +174,26 @@ class LocalCompactor {
             .withRecordCount(recordCount)
             .build();
 
-    CompactionMap map = mapBuilder.build();
     String mapPath =
         table.location() + "/metadata/" + FileFormat.AVRO.addExtension("cmap-" + UUID.randomUUID());
-    try {
-      CompactionMaps.write(map, table.io().newOutputFile(mapPath));
-    } catch (IOException e) {
-      throw new RuntimeException(e);
+    if (attachMap) {
+      CompactionMap map = mapBuilder.build();
+      try {
+        CompactionMaps.write(map, table.io().newOutputFile(mapPath));
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
     }
 
     BaseRewriteFiles rewrite =
         (BaseRewriteFiles) table.newRewrite().validateFromSnapshot(startingSnapshot.snapshotId());
     rewrite.rewriteFiles(replacedData, replacedDeletes, Sets.newHashSet(target), Sets.newHashSet());
-    rewrite.setCompactionMapLocation(mapPath);
+    if (attachMap) {
+      rewrite.setCompactionMapLocation(mapPath);
+    } else {
+      rewrite.disableAutoCompactionMap();
+    }
+
     rewrite.commit();
 
     table.refresh();
