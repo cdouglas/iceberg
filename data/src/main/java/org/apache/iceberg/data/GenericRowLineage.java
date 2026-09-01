@@ -29,18 +29,18 @@ import org.apache.iceberg.types.Types;
  * Writing data files whose rows carry their own {@code _row_id}.
  *
  * <p>Under v3 a row's id is normally derived from its file's {@code first_row_id} plus its offset,
- * which only works while a file's rows are one contiguous range. Any operation that gathers rows from
- * several files -- a compaction, or recovering rows into a resurrection file -- produces a file whose
- * rows came from unrelated ranges, and the only way to keep their identities is to write the ids out
- * per row.
+ * which only works while a file's rows are one contiguous range. Any operation that gathers rows
+ * from several files -- a compaction, or recovering rows into a resurrection file -- produces a
+ * file whose rows came from unrelated ranges, and the only way to keep their identities is to write
+ * the ids out per row.
  *
  * <p>The read side already prefers a materialized value over the derived one ({@code
- * ParquetValueReaders.RowIdReader}), but only when the file also carries a {@code first_row_id}: with
- * none assigned the reader returns null rather than reading the column. So a file written this way
- * still needs {@code withFirstRowId}, even though nothing derives from it.
+ * ParquetValueReaders.RowIdReader}), but only when the file also carries a {@code first_row_id}:
+ * with none assigned the reader returns null rather than reading the column. So a file written this
+ * way still needs {@code withFirstRowId}, even though nothing derives from it.
  *
- * <p>This is not specific to snapshot rewriting. Without it no generic-writer operation can preserve
- * row lineage, which is why Iceberg's Spark rewrite carries its own equivalent.
+ * <p>This is not specific to snapshot rewriting. Without it no generic-writer operation can
+ * preserve row lineage, which is why Iceberg's Spark rewrite carries its own equivalent.
  */
 public class GenericRowLineage {
 
@@ -51,7 +51,9 @@ public class GenericRowLineage {
     return TableUtil.formatVersion(table) >= 3;
   }
 
-  /** The schema to write when rows carry explicit ids: the table's columns plus the lineage ones. */
+  /**
+   * The schema to write when rows carry explicit ids: the table's columns plus the lineage ones.
+   */
   public static Schema writeSchema(Schema tableSchema) {
     return MetadataColumns.schemaWithRowLineage(tableSchema);
   }
@@ -78,8 +80,8 @@ public class GenericRowLineage {
   /**
    * Copies a row into {@code writeSchema}, carrying an explicit id.
    *
-   * <p>{@code _last_updated_sequence_number} is left null so the reader falls back to the file's own
-   * sequence number, which is what an operation that relocates a row without changing it should
+   * <p>{@code _last_updated_sequence_number} is left null so the reader falls back to the file's
+   * own sequence number, which is what an operation that relocates a row without changing it should
    * report.
    */
   public static Record withRowId(Schema writeSchema, Record source, Long rowId) {

@@ -37,16 +37,18 @@ import org.junit.jupiter.api.Test;
 /**
  * A committed rewrite can be put back.
  *
- * <p>Each rewritten snapshot records the manifest list it used to point at and the summary it used to
- * carry, so restoring is a matter of pointing back -- no reads, no copies, byte-identical result.
- * That makes committing a rewrite a decision rather than a commitment, for as long as the detached
- * layout survives.
+ * <p>Each rewritten snapshot records the manifest list it used to point at and the summary it used
+ * to carry, so restoring is a matter of pointing back -- no reads, no copies, byte-identical
+ * result. That makes committing a rewrite a decision rather than a commitment, for as long as the
+ * detached layout survives.
  *
  * <p>The window closes at reclaim, which is the point of no return and is asserted here as such.
  */
 public class TestSnapshotRewriteRoundTrip extends SnapshotRewriteTestBase {
 
-  /** Rewrite, commit, restore: every snapshot reads what it read before, with its original metadata. */
+  /**
+   * Rewrite, commit, restore: every snapshot reads what it read before, with its original metadata.
+   */
   @Test
   public void restoreUndoesACommittedRewrite() throws IOException {
     buildWindow();
@@ -193,7 +195,8 @@ public class TestSnapshotRewriteRoundTrip extends SnapshotRewriteTestBase {
   }
 
   private List<DataFile> firstSnapshotFiles() throws IOException {
-    List<DataFile> files = org.apache.iceberg.relocated.com.google.common.collect.Lists.newArrayList();
+    List<DataFile> files =
+        org.apache.iceberg.relocated.com.google.common.collect.Lists.newArrayList();
     TableMetadata metadata = ((HasTableOperations) table).operations().current();
     for (org.apache.iceberg.ManifestFile manifest :
         table.currentSnapshot().dataManifests(table.io())) {

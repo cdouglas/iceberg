@@ -30,13 +30,13 @@ import org.slf4j.LoggerFactory;
  * Prices the snapshot rewrites available on a table, without writing anything.
  *
  * <p>Reaching further back releases older layouts and costs more than proportionally, and which
- * trade is right depends on the table: how wide its rows are, how much its interstitial transactions
- * insert, how much of it dies between compactions. So this reports what each available reach would
- * cost and leaves the decision to a person.
+ * trade is right depends on the table: how wide its rows are, how much its interstitial
+ * transactions insert, how much of it dies between compactions. So this reports what each available
+ * reach would cost and leaves the decision to a person.
  *
- * <p>The tool has no mode that mutates a table. {@code --dry-run} is required rather than implied so
- * that the intent is on the command line, and so a future mode that does commit has to be asked for
- * explicitly.
+ * <p>The tool has no mode that mutates a table. {@code --dry-run} is required rather than implied
+ * so that the intent is on the command line, and so a future mode that does commit has to be asked
+ * for explicitly.
  *
  * <pre>
  * java -cp iceberg-data.jar:iceberg-core.jar:&lt;hadoop&gt; \
@@ -44,8 +44,8 @@ import org.slf4j.LoggerFactory;
  *     --dry-run --table /warehouse/db/table [--reach &lt;snapshotId&gt;]
  * </pre>
  *
- * <p>The report goes through SLF4J at INFO, so a run with logging misconfigured prints nothing rather
- * than looking like a table with no candidates.
+ * <p>The report goes through SLF4J at INFO, so a run with logging misconfigured prints nothing
+ * rather than looking like a table with no candidates.
  */
 public class SnapshotRewriteDryRun {
   private static final Logger LOG = LoggerFactory.getLogger(SnapshotRewriteDryRun.class);

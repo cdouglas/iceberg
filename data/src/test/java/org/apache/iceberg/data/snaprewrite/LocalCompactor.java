@@ -63,8 +63,8 @@ import org.apache.iceberg.util.StructLikeMap;
  * <p>Under v3 it also preserves row lineage, writing each surviving row's {@code _row_id} out
  * explicitly. A compaction gathers rows from files whose id ranges are unrelated, so a single
  * {@code first_row_id} cannot describe the result and derived ids would renumber every row. Without
- * this the rewrite's identity guarantee cannot be tested end to end, because the compaction would be
- * the thing losing identities.
+ * this the rewrite's identity guarantee cannot be tested end to end, because the compaction would
+ * be the thing losing identities.
  */
 class LocalCompactor {
   /** No target size limit: one output file per partition. */
@@ -163,8 +163,7 @@ class LocalCompactor {
       long maxRowsPerTarget) {
     List<DataFile> written = Lists.newArrayList();
     boolean lineage = GenericRowLineage.tracked(table);
-    Schema writeSchema =
-        lineage ? GenericRowLineage.writeSchema(table.schema()) : table.schema();
+    Schema writeSchema = lineage ? GenericRowLineage.writeSchema(table.schema()) : table.schema();
     GenericAppenderFactory factory =
         new GenericAppenderFactory(writeSchema, table.spec()).setAll(table.properties());
 

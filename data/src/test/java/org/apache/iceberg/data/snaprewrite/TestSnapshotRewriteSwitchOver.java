@@ -42,14 +42,14 @@ import org.junit.jupiter.api.Test;
  * Running a rewrite as a recurring pass, over history a previous pass already rewrote.
  *
  * <p>This is the deployment the design points at: a compaction happens, and some time later a
- * separate pass switches the snapshots it superseded over to the newer layout. Keeping the two apart
- * is what lets the age threshold hold -- a fused pass would have to rewrite immediately, which is
- * exactly what P7 exists to prevent -- and it is the only model that works on history that already
- * exists, since a table adopting this feature is full of compactions that predate it.
+ * separate pass switches the snapshots it superseded over to the newer layout. Keeping the two
+ * apart is what lets the age threshold hold -- a fused pass would have to rewrite immediately,
+ * which is exactly what P7 exists to prevent -- and it is the only model that works on history that
+ * already exists, since a table adopting this feature is full of compactions that predate it.
  *
  * <p>The pass therefore has to be able to run over its own output. A snapshot rewritten onto one
- * compaction still pins that compaction's files, so when a newer compaction supersedes them the same
- * snapshot has to move again.
+ * compaction still pins that compaction's files, so when a newer compaction supersedes them the
+ * same snapshot has to move again.
  */
 public class TestSnapshotRewriteSwitchOver extends SnapshotRewriteTestBase {
 
@@ -57,8 +57,8 @@ public class TestSnapshotRewriteSwitchOver extends SnapshotRewriteTestBase {
    * A second pass re-expresses snapshots a first pass already moved.
    *
    * <p>Nothing about a rewritten snapshot makes it special to the planner: it references data files
-   * and delete files like any other, and the newer compaction's map covers those files. So the second
-   * pass treats it as ordinary input, and every snapshot still reads what it always did.
+   * and delete files like any other, and the newer compaction's map covers those files. So the
+   * second pass treats it as ordinary input, and every snapshot still reads what it always did.
    */
   @Test
   public void aSecondPassRewritesWhatTheFirstPassWrote() throws IOException {
@@ -163,11 +163,11 @@ public class TestSnapshotRewriteSwitchOver extends SnapshotRewriteTestBase {
   /**
    * Repeating a pass costs the whole retained history, not just the new window.
    *
-   * <p>Every rewritten snapshot deletes every row inserted after it, so a pass that reaches back over
-   * earlier passes pays for that reach again. This measures it rather than asserting it is small: the
-   * second pass writes strictly more delete positions than the first, over the same table, because it
-   * covers more snapshots against a newer compaction. It is the operational cost of continuing to
-   * reclaim, and the reason the report exists.
+   * <p>Every rewritten snapshot deletes every row inserted after it, so a pass that reaches back
+   * over earlier passes pays for that reach again. This measures it rather than asserting it is
+   * small: the second pass writes strictly more delete positions than the first, over the same
+   * table, because it covers more snapshots against a newer compaction. It is the operational cost
+   * of continuing to reclaim, and the reason the report exists.
    */
   @Test
   public void repeatedPassesPayForTheirReach() throws IOException {
@@ -196,8 +196,7 @@ public class TestSnapshotRewriteSwitchOver extends SnapshotRewriteTestBase {
     assertThat(second.report().deletePositions())
         .as("reaching back over an earlier pass re-pays for those snapshots")
         .isGreaterThan(firstPositions);
-    assertThat(second.plan().window().size())
-        .isGreaterThan(first.plan().window().size());
+    assertThat(second.plan().window().size()).isGreaterThan(first.plan().window().size());
   }
 
   // ------------------------------------------------------------------ helpers

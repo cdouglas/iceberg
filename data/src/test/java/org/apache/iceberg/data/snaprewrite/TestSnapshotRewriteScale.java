@@ -43,12 +43,12 @@ import org.junit.jupiter.api.Test;
  * The accounting, measured at a scale where file bytes dominate metadata.
  *
  * <p>Every claim in the design about what a rewrite saves has so far rested on arithmetic plus
- * measurements from tables of a few dozen rows, where a manifest outweighs the data it describes. The
- * only way to settle it is on a real history; short of that, this is the largest scale that runs in a
- * unit test, and it reports what it measures rather than only asserting bounds.
+ * measurements from tables of a few dozen rows, where a manifest outweighs the data it describes.
+ * The only way to settle it is on a real history; short of that, this is the largest scale that
+ * runs in a unit test, and it reports what it measures rather than only asserting bounds.
  *
- * <p>It also times the induction, because the planner works a row at a time and that is the property
- * a distributed implementation would have to change.
+ * <p>It also times the induction, because the planner works a row at a time and that is the
+ * property a distributed implementation would have to change.
  */
 public class TestSnapshotRewriteScale extends SnapshotRewriteTestBase {
 
@@ -73,8 +73,7 @@ public class TestSnapshotRewriteScale extends SnapshotRewriteTestBase {
       append(WorkloadGenerator.generateRows(seed++, PER_TRANSACTION));
 
       // Clustered deletes against the compaction, the shape a purge has.
-      long[] positions =
-          WorkloadGenerator.generateClusteredPositions(seed++, BASE_ROWS, 200, 50);
+      long[] positions = WorkloadGenerator.generateClusteredPositions(seed++, BASE_ROWS, 200, 50);
       List<Pair<CharSequence, Long>> targets = Lists.newArrayList();
       for (long position : positions) {
         targets.add(Pair.of(compacted.location(), position));

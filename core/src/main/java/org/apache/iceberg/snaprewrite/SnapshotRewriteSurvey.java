@@ -36,8 +36,8 @@ import org.apache.iceberg.util.SnapshotUtil;
 /**
  * Finds and prices the windows a table could rewrite.
  *
- * <p>A recurring pass needs to choose how far back to reach, and that choice is a trade rather than a
- * rule: reaching further releases older layouts, but every rewritten snapshot deletes every row
+ * <p>A recurring pass needs to choose how far back to reach, and that choice is a trade rather than
+ * a rule: reaching further releases older layouts, but every rewritten snapshot deletes every row
  * inserted after it, so a longer window costs more than proportionally. There is no reach that is
  * right for every table, so this prices each one and leaves the choice to the caller.
  *
@@ -122,8 +122,8 @@ public class SnapshotRewriteSurvey {
    * Whether any snapshot in the window still references a file the target compaction replaced.
    *
    * <p>This is the idempotence condition a recurring pass needs, and it is not "has this been
-   * rewritten". A snapshot moved onto an older compaction has been rewritten and still needs moving;
-   * what matters is whether it is already expressed against the newest one.
+   * rewritten". A snapshot moved onto an older compaction has been rewritten and still needs
+   * moving; what matters is whether it is already expressed against the newest one.
    */
   private static boolean referencesAnyOf(
       List<Snapshot> window, FileIO io, TableMetadata base, Set<String> superseded) {
