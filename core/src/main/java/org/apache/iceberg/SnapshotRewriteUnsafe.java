@@ -134,8 +134,20 @@ public class SnapshotRewriteUnsafe {
    *
    * <p>The result has a null metadata file location and no pending changes: it is an uncommitted
    * shadow, suitable for reading but not yet written anywhere.
+   *
+   * <p>Statistics are passed explicitly rather than carried over from {@code base}, because a
+   * rewrite invalidates some of them and leaves others intact, and the difference is not visible
+   * from here. Table-level statistics are derived from the rows live at a snapshot, which a rewrite
+   * preserves, so they survive. Partition statistics are file counts and byte totals -- properties
+   * of the layout, which a rewrite replaces -- so they do not. Nothing in Iceberg validates either
+   * against the snapshot it names, so a stale entry is believed rather than rejected; that is why
+   * the caller has to say.
    */
-  public static TableMetadata replaceSnapshots(TableMetadata base, List<Snapshot> snapshots) {
+  public static TableMetadata replaceSnapshots(
+      TableMetadata base,
+      List<Snapshot> snapshots,
+      List<StatisticsFile> statisticsFiles,
+      List<PartitionStatisticsFile> partitionStatisticsFiles) {
     return new TableMetadata(
         null,
         base.formatVersion(),
@@ -158,8 +170,8 @@ public class SnapshotRewriteUnsafe {
         base.snapshotLog(),
         base.previousFiles(),
         base.refs(),
-        base.statisticsFiles(),
-        base.partitionStatisticsFiles(),
+        statisticsFiles,
+        partitionStatisticsFiles,
         base.nextRowId(),
         base.encryptionKeys(),
         ImmutableList.of());

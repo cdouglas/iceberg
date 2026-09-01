@@ -20,11 +20,15 @@ package org.apache.iceberg.snaprewrite;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import org.apache.iceberg.ImmutableGenericPartitionStatisticsFile;
+import org.apache.iceberg.PartitionStatisticsFile;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotRewriteUnsafe;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 /**
  * Puts rewritten snapshots back the way they were.
@@ -34,6 +38,12 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  * back. Nothing needs to be read or copied, and the restored snapshot is byte-identical to the
  * original -- same manifest list, same summary, same identity.
  *
+ * <p>One thing does have to be put back rather than pointed at: partition statistics, which a
+ * rewrite drops because they describe a layout it replaced. Those live in table metadata rather
+ * than in a snapshot, so the rewrite records each one in the snapshot that replaced it and this
+ * re-attaches them. Undo stays self-contained -- everything needed to reverse a rewrite is in the
+ * snapshots the rewrite wrote.
+ *
  * <p>That window closes when {@link SnapshotRewriteResult#reclaim} deletes the old files. Before
  * then this is the undo button, which is what makes committing a rewrite a decision rather than a
  * commitment.
@@ -41,6 +51,13 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 public class SnapshotRewriteRestore {
   static final String ORIGINAL_MANIFEST_LIST = "snapshot-rewritten-from";
   static final String ORIGINAL_PREFIX = "snapshot-rewritten-from.";
+
+  // Deliberately outside ORIGINAL_PREFIX. Everything under that prefix is replayed verbatim into
+  // the
+  // restored summary, and these two keys describe the rewrite rather than the snapshot it replaced.
+  static final String DETACHED_PARTITION_STATS_PATH = "snapshot-rewrite-detached-partition-stats";
+  static final String DETACHED_PARTITION_STATS_SIZE =
+      "snapshot-rewrite-detached-partition-stats-size-bytes";
 
   private SnapshotRewriteRestore() {}
 
@@ -58,12 +75,23 @@ public class SnapshotRewriteRestore {
    */
   public static TableMetadata restore(TableMetadata base) {
     List<Snapshot> restored = Lists.newArrayList();
-    int count = 0;
+    List<PartitionStatisticsFile> partitionStats =
+        Lists.newArrayList(base.partitionStatisticsFiles());
+    Set<Long> described = Sets.newHashSet();
+    for (PartitionStatisticsFile file : partitionStats) {
+      described.add(file.snapshotId());
+    }
 
+    int count = 0;
     for (Snapshot snapshot : base.snapshots()) {
       if (isRewritten(snapshot)) {
         restored.add(original(snapshot));
         count += 1;
+
+        PartitionStatisticsFile detached = detachedPartitionStats(snapshot);
+        if (detached != null && described.add(snapshot.snapshotId())) {
+          partitionStats.add(detached);
+        }
       } else {
         restored.add(snapshot);
       }
@@ -73,7 +101,30 @@ public class SnapshotRewriteRestore {
       throw new IllegalStateException("No rewritten snapshots to restore");
     }
 
-    return SnapshotRewriteUnsafe.replaceSnapshots(base, restored);
+    return SnapshotRewriteUnsafe.replaceSnapshots(
+        base, restored, base.statisticsFiles(), partitionStats);
+  }
+
+  /**
+   * The partition statistics a rewrite detached from this snapshot, or null if it had none.
+   *
+   * <p>Reconstructed from the summary rather than read: a {@code PartitionStatisticsFile} is three
+   * fields, and the snapshot id is the snapshot's own, so recording the path and size is enough to
+   * rebuild it exactly. Whether the file itself still exists is a separate question -- reclaim
+   * deletes it, which is the same point at which pointing back at a manifest list stops working.
+   */
+  private static PartitionStatisticsFile detachedPartitionStats(Snapshot rewritten) {
+    String path = rewritten.summary().get(DETACHED_PARTITION_STATS_PATH);
+    String size = rewritten.summary().get(DETACHED_PARTITION_STATS_SIZE);
+    if (path == null || size == null) {
+      return null;
+    }
+
+    return ImmutableGenericPartitionStatisticsFile.builder()
+        .snapshotId(rewritten.snapshotId())
+        .path(path)
+        .fileSizeInBytes(Long.parseLong(size))
+        .build();
   }
 
   /** How many snapshots {@link #restore} would put back. */

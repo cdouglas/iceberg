@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
@@ -29,6 +30,7 @@ import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.ManifestFiles;
 import org.apache.iceberg.ManifestWriter;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.PartitionStatisticsFile;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotRewriteUnsafe;
 import org.apache.iceberg.SnapshotSummary;
@@ -39,6 +41,7 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 
 /**
  * Writes the manifests, manifest lists, and snapshots of a rewrite.
@@ -82,6 +85,7 @@ class SnapshotRewriteWriter {
   private final Map<String, DataFile> resurrected;
   private final Map<String, DeleteFile> deleteFiles;
   private final Stamping stamping;
+  private final Map<Long, PartitionStatisticsFile> detachedPartitionStats;
   private final List<String> writtenPaths = Lists.newArrayList();
 
   SnapshotRewriteWriter(
@@ -97,6 +101,46 @@ class SnapshotRewriteWriter {
     this.resurrected = resurrected;
     this.deleteFiles = deleteFiles;
     this.stamping = stamping;
+    this.detachedPartitionStats = detachedPartitionStats(base, plan);
+  }
+
+  /**
+   * The partition statistics a rewrite invalidates, by the snapshot they describe.
+   *
+   * <p>Partition statistics are per-partition file counts, byte totals, and delete counts. All of
+   * those describe a layout, and a rewritten snapshot holds a different one -- the whole
+   * compaction, with most of it masked. Nothing in Iceberg checks a statistics file against the
+   * snapshot it names, so leaving these attached would not fail; it would simply be believed. They
+   * are dropped instead, and recorded in the snapshot's summary so a restore can put them back.
+   *
+   * <p>Table-level statistics are not dropped. The standard blob type is a theta sketch, which
+   * counts distinct values among the rows live at a snapshot, and a rewrite preserves exactly that.
+   */
+  private static Map<Long, PartitionStatisticsFile> detachedPartitionStats(
+      TableMetadata base, SnapshotRewritePlan plan) {
+    Set<Long> rewrittenIds = Sets.newHashSet();
+    for (Snapshot snapshot : plan.window()) {
+      rewrittenIds.add(snapshot.snapshotId());
+    }
+
+    Map<Long, PartitionStatisticsFile> detached = Maps.newHashMap();
+    for (PartitionStatisticsFile file : base.partitionStatisticsFiles()) {
+      if (rewrittenIds.contains(file.snapshotId())) {
+        detached.put(file.snapshotId(), file);
+      }
+    }
+
+    return detached;
+  }
+
+  /** Paths of the statistics files this rewrite detached, for reclaim to delete. */
+  List<String> detachedStatisticsPaths() {
+    List<String> paths = Lists.newArrayList();
+    for (PartitionStatisticsFile file : detachedPartitionStats.values()) {
+      paths.add(file.path());
+    }
+
+    return paths;
   }
 
   /**
@@ -115,7 +159,15 @@ class SnapshotRewriteWriter {
       snapshots.add(replacement != null ? replacement : snapshot);
     }
 
-    return SnapshotRewriteUnsafe.replaceSnapshots(base, snapshots);
+    List<PartitionStatisticsFile> partitionStats = Lists.newArrayList();
+    for (PartitionStatisticsFile file : base.partitionStatisticsFiles()) {
+      if (!detachedPartitionStats.containsKey(file.snapshotId())) {
+        partitionStats.add(file);
+      }
+    }
+
+    return SnapshotRewriteUnsafe.replaceSnapshots(
+        base, snapshots, base.statisticsFiles(), partitionStats);
   }
 
   /** Metadata files this writer created, for reclaim accounting and for cleanup on failure. */
@@ -255,11 +307,25 @@ class SnapshotRewriteWriter {
     summary.put(SnapshotSummary.TOTAL_POS_DELETES_PROP, String.valueOf(positions));
     summary.put(SnapshotSummary.TOTAL_EQ_DELETES_PROP, "0");
 
-    // Everything needed to put this snapshot back the way it was: the manifest list it used to point
-    // at, and the summary it used to carry. A rewrite is reversible while the old files survive, and
+    // Everything needed to put this snapshot back the way it was: the manifest list it used to
+    // point
+    // at, and the summary it used to carry. A rewrite is reversible while the old files survive,
+    // and
     // that is worth preserving even though most of these fields describe a layout that no longer
     // exists here.
     summary.put(SnapshotRewriteRestore.ORIGINAL_MANIFEST_LIST, original.manifestListLocation());
+
+    // Partition statistics are dropped because a rewrite makes them wrong, but a restore has to be
+    // able to put them back, and they live in table metadata rather than in the snapshot. Recording
+    // them here keeps undo self-contained: everything needed is in the snapshot that replaced them.
+    PartitionStatisticsFile detached = detachedPartitionStats.get(original.snapshotId());
+    if (detached != null) {
+      summary.put(SnapshotRewriteRestore.DETACHED_PARTITION_STATS_PATH, detached.path());
+      summary.put(
+          SnapshotRewriteRestore.DETACHED_PARTITION_STATS_SIZE,
+          String.valueOf(detached.fileSizeInBytes()));
+    }
+
     if (original.summary() != null) {
       for (Map.Entry<String, String> entry : original.summary().entrySet()) {
         summary.put(SnapshotRewriteRestore.ORIGINAL_PREFIX + entry.getKey(), entry.getValue());
