@@ -24,7 +24,6 @@ import java.util.Set;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
-import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
@@ -162,7 +161,9 @@ public class SnapshotRewriteResult {
       try {
         TableMetadata previous = TableMetadataParser.read(io, entry.file());
         for (Snapshot snapshot : previous.snapshots()) {
-          collect(snapshot, retained);
+          Map<String, Long> sizes = Maps.newHashMap();
+          SnapshotFiles.collect(snapshot, io, previous.specsById(), sizes);
+          retained.addAll(sizes.keySet());
         }
       } catch (RuntimeException e) {
         // An unreadable metadata document is not proof that nothing references the files. Treat the
@@ -197,21 +198,6 @@ public class SnapshotRewriteResult {
 
     for (DeleteFile file : deleteFiles.values()) {
       io.deleteFile(file.location());
-    }
-  }
-
-  private void collect(Snapshot snapshot, Set<String> paths) {
-    paths.add(snapshot.manifestListLocation());
-    for (ManifestFile manifest : snapshot.allManifests(io)) {
-      paths.add(manifest.path());
-    }
-
-    for (DataFile file : snapshot.addedDataFiles(io)) {
-      paths.add(file.location());
-    }
-
-    for (DeleteFile file : snapshot.addedDeleteFiles(io)) {
-      paths.add(file.location());
     }
   }
 
