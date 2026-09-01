@@ -40,9 +40,10 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
  * needs rows that are dead in the current snapshot.
  *
  * <p>Reading {@code _row_id} needs the file's {@code first_row_id} passed in as a constant. Without
- * it {@code ParquetValueReaders.rowIds} returns nulls and discards the column even when the file has
- * one, so a raw read would report no identities at all. With it, the reader behaves as it does in a
- * scan: a materialized value wins, and otherwise the id is derived from the constant and the offset.
+ * it {@code ParquetValueReaders.rowIds} returns nulls and discards the column even when the file
+ * has one, so a raw read would report no identities at all. With it, the reader behaves as it does
+ * in a scan: a materialized value wins, and otherwise the id is derived from the constant and the
+ * offset.
  */
 class RawFiles {
   private RawFiles() {}

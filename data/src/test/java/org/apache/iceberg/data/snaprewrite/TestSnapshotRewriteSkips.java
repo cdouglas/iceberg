@@ -64,8 +64,8 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
   /**
    * An unsupported format version is refused outright.
    *
-   * <p>v2 and v3 are handled; v3 additionally requires that the window recover nothing, which {@code
-   * TestSnapshotRewriteV3} covers. v4 is simply not reasoned about here.
+   * <p>v2 and v3 are handled; v3 additionally requires that the window recover nothing, which
+   * {@code TestSnapshotRewriteV3} covers. v4 is simply not reasoned about here.
    */
   @Test
   public void refusesUnsupportedFormatVersion() throws IOException {

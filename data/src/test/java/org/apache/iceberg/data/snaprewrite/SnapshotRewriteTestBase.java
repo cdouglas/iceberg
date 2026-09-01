@@ -31,10 +31,10 @@ import java.util.UUID;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
-import org.apache.iceberg.FileScanTask;
-import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
@@ -46,16 +46,16 @@ import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
+import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
-import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.snaprewrite.SnapshotRewrite;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.apache.iceberg.types.Type;
@@ -110,7 +110,9 @@ public abstract class SnapshotRewriteTestBase {
   /** Recreates the table under test at a different format version. */
   protected void useFormatVersion(int version) {
     this.formatVersion = version;
-    this.table = newTable(SCHEMA, PartitionSpec.unpartitioned(), "tbl-v" + version + "-" + UUID.randomUUID());
+    this.table =
+        newTable(
+            SCHEMA, PartitionSpec.unpartitioned(), "tbl-v" + version + "-" + UUID.randomUUID());
   }
 
   private Table newTable(Schema schema, PartitionSpec spec, String name) {
@@ -189,8 +191,8 @@ public abstract class SnapshotRewriteTestBase {
    * Commits position deletes.
    *
    * <p>Under v3 a data file may carry at most one deletion vector per snapshot, so deleting from a
-   * file that already has one means merging with it and replacing it -- adding a second is refused as
-   * a conflicting DV. v2 has no such rule: position delete files simply accumulate.
+   * file that already has one means merging with it and replacing it -- adding a second is refused
+   * as a conflicting DV. v2 has no such rule: position delete files simply accumulate.
    */
   protected void delete(List<Pair<CharSequence, Long>> positions) throws IOException {
     applyDeletes(newRowDelta(), positions).commit();
@@ -207,8 +209,9 @@ public abstract class SnapshotRewriteTestBase {
   /**
    * A row delta pinned to the current snapshot.
    *
-   * <p>Without a starting snapshot, {@code validateAddedDVs} treats the entire history as concurrent,
-   * so replacing a data file's deletion vector looks like a conflict with the vector being replaced.
+   * <p>Without a starting snapshot, {@code validateAddedDVs} treats the entire history as
+   * concurrent, so replacing a data file's deletion vector looks like a conflict with the vector
+   * being replaced.
    */
   private RowDelta newRowDelta() {
     return table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
@@ -217,8 +220,8 @@ public abstract class SnapshotRewriteTestBase {
   /**
    * Stages deletes on a row delta, merging with and replacing existing deletion vectors under v3.
    *
-   * <p>Both paths that delete need this, and neither is the rewrite's concern: it is what a v3 writer
-   * has to do to stay within one deletion vector per data file per snapshot.
+   * <p>Both paths that delete need this, and neither is the rewrite's concern: it is what a v3
+   * writer has to do to stay within one deletion vector per data file per snapshot.
    */
   private RowDelta applyDeletes(RowDelta delta, List<Pair<CharSequence, Long>> positions)
       throws IOException {
@@ -366,7 +369,8 @@ public abstract class SnapshotRewriteTestBase {
    * the range probes split them.
    */
   private static List<Expression> probes(Table target, long snapshotId) {
-    String numeric = firstColumnOfType(target.schema(), Types.IntegerType.get(), Types.LongType.get());
+    String numeric =
+        firstColumnOfType(target.schema(), Types.IntegerType.get(), Types.LongType.get());
     String text = firstColumnOfType(target.schema(), Types.StringType.get());
     if (numeric == null) {
       return ImmutableList.of();
@@ -407,7 +411,9 @@ public abstract class SnapshotRewriteTestBase {
     return built;
   }
 
-  /** Asserts the rewritten snapshots keep their identity: id, parent, sequence number, timestamp. */
+  /**
+   * Asserts the rewritten snapshots keep their identity: id, parent, sequence number, timestamp.
+   */
   protected void assertIdentityPreserved(SnapshotRewriteResult result) {
     for (Snapshot original : table.snapshots()) {
       Snapshot rewritten = result.metadata().snapshot(original.snapshotId());
