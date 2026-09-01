@@ -82,8 +82,8 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
   /**
    * A partial compaction leaves files where they are.
    *
-   * <p>The compaction map says nothing about an untouched file because nothing moved, so the locator
-   * has to treat those rows as already in place rather than as missing.
+   * <p>The compaction map says nothing about an untouched file because nothing moved, so the
+   * locator has to treat those rows as already in place rather than as missing.
    */
   @Test
   public void partialCompaction() throws IOException {
@@ -109,9 +109,9 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
   /**
    * Two compactions inside one window: the maps have to compose.
    *
-   * <p>Reachable only with an explicit floor, since a window otherwise stops at the first compaction
-   * it meets going back. A row inserted before the intermediate compaction was relocated twice, and
-   * placing it means following both maps.
+   * <p>Reachable only with an explicit floor, since a window otherwise stops at the first
+   * compaction it meets going back. A row inserted before the intermediate compaction was relocated
+   * twice, and placing it means following both maps.
    */
   @Test
   public void chainedCompactionsInsideTheWindow() throws IOException {

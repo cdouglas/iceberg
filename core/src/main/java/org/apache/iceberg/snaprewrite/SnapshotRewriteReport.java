@@ -93,6 +93,26 @@ public class SnapshotRewriteReport {
     return resurrectedRows;
   }
 
+  public long resurrectedBytes() {
+    return resurrectedBytes;
+  }
+
+  /**
+   * Bytes of position deletes the rewritten snapshots carry.
+   *
+   * <p>Not a rounding error. Every rewritten snapshot must delete every row inserted after it, so
+   * across a window of {@code m} transactions each inserting {@code r} rows the total is on the
+   * order of {@code r * m^2 / 2} positions. A window of a few commits costs little; a window of
+   * hundreds is dominated by this term, and the saving of one table copy is spent on it.
+   */
+  public long deleteBytes() {
+    return deleteBytes;
+  }
+
+  public long metadataBytes() {
+    return metadataBytes;
+  }
+
   public long deletePositions() {
     return deletePositions;
   }

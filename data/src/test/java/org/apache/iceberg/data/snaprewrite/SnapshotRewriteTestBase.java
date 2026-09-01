@@ -47,6 +47,7 @@ import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.snaprewrite.SnapshotRewrite;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.apache.iceberg.types.Types;
@@ -138,7 +139,8 @@ public abstract class SnapshotRewriteTestBase {
       throws IOException {
     table
         .newRowDelta()
-        .addDeletes(FileHelpers.writeDeleteFile(table, newOutput("deletes"), partition, positions).first())
+        .addDeletes(
+            FileHelpers.writeDeleteFile(table, newOutput("deletes"), partition, positions).first())
         .commit();
   }
 
@@ -218,6 +220,16 @@ public abstract class SnapshotRewriteTestBase {
     }
 
     Collections.sort(rows);
+    return rows;
+  }
+
+  /** Every snapshot's rows, keyed by snapshot id. Captured before a rewrite to compare after. */
+  protected static java.util.Map<Long, List<String>> allSnapshotRows(Table target) {
+    java.util.Map<Long, List<String>> rows = Maps.newLinkedHashMap();
+    for (Snapshot snapshot : target.snapshots()) {
+      rows.put(snapshot.snapshotId(), rowsAt(target, snapshot.snapshotId()));
+    }
+
     return rows;
   }
 
