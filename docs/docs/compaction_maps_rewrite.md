@@ -284,6 +284,76 @@ Getting this wrong fails differently by version, and the v2 mode is the dangerou
 asserts the oracle catches it, because a suite that only ever runs the correct stamping cannot
 distinguish "the stamping is right" from "nothing is checking".
 
+### Invariants suspended
+
+A rewrite is unsafe in the Rust sense: it asserts soundness rather than satisfying what the framework
+can prove. Three different things get called "the invariant" in that sentence, and they carry very
+different risk, so they are listed separately.
+
+#### Satisfied by construction
+
+The check still executes on every read of a rewritten snapshot, and still passes. These are the cheap
+ones: if the construction is wrong, Iceberg says so.
+
+| Invariant | Guard | Why it passes |
+|---|---|---|
+| A delete applies to a data file only when `data.dataSequenceNumber <= delete.dataSequenceNumber` | `DeleteFileIndex.findDV` (v3 DVs, raises `ValidationException`); `DeleteFileIndex.PositionDeletes.filter` via `findStartIndex` (v2 position deletes, silent) | uniform per-snapshot stamping makes the comparison an equality |
+| A null entry sequence number is permitted only for status `ADDED`, and only from the committing snapshot | `V3Metadata.IndexedManifestEntry.get` case 2, and the same in `V2Metadata` | the rewrite never emits a null: every entry is `EXISTING` with an explicit sequence number |
+| An unassigned *manifest* sequence number is permitted only for a manifest created by the committing snapshot | `V3Metadata.ManifestFileWrapper.get` cases 4 and 5 | the manifest's snapshot id and the manifest list's agree, both being the rewritten snapshot's |
+| A manifest's `first_row_id` is assigned exactly once, and a DATA manifest must end up with one | `V3Metadata.ManifestFileWrapper.get` case 15; assignment in `ManifestListWriter.V3Writer.prepare` | fresh manifests carry null and are assigned from a counter seeded with the snapshot's own `firstRowId` |
+
+Writing every entry as `EXISTING` is not evasion — it is the only available encoding. Iceberg offers
+exactly two: `ADDED` with an inherited sequence number, or `EXISTING` with an explicit one. A rewrite
+needs an explicit sequence number of its own choosing, so `EXISTING` is forced.
+
+#### Stated in prose, enforced nowhere
+
+These are the ones to watch, because no failure is possible: nothing will ever complain.
+
+`ManifestWriter.existing` documents its contract as *"The original data and file sequence numbers,
+snapshot ID, which were assigned at commit, must be preserved when adding an existing entry."* Nothing
+checks it. The rewrite violates all three fields deliberately: `SnapshotRewriteWriter` passes the
+rewritten snapshot's own id as each file's owning snapshot, and that snapshot's sequence number as both
+the data and the file sequence number. A rewritten manifest therefore asserts that every file it holds
+was added by the snapshot holding it. See errata 2 and 3.
+
+Manifest-level `first_row_id` ranges also overlap across rewritten snapshots: the assignment counter
+advances over the existing-row count of the whole compaction, from a seed of the snapshot's own
+`firstRowId`. Nothing checks this either. It is benign only because file-level `first_row_id` is what
+actually carries identity, which is why recovery files are given one explicitly rather than left to
+inherit it from the manifest.
+
+#### Bypassed, so the check never runs
+
+Here the framework would refuse outright, so the code takes a different path and the refusal set stands
+in for the guarantee.
+
+| Invariant | Guard skipped | What stands in |
+|---|---|---|
+| A snapshot id is unique within a table | `TableMetadata.Builder.addSnapshot` | replacement is definitionally a duplicate; `SnapshotRewriteUnsafe.replaceSnapshots` uses the package-private constructor, the same path `TableMetadataParser.fromJson` takes |
+| A snapshot's sequence number exceeds `lastSequenceNumber` | same | the original sequence number is reused on purpose |
+| v3: `firstRowId >= nextRowId`, and `nextRowId += addedRows` | same | a replacement must *not* advance `nextRowId`; the builder cannot express that |
+| Every metadata change is expressible as a `MetadataUpdate` | `addSnapshot` records `MetadataUpdate.AddSnapshot`; a rewrite records nothing | nothing — this is why the operation cannot travel over REST (errata 1) |
+| Commit-time conflict validation | all of `SnapshotProducer.apply()`, and every `MergingSnapshotProducer` validation | `commit()` is `ops.commit(base, rewritten)`, a whole-metadata swap; the planner's preconditions run before anything is written |
+
+The last row is the largest suspension. Because the commit is a metadata swap rather than a produced
+snapshot, the REPLACE sanity check `addedRecords <= replacedRecords`, the row-lineage `assignedRows`
+derivation, and the retry/refresh loop are all absent. Concurrency control reduces to whatever
+compare-and-set on base metadata the `TableOperations` implementation performs: a writer that moved
+`current` makes the commit fail outright, with no retry and no revalidation, because the plan was
+computed against one specific base.
+
+What replaces all of it is a refusal set rather than a proof — the twelve reasons in `RewriteRefusal`,
+checked before any file is written (`SnapshotRewritePlanner.checkStaticPreconditions`). Two carry most
+of the weight: `UNLOCATABLE_ROW`, which requires every row live in the window to be findable, and
+`REPLACE_CHANGED_DATA`, which guards the assumption that an interstitial compaction is a logical no-op.
+
+One boundary is load-bearing for all of the above: **the compaction itself is never rewritten**
+(`SnapshotRewritePlan.window()` excludes it), so new commits still branch from a snapshot outside the
+window, at a sequence number above `lastSequenceNumber`. The inverted sequence-number semantics stay
+confined to history that will never be appended to. If that stopped being true, uniform stamping would
+be actively wrong rather than merely unusual.
+
 ### Row lineage
 
 Under v3 a row's id is normally derived from its file's `first_row_id` plus its offset, which works
@@ -381,3 +451,28 @@ cannot materialize ids stays usable on v2 and is refused on v3 rather than silen
 Every figure in this document comes from generated tables, the largest 80k rows in one file. Nothing
 here exercises object-store latency, a window hundreds of commits deep, or a production layout. The
 dry run exists so that the measurement can be taken on a real table; it has not been.
+
+### 10. Undo points back; it does not reconstruct
+
+`SnapshotRewriteRestore` reverses a rewrite by pointing each snapshot at the manifest list it used to
+carry. That is exact and free, and it is also entirely dependent on the old layout still existing:
+after `reclaim()` there is nothing to point at, which
+`TestSnapshotRewriteRoundTrip#reclaimEndsReversibility` asserts.
+
+The stronger property -- reconstructing the pre-compaction layout *from the rewritten layout alone* --
+is not implemented, and no test exercises it. It appears feasible, because a compaction map is
+invertible: for every row in the compaction it names the pre-compaction file and offset the row came
+from, which recovers each original file's surviving rows and their order, and so its boundaries. Two
+pieces are missing:
+
+- Rows that died inside the window are absent from the compaction and live in recovery files. Their
+  original file and offset is known at rewrite time (`ResurrectionRequest.sources()`, in output order)
+  and is never persisted.
+- Under v3, a row id that was derived rather than materialized needs its original file's
+  `first_row_id` to reproduce. That is also computed at rewrite time
+  (`ResurrectionRequest.sourceFirstRowIds()`) and also not persisted.
+
+Persisting both -- a reverse map written alongside the rewrite -- would make the inverse computable
+without the old files. Even then it could only be lossless up to file identity: reconstruction writes
+new files at new paths, so the result would match the original in rows, per-file grouping, row order,
+and row ids, but not in bytes or in manifest-list location.

@@ -38,6 +38,28 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
  * surface for "what did we assert that Iceberg would otherwise check" is a single file. Nothing in
  * {@code org.apache.iceberg.snaprewrite} touches package-private state directly.
  *
+ * <h2>What "unsafe" covers</h2>
+ *
+ * <p>Three different things get called an invariant here, and they carry very different risk. Each
+ * method below names which kind it is:
+ *
+ * <ul>
+ *   <li><b>Satisfied by construction.</b> The guard still runs on every read and still passes. If
+ *       the construction is wrong, Iceberg says so. The sequence-number stamping rule is the main
+ *       one, enforced by {@code DeleteFileIndex.findDV} for v3 deletion vectors and -- silently --
+ *       by {@code DeleteFileIndex.PositionDeletes.filter} for v2 position deletes.
+ *   <li><b>Stated in prose, enforced nowhere.</b> No failure is possible because nothing checks.
+ *       {@link ManifestWriter#existing} documents that an existing entry must preserve the file's
+ *       original sequence numbers and snapshot id; a rewrite overwrites all three.
+ *   <li><b>Bypassed.</b> The guard never executes, because the sanctioned path would refuse
+ *       outright. {@link TableMetadata.Builder#addSnapshot} and {@link SnapshotProducer#apply} are
+ *       the two, and a refusal set ({@code RewriteRefusal}) stands in for what they would have
+ *       guaranteed.
+ * </ul>
+ *
+ * <p>The full audit, with the guard for each item, is in {@code
+ * docs/docs/compaction_maps_rewrite.md} under "Invariants suspended".
+ *
  * <p>This class is not part of the public API and carries no compatibility guarantee.
  */
 public class SnapshotRewriteUnsafe {
@@ -56,6 +78,12 @@ public class SnapshotRewriteUnsafe {
    * rewritten. A rewritten snapshot must not disturb row lineage: the rows it holds are the same
    * rows, and under v3 their ids derive from the data files' own {@code first_row_id}, which the
    * rewrite does not change. Anything else here would renumber history.
+   *
+   * <p><b>Suspends (bypassed):</b> {@link SnapshotProducer#apply()}, the only sanctioned producer
+   * of a snapshot. Skipped with it: the REPLACE sanity check that added records do not exceed
+   * replaced records, and the row-lineage derivation of {@code addedRows} from the manifest list's
+   * assigned row ids. Both are properties of a snapshot produced from a parent by applying a
+   * transaction, and a rewritten snapshot is not that.
    */
   public static Snapshot newSnapshot(
       long sequenceNumber,
@@ -93,6 +121,16 @@ public class SnapshotRewriteUnsafe {
    *
    * <p><b>Asserted:</b> {@code snapshots} contains an entry for every id referenced by the base
    * metadata's refs and snapshot log, each with its original sequence number.
+   *
+   * <p><b>Suspends (bypassed):</b> all four of {@link TableMetadata.Builder#addSnapshot}'s checks
+   * -- that a snapshot id is unique, that its sequence number exceeds {@code lastSequenceNumber},
+   * and under v3 that {@code firstRowId >= nextRowId} while {@code nextRowId} advances by {@code
+   * addedRows}. A replacement is definitionally a duplicate at an already-used sequence number, and
+   * must not advance {@code nextRowId} at all.
+   *
+   * <p>Also skipped: {@code addSnapshot} records a {@link MetadataUpdate.AddSnapshot}, and this
+   * records nothing. There is no {@code MetadataUpdate} for replacing a snapshot, which is why the
+   * operation cannot be expressed over the REST catalog protocol.
    *
    * <p>The result has a null metadata file location and no pending changes: it is an uncommitted
    * shadow, suitable for reading but not yet written anywhere.
@@ -134,6 +172,16 @@ public class SnapshotRewriteUnsafe {
    * its entries at {@code sequenceNumber}, so that within the resulting snapshot every delete file
    * applies to every data file it references. See {@code SnapshotRewriteWriter} for the stamping
    * rule and why a violation fails silently in v2.
+   *
+   * <p><b>Suspends (satisfied by construction):</b> the manifest wrappers in {@code V2Metadata} and
+   * {@code V3Metadata} permit an unassigned manifest sequence number only for a manifest created by
+   * the committing snapshot, and permit a null entry sequence number only for status {@code ADDED}
+   * from that same snapshot. Both hold here: {@code snapshotId} is the rewritten snapshot's own,
+   * and every entry carries an explicit sequence number. Under v3 the manifest {@code first_row_id}
+   * is assigned from a counter seeded with {@code firstRowId}; because entries are written as
+   * existing, that counter advances over the whole compaction, so the ranges assigned to different
+   * rewritten snapshots overlap. Nothing checks that, and it is benign only because identity is
+   * carried by the data files' own {@code first_row_id}.
    */
   public static void writeManifestList(
       int formatVersion,
@@ -160,6 +208,11 @@ public class SnapshotRewriteUnsafe {
    *
    * <p><b>Asserted:</b> the result is used only to compute live row sets during planning, never to
    * validate a commit.
+   *
+   * <p><b>Suspends: nothing.</b> This hatch is visibility only -- it widens access to a
+   * package-private class without relaxing any rule. It is here because reimplementing the matching
+   * rules would be the unsafe choice: the live sets computed during planning must agree with what a
+   * reader will see, or the rewrite reconstructs a state that never existed.
    */
   public static DeleteIndex deleteIndex(
       FileIO io, List<ManifestFile> deleteManifests, Map<Integer, PartitionSpec> specsById) {
