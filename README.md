@@ -17,62 +17,101 @@
   - under the License.
   -->
 
-# Compaction Maps for Apache Iceberg
+# Rewriting Iceberg Snapshots with Compaction Maps
 
-This branch is a research prototype built on **Apache Iceberg 1.10.1** (tag [`apache-iceberg-1.10.1`](https://github.com/apache/iceberg/releases/tag/apache-iceberg-1.10.1)). It adds **compaction maps**: a compact data structure that records the position transformations applied by a compaction so that concurrent transactions writing position deletes (or deletion vectors) can be rebased onto the new layout instead of restarted.
+This branch re-expresses **snapshots that already committed** against a later compaction, instead of
+the layout they were prepared against. The states a table can address do not change; what changes is
+which files those states pin, and therefore what can be reclaimed. Once a window of snapshots
+references the newer compaction, the older compaction's outputs and every interstitial data and delete
+file become unreachable.
 
-Compactions and concurrent updates logically commute — compaction does not change table contents — but in current table formats they conflict on direct file references. A compaction map captures, per run of rows, the move from a source file to one or more target files. Either side of a conflict can use the map to rewrite its position-delete references and commit, with no global coordination beyond Iceberg's existing snapshot pointer swap.
+A compaction map repairs a *concurrent* transaction's references. The same translation runs backwards,
+over history.
 
-## Paper
+## Prerequisite: compaction maps
 
-Chris Douglas and Joseph M. Hellerstein. **Commutative Compaction.** *1st International Workshop on Data FORMATS for Modern Architectures and Workloads ([FORMATS '26](https://dataformats.org/))*, May 31–June 5, 2026, Bengaluru, India. ACM. <https://doi.org/10.1145/3802514.3809174>
+Nothing here works without a compaction that records what it moved. That is the
+[`cmpmap`](https://github.com/cdouglas/iceberg/tree/cmpmap) branch, which this one builds on:
 
-The paper introduces compaction maps, the rebase operation, and the remapping policy, and evaluates an Apache Iceberg prototype (this branch) on Apache Spark 3.5 and 4.0 with both v2 position delete files and v3 deletion vectors.
+- the compaction map data structure, builder, Avro storage, and manifest-list reference;
+- conflict detection and `SERIALIZABLE` integration in `BaseRowDelta` / `MergingSnapshotProducer`;
+- automatic remapping in `RewriteDataFilesCommitManager` for Spark 3.5 and 4.0, v2 position delete
+  files and v3 deletion vectors;
+- the empirically-tuned remapping policy.
 
-## Benchmark Results
+Background: Chris Douglas and Joseph M. Hellerstein, **Commutative Compaction**, FORMATS '26,
+<https://doi.org/10.1145/3802514.3809174>.
 
-End-to-end remapping was measured against object storage in three clouds (AWS S3 us-west-2, Azure ADLSv2 westus2, GCS uswest1) on commodity VMs (4 vCPU, 16 GiB), varying the number of runs in the compaction map (10 to 10K) and the size of the position delete file or deletion vector (1K to 1M deletes):
+## What it saves
 
-![Total latency heatmap for deletion vectors across AWS, Azure, and GCP](benchmark/remapping-microbenchmark/results/plots/total_latency_heatmap_dv.png)
+Each row that dies inside a window is materialized exactly once, so the bytes needed to retain the
+history become the compaction plus the rows that died, where before they were the previous compaction
+plus everything inserted since. Those differ by one copy of the table.
 
+Measured on 60k base rows, five transactions inserting 4k each, clustered deletes, 20-column rows:
 
-- Repairing a 1M-delete commit against a 10K-run compaction map completes in **under one second in every cloud**, including all I/O — 0.34–0.45 s for deletion vectors and 1.8–2.3 s for position delete files.
-- At 10K deletes (typical commit size) latency never exceeds **half a second** in any cloud, regardless of run count.
-- Deletion vectors outperform position delete files across the board; Parquet encode dominates the PD cost while the DV roaring-bitmap region is only a few KiB.
-- The compaction map itself is small: 10 runs occupies 2.6 KiB and 10K runs occupies 8.9 KiB on disk.
+```
+reclaimable  18.39 MiB      added  0.58 MiB      saved  17.81 MiB
+predicted    18.02 MiB   ->  the saving is 98.8% of one copy of the table
+```
 
-Cost is negligible relative to the compaction it commutes with — compactions typically run for minutes to hours.
+It does not always pay. Every rewritten snapshot deletes every row inserted after it, and a delete
+position costs about a byte whatever the row's width — so on a 2-column table that term was **57%** of
+the saving, against 0.7% above. Small tables lose outright, because a manifest and manifest list per
+snapshot outweigh the data they describe. **Price it before running it.**
 
-See [docs/docs/compaction_maps_bench.md](docs/docs/compaction_maps_bench.md) for the full benchmark methodology and the JMH microbenchmark suite that drives the remapping-algorithm policy.
+## Dry run
+
+Writes nothing, reports what each available reach would cost:
+
+```bash
+./gradlew :iceberg-data:jar :iceberg-core:jar
+
+VERSION=1.11.0-SNAPSHOT
+java -cp "data/build/libs/iceberg-data-$VERSION.jar:core/build/libs/iceberg-core-$VERSION.jar:$(hadoop classpath)" \
+    org.apache.iceberg.data.SnapshotRewriteDryRun \
+    --dry-run --table /warehouse/db/orders
+```
+
+`--dry-run` is required; the tool has no mode that modifies a table. See
+[compaction_maps_rewrite.md](docs/docs/compaction_maps_rewrite.md#dry-run) for the flags and how to
+read the output.
 
 ## Status
 
-Implementation is on the `cmpmap` branch:
+Non-destructive by default. `materialize()` writes data files, delete files, manifests, and a complete
+`TableMetadata`, and commits none of it — the result is exposed as a read-only table so it can be
+verified first. `commit()` and `reclaim()` are separate, explicit steps, and a committed rewrite can be
+undone byte-identically until reclaim runs.
 
-- Core data structure, builder, Avro storage, and manifest-list reference.
-- Conflict detection and SERIALIZABLE-isolation integration in `BaseRowDelta` / `MergingSnapshotProducer`.
-- Automatic remapping in `RewriteDataFilesCommitManager` for Spark 3.5 and 4.0, for both position delete files (v2) and deletion vectors (v3).
-- Empirically-tuned remapping policy (IntervalTree / RangeQuery / StreamJoin) selected at runtime from the shape of the inputs.
+Implemented: v2 and v3, partitioned and unpartitioned tables, partial and chained compactions, windows
+reaching back through older compactions, deletion vectors, materialized `_row_id`, reversibility,
+reclaim accounting, and window pricing. 71 test methods including 20 fuzz seeds over both format
+versions.
+
+Not implemented: bulk remapping in the planner (it locates rows one at a time), distributed execution,
+and any measurement on a real table history. See
+[compaction_maps_rewrite.md#errata](docs/docs/compaction_maps_rewrite.md#errata) — in particular that
+snapshot replacement is not expressible in the REST catalog protocol, and that the rewrite destroys
+change-log provenance on purpose.
 
 ## Documentation
 
-Detailed documentation lives in `docs/docs/`:
+- [compaction_maps_rewrite.md](docs/docs/compaction_maps_rewrite.md) — this feature: usage, dry run,
+  recurring passes, implementation details, and errata.
+- `SNAPREWRITE_SPEC.md` — design specification, soundness argument, and the reasoning behind each
+  decision.
 
-- [compaction_maps.md](docs/docs/compaction_maps.md) — user guide, table properties, conflict-resolution workflow.
-- [compaction_maps_impl.md](docs/docs/compaction_maps_impl.md) — implementation walkthrough, schema, integration points.
-- [compaction_maps_impl_pseudocode.md](docs/docs/compaction_maps_impl_pseudocode.md) — pseudocode for the remapping strategies.
-- [compaction_maps_bench.md](docs/docs/compaction_maps_bench.md) — benchmark suites, methodology, and how to reproduce.
-- [compaction_maps_errata.md](docs/docs/compaction_maps_errata.md) — design scope and known limitations (e.g. sort/z-order rewrites are out of scope).
+Compaction-map documentation lives on the [`cmpmap`](https://github.com/cdouglas/iceberg/tree/cmpmap)
+branch, under `docs/docs/compaction_maps*.md`.
 
 ## Building
 
-This branch builds with the standard Iceberg toolchain (Gradle, Java 11/17/21):
-
 ```bash
-./gradlew :iceberg-core:compileJava
-./gradlew :iceberg-core:test --tests "*CompactionMap*"
-./gradlew :iceberg-core:test --tests "*Remapping*"
+./gradlew :iceberg-core:compileJava :iceberg-data:compileJava
+./gradlew :iceberg-data:test --tests "org.apache.iceberg.data.snaprewrite.*"
 ./gradlew spotlessApply
 ```
 
-For general Iceberg build, engine-compatibility, and contribution information, see the upstream project at <https://iceberg.apache.org>.
+For general Iceberg build, engine-compatibility, and contribution information, see the upstream
+project at <https://iceberg.apache.org>.
