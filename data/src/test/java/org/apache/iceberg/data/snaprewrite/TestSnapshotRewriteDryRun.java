@@ -38,8 +38,9 @@ import org.junit.jupiter.api.Test;
 /**
  * The dry-run entry point, exercised the way the documentation says to invoke it.
  *
- * <p>Worth a test rather than a manual check: the documented command is the first thing anyone runs,
- * and the tool's whole promise is that it cannot modify a table. Both halves are asserted here.
+ * <p>Worth a test rather than a manual check: the documented command is the first thing anyone
+ * runs, and the tool's whole promise is that it cannot modify a table. Both halves are asserted
+ * here.
  */
 public class TestSnapshotRewriteDryRun extends SnapshotRewriteTestBase {
 
@@ -51,8 +52,7 @@ public class TestSnapshotRewriteDryRun extends SnapshotRewriteTestBase {
 
     assertThatCode(
             () ->
-                SnapshotRewriteDryRun.main(
-                    new String[] {"--dry-run", "--table", table.location()}))
+                SnapshotRewriteDryRun.main(new String[] {"--dry-run", "--table", table.location()}))
         .doesNotThrowAnyException();
 
     assertThatCode(
@@ -80,8 +80,7 @@ public class TestSnapshotRewriteDryRun extends SnapshotRewriteTestBase {
 
     assertThatCode(
             () ->
-                SnapshotRewriteDryRun.main(
-                    new String[] {"--dry-run", "--table", table.location()}))
+                SnapshotRewriteDryRun.main(new String[] {"--dry-run", "--table", table.location()}))
         .doesNotThrowAnyException();
   }
 
@@ -90,8 +89,7 @@ public class TestSnapshotRewriteDryRun extends SnapshotRewriteTestBase {
   public void requiresTheDryRunFlag() throws IOException {
     buildHistory();
 
-    assertThatThrownBy(
-            () -> SnapshotRewriteDryRun.main(new String[] {"--table", table.location()}))
+    assertThatThrownBy(() -> SnapshotRewriteDryRun.main(new String[] {"--table", table.location()}))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("--dry-run is required");
   }

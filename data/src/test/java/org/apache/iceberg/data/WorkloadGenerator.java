@@ -92,7 +92,8 @@ public final class WorkloadGenerator {
    * Generate a single row using the supplied RNG. Mutates {@code rng}.
    *
    * <p>Public because callers outside this package stream rows one at a time rather than
-   * materializing a list; it was package-private when the generator and its callers shared a package.
+   * materializing a list; it was package-private when the generator and its callers shared a
+   * package.
    */
   public static Record nextRow(Random rng, GenericRecord template) {
     GenericRecord row = template.copy();

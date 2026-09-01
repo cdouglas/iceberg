@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
-import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.ManifestFiles;
@@ -37,18 +36,19 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
-import org.apache.iceberg.exceptions.ValidationException;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
+import org.apache.iceberg.deletes.PositionDeleteIndex;
+import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.apache.iceberg.snaprewrite.RewriteRefusal;
-import org.apache.iceberg.snaprewrite.RewriteRefusedException;
 import org.apache.iceberg.snaprewrite.PositionDeleteRequest;
 import org.apache.iceberg.snaprewrite.ResurrectionRequest;
+import org.apache.iceberg.snaprewrite.RewriteRefusal;
+import org.apache.iceberg.snaprewrite.RewriteRefusedException;
 import org.apache.iceberg.snaprewrite.SnapshotRewrite;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteIO;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
@@ -59,11 +59,11 @@ import org.junit.jupiter.api.Test;
  * Format v3: snapshots rewrite to deletion vectors.
  *
  * <p>Supported exactly as far as it is lossless. Rows that survived the compaction keep their
- * identity for free -- a rewritten snapshot points at the compaction's own files at the same offsets,
- * so {@code first_row_id + pos} yields what it always did. A row that has to be recovered is
- * different: it lands in a file this rewrite writes, and its {@code _row_id} would be derived from
- * that file instead. So a v3 window that needs no recovery rewrites; one that does is refused rather
- * than allowed through with silently renumbered rows.
+ * identity for free -- a rewritten snapshot points at the compaction's own files at the same
+ * offsets, so {@code first_row_id + pos} yields what it always did. A row that has to be recovered
+ * is different: it lands in a file this rewrite writes, and its {@code _row_id} would be derived
+ * from that file instead. So a v3 window that needs no recovery rewrites; one that does is refused
+ * rather than allowed through with silently renumbered rows.
  */
 public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
 
@@ -128,8 +128,8 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
    * The row ids themselves, not just the snapshot-level accounting.
    *
    * <p>A row's id derives from its data file's {@code first_row_id} plus its offset. A rewritten
-   * snapshot holds the compaction's own files at their own offsets, so the claim is that the derived
-   * ids are identical -- but that depends on the manifest writer emitting each file's
+   * snapshot holds the compaction's own files at their own offsets, so the claim is that the
+   * derived ids are identical -- but that depends on the manifest writer emitting each file's
    * {@code first_row_id} explicitly rather than letting the manifest list re-assign it from the
    * snapshot's range, which would renumber every surviving row. Checked directly.
    */
@@ -174,13 +174,13 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
    * nothing. In an insert-only window every row live at a rewritten snapshot is also live at the
    * compaction, so each identity it returns must be one of the compaction's.
    *
-   * <p>It deliberately does <b>not</b> assert that these ids match what the snapshot reported before
-   * the rewrite. That is a property of the compaction, not of the rewrite: a compaction preserves row
-   * lineage only if it carries {@code first_row_id} forward or materializes {@code _row_id}, and
-   * {@link LocalCompactor} does neither -- it lets Iceberg assign a fresh range, renumbering every
-   * row at every compaction. Iceberg's Spark rewrite action does preserve lineage; the generic
-   * writers have no way to. So end-to-end identity across a history needs a lineage-preserving
-   * compaction, and this harness cannot supply one.
+   * <p>It deliberately does <b>not</b> assert that these ids match what the snapshot reported
+   * before the rewrite. That is a property of the compaction, not of the rewrite: a compaction
+   * preserves row lineage only if it carries {@code first_row_id} forward or materializes {@code
+   * _row_id}, and {@link LocalCompactor} does neither -- it lets Iceberg assign a fresh range,
+   * renumbering every row at every compaction. Iceberg's Spark rewrite action does preserve
+   * lineage; the generic writers have no way to. So end-to-end identity across a history needs a
+   * lineage-preserving compaction, and this harness cannot supply one.
    */
   @Test
   public void rewrittenSnapshotsReportTheCompactionsIdentities() throws IOException {
@@ -233,8 +233,8 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
    * <p>This is what the rewrite is ultimately claiming, and until the harness could preserve row
    * lineage through a compaction it was not testable -- {@link LocalCompactor} let Iceberg assign a
    * fresh range and renumbered every row at every compaction, so the ids differed for reasons that
-   * had nothing to do with rewriting. With the compaction materializing ids, this compares what each
-   * snapshot reported before the rewrite against what it reports after.
+   * had nothing to do with rewriting. With the compaction materializing ids, this compares what
+   * each snapshot reported before the rewrite against what it reports after.
    */
   @Test
   public void rowIdentitiesAreUnchangedAcrossTheHistory() throws IOException {
@@ -264,9 +264,10 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
   /**
    * A v3 window that deletes rows now rewrites, with identities intact.
    *
-   * <p>Recovering a row writes it into a new file, so its identity survives only if the id is written
-   * out per row. With that in place the whole window rewrites -- the case P1b used to refuse -- and
-   * every snapshot still reports the same row ids it always did, recovered rows included.
+   * <p>Recovering a row writes it into a new file, so its identity survives only if the id is
+   * written out per row. With that in place the whole window rewrites -- the case P1b used to
+   * refuse -- and every snapshot still reports the same row ids it always did, recovered rows
+   * included.
    */
   @Test
   public void v3WindowWithDeletesRewritesAndKeepsIdentities() throws IOException {
@@ -325,7 +326,8 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
     // The two recovered rows report the ids they had under the previous compaction, which are not
     // the ids their new file's range would imply.
     List<String> ids = Lists.newArrayList();
-    for (String identity : identitiesAt(result.asTable(), result.plan().window().get(0).snapshotId())) {
+    for (String identity :
+        identitiesAt(result.asTable(), result.plan().window().get(0).snapshotId())) {
       ids.add(identity.substring(0, identity.indexOf(' ')));
     }
 
@@ -405,9 +407,9 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
    * On v3 a mis-stamped rewrite fails loudly rather than silently.
    *
    * <p>{@code DeleteFileIndex.findDV} raises when a deletion vector sorts below the data file it
-   * references, where v2 simply drops the delete from the returned slice and the rows reappear. Same
-   * mistake, opposite failure mode -- worth pinning, because it is the reason the v2 oracle has to
-   * carry the weight that v3 gets from the format.
+   * references, where v2 simply drops the delete from the returned slice and the rows reappear.
+   * Same mistake, opposite failure mode -- worth pinning, because it is the reason the v2 oracle
+   * has to carry the weight that v3 gets from the format.
    */
   @Test
   public void misStampedV3RewriteFailsLoudly() throws IOException {

@@ -41,9 +41,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Choosing how far back a pass should reach.
  *
- * <p>Reaching further releases older layouts and costs more than proportionally, and neither side of
- * that has a right answer in general. The survey prices each reach so the decision is made per table
- * from measurement rather than from a rule.
+ * <p>Reaching further releases older layouts and costs more than proportionally, and neither side
+ * of that has a right answer in general. The survey prices each reach so the decision is made per
+ * table from measurement rather than from a rule.
  */
 public class TestSnapshotRewriteSurvey extends SnapshotRewriteTestBase {
 
@@ -63,8 +63,7 @@ public class TestSnapshotRewriteSurvey extends SnapshotRewriteTestBase {
     }
 
     // Shortest first, and reaching further covers more snapshots and writes more deletes.
-    assertThat(candidates.get(1).snapshotCount())
-        .isGreaterThan(candidates.get(0).snapshotCount());
+    assertThat(candidates.get(1).snapshotCount()).isGreaterThan(candidates.get(0).snapshotCount());
     assertThat(candidates.get(1).estimate().deletePositions())
         .as("a longer reach re-pays for the snapshots it covers")
         .isGreaterThan(candidates.get(0).estimate().deletePositions());
@@ -156,7 +155,8 @@ public class TestSnapshotRewriteSurvey extends SnapshotRewriteTestBase {
   public void candidatesRenderTheirReachAndPrice() throws IOException {
     threeCompactions();
 
-    String text = SnapshotRewriteSurvey.survey(table, new GenericSnapshotRewriteIO(table)).get(0).toString();
+    String text =
+        SnapshotRewriteSurvey.survey(table, new GenericSnapshotRewriteIO(table)).get(0).toString();
     assertThat(text).contains("reach to");
     assertThat(text).contains("snapshots");
     assertThat(text).contains("reclaimable");

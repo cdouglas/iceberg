@@ -409,15 +409,15 @@ public class SnapshotRewritePlanner {
   /**
    * Refuses a v3 window that would have to recover rows.
    *
-   * <p>Rows that survived the compaction keep their identity for free: a rewritten snapshot points at
-   * the compaction's own files at the same offsets, so {@code first_row_id + pos} yields what it
+   * <p>Rows that survived the compaction keep their identity for free: a rewritten snapshot points
+   * at the compaction's own files at the same offsets, so {@code first_row_id + pos} yields what it
    * always did. A recovered row is different -- it lands in a file this rewrite writes, and its id
    * would be derived from that file's {@code first_row_id} instead. Preserving it needs a
    * materialized {@code _row_id}, which the generic writers cannot produce.
    *
-   * <p>An implementation that writes ids out per row lifts this; one that cannot is still fine on v2,
-   * where there is no lineage to lose. Either way v3 is supported exactly as far as it is lossless and
-   * refused past that, rather than allowed through with silently renumbered rows.
+   * <p>An implementation that writes ids out per row lifts this; one that cannot is still fine on
+   * v2, where there is no lineage to lose. Either way v3 is supported exactly as far as it is
+   * lossless and refused past that, rather than allowed through with silently renumbered rows.
    */
   private void checkRowLineage(List<ResurrectionRequest> requests) {
     if (base.formatVersion() >= 3 && !requests.isEmpty() && !rewriteIO.preservesRowLineage()) {
@@ -431,10 +431,7 @@ public class SnapshotRewritePlanner {
           String.format(
               "%s rows in %s files would be recovered into new files under format version %s, and %s"
                   + " does not preserve row ids",
-              rows,
-              requests.size(),
-              base.formatVersion(),
-              rewriteIO.getClass().getSimpleName()));
+              rows, requests.size(), base.formatVersion(), rewriteIO.getClass().getSimpleName()));
     }
   }
 

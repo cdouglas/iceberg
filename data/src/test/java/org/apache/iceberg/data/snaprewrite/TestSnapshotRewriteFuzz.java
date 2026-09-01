@@ -40,17 +40,17 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Random histories checked by the full oracle.
  *
- * <p>Rows and delete positions come from {@link WorkloadGenerator}, the same generator the compaction
- * baseline benchmark uses, so the two harnesses explore the same data. Its clustered deletes matter
- * more here than the row shape: deleting contiguous runs rather than scattered singletons produces
- * long runs in the compaction map and contiguous stretches in the resurrection files, which is the
- * shape real "right to be forgotten" workloads have and the one a hand-rolled uniform sample never
- * generates.
+ * <p>Rows and delete positions come from {@link WorkloadGenerator}, the same generator the
+ * compaction baseline benchmark uses, so the two harnesses explore the same data. Its clustered
+ * deletes matter more here than the row shape: deleting contiguous runs rather than scattered
+ * singletons produces long runs in the compaction map and contiguous stretches in the resurrection
+ * files, which is the shape real "right to be forgotten" workloads have and the one a hand-rolled
+ * uniform sample never generates.
  *
- * <p>The op sequence is this suite's own. {@code FuzzScenario} builds one compaction plus concurrent
- * late transactions over ~100k rows, which is a different question at a scale no unit test can carry;
- * a rewrite needs a window of interstitial commits between two compactions. Its weighted op mix --
- * position delete, append, row replacement -- is what is mirrored here.
+ * <p>The op sequence is this suite's own. {@code FuzzScenario} builds one compaction plus
+ * concurrent late transactions over ~100k rows, which is a different question at a scale no unit
+ * test can carry; a rewrite needs a window of interstitial commits between two compactions. Its
+ * weighted op mix -- position delete, append, row replacement -- is what is mirrored here.
  */
 public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
 
@@ -62,7 +62,8 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
       })
   public void randomHistory(long seed) throws IOException {
     // Alternate format versions by seed: v2 writes position delete files, v3 deletion vectors, and
-    // v3 additionally has to carry every row's identity through both the compaction and the rewrite.
+    // v3 additionally has to carry every row's identity through both the compaction and the
+    // rewrite.
     // The generator's schema, and a fresh location per seed so a failure leaves the table behind.
     int version = seed % 2 == 0 ? 3 : 2;
     useSchema(WorkloadGenerator.SCHEMA, PartitionSpec.unpartitioned(), version);
@@ -121,7 +122,8 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
       // exceed the rows that ever existed.
       assertThat(result.plan().resurrectedRows()).isLessThanOrEqualTo(totalRowsEverWritten());
     } catch (RewriteRefusedException e) {
-      // A refusal is a valid outcome for a generated history; it must never be a silent wrong answer.
+      // A refusal is a valid outcome for a generated history; it must never be a silent wrong
+      // answer.
       assertThat(e.refusal()).isNotNull();
     }
   }
@@ -172,8 +174,8 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
   /**
    * Clustered positions inside one file, clamped to what the file can supply.
    *
-   * <p>A rolled compaction leaves short trailing files -- sometimes a single row -- and the generator
-   * rejects a request for more deletes than the file has positions.
+   * <p>A rolled compaction leaves short trailing files -- sometimes a single row -- and the
+   * generator rejects a request for more deletes than the file has positions.
    */
   private long[] clusteredPositions(Random random, long seed, FileScanTask task, int wanted) {
     long recordCount = task.file().recordCount();
@@ -219,7 +221,8 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
 
     List<Pair<CharSequence, Long>> live = Lists.newArrayList();
     for (long position : positions) {
-      if (position < task.file().recordCount() && (deleted == null || !deleted.isDeleted(position))) {
+      if (position < task.file().recordCount()
+          && (deleted == null || !deleted.isDeleted(position))) {
         live.add(Pair.of(task.file().location(), position));
       }
     }
