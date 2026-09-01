@@ -28,6 +28,41 @@ file become unreachable.
 A compaction map repairs a *concurrent* transaction's references. The same translation runs backwards,
 over history.
 
+> This branch (and its documentation, including this README but excepting this
+> comment) is vibe-coded from the [blog
+> post](https://cdouglas.github.io/posts/2026/08/rewriting-snapshots) to learn
+> what it would break in the format if snapshots were inverted as described.
+> Bluntly: the implementation evades safety invariants by corrupting metadata
+> in the rewritten table. For example, deletion vectors should only apply to
+> files written at [lower _or equal_ sequence
+> numbers](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.1/core/src/main/java/org/apache/iceberg/DeleteFileIndex.java#L206).
+> To work around this, 1) every file rewritten in the inverted snapshot uses
+> the seqno for that snapshot so consequently 2) the compacted file has a
+> different seqno in each rewritten snapshot. To be fair, these safety checks
+> protected the committed state whose layout we are (unsafely) rewriting, but
+> it highlights how the rewrite is liberally interpreting "undefined behavior"
+> as "satisfies the default client".
+>
+> The current prototype doesn't retain enough information to losslessly restore
+> the old layout from the inverted layout. It would need to build a reverse map
+> for `_row_id` in the inverted layout (retained only for this purpose), among
+> other things discarded during the rewrite. It should be feasible, but it is
+> not implemented. Table statistics don't change, but more granular stats are
+> dropped and not recomputed as part of the rewrite.
+>
+> The tradeoff is unclear and depends on the workload. Inverting should save
+> space and improve read latency by applying deletion vectors to the compacted
+> layout, rather than merging chains of delta commits. Particularly if most
+> data survive between compactions. However, it would add a lot of complexity
+> to areas where the specification is actively building on the invariants this
+> explicitly breaks.
+>
+> Not to be too morose, but this is a qualified win in the best case, insofar
+> as the space savings need to be more important than stamping a region of the
+> table as "degraded". Instead of corrupting the table to make it look legit,
+> explicitly marking the region as "archived" so readers expect only a subset
+> of statistics, features, etc. would be more defensible.
+
 ## Prerequisite: compaction maps
 
 Nothing here works without a compaction that records what it moved. That is the
