@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.DataFile;
@@ -30,10 +31,16 @@ import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.ManifestFiles;
 import org.apache.iceberg.ManifestReader;
+import org.apache.iceberg.MetadataColumns;
+import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.data.IcebergGenerics;
+import org.apache.iceberg.data.Record;
+import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.snaprewrite.RewriteRefusal;
@@ -147,6 +154,71 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
             .isEqualTo(beforeRewrite.get(file.location()));
       }
     }
+  }
+
+  /**
+   * Row identity, at the level the rewrite is responsible for.
+   *
+   * <p>The shared oracle compares values, so rows holding equal values could in principle swap
+   * places unnoticed. Under v3 there is a stronger check: every row carries a {@code _row_id} meant
+   * to be independent of layout, so comparing those compares identities.
+   *
+   * <p>What the rewrite guarantees is that a rewritten snapshot reports the identities <i>the
+   * compaction</i> reports -- it points at the compaction's files at their own offsets and invents
+   * nothing. In an insert-only window every row live at a rewritten snapshot is also live at the
+   * compaction, so each identity it returns must be one of the compaction's.
+   *
+   * <p>It deliberately does <b>not</b> assert that these ids match what the snapshot reported before
+   * the rewrite. That is a property of the compaction, not of the rewrite: a compaction preserves row
+   * lineage only if it carries {@code first_row_id} forward or materializes {@code _row_id}, and
+   * {@link LocalCompactor} does neither -- it lets Iceberg assign a fresh range, renumbering every
+   * row at every compaction. Iceberg's Spark rewrite action does preserve lineage; the generic
+   * writers have no way to. So end-to-end identity across a history needs a lineage-preserving
+   * compaction, and this harness cannot supply one.
+   */
+  @Test
+  public void rewrittenSnapshotsReportTheCompactionsIdentities() throws IOException {
+    useFormatVersion(3);
+
+    append(records(1, 6, "base"));
+    compact();
+    append(records(10, 3, "alpha"));
+    append(records(20, 3, "beta"));
+    Snapshot compaction = compact();
+
+    SnapshotRewriteResult result = rewrite();
+    Table shadow = result.asTable();
+
+    List<String> fromCompaction = identitiesAt(table, compaction.snapshotId());
+    assertThat(fromCompaction).hasSize(12);
+
+    for (Snapshot original : result.plan().window()) {
+      List<String> rewritten = identitiesAt(shadow, original.snapshotId());
+      assertThat(rewritten).as("snapshot %s returns rows", original.snapshotId()).isNotEmpty();
+      assertThat(fromCompaction)
+          .as("every identity in snapshot %s is one the compaction reports", original.snapshotId())
+          .containsAll(rewritten);
+    }
+  }
+
+  /** Every row's {@code _row_id} paired with its values, sorted. */
+  private List<String> identitiesAt(Table target, long snapshotId) throws IOException {
+    Schema withLineage = MetadataColumns.schemaWithRowLineage(target.schema());
+    List<String> rows = Lists.newArrayList();
+    try (CloseableIterable<Record> records =
+        IcebergGenerics.read(target).useSnapshot(snapshotId).project(withLineage).build()) {
+      for (Record record : records) {
+        rows.add(
+            record.getField(MetadataColumns.ROW_ID.name())
+                + " => id="
+                + record.getField("id")
+                + " data="
+                + record.getField("data"));
+      }
+    }
+
+    Collections.sort(rows);
+    return rows;
   }
 
   /**

@@ -254,7 +254,18 @@ class SnapshotRewriteWriter {
     summary.put(SnapshotSummary.TOTAL_FILE_SIZE_PROP, String.valueOf(size));
     summary.put(SnapshotSummary.TOTAL_POS_DELETES_PROP, String.valueOf(positions));
     summary.put(SnapshotSummary.TOTAL_EQ_DELETES_PROP, "0");
-    summary.put("snapshot-rewritten-from", original.manifestListLocation());
+
+    // Everything needed to put this snapshot back the way it was: the manifest list it used to point
+    // at, and the summary it used to carry. A rewrite is reversible while the old files survive, and
+    // that is worth preserving even though most of these fields describe a layout that no longer
+    // exists here.
+    summary.put(SnapshotRewriteRestore.ORIGINAL_MANIFEST_LIST, original.manifestListLocation());
+    if (original.summary() != null) {
+      for (Map.Entry<String, String> entry : original.summary().entrySet()) {
+        summary.put(SnapshotRewriteRestore.ORIGINAL_PREFIX + entry.getKey(), entry.getValue());
+      }
+    }
+
     return summary;
   }
 
