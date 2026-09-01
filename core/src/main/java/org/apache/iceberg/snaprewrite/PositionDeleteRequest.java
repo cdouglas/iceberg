@@ -61,6 +61,13 @@ public class PositionDeleteRequest {
     return deletes;
   }
 
+  /**
+   * Where to write, and the key this request is known by in the plan.
+   *
+   * <p>Deletion vectors choose their own physical location -- the Puffin writer allocates it -- so
+   * for v3 this is an identifier rather than a destination, and the returned {@code DeleteFile}'s
+   * location is authoritative. Nothing outside the plan's own bookkeeping reads it as a path.
+   */
   public String outputPath() {
     return outputPath;
   }
