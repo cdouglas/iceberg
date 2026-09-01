@@ -27,6 +27,7 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
@@ -35,6 +36,7 @@ import org.apache.iceberg.deletes.BaseDVFileWriter;
 import org.apache.iceberg.deletes.DVFileWriter;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.snaprewrite.PositionSet;
 import org.apache.iceberg.avro.Avro;
@@ -86,6 +88,11 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
   }
 
   @Override
+  public boolean preservesRowLineage() {
+    return true;
+  }
+
+  @Override
   public PositionDeleteIndex loadPositionDeletes(
       Iterable<DeleteFile> deleteFiles, CharSequence dataFilePath) {
     return deleteLoader.loadPositionDeletes(deleteFiles, dataFilePath);
@@ -93,12 +100,15 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
 
   @Override
   public DataFile resurrect(ResurrectionRequest request) {
-    Map<String, Map<Long, Record>> loaded = readSources(request);
+    boolean lineage = GenericRowLineage.tracked(table);
+    Schema readSchema =
+        lineage ? GenericRowLineage.writeSchema(request.schema()) : request.schema();
+    Map<String, Map<Long, Record>> loaded = readSources(request, readSchema);
 
     OutputFile output = io.newOutputFile(request.outputPath());
     FileFormat format = FileFormat.fromFileName(request.outputPath());
     GenericAppenderFactory factory =
-        new GenericAppenderFactory(request.schema(), request.spec()).setAll(table.properties());
+        new GenericAppenderFactory(readSchema, request.spec()).setAll(table.properties());
 
     long recordCount = 0;
     FileAppender<Record> appender = factory.newAppender(output, format);
@@ -108,6 +118,14 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
         if (record == null) {
           throw new IllegalStateException(
               String.format("Row %s is missing from its source file", source));
+        }
+
+        if (lineage) {
+          // The recovered row keeps the identity it had. Deriving one from this file's range would
+          // give it a new identity in a snapshot where it is supposed to be the same row -- the one
+          // thing about a row that is meant to survive a change of layout.
+          record =
+              GenericRowLineage.withRowId(readSchema, record, rowIdOf(record, source, request));
         }
 
         appender.add(record);
@@ -128,7 +146,34 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
       builder.withPartition(request.partition());
     }
 
+    if (lineage) {
+      // A materialized id is only read when the file also carries a first_row_id, so one is needed
+      // even though nothing derives from it. Reusing a source range keeps this file from laying
+      // claim to id space the table has not handed out.
+      builder.withFirstRowId(anySourceRange(request));
+    }
+
     return builder.build();
+  }
+
+  /** The identity of a recovered row: written into its source file, or derived from that file's range. */
+  private Long rowIdOf(Record record, RowRef source, ResurrectionRequest request) {
+    Object materialized = record.getField(MetadataColumns.ROW_ID.name());
+    if (materialized != null) {
+      return (Long) materialized;
+    }
+
+    Long first = request.sourceFirstRowIds().get(source.path());
+    return first == null ? null : first + source.position();
+  }
+
+  private long anySourceRange(ResurrectionRequest request) {
+    long lowest = Long.MAX_VALUE;
+    for (Long first : request.sourceFirstRowIds().values()) {
+      lowest = Math.min(lowest, first);
+    }
+
+    return lowest == Long.MAX_VALUE ? 0L : lowest;
   }
 
   @Override
@@ -212,7 +257,8 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
    * <p>Positions are file offsets, so the reader counts rows as it goes. Container reuse is off:
    * these records outlive the iteration.
    */
-  private Map<String, Map<Long, Record>> readSources(ResurrectionRequest request) {
+  private Map<String, Map<Long, Record>> readSources(
+      ResurrectionRequest request, Schema readSchema) {
     Map<String, PositionSet> wanted = Maps.newHashMap();
     for (RowRef source : request.sources()) {
       wanted.computeIfAbsent(source.path(), ignored -> new PositionSet()).add(source.position());
@@ -223,7 +269,8 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
       Map<Long, Record> rows = Maps.newHashMap();
       loaded.put(entry.getKey(), rows);
 
-      try (CloseableIterable<Record> reader = open(entry.getKey(), request.schema())) {
+      try (CloseableIterable<Record> reader =
+          open(entry.getKey(), readSchema, request.sourceFirstRowIds().get(entry.getKey()))) {
         long position = 0;
         for (Record record : reader) {
           if (entry.getValue().contains(position)) {
@@ -240,7 +287,17 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
     return loaded;
   }
 
-  private CloseableIterable<Record> open(String path, Schema projection) {
+  /**
+   * Opens a data file for a positional read.
+   *
+   * <p>{@code firstRowId} has to be passed through as a constant for {@code _row_id} to be readable
+   * at all: without it the reader returns nulls and discards the column even when the file has one.
+   */
+  private CloseableIterable<Record> open(String path, Schema projection, Long firstRowId) {
+    Map<Integer, Object> constants =
+        firstRowId == null
+            ? ImmutableMap.of()
+            : ImmutableMap.of(MetadataColumns.ROW_ID.fieldId(), firstRowId);
     InputFile input = io.newInputFile(path);
     FileFormat format = FileFormat.fromFileName(path);
     if (format == null) {
@@ -257,7 +314,7 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
       case PARQUET:
         return Parquet.read(input)
             .project(projection)
-            .createReaderFunc(parquetReader(projection))
+            .createReaderFunc(parquetReader(projection, constants))
             .build();
 
       case ORC:
@@ -269,8 +326,9 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
     }
   }
 
-  private Function<MessageType, ParquetValueReader<?>> parquetReader(Schema projection) {
-    return fileSchema -> GenericParquetReaders.buildReader(projection, fileSchema);
+  private Function<MessageType, ParquetValueReader<?>> parquetReader(
+      Schema projection, Map<Integer, Object> constants) {
+    return fileSchema -> GenericParquetReaders.buildReader(projection, fileSchema, constants);
   }
 
   private Function<TypeDescription, OrcRowReader<?>> orcReader(Schema projection) {

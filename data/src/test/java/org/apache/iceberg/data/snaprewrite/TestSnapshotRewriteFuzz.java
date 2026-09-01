@@ -61,8 +61,11 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
         4181L, 6765L, 10946L
       })
   public void randomHistory(long seed) throws IOException {
+    // Alternate format versions by seed: v2 writes position delete files, v3 deletion vectors, and
+    // v3 additionally has to carry every row's identity through both the compaction and the rewrite.
     // The generator's schema, and a fresh location per seed so a failure leaves the table behind.
-    useSchema(WorkloadGenerator.SCHEMA, PartitionSpec.unpartitioned());
+    int version = seed % 2 == 0 ? 3 : 2;
+    useSchema(WorkloadGenerator.SCHEMA, PartitionSpec.unpartitioned(), version);
 
     Random random = new Random(seed);
     long rowSeed = seed;

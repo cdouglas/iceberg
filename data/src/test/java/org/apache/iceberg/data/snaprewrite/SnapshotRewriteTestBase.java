@@ -26,10 +26,13 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -48,7 +51,9 @@ import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.snaprewrite.SnapshotRewrite;
@@ -94,6 +99,12 @@ public abstract class SnapshotRewriteTestBase {
   /** Recreates the table under test with a different schema. */
   protected void useSchema(Schema schema, PartitionSpec spec) {
     this.table = newTable(schema, spec, "tbl-" + UUID.randomUUID());
+  }
+
+  /** Recreates the table under test with a different schema and format version. */
+  protected void useSchema(Schema schema, PartitionSpec spec, int version) {
+    this.formatVersion = version;
+    this.table = newTable(schema, spec, "tbl-v" + version + "-" + UUID.randomUUID());
   }
 
   /** Recreates the table under test at a different format version. */
@@ -174,17 +185,81 @@ public abstract class SnapshotRewriteTestBase {
     return file;
   }
 
-  /** Commits position deletes. */
+  /**
+   * Commits position deletes.
+   *
+   * <p>Under v3 a data file may carry at most one deletion vector per snapshot, so deleting from a
+   * file that already has one means merging with it and replacing it -- adding a second is refused as
+   * a conflicting DV. v2 has no such rule: position delete files simply accumulate.
+   */
   protected void delete(List<Pair<CharSequence, Long>> positions) throws IOException {
-    table.newRowDelta().addDeletes(writeDeletes(positions)).commit();
+    applyDeletes(newRowDelta(), positions).commit();
   }
 
   /** Commits an insert and a delete together. */
   protected DataFile appendAndDelete(List<Record> rows, List<Pair<CharSequence, Long>> positions)
       throws IOException {
     DataFile file = writeData(rows);
-    table.newRowDelta().addRows(file).addDeletes(writeDeletes(positions)).commit();
+    applyDeletes(newRowDelta().addRows(file), positions).commit();
     return file;
+  }
+
+  /**
+   * A row delta pinned to the current snapshot.
+   *
+   * <p>Without a starting snapshot, {@code validateAddedDVs} treats the entire history as concurrent,
+   * so replacing a data file's deletion vector looks like a conflict with the vector being replaced.
+   */
+  private RowDelta newRowDelta() {
+    return table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+  }
+
+  /**
+   * Stages deletes on a row delta, merging with and replacing existing deletion vectors under v3.
+   *
+   * <p>Both paths that delete need this, and neither is the rewrite's concern: it is what a v3 writer
+   * has to do to stay within one deletion vector per data file per snapshot.
+   */
+  private RowDelta applyDeletes(RowDelta delta, List<Pair<CharSequence, Long>> positions)
+      throws IOException {
+    if (formatVersion < 3) {
+      return delta.addDeletes(writeDeletes(positions));
+    }
+
+    Set<String> touched = Sets.newHashSet();
+    for (Pair<CharSequence, Long> position : positions) {
+      touched.add(position.first().toString());
+    }
+
+    List<Pair<CharSequence, Long>> merged = Lists.newArrayList(positions);
+    List<DeleteFile> superseded = Lists.newArrayList();
+    try (CloseableIterable<FileScanTask> tasks = table.newScan().planFiles()) {
+      for (FileScanTask task : tasks) {
+        String path = task.file().location();
+        if (!touched.contains(path)) {
+          continue;
+        }
+
+        for (DeleteFile existing : task.deletes()) {
+          superseded.add(existing);
+          PositionDeleteIndex index =
+              new GenericSnapshotRewriteIO(table)
+                  .loadPositionDeletes(ImmutableList.of(existing), path);
+          for (long pos = 0; pos < task.file().recordCount(); pos += 1) {
+            if (index.isDeleted(pos)) {
+              merged.add(Pair.of(path, pos));
+            }
+          }
+        }
+      }
+    }
+
+    delta.addDeletes(writeDeletes(merged));
+    for (DeleteFile old : superseded) {
+      delta.removeDeletes(old);
+    }
+
+    return delta;
   }
 
   /** Removes a whole data file. */
