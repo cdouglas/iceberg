@@ -146,7 +146,8 @@ refusals, not warnings.
 
 | # | Condition | Why |
 |---|---|---|
-| P1 | Format version == 2 | Phase 1 scope; v3 row lineage is unsolved (§4.5) |
+| P1 | Format version 2 or 3 | v4 unsupported |
+| P1b | Under v3, the plan requires no resurrection | Recovering a row writes it into a new file, changing its `_row_id`. Surviving rows keep theirs for free (§4.5) |
 | P2 | No equality deletes anywhere in the window | `D_k` is not positionally computable |
 | P3 | `schema-id` identical across the window and `C_B` | A column dropped after `S_k` would read as null from `C_B`'s files |
 | P4 | `spec-id` identical across the window and `C_B` | Resurrection files must be partition-aligned to the snapshot's spec |
@@ -318,7 +319,7 @@ A `--dry-run` mode stops after planning and estimates from manifest metadata alo
 (`record_count`, `file_size_in_bytes`), writing nothing at all — cheap enough to run across
 a whole table's history to find windows worth rewriting.
 
-### 4.5 Row lineage blocks v3 (deferred)
+### 4.5 Row lineage bounds v3, it does not block it
 
 `TableMetadata.Builder.addSnapshot` requires `firstRowId != null` for format ≥ 3, and
 materialized `_row_id` write support exists only in the Spark layer
@@ -326,9 +327,26 @@ materialized `_row_id` write support exists only in the Spark layer
 writers have no path for it, though the *read* path handles materialized values
 (`ParquetValueReaders`, `avro/ValueReaders`).
 
-A resurrected row written without a materialized `_row_id` inherits `first_row_id + pos`
-from its new file and therefore **changes identity**. Under v3 row lineage that is a
-losslessness violation, so v3 is out of scope for phase 1 (precondition P1).
+The blocker is narrower than it first appears, and only bites on recovery:
+
+- **Rows that survived the compaction keep their identity for free.** A rewritten snapshot points at
+  the compaction's own data files at the same offsets, so `first_row_id + pos` yields exactly what it
+  always did. Whether that matches the row's original id is the *compactor's* obligation, not the
+  rewrite's.
+- **A recovered row is different.** It lands in a file the rewrite writes, so its id would derive
+  from that file's `first_row_id`. Preserving it needs a materialized `_row_id`, which the generic
+  writers cannot produce.
+- **A window that recovers nothing adds no rows**, so each rewritten snapshot keeps its original
+  `firstRowId`/`addedRows` and the table's `next-row-id` accounting is untouched.
+
+So v3 is supported exactly as far as it is lossless (P1b) and refused past that, rather than allowed
+through with silently renumbered rows. The remaining work -- materialized `_row_id`, `first-row-id`
+reconstruction -- buys only the recovery case.
+
+**One failure mode inverts under v3.** A mis-stamped delete is dropped silently in v2 (§4.2), but
+`DeleteFileIndex.findDV` raises `ValidationException` when a deletion vector sorts below the data file
+it references. Same mistake, opposite failure mode: v3 gets from the format what v2's oracle has to
+work for.
 
 ### 4.6 What the rewrite legitimately destroys
 
@@ -546,11 +564,22 @@ reason names the right precondition.
 
 ### 8.7 Fuzz (`TestSnapshotRewriteFuzz`)
 
-Seeded random workloads over the op mix in §8.3, modeled on
-`benchmark/compaction-baseline`'s `WorkloadGenerator` but local and v2. Per seed: generate,
-compact, rewrite into a shadow table, run the full oracle over all snapshots, and check the
-report's predicted-vs-measured accounting. Log the anchor seed so failures reproduce,
-following the convention already established in the compaction-baseline fuzzer.
+Seeded random workloads whose rows and delete positions come from `WorkloadGenerator` -- the same
+generator the compaction baseline benchmark uses, moved to `iceberg-data`'s test fixtures so both
+harnesses share it without `:iceberg-data:test` inheriting the benchmark's Spark dependency.
+
+Its **clustered deletes** are what matter here. Removing contiguous runs rather than scattered
+singletons produces long runs in the compaction map and contiguous stretches in the resurrection
+files -- the shape a "right to be forgotten" workload has, and one a uniform sample never generates.
+
+The op sequence is this suite's own. `FuzzScenario` builds one compaction plus concurrent late
+transactions over ~100k rows: a different question, at a scale no unit test can carry. A rewrite needs
+a window of interstitial commits *between* two compactions. Its weighted op mix -- position delete,
+append, row replacement -- is mirrored.
+
+Twenty seeds, each generating, compacting (rolling on half of them), rewriting into a shadow table,
+and running the full oracle. All twenty rewrite rather than refuse, over windows of 3-11 snapshots, so
+the fuzzer is not passing by declining to work.
 
 ---
 
@@ -562,7 +591,8 @@ following the convention already established in the compaction-baseline fuzzer.
 | 2 | Partitioned tables; partial compaction; chained maps in-window; recursive windows | **done** -- `TestSnapshotRewriteLayouts` |
 | 3 | Fuzz at volume; `--dry-run` accounting | **done** -- 20 seeds, all rewrite (none trivially refuse), windows of 4-8 snapshots |
 | 4 | `commit()` + reclaim; `ExpireSnapshots` interop | **done** -- `TestSnapshotRewriteCommit` |
-| 5 | v3 / DVs: materialized `_row_id`, `first-row-id` reconstruction, P1 lifted | not started |
+| 5a | v3 with deletion vectors, gated on windows that recover nothing | **done** -- `TestSnapshotRewriteV3` |
+| 5b | v3 recovery: materialized `_row_id`, `first-row-id` reconstruction, P1b lifted | not started |
 | 6 | Spark `RowResurrector` for scale; cost model on real tables | not started |
 
 ---

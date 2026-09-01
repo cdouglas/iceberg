@@ -26,7 +26,8 @@ package org.apache.iceberg.snaprewrite;
  * partial success is not a useful outcome.
  */
 public enum RewriteRefusal {
-  FORMAT_VERSION("table format version is not 2"),
+  FORMAT_VERSION("table format version is not supported"),
+  ROW_LINEAGE("recovering rows would change their row ids under v3 row lineage"),
   EQUALITY_DELETES("window contains equality deletes"),
   SCHEMA_CHANGED("schema changed across the window"),
   SPEC_CHANGED("partition spec changed across the window"),

@@ -30,6 +30,13 @@ import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.TableUtil;
+import org.apache.iceberg.deletes.BaseDVFileWriter;
+import org.apache.iceberg.deletes.DVFileWriter;
+import org.apache.iceberg.io.OutputFileFactory;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
+import org.apache.iceberg.snaprewrite.PositionSet;
 import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.data.avro.PlannedDataReader;
 import org.apache.iceberg.data.orc.GenericOrcReader;
@@ -50,7 +57,6 @@ import org.apache.iceberg.parquet.ParquetValueReader;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.snaprewrite.PositionDeleteRequest;
-import org.apache.iceberg.snaprewrite.PositionSet;
 import org.apache.iceberg.snaprewrite.ResurrectionRequest;
 import org.apache.iceberg.snaprewrite.RowRef;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteIO;
@@ -127,6 +133,10 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
 
   @Override
   public DeleteFile writePositionDeletes(PositionDeleteRequest request) {
+    if (TableUtil.formatVersion(table) >= 3) {
+      return writeDeletionVector(request);
+    }
+
     FileFormat format =
         FileFormat.fromString(
             table
@@ -161,6 +171,39 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
     }
 
     return writer.toDeleteFile();
+  }
+
+  /**
+   * Writes one deletion vector.
+   *
+   * <p>A deletion vector references exactly one data file, so the planner emits one request per file
+   * rather than per partition, and this asserts that shape rather than silently writing the first
+   * entry. The Puffin writer allocates the output location itself, so the request's path is an
+   * identifier and the returned file's location is the real one.
+   */
+  private DeleteFile writeDeletionVector(PositionDeleteRequest request) {
+    Preconditions.checkArgument(
+        request.deletes().size() == 1,
+        "A deletion vector references one data file, got %s",
+        request.deletes().size());
+
+    Map.Entry<String, PositionSet> entry =
+        request.deletes().entrySet().iterator().next();
+    OutputFileFactory files =
+        OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PUFFIN).build();
+
+    DVFileWriter writer = new BaseDVFileWriter(files, path -> null);
+    try (DVFileWriter closeable = writer) {
+      entry
+          .getValue()
+          .forEach(
+              position ->
+                  closeable.delete(entry.getKey(), position, request.spec(), request.partition()));
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+
+    return Iterables.getOnlyElement(writer.result().deleteFiles());
   }
 
   /**
