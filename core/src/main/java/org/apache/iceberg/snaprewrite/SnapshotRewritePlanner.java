@@ -258,7 +258,13 @@ public class SnapshotRewritePlanner {
       String path = newDataPath(current.snapshotId());
       resurrections.add(
           new ResurrectionRequest(
-              current.snapshotId(), spec, entry.getKey(), base.schema(), sources, path));
+              current.snapshotId(),
+              spec,
+              entry.getKey(),
+              base.schema(),
+              sources,
+              sourceFirstRowIds(sources, previousState),
+              path));
       partitionByPath.put(path, entry.getKey());
       presentResurrections.add(path);
       count += sources.size();
@@ -379,6 +385,28 @@ public class SnapshotRewritePlanner {
   }
 
   /**
+   * The {@code first_row_id} of each file these rows come from, where the table assigns them.
+   *
+   * <p>A row's identity is either written into its file or derived from this value plus its offset,
+   * and either way the reader needs it. Empty below v3, where there is no lineage.
+   */
+  private Map<String, Long> sourceFirstRowIds(List<RowRef> sources, SnapshotState state) {
+    if (base.formatVersion() < 3) {
+      return ImmutableMap.of();
+    }
+
+    Map<String, Long> ranges = Maps.newHashMap();
+    for (RowRef source : sources) {
+      DataFile file = state.files.get(source.path());
+      if (file != null && file.firstRowId() != null) {
+        ranges.put(source.path(), file.firstRowId());
+      }
+    }
+
+    return ranges;
+  }
+
+  /**
    * Refuses a v3 window that would have to recover rows.
    *
    * <p>Rows that survived the compaction keep their identity for free: a rewritten snapshot points at
@@ -387,11 +415,12 @@ public class SnapshotRewritePlanner {
    * would be derived from that file's {@code first_row_id} instead. Preserving it needs a
    * materialized {@code _row_id}, which the generic writers cannot produce.
    *
-   * <p>So v3 is supported exactly as far as it is lossless, and refused past that, rather than being
-   * allowed through with silently renumbered rows.
+   * <p>An implementation that writes ids out per row lifts this; one that cannot is still fine on v2,
+   * where there is no lineage to lose. Either way v3 is supported exactly as far as it is lossless and
+   * refused past that, rather than allowed through with silently renumbered rows.
    */
   private void checkRowLineage(List<ResurrectionRequest> requests) {
-    if (base.formatVersion() >= 3 && !requests.isEmpty()) {
+    if (base.formatVersion() >= 3 && !requests.isEmpty() && !rewriteIO.preservesRowLineage()) {
       long rows = 0;
       for (ResurrectionRequest request : requests) {
         rows += request.rowCount();
@@ -400,8 +429,12 @@ public class SnapshotRewritePlanner {
       throw new RewriteRefusedException(
           RewriteRefusal.ROW_LINEAGE,
           String.format(
-              "%s rows in %s files would be recovered into new files under format version %s",
-              rows, requests.size(), base.formatVersion()));
+              "%s rows in %s files would be recovered into new files under format version %s, and %s"
+                  + " does not preserve row ids",
+              rows,
+              requests.size(),
+              base.formatVersion(),
+              rewriteIO.getClass().getSimpleName()));
     }
   }
 
