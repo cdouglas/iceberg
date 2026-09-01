@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.ManifestFiles;
@@ -38,6 +39,7 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.CloseableIterable;
@@ -45,6 +47,10 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.snaprewrite.RewriteRefusal;
 import org.apache.iceberg.snaprewrite.RewriteRefusedException;
+import org.apache.iceberg.snaprewrite.PositionDeleteRequest;
+import org.apache.iceberg.snaprewrite.ResurrectionRequest;
+import org.apache.iceberg.snaprewrite.SnapshotRewrite;
+import org.apache.iceberg.snaprewrite.SnapshotRewriteIO;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.apache.iceberg.util.ContentFileUtil;
 import org.junit.jupiter.api.Test;
@@ -256,14 +262,84 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
   }
 
   /**
-   * A v3 window that would have to recover rows is refused.
+   * A v3 window that deletes rows now rewrites, with identities intact.
    *
-   * <p>Recovering a row means writing it into a new file, and without a materialized {@code _row_id}
-   * that changes its identity. Renumbering rows in a historical snapshot is exactly the kind of loss
-   * this rewrite exists to avoid, so it refuses rather than proceeds.
+   * <p>Recovering a row writes it into a new file, so its identity survives only if the id is written
+   * out per row. With that in place the whole window rewrites -- the case P1b used to refuse -- and
+   * every snapshot still reports the same row ids it always did, recovered rows included.
    */
   @Test
-  public void refusesWhenV3WouldHaveToRecoverRows() throws IOException {
+  public void v3WindowWithDeletesRewritesAndKeepsIdentities() throws IOException {
+    useFormatVersion(3);
+
+    append(records(1, 6, "base"));
+    compact();
+
+    DataFile alpha = append(records(10, 4, "alpha"));
+    delete(ImmutableList.of(at(alpha, 1)));
+    append(records(20, 3, "beta"));
+    compact();
+
+    Map<Long, List<String>> before = Maps.newLinkedHashMap();
+    for (Snapshot snapshot : table.snapshots()) {
+      before.put(snapshot.snapshotId(), identitiesAt(table, snapshot.snapshotId()));
+    }
+
+    SnapshotRewriteResult result = rewrite();
+    assertLossless(result);
+    assertIdentityPreserved(result);
+
+    assertThat(result.plan().resurrectedRows()).isEqualTo(1);
+    assertThat(result.plan().resurrections()).hasSize(1);
+
+    Table shadow = result.asTable();
+    for (Map.Entry<Long, List<String>> entry : before.entrySet()) {
+      assertThat(identitiesAt(shadow, entry.getKey()))
+          .as("snapshot %s keeps its row ids, including the recovered row", entry.getKey())
+          .isEqualTo(entry.getValue());
+    }
+  }
+
+  /** A recovered row's id is written into the file, not derived from it. */
+  @Test
+  public void recoveredRowsCarryMaterializedIds() throws IOException {
+    useFormatVersion(3);
+
+    append(records(1, 5, "base"));
+    compact();
+    DataFile compacted = onlyDataFileOfCurrentSnapshot();
+
+    // Delete the last two rows, so a derived id would differ from the original by a visible amount.
+    delete(ImmutableList.of(at(compacted, 3), at(compacted, 4)));
+    compact();
+
+    SnapshotRewriteResult result = rewrite();
+    assertLossless(result);
+
+    ResurrectionRequest recovered = result.plan().resurrections().get(0);
+    assertThat(recovered.rowCount()).isEqualTo(2);
+    assertThat(recovered.sourceFirstRowIds())
+        .as("the planner must pass the source range through")
+        .isNotEmpty();
+
+    // The two recovered rows report the ids they had under the previous compaction, which are not
+    // the ids their new file's range would imply.
+    List<String> ids = Lists.newArrayList();
+    for (String identity : identitiesAt(result.asTable(), result.plan().window().get(0).snapshotId())) {
+      ids.add(identity.substring(0, identity.indexOf(' ')));
+    }
+
+    assertThat(ids).containsExactly("0", "1", "2", "3", "4");
+  }
+
+  /**
+   * An implementation that cannot preserve identities is still refused.
+   *
+   * <p>The gate is the capability, not the format version, so a v2-only implementation stays usable
+   * on v2 and is stopped before it renumbers rows on v3.
+   */
+  @Test
+  public void refusesV3RecoveryWhenTheWriterCannotPreserveIds() throws IOException {
     useFormatVersion(3);
 
     append(records(1, 5, "base"));
@@ -273,11 +349,56 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
     delete(ImmutableList.of(at(alpha, 1)));
     compact();
 
-    assertThatThrownBy(() -> rewriter().plan())
+    SnapshotRewriteIO lineageBlind =
+        new ForwardingSnapshotRewriteIO(new GenericSnapshotRewriteIO(table)) {
+          @Override
+          public boolean preservesRowLineage() {
+            return false;
+          }
+        };
+
+    assertThatThrownBy(
+            () ->
+                SnapshotRewrite.forTable(table, lineageBlind)
+                    .onLatestCompaction()
+                    .maxDeadRatio(Double.MAX_VALUE)
+                    .plan())
         .isInstanceOf(RewriteRefusedException.class)
-        .hasMessageContaining("row ids")
+        .hasMessageContaining("does not preserve row ids")
         .extracting(e -> ((RewriteRefusedException) e).refusal())
         .isEqualTo(RewriteRefusal.ROW_LINEAGE);
+  }
+
+  /** Delegates everything, so a test can vary one answer. */
+  private static class ForwardingSnapshotRewriteIO implements SnapshotRewriteIO {
+    private final SnapshotRewriteIO delegate;
+
+    ForwardingSnapshotRewriteIO(SnapshotRewriteIO delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public PositionDeleteIndex loadPositionDeletes(
+        Iterable<DeleteFile> deleteFiles, CharSequence dataFilePath) {
+      return delegate.loadPositionDeletes(deleteFiles, dataFilePath);
+    }
+
+    @Override
+    public DataFile resurrect(ResurrectionRequest request) {
+      return delegate.resurrect(request);
+    }
+
+    @Override
+    public DeleteFile writePositionDeletes(PositionDeleteRequest request) {
+      return delegate.writePositionDeletes(request);
+    }
+  }
+
+  private DataFile onlyDataFileOfCurrentSnapshot() throws IOException {
+    TableMetadata metadata = ((HasTableOperations) table).operations().current();
+    List<DataFile> files = dataFilesOf(table.currentSnapshot(), metadata);
+    assertThat(files).hasSize(1);
+    return files.get(0);
   }
 
   /**

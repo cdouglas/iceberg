@@ -19,10 +19,12 @@
 package org.apache.iceberg.snaprewrite;
 
 import java.util.List;
+import java.util.Map;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 
 /**
  * A request to materialize rows that died inside the rewrite window.
@@ -41,6 +43,7 @@ public class ResurrectionRequest {
   private final StructLike partition;
   private final Schema schema;
   private final List<RowRef> sources;
+  private final Map<String, Long> sourceFirstRowIds;
   private final String outputPath;
 
   ResurrectionRequest(
@@ -49,12 +52,14 @@ public class ResurrectionRequest {
       StructLike partition,
       Schema schema,
       List<RowRef> sources,
+      Map<String, Long> sourceFirstRowIds,
       String outputPath) {
     this.snapshotId = snapshotId;
     this.spec = spec;
     this.partition = partition;
     this.schema = schema;
     this.sources = ImmutableList.copyOf(sources);
+    this.sourceFirstRowIds = ImmutableMap.copyOf(sourceFirstRowIds);
     this.outputPath = outputPath;
   }
 
@@ -84,6 +89,17 @@ public class ResurrectionRequest {
    */
   public List<RowRef> sources() {
     return sources;
+  }
+
+  /**
+   * The {@code first_row_id} of each source file, by path, where the table assigns them.
+   *
+   * <p>Needed to read a source row's identity at all: a row id is either written into the file or
+   * derived from this value plus the row's offset, and the reader needs it supplied as a constant
+   * either way. Empty when the table does not track row lineage.
+   */
+  public Map<String, Long> sourceFirstRowIds() {
+    return sourceFirstRowIds;
   }
 
   public String outputPath() {

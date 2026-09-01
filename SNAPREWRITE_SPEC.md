@@ -147,7 +147,7 @@ refusals, not warnings.
 | # | Condition | Why |
 |---|---|---|
 | P1 | Format version 2 or 3 | v4 unsupported |
-| P1b | Under v3, the plan requires no resurrection | Recovering a row writes it into a new file, changing its `_row_id`. Surviving rows keep theirs for free (§4.5) |
+| P1b | Under v3, either the plan requires no resurrection, or the `SnapshotRewriteIO` reports `preservesRowLineage()` | Recovering a row writes it into a new file, so its identity survives only if the id is written out per row. Gated on the capability, not the format: a v2-only implementation stays usable on v2 (§4.5) |
 | P2 | No equality deletes anywhere in the window | `D_k` is not positionally computable |
 | P3 | `schema-id` identical across the window and `C_B` | A column dropped after `S_k` would read as null from `C_B`'s files |
 | P4 | `spec-id` identical across the window and `C_B` | Resurrection files must be partition-aligned to the snapshot's spec |
@@ -395,7 +395,18 @@ resurrection file added to a historical snapshot must either
 
 Option 2 is not "lossy but workable": it produces metadata whose snapshot-level row-id accounting
 contradicts its own files. The choice was never strict-versus-drift. It is **materialize, or do not
-support recovery on v3** -- which is what P1b does.
+support recovery on v3**.
+
+Option 1 is now what happens: `GenericSnapshotRewriteIO` writes recovered rows with their original
+ids and reports `preservesRowLineage()`, so P1b passes and a v3 window that deletes can be rewritten.
+A resurrection file takes its `first_row_id` from the lowest range among its sources -- a value has to
+be there for the materialized ids to be read at all, and reusing an allocated range keeps the file
+from claiming id space the table has not handed out. `addedRows` stays untouched, so the snapshot-level
+accounting is unchanged.
+
+P1b remains as a capability gate rather than being deleted: an implementation that cannot materialize
+ids is still perfectly usable on v2, and should be stopped on v3 rather than silently renumbering
+rows.
 
 Note that the same writer capability is a prerequisite for a lineage-preserving *compaction* in the
 generic path, for the same reason: merging files whose row-id ranges are not contiguous cannot be
@@ -658,7 +669,7 @@ the fuzzer is not passing by declining to work.
 | 4 | `commit()` + reclaim; `ExpireSnapshots` interop | **done** -- `TestSnapshotRewriteCommit` |
 | 5a | v3 with deletion vectors, gated on windows that recover nothing | **done** -- `TestSnapshotRewriteV3` |
 | 5b | Generic materialized `_row_id` (`GenericRowLineage`), lineage-preserving compaction in the harness, end-to-end identity oracle | **done** |
-| 5c | v3 recovery: resurrection files with materialized ids, P1b lifted | not started |
+| 5c | v3 recovery: resurrection files with materialized ids, P1b gated on capability | **done** |
 | 6 | Spark `RowResurrector` for scale; cost model on real tables | not started |
 
 ---
