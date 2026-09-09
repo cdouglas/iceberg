@@ -305,9 +305,10 @@ concurrent append and a concurrent delete commute. The sequence number is the de
 watermark, and a data file added after it holds rows the delete's author never saw.
 
 A rewrite inverts that deliberately — its deletes reference files written long after the snapshot they
-land in — so **every file in a rewritten snapshot is stamped at that snapshot's own sequence number**.
-The comparison becomes an equality, which passes, and each rewritten snapshot reads as though every
-file it holds had been added by it.
+land in — so **every data file in the window is stamped at one shared sequence number**, chosen one
+below the window's oldest snapshot, and **each snapshot's deletes at that snapshot's own**. The
+comparison becomes a strict inequality, which passes. It also reads as the truth about those rows:
+they were all present before the window began.
 
 Getting this wrong fails differently by version, and the v2 mode is the dangerous one:
 
@@ -318,6 +319,29 @@ Getting this wrong fails differently by version, and the v2 mode is the dangerou
 `TestSnapshotRewriteStructure#misStampedRewriteIsCaughtByTheOracle` builds the mistake on purpose and
 asserts the oracle catches it, because a suite that only ever runs the correct stamping cannot
 distinguish "the stamping is right" from "nothing is checking".
+
+#### Why one shared number, and not each snapshot's own
+
+Stamping each file at its own snapshot's number satisfies the rule too, by equality, and was the
+original design. A manifest *entry* carries the data sequence number, though, so two snapshots that
+disagree about a file's number **cannot share a manifest** — and per-snapshot stamping makes every
+rewritten snapshot disagree with every other one about every file in the compaction. Each then needs
+its own copy of a manifest describing the whole compaction, which is exactly what the manifest list's
+indirection exists to avoid.
+
+One number below the window makes the entries agree, so a single manifest serves the window:
+`files + window` instead of `files × window`. Measured by
+`TestSnapshotRewriteDeleteCost#sharingScalesWithTheCompactionsFileCount`, over a six-snapshot window:
+
+| target files in the compaction | shared | per-snapshot | ratio |
+|---|---|---|---|
+| 1 | 99,259 | 156,559 | 1.58× |
+| 7 | 102,827 | 179,655 | 1.75× |
+| 26 | 112,832 | 247,204 | 2.19× |
+
+The shared column barely moves as the compaction gains files; the other grows with it. A real
+compaction has thousands of files, which no unit test reaches, so the trend is the evidence rather
+than the ratio. `Stamping.OWN` keeps the superseded mode so the difference stays measurable.
 
 ### Invariants suspended
 
@@ -332,7 +356,7 @@ ones: if the construction is wrong, Iceberg says so.
 
 | Invariant | Guard | Why it passes |
 |---|---|---|
-| A delete applies to a data file only when `data.dataSequenceNumber <= delete.dataSequenceNumber` | `DeleteFileIndex.findDV` (v3 DVs, raises `ValidationException`); `DeleteFileIndex.PositionDeletes.filter` via `findStartIndex` (v2 position deletes, silent) | uniform per-snapshot stamping makes the comparison an equality |
+| A delete applies to a data file only when `data.dataSequenceNumber <= delete.dataSequenceNumber` | `DeleteFileIndex.findDV` (v3 DVs, raises `ValidationException`); `DeleteFileIndex.PositionDeletes.filter` via `findStartIndex` (v2 position deletes, silent) | data stamped below the window, deletes at each snapshot's own number, so the comparison is a strict inequality |
 | A null entry sequence number is permitted only for status `ADDED`, and only from the committing snapshot | `V3Metadata.IndexedManifestEntry.get` case 2, and the same in `V2Metadata` | the rewrite never emits a null: every entry is `EXISTING` with an explicit sequence number |
 | An unassigned *manifest* sequence number is permitted only for a manifest created by the committing snapshot | `V3Metadata.ManifestFileWrapper.get` cases 4 and 5 | the manifest's snapshot id and the manifest list's agree, both being the rewritten snapshot's |
 | A manifest's `first_row_id` is assigned exactly once, and a DATA manifest must end up with one | `V3Metadata.ManifestFileWrapper.get` case 15; assignment in `ManifestListWriter.V3Writer.prepare` | fresh manifests carry null and are assigned from a counter seeded with the snapshot's own `firstRowId` |
@@ -457,11 +481,14 @@ rather than satisfying what the framework can prove.
 snapshot. A production design needs one. The non-destructive path has no such constraint and works
 against any catalog.
 
-### 2. One physical file carries different sequence numbers in different snapshots
+### 2. One physical file carries two sequence numbers table-wide
 
-A consequence of the stamping rule above. Correct for single-snapshot reads — readers only compare
-within one snapshot's file set — and meaningless for incremental scans across the window, which the
-design already breaks.
+A consequence of the stamping rule above: the compaction's files keep their real number in the
+compaction and everything after it, and carry the window's shared number in every rewritten snapshot.
+Correct for single-snapshot reads — readers only compare within one snapshot's file set — and
+meaningless for incremental scans across the window, which the design already breaks.
+
+Two, rather than one per rewritten snapshot, is the whole reason the window can share a manifest.
 
 ### 3. Provenance is destroyed, deliberately
 
@@ -579,18 +606,15 @@ rewritten table — and would arguably be right to.
 Satisfying the reference implementation is not the same as satisfying the specification. Treat a
 rewritten table as unportable until each reader that has to read it has actually been tried.
 
-### 13. Per-snapshot stamping duplicates the compaction's manifests
+### 13. Metadata is still linear in the window
 
-Stamping every file at its snapshot's own sequence number is what makes the deletes apply, and it has
-a cost that is easy to miss: a manifest *entry* carries the data sequence number, so two snapshots
-that disagree about a file's sequence number cannot share a manifest. Every rewritten snapshot
-therefore gets its own copy of a data manifest listing the whole compaction, which is precisely what
-the manifest list's indirection exists to avoid.
+Sharing the compaction's manifest across the window removes the term that grew as `files × window`,
+but each rewritten snapshot still needs its own delete manifest and its own manifest list — measured
+at 8.9 KiB and 5.2 KiB, both nearly all Avro header, since every manifest embeds the schema and
+partition spec. That is ~14 KiB per snapshot that nothing here reduces, and on a small table it is
+the whole story: what a rewrite frees and what it writes are both dominated by Avro.
 
-A single shared sequence number below the window's floor would work as well -- the deletes would apply
-by strict inequality instead of equality -- and would let every rewritten snapshot reference one
-restamped copy, turning `O(files x window)` into `O(files + window)`. It would also leave each
-physical file with two sequence numbers table-wide rather than one per rewritten snapshot.
-
-Per-snapshot stamping was chosen because it makes each snapshot internally uniform and easy to state,
-before this cost was measured. It is the first thing to change.
+The delete manifests cannot be shared — their entries genuinely differ per snapshot, which is the
+point of the rewrite. The manifest lists cannot be shared at all; a snapshot is a manifest list.
+Reducing this further would mean fewer, larger rewritten snapshots, which is the coalescing an
+`ARCHIVE` layout would permit and this prototype does not attempt.

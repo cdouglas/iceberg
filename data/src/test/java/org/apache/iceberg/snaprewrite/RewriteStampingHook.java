@@ -33,4 +33,14 @@ public class RewriteStampingHook {
   public static SnapshotRewriteResult materializeMisStamped(SnapshotRewrite rewrite) {
     return rewrite.materialize(SnapshotRewriteWriter.Stamping.SOURCE);
   }
+
+  /**
+   * Materializes with each snapshot stamping its own files, the superseded mode.
+   *
+   * <p>Correct, but no two snapshots can share a manifest, so each carries its own copy of the
+   * compaction. Kept so the cost of that can be measured against the default.
+   */
+  public static SnapshotRewriteResult materializePerSnapshotStamped(SnapshotRewrite rewrite) {
+    return rewrite.materialize(SnapshotRewriteWriter.Stamping.OWN);
+  }
 }

@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.snaprewrite.RewriteStampingHook;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteReport;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.junit.jupiter.api.Test;
@@ -80,15 +81,18 @@ public class TestSnapshotRewriteReport extends SnapshotRewriteTestBase {
     assertThat(report.deadRatio()).isZero();
     assertThat(report.deletePositions()).isPositive();
 
-    // On a ten-row table the rewrite loses: each rewritten snapshot needs a manifest and a manifest
-    // list, several kilobytes of Avro apiece, against data files of a few hundred bytes. The
-    // accounting argument predicts a saving of about one copy of the compacted table, and one copy
-    // of
-    // a table this small is worth less than the metadata describing it. Reporting the negative is
-    // the
-    // honest answer, and it is why the report exists: whether a window is worth rewriting is a
-    // question about that window, not about the design.
-    assertThat(report.savedBytes()).isNegative();
+    // At ten rows the data is worth less than the metadata describing it, so what a rewrite frees
+    // and what it writes are both dominated by Avro. Which way that lands depends on how many
+    // manifests the rewrite adds, and sharing the compaction's manifest across the window is worth
+    // more here than the row data is -- so this asserts the comparison rather than a sign.
+    SnapshotRewriteReport perSnapshot =
+        RewriteStampingHook.materializePerSnapshotStamped(rewriter()).report();
+    assertThat(report.metadataBytes())
+        .as("sharing the compaction's manifest writes less metadata")
+        .isLessThan(perSnapshot.metadataBytes());
+    assertThat(report.savedBytes())
+        .as("and therefore saves more")
+        .isGreaterThan(perSnapshot.savedBytes());
     assertThat(report.predictedSavedBytes()).isPositive();
   }
 

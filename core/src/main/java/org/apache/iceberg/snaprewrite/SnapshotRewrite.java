@@ -63,10 +63,15 @@ public class SnapshotRewrite {
   private static final long V2_BYTES_PER_POSITION_ESTIMATE = 2;
   private static final long DELETE_FILE_OVERHEAD_ESTIMATE = 1024;
 
-  // A manifest plus a manifest list per rewritten snapshot. This is the term that decides whether a
-  // small window is worth anything: it outweighs the delete vectors by an order of magnitude or
-  // two.
-  private static final long METADATA_BYTES_PER_SNAPSHOT_ESTIMATE = 24 * 1024;
+  // The compaction's data manifest, written once for the window and shared by every rewritten
+  // snapshot. Measured at ~9.5 KiB for a single entry: an Avro manifest embeds the schema and
+  // partition spec in its header, so even a tiny one costs kilobytes.
+  private static final long SHARED_MANIFEST_BYTES_ESTIMATE = 10 * 1024;
+
+  // A delete manifest plus a manifest list, which every rewritten snapshot needs of its own. This
+  // is the term that decides whether a small window is worth anything: it outweighs the delete
+  // vectors themselves by an order of magnitude or two.
+  private static final long METADATA_BYTES_PER_SNAPSHOT_ESTIMATE = 14 * 1024;
 
   private final Table table;
   private final TableMetadata base;
@@ -176,7 +181,8 @@ public class SnapshotRewrite {
         estimatedDeleteBytes(positions, deleteFiles),
         deleteFiles,
         positions,
-        (long) estimated.window().size() * METADATA_BYTES_PER_SNAPSHOT_ESTIMATE,
+        SHARED_MANIFEST_BYTES_ESTIMATE
+            + (long) estimated.window().size() * METADATA_BYTES_PER_SNAPSHOT_ESTIMATE,
         targetBytes,
         estimated.targetRows(),
         true);
@@ -199,7 +205,7 @@ public class SnapshotRewrite {
 
   /** Runs the induction, writes the rewritten layout, and returns it uncommitted. */
   public SnapshotRewriteResult materialize() {
-    return materialize(SnapshotRewriteWriter.Stamping.OWN);
+    return materialize(SnapshotRewriteWriter.Stamping.SHARED_BASE);
   }
 
   SnapshotRewriteResult materialize(SnapshotRewriteWriter.Stamping stamping) {

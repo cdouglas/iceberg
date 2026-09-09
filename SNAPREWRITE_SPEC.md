@@ -738,8 +738,9 @@ the fuzzer is not passing by declining to work.
    the quadratic delete term in §2.3: a long window costs more than proportionally, so deep recursion
    should be done as a series of short windows rather than one long one. Worth measuring on a real
    history.
-5. **Is per-snapshot stamping the right choice over a single `baseSeq`?** **Probably not, and this
-   was not just an auditability question.** Both satisfy `data.seq <= delete.seq`. What was missed
+5. **Is per-snapshot stamping the right choice over a single `baseSeq`?** **Resolved: no. Shared
+   `baseSeq` is now the default (`Stamping.SHARED_BASE`), and this was never just an auditability
+   question.** Both satisfy `data.seq <= delete.seq`. What was missed
    is that a manifest *entry* carries the data sequence number, so two snapshots that disagree about
    a file's sequence number cannot share a manifest. Per-snapshot stamping therefore forces every
    rewritten snapshot to carry **its own copy of a data manifest listing the whole compaction** --
@@ -755,7 +756,14 @@ the fuzzer is not passing by declining to work.
    restamped data manifest, leaving each with only its own small delete manifest and manifest list:
    `O(files + window)` instead. The deletes still apply, with strict inequality rather than
    equality. Each physical file would then carry two sequence numbers table-wide instead of one per
-   rewritten snapshot, which is also less to explain. This is the first change worth making.
+   rewritten snapshot, which is also less to explain.
+
+   Implemented. Measured over a six-snapshot window, metadata written: 1 target file 99,259 vs
+   156,559 (1.58x); 7 files 102,827 vs 179,655 (1.75x); 26 files 112,832 vs 247,204 (2.19x). The
+   shared figure barely moves as the compaction gains files and the other grows with it, which is the
+   `files + window` versus `files x window` claim. `Stamping.OWN` is retained so the comparison stays
+   measurable, and the entries in the shared manifest can now name the compaction as the snapshot
+   that added them, which is true -- so the provenance destroyed in SS4.6 is narrower than it was.
 
 6. **Should there be a minimum-saving guard?** P8 bounds the dead ratio, which is about the cost of
    resurrection, but the metadata and delete terms decide whether a small window is worth anything at
