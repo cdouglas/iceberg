@@ -76,20 +76,19 @@ flat ~490 bytes no matter how much it masks.
 
 The costs that actually decide it, largest first:
 
-- **Per-snapshot metadata, ~23-25 KiB.** This dominates the delete vectors by roughly fifty times,
-  and it is what makes a rewrite lose on a small table: below about 25 KiB of reclaimable data per
-  snapshot in the window, the rewrite costs more than it frees. The report prints the negative
-  rather than hiding it.
+- **Per-snapshot metadata, ~14 KiB.** This dominates the delete vectors by roughly thirty times, and
+  it is what makes a rewrite lose on a small table: below roughly that much reclaimable data per
+  snapshot in the window, the rewrite costs more than it frees. The report prints the negative rather
+  than hiding it.
 
-    Measured per rewritten snapshot, window of eight over a one-file compaction: a 9.5 KiB data
-    manifest holding **one** entry, an 8.9 KiB delete manifest, a 5.2 KiB manifest list. Almost all
-    of that is the Avro header, which embeds the schema and partition spec in every manifest.
+    Measured per rewritten snapshot: an 8.9 KiB delete manifest and a 5.2 KiB manifest list. Almost
+    all of that is the Avro header, which embeds the schema and partition spec in every manifest, so
+    it is paid whether the manifest describes one file or a thousand. Neither can be shared — the
+    delete entries genuinely differ per snapshot, and a snapshot *is* a manifest list.
 
-    The duplication is forced by the stamping rule, not by the rewrite. A manifest entry carries the
-    data sequence number, so two snapshots that disagree about a file's sequence number cannot share
-    a manifest -- and per-snapshot stamping makes every rewritten snapshot disagree with every other.
-    Iceberg otherwise shares manifests freely across snapshots; this gives that up, and over a
-    compaction of thousands of files the copies grow as `files x window`. Errata 13.
+    The compaction's own data manifest, 9.5 KiB for a single entry and larger in proportion to its
+    file count, is written **once for the window** rather than once per snapshot. That is what the
+    shared sequence number buys; see [Sequence numbers](#sequence-numbers).
 - **One copy of every row that died in the window**, at full row width. The only term that scales
   with the schema, and what `maxDeadRatio` guards.
 - **Delete vectors, ~0.5 KiB per snapshot under v3.** Effectively noise.
@@ -492,8 +491,10 @@ Two, rather than one per rewritten snapshot, is the whole reason the window can 
 
 ### 3. Provenance is destroyed, deliberately
 
-- Manifest entries are all written `EXISTING` under the rewritten snapshot, so `snapshot_id` and
-  `status` no longer say which commit added a file.
+- Manifest entries are all written `EXISTING`, so `status` no longer says which commit added a
+  file. `snapshot_id` is truthful for the compaction's own files, which the shared manifest
+  attributes to the compaction, and not for the recovery files, which name the snapshot that
+  recovered them rather than the one that first inserted the rows.
 - Incremental scans (`appendsBetween`, CDC) over the rewritten window return garbage. The snapshots
   are correctly *sequenced*, but the changesets are wrong: the snapshot written by `T_α` was not
   produced by the delta the new layout describes.
