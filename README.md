@@ -36,12 +36,24 @@ over history.
 > in the rewritten table. For example, deletion vectors should only apply to
 > files written at [lower _or equal_ sequence
 > numbers](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.1/core/src/main/java/org/apache/iceberg/DeleteFileIndex.java#L206).
-> To work around this, 1) every file rewritten in the inverted snapshot uses
-> the seqno for that snapshot so consequently 2) the compacted file has a
-> different seqno in each rewritten snapshot. To be fair, these safety checks
-> protected the committed state whose layout we are (unsafely) rewriting, but
-> it highlights how the rewrite is liberally interpreting "undefined behavior"
-> as "satisfies the default client".
+> To work around this, 1) every data file in the rewritten window is recorded
+> at a single seqno, one below the window's oldest snapshot, and 2) each
+> rewritten snapshot's deletion vectors carry that snapshot's own seqno, so
+> the check passes on the strict inequality. A compacted file consequently
+> has two seqnos in the table: the real one from the compaction onward, and
+> the window's shared one wherever it appears in a rewritten snapshot.
+>
+> The first attempt instead gave every file the seqno of the snapshot holding
+> it, passing the check on equality. That is also accepted, and it is worse: a
+> manifest *entry* carries the seqno, so no two rewritten snapshots could
+> share a manifest, and each needed its own copy of a manifest describing the
+> whole compaction — the duplication that manifest lists exist to avoid. One
+> shared seqno lets a single manifest serve the window. Both hacks satisfy the
+> reader; only one of them is affordable, and nothing in the format says so.
+>
+> To be fair, these safety checks protected the committed state whose layout we
+> are (unsafely) rewriting, but it highlights how the rewrite is liberally
+> interpreting "undefined behavior" as "satisfies the default client".
 >
 > The current prototype doesn't retain enough information to losslessly restore
 > the old layout from the inverted layout. It would need to build a reverse map
