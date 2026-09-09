@@ -114,17 +114,26 @@ delete vectors cost.
 
 Every rewritten snapshot must delete every row inserted after it, so over a window of `m`
 transactions each inserting `r` rows the delete vectors hold on the order of `r · m² / 2` positions.
-That growth is real, but **whether it matters is decided by bytes per row, not by window length.** A
-delete position costs about a byte however wide the row is:
+That growth is real in positions. Whether it is real in **bytes** is decided by the format version,
+and the earlier claim here -- that it was decided by bytes per row -- was wrong. It came from
+`estimate()`'s flat 8-bytes-per-position model rather than from a measurement.
 
-| rows | schema | delete positions | delete bytes / saving |
-|---|---|---|---|
-| 30k (`TestSnapshotRewriteReport`) | 2 columns, ~3 B/row | 20k | **57%** |
-| 80k (`TestSnapshotRewriteScale`) | 20 columns, ~300 B/row | 100k | **0.7%** |
+Measured (`TestSnapshotRewriteDeleteCost`), a v3 deletion vector costs a flat **~490 bytes** whether
+it masks 2,000 positions or 16,000: the rows a snapshot masks are the ones inserted after it, an
+order-preserving compaction lays those out consecutively, and Roaring stores a contiguous range as a
+run. The quadratic position count therefore costs almost nothing. A v2 position-delete file stores a
+row per position, measured at **1.2-1.6 bytes each**, so under v2 the quadratic term is quadratic in
+bytes as well.
 
-So on narrow rows the delete term dominates and short windows matter; on realistic row widths it
-disappears. The economics are a per-window, per-table question the report has to answer, not a
-property of the design.
+| format | schema | txs | positions | delete bytes | metadata bytes | net saving |
+|---|---|---|---|---|---|---|
+| v3 | 20 col | 8 | 72,000 | 3,956 | 203,805 | +8,191,532 |
+| v3 | 2 col | 8 | 72,000 | 3,948 | 181,060 | +101,588 |
+| v2 | 2 col | 8 | 72,000 | 87,777 | 164,347 | **-15,872** |
+
+So the binding cost is **per-snapshot metadata** -- a manifest plus a manifest list, ~23-25 KiB each,
+some fifty times the delete vectors -- and, under v2, the delete files themselves. The economics are
+a per-window, per-table question the report has to answer, not a property of the design.
 
 Below a certain scale the rewrite simply loses. Each rewritten snapshot needs a manifest and a
 manifest list -- several KiB of Avro apiece -- so a table whose data files are smaller than its
