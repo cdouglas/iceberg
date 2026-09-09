@@ -212,6 +212,40 @@ public class SnapshotRewriteUnsafe {
   }
 
   /**
+   * Rebuilds a manifest with an assigned sequence number so it can be shared between snapshots.
+   *
+   * <p>A freshly written manifest reports {@code UNASSIGNED_SEQ}, which the manifest-list writers
+   * in {@code V2Metadata} and {@code V3Metadata} take as "assign the committing snapshot's number"
+   * -- and they check that the manifest was created by that snapshot before doing so. A manifest
+   * referenced by several snapshots cannot satisfy that check for more than one of them, and would
+   * anyway be given a different sequence number in each. Assigning the number here takes that
+   * branch out of play: the manifest carries one sequence number wherever it appears.
+   *
+   * <p><b>Asserted:</b> every entry in {@code manifest} was written at {@code sequenceNumber}, so
+   * the manifest's own number and its minimum agree with its contents.
+   */
+  public static ManifestFile assignSequenceNumber(ManifestFile manifest, long sequenceNumber) {
+    return new GenericManifestFile(
+        manifest.path(),
+        manifest.length(),
+        manifest.partitionSpecId(),
+        manifest.content(),
+        sequenceNumber,
+        sequenceNumber,
+        manifest.snapshotId(),
+        manifest.partitions(),
+        manifest.keyMetadata(),
+        manifest.addedFilesCount(),
+        manifest.addedRowsCount(),
+        manifest.existingFilesCount(),
+        manifest.existingRowsCount(),
+        manifest.deletedFilesCount(),
+        manifest.deletedRowsCount(),
+        manifest.firstRowId(),
+        manifest.compactionMapLocation());
+  }
+
+  /**
    * Indexes the delete files of a snapshot exactly as scan planning would.
    *
    * <p>{@link DeleteFileIndex} is package-private. Using the real index rather than reimplementing

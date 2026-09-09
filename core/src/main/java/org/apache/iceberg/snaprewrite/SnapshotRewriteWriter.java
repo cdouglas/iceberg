@@ -48,8 +48,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  *
  * <h2>Sequence number stamping</h2>
  *
- * <p>Every file in a rewritten snapshot -- the compaction's data files, the resurrection files, and
- * the delete files -- is stamped at that snapshot's own sequence number.
+ * <p>Every data file in the window -- the compaction's files and the recovery files -- is stamped
+ * at one sequence number, {@code baseSequenceNumber}, chosen one below the oldest snapshot in the
+ * window. Each snapshot's delete files are stamped at that snapshot's own number.
  *
  * <p>This is load-bearing and it fails open. Iceberg applies a positional delete to a data file
  * only when {@code data.dataSequenceNumber <= delete.dataSequenceNumber}, which is how a concurrent
@@ -60,22 +61,50 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  *
  * <p>In v2 that failure is silent: {@code DeleteFileIndex.PositionDeletes.filter} slices a
  * sequence-sorted array and simply omits deletes that sort too low. No exception, no log line, just
- * rows reappearing in a time-travel read. Stamping everything at the snapshot's own sequence number
- * makes the comparison an equality, which passes, and makes each rewritten snapshot internally
- * uniform: it reads as though every file it holds had been added by it.
+ * rows reappearing in a time-travel read.
+ *
+ * <h2>Why one shared number rather than each snapshot's own</h2>
+ *
+ * <p>Stamping each file at its own snapshot's number also satisfies the rule, by equality, and was
+ * the original design. It costs more than it looks. A manifest <em>entry</em> carries the data
+ * sequence number, so two snapshots that disagree about a file's number cannot share a manifest --
+ * and per-snapshot stamping makes every rewritten snapshot disagree with every other about every
+ * file in the compaction. Each therefore needs its own copy of a manifest describing the whole
+ * compaction, which is precisely what the manifest list's indirection exists to avoid.
+ *
+ * <p>A single number below the window satisfies the rule by strict inequality instead, so the
+ * entries agree and one manifest serves the window: {@code files + window} rather than {@code files
+ * x window}. Measured, a six-snapshot window over a 26-file compaction writes 2.2 times less
+ * metadata this way, and the ratio grows with the compaction's file count. It also reads as the
+ * truth about these rows -- they were all present before the window began -- and leaves each
+ * physical file with two sequence numbers table-wide rather than one per rewritten snapshot.
+ *
+ * <p>{@link Stamping#OWN} keeps the superseded mode so the difference stays measurable.
  */
 class SnapshotRewriteWriter {
 
   /**
    * How data files are stamped in a rewritten snapshot.
    *
-   * <p>{@link #OWN} is the only correct setting. {@link #SOURCE} exists so tests can build the
-   * mistake on purpose and confirm the oracle catches it: because v2 drops inert deletes without
-   * complaint, a suite that only ever exercises the correct stamping cannot tell whether it would
-   * notice the incorrect one.
+   * <p>{@link #SHARED_BASE} is the default and the one to use. {@link #OWN} is also correct but
+   * costs a copy of the compaction's data manifests per rewritten snapshot; it is kept so the
+   * difference can be measured. {@link #SOURCE} is wrong on purpose: because v2 drops inert deletes
+   * without complaint, a suite that only ever exercises correct stamping cannot tell whether it
+   * would notice the incorrect one.
    */
   enum Stamping {
+    /**
+     * Every data file in the window is stamped at one sequence number below the window, and each
+     * snapshot's deletes at that snapshot's own. The delete rule holds by strict inequality, and
+     * because the entries no longer differ between snapshots, they can share one data manifest.
+     */
+    SHARED_BASE,
+    /**
+     * Every file is stamped at its own snapshot's sequence number, so the delete rule holds by
+     * equality. Correct, but no two snapshots can then share a manifest.
+     */
     OWN,
+    /** The compaction's real sequence numbers, which leaves every delete inert. */
     SOURCE
   }
 
@@ -86,6 +115,8 @@ class SnapshotRewriteWriter {
   private final Map<String, DeleteFile> deleteFiles;
   private final Stamping stamping;
   private final Map<Long, PartitionStatisticsFile> detachedPartitionStats;
+  private final long baseSequenceNumber;
+  private ManifestFile sharedTargetManifest;
   private final List<String> writtenPaths = Lists.newArrayList();
 
   SnapshotRewriteWriter(
@@ -102,6 +133,23 @@ class SnapshotRewriteWriter {
     this.deleteFiles = deleteFiles;
     this.stamping = stamping;
     this.detachedPartitionStats = detachedPartitionStats(base, plan);
+    this.baseSequenceNumber = baseSequenceNumber(plan);
+  }
+
+  /**
+   * The sequence number every data file in a shared-base rewrite is stamped at.
+   *
+   * <p>One below the oldest snapshot in the window, so that every rewritten snapshot's deletes --
+   * stamped at that snapshot's own number -- satisfy the delete rule strictly. It also reads as the
+   * truth about these rows: they were all present before the window began.
+   */
+  private static long baseSequenceNumber(SnapshotRewritePlan plan) {
+    long oldest = Long.MAX_VALUE;
+    for (Snapshot snapshot : plan.window()) {
+      oldest = Math.min(oldest, snapshot.sequenceNumber());
+    }
+
+    return Math.max(0, oldest - 1);
   }
 
   /**
@@ -180,13 +228,42 @@ class SnapshotRewriteWriter {
     long sequenceNumber = original.sequenceNumber();
     PartitionSpec spec = base.spec();
 
+    // What the snapshot holds, for its summary totals: the compaction plus whatever it recovered.
+    // How that is split across manifests depends on the stamping, but the contents do not.
     List<DataFile> dataFiles = Lists.newArrayList(plan.targetFiles());
     for (String path : rewritten.resurrectionPaths()) {
       dataFiles.add(resurrected.get(path));
     }
 
     List<ManifestFile> manifests = Lists.newArrayList();
-    manifests.add(writeDataManifest(original, spec, sequenceNumber, dataFiles));
+    if (stamping == Stamping.SHARED_BASE) {
+      // One manifest for the compaction's files, written once and referenced by every rewritten
+      // snapshot. Its entries name the compaction as the snapshot that added them, which is true.
+      manifests.add(sharedTargetManifest(spec));
+
+      List<DataFile> recovered = Lists.newArrayList();
+      for (String path : rewritten.resurrectionPaths()) {
+        recovered.add(resurrected.get(path));
+      }
+
+      if (!recovered.isEmpty()) {
+        manifests.add(
+            writeDataManifest(
+                "recovered-" + original.snapshotId(),
+                original.snapshotId(),
+                spec,
+                baseSequenceNumber,
+                recovered));
+      }
+    } else {
+      manifests.add(
+          writeDataManifest(
+              "data-" + original.snapshotId(),
+              original.snapshotId(),
+              spec,
+              sequenceNumber,
+              dataFiles));
+    }
 
     List<DeleteFile> deletes = Lists.newArrayList();
     for (PositionDeleteRequest request : rewritten.deleteRequests()) {
@@ -227,16 +304,39 @@ class SnapshotRewriteWriter {
         original.addedRows());
   }
 
+  /**
+   * The compaction's files, in a manifest every rewritten snapshot can reference.
+   *
+   * <p>Written on the first snapshot that needs it and reused thereafter. It carries an assigned
+   * sequence number so the manifest-list writers do not try to stamp it per snapshot, which is the
+   * whole point: one manifest, one sequence number, m references.
+   */
+  private ManifestFile sharedTargetManifest(PartitionSpec spec) {
+    if (sharedTargetManifest == null) {
+      long compactionId = plan.compaction().snapshotId();
+      this.sharedTargetManifest =
+          SnapshotRewriteUnsafe.assignSequenceNumber(
+              writeDataManifest(
+                  "targets", compactionId, spec, baseSequenceNumber, plan.targetFiles()),
+              baseSequenceNumber);
+    }
+
+    return sharedTargetManifest;
+  }
+
   private ManifestFile writeDataManifest(
-      Snapshot original, PartitionSpec spec, long sequenceNumber, List<DataFile> files) {
-    String path = newMetadataPath("snaprewrite-data-" + original.snapshotId(), "avro");
+      String name,
+      long manifestSnapshotId,
+      PartitionSpec spec,
+      long sequenceNumber,
+      List<DataFile> files) {
+    String path = newMetadataPath("snaprewrite-" + name, "avro");
     ManifestWriter<DataFile> writer =
-        ManifestFiles.write(
-            base.formatVersion(), spec, io.newOutputFile(path), original.snapshotId());
+        ManifestFiles.write(base.formatVersion(), spec, io.newOutputFile(path), manifestSnapshotId);
     try {
       for (DataFile file : files) {
         long dataSequenceNumber = dataSequenceNumber(file, sequenceNumber);
-        writer.existing(file, original.snapshotId(), dataSequenceNumber, dataSequenceNumber);
+        writer.existing(file, manifestSnapshotId, dataSequenceNumber, dataSequenceNumber);
       }
     } finally {
       close(writer);

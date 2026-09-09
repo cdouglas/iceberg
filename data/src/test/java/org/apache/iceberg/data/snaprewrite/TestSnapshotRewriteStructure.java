@@ -51,7 +51,11 @@ public class TestSnapshotRewriteStructure extends SnapshotRewriteTestBase {
    * concurrent append and a concurrent delete commute: the sequence number is the delete's
    * watermark, and a data file added after it holds rows the delete's author never saw. A rewrite
    * inverts that -- its deletes reference files written long after the snapshot they land in -- so
-   * it stamps everything at the snapshot's own sequence number.
+   * it has to choose sequence numbers that make the comparison hold.
+   *
+   * <p>This asserts the rule itself rather than the numbers a particular stamping picks. Asserting
+   * the numbers is what made this test fail when the stamping changed, even though every delete
+   * still applied; the rule is what the rewrite has to preserve.
    */
   @Test
   public void everyDeleteAppliesToItsDataFiles() throws IOException {
@@ -60,23 +64,54 @@ public class TestSnapshotRewriteStructure extends SnapshotRewriteTestBase {
 
     for (Snapshot original : result.plan().window()) {
       Snapshot rewritten = result.metadata().snapshot(original.snapshotId());
-      long expected = original.sequenceNumber();
 
+      long newestData = Long.MIN_VALUE;
       for (DataFile file : dataFilesOf(rewritten, result.metadata())) {
-        assertThat(file.dataSequenceNumber())
-            .as("data file in snapshot %s must carry its sequence number", original.snapshotId())
-            .isEqualTo(expected);
+        newestData = Math.max(newestData, file.dataSequenceNumber());
       }
 
       for (DeleteFile file : deleteFilesOf(rewritten, result.metadata())) {
         assertThat(file.dataSequenceNumber())
-            .as("delete file in snapshot %s must carry its sequence number", original.snapshotId())
-            .isEqualTo(expected);
+            .as(
+                "a delete in snapshot %s must not sort below any data file it could hide",
+                original.snapshotId())
+            .isGreaterThanOrEqualTo(newestData);
         assertThat(file.dataSequenceNumber())
-            .as("deletes must not sort below the data they hide")
-            .isGreaterThanOrEqualTo(expected);
+            .as("a delete must not sort above the snapshot that holds it")
+            .isLessThanOrEqualTo(original.sequenceNumber());
       }
     }
+  }
+
+  /**
+   * Under the default stamping, the compaction's files are described once for the whole window.
+   *
+   * <p>A manifest entry carries the data sequence number, so snapshots that disagree about a file's
+   * sequence number cannot share a manifest. Stamping the data below the window instead of at each
+   * snapshot lets them agree, and one manifest then serves every rewritten snapshot -- which is
+   * what manifest-list indirection is for.
+   */
+  @Test
+  public void theCompactionIsDescribedOnce() throws IOException {
+    buildWindow();
+    SnapshotRewriteResult result = rewrite();
+
+    // A snapshot that recovered rows carries a second, small manifest of its own, so the count per
+    // snapshot varies. What every snapshot must share is one manifest: the compaction's.
+    Set<String> common = null;
+    for (Snapshot original : result.plan().window()) {
+      Snapshot rewritten = result.metadata().snapshot(original.snapshotId());
+      Set<String> paths = Sets.newHashSet();
+      for (ManifestFile manifest : rewritten.dataManifests(table.io())) {
+        paths.add(manifest.path());
+      }
+
+      common = common == null ? paths : Sets.intersection(common, paths).immutableCopy();
+    }
+
+    assertThat(common)
+        .as("every rewritten snapshot references the one manifest describing the compaction")
+        .hasSize(1);
   }
 
   /**

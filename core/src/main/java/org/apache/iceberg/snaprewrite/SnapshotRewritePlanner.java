@@ -326,14 +326,18 @@ public class SnapshotRewritePlanner {
           RewriteRefusal.FORMAT_VERSION, "format version " + base.formatVersion());
     }
 
-    if (System.currentTimeMillis() - compaction.timestampMillis() < minAgeMs) {
+    // Clamped at zero. A snapshot timestamp is wall clock from whatever machine committed it, so a
+    // clock that stepped backwards -- or a writer running slightly ahead -- can put a committed
+    // snapshot in the future and make its age negative. Unclamped, that refuses a rewrite even when
+    // no minimum age was asked for. Treating a future-dated snapshot as brand new keeps a positive
+    // minimum conservative and stops a zero minimum from rejecting anything.
+    long ageMs = Math.max(0, System.currentTimeMillis() - compaction.timestampMillis());
+    if (ageMs < minAgeMs) {
       throw new RewriteRefusedException(
           RewriteRefusal.TOO_RECENT,
           String.format(
               "compaction %s is %sms old, minimum is %sms",
-              compaction.snapshotId(),
-              System.currentTimeMillis() - compaction.timestampMillis(),
-              minAgeMs));
+              compaction.snapshotId(), ageMs, minAgeMs));
     }
   }
 
