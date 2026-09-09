@@ -269,17 +269,26 @@ Because phase 1 is v2, a mis-stamped rewrite produces a *plausible table that re
 This makes the §8.2 oracle and the §8.4 round-trip load-bearing rather than confirmatory,
 and it is the single strongest argument for the non-destructive default in §4.4.
 
-**Decision (per-snapshot stamping):** in each rewritten snapshot `S_k`, stamp *everything* —
-`C_B`'s data files, the resurrection files, and the delete files — at `σ_k`, that snapshot's
-own sequence number. Since the comparison is `<=`, equality passes, and every delete
-applies to every data file in the snapshot, which is precisely what a rewritten snapshot
-wants. The rule states in one line: **a rewritten snapshot stamps its entire contents at its
-own sequence number**, as though every file had been added by it. `ManifestWriter.existing(
-file, snapshotId, dataSeq, fileSeq)` (`ManifestWriter.java:154`) provides the control.
+**Decision (shared base sequence number).** Stamp every *data* file in the window --- `C_B`'s
+files and the resurrection files --- at a single `σ_base`, one below the window's oldest
+snapshot, and each snapshot's *delete* files at `σ_k`, that snapshot's own. Since `σ_k >
+σ_base` for every `k`, the comparison holds strictly, and every delete applies to every data
+file in the snapshot. `ManifestWriter.existing(file, snapshotId, dataSeq, fileSeq)`
+(`ManifestWriter.java:154`) provides the control.
 
 This also handles the cross-step case without a special rule: resurrection file `g_k` is
-created by `T_k⁻¹` but deleted from by `T_j⁻¹` for `j < k`; in snapshot `S_{j-1}` both are
-stamped `σ_{j-1}` and the delete applies.
+created by `T_k⁻¹` but deleted from by `T_j⁻¹` for `j < k`; `g_k` carries `σ_base` and the
+delete carries `σ_{j-1} > σ_base`, so it applies.
+
+**Superseded (per-snapshot stamping).** The original decision stamped *everything* in `S_k`
+at `σ_k`, so the comparison passed by equality. That is also correct and states in one line
+--- a rewritten snapshot stamps its entire contents at its own sequence number --- but it makes
+every rewritten snapshot disagree with every other about every file in `C_B`. A manifest
+*entry* carries the data sequence number, so those snapshots cannot share a manifest, and
+each needs its own copy of one describing the whole compaction: `O(files x window)` where the
+shared base is `O(files + window)`. See SS10.5 for the measurements. `Stamping.OWN` retains
+the mode so the difference stays measurable; `Stamping.SOURCE` is the deliberately broken
+one from SS8.4.
 
 **This is a spec deviation** and is documented as such: one physical data file carries
 different `data_sequence_number` values in different snapshots. It is correct for
