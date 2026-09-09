@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.ManifestFiles;
@@ -186,6 +187,108 @@ public class TestSnapshotRewriteDeleteCost extends SnapshotRewriteTestBase {
     assertThat(largest)
         .as("a vector masking the whole window must not cost much more than one masking a slice")
         .isLessThan(smallest * 3);
+
+    result.discard();
+  }
+
+  /**
+   * Where the per-snapshot metadata goes.
+   *
+   * <p>Every rewritten snapshot needs its own copy of a data manifest listing the whole compaction,
+   * because the entries differ: each snapshot stamps the same physical file at its own sequence
+   * number. Manifests are otherwise shared freely between snapshots, so this duplication is a cost
+   * of the stamping workaround rather than of the rewrite itself.
+   */
+  @Test
+  public void metadataBreakdownPerSnapshot() throws IOException {
+    useSchema(WorkloadGenerator.SCHEMA, PartitionSpec.unpartitioned(), 3);
+
+    long seed = 20260909L;
+    append(WorkloadGenerator.generateRows(seed++, 20_000));
+    compact();
+    for (int i = 0; i < 8; i += 1) {
+      append(WorkloadGenerator.generateRows(seed++, 2_000));
+    }
+
+    compact();
+
+    SnapshotRewriteResult result = rewrite();
+    TableMetadata rewritten = result.metadata();
+
+    System.out.printf(
+        "%n%-4s %9s %11s %9s %11s %11s %11s%n",
+        "k", "dataMfs", "data-bytes", "entries", "del-bytes", "list-bytes", "total");
+
+    long dataTotal = 0;
+    long deleteTotal = 0;
+    long listTotal = 0;
+    int index = 0;
+    for (Snapshot original : result.plan().window()) {
+      Snapshot snapshot = rewritten.snapshot(original.snapshotId());
+
+      long dataBytes = 0;
+      int entries = 0;
+      int manifests = 0;
+      for (ManifestFile manifest : snapshot.dataManifests(table.io())) {
+        dataBytes += manifest.length();
+        manifests += 1;
+        try (ManifestReader<DataFile> reader =
+            ManifestFiles.read(manifest, table.io(), rewritten.specsById())) {
+          for (DataFile ignored : reader) {
+            entries += 1;
+          }
+        }
+      }
+
+      long deleteBytes = 0;
+      for (ManifestFile manifest : snapshot.deleteManifests(table.io())) {
+        deleteBytes += manifest.length();
+      }
+
+      long listBytes = table.io().newInputFile(snapshot.manifestListLocation()).getLength();
+
+      System.out.printf(
+          "%-4d %9d %11d %9d %11d %11d %11d%n",
+          index,
+          manifests,
+          dataBytes,
+          entries,
+          deleteBytes,
+          listBytes,
+          dataBytes + deleteBytes + listBytes);
+
+      dataTotal += dataBytes;
+      deleteTotal += deleteBytes;
+      listTotal += listBytes;
+      index += 1;
+    }
+
+    System.out.printf(
+        "TOTAL data=%d deletes=%d lists=%d  (data is %.0f%% of rewrite metadata)%n",
+        dataTotal,
+        deleteTotal,
+        listTotal,
+        100.0 * dataTotal / (dataTotal + deleteTotal + listTotal));
+
+    // Each rewritten snapshot has its own data manifest, at its own path: the entries differ by
+    // sequence number, so nothing can be shared. That duplication is the claim under test.
+    Map<String, Long> dataManifestPaths = Maps.newHashMap();
+    for (Snapshot original : result.plan().window()) {
+      for (ManifestFile manifest :
+          rewritten.snapshot(original.snapshotId()).dataManifests(table.io())) {
+        dataManifestPaths.put(manifest.path(), manifest.length());
+      }
+    }
+
+    assertThat(dataManifestPaths)
+        .as("one data manifest per rewritten snapshot, none shared")
+        .hasSize(result.plan().window().size());
+
+    // And it is nearly all fixed cost: an Avro manifest embeds the schema and spec in its header,
+    // so a manifest describing a single data file still runs to kilobytes.
+    assertThat(dataTotal / result.plan().window().size())
+        .as("a one-entry data manifest still costs kilobytes")
+        .isGreaterThan(4096);
 
     result.discard();
   }

@@ -738,11 +738,24 @@ the fuzzer is not passing by declining to work.
    the quadratic delete term in §2.3: a long window costs more than proportionally, so deep recursion
    should be done as a series of short windows rather than one long one. Worth measuring on a real
    history.
-5. **Is per-snapshot stamping the right choice over a single `baseSeq`?** Both satisfy
-   `data.seq <= delete.seq`. Per-snapshot is simpler to state and makes each rewritten
-   snapshot internally uniform; a shared `baseSeq` would give each physical file only two
-   distinct sequence numbers table-wide instead of one per rewritten snapshot. Neither is
-   spec-legal; the choice is about which is easier to audit.
+5. **Is per-snapshot stamping the right choice over a single `baseSeq`?** **Probably not, and this
+   was not just an auditability question.** Both satisfy `data.seq <= delete.seq`. What was missed
+   is that a manifest *entry* carries the data sequence number, so two snapshots that disagree about
+   a file's sequence number cannot share a manifest. Per-snapshot stamping therefore forces every
+   rewritten snapshot to carry **its own copy of a data manifest listing the whole compaction** --
+   the one thing manifest-list indirection exists to avoid.
+
+   Measured (`TestSnapshotRewriteDeleteCost#metadataBreakdownPerSnapshot`), on a window of eight
+   over a single-file compaction: per snapshot, a 9.5 KiB data manifest holding **one** entry, an
+   8.9 KiB delete manifest, and a 5.2 KiB manifest list -- 23.6 KiB, almost all of it the Avro
+   header that embeds the schema and partition spec. At this scale it is fixed overhead; over a
+   compaction of thousands of files it becomes `O(files x window)`.
+
+   A shared `baseSeq` below the window's floor would let every rewritten snapshot reference **one**
+   restamped data manifest, leaving each with only its own small delete manifest and manifest list:
+   `O(files + window)` instead. The deletes still apply, with strict inequality rather than
+   equality. Each physical file would then carry two sequence numbers table-wide instead of one per
+   rewritten snapshot, which is also less to explain. This is the first change worth making.
 
 6. **Should there be a minimum-saving guard?** P8 bounds the dead ratio, which is about the cost of
    resurrection, but the metadata and delete terms decide whether a small window is worth anything at
