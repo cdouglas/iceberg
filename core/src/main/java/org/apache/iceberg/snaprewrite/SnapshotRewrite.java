@@ -49,9 +49,24 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  * }</pre>
  */
 public class SnapshotRewrite {
-  private static final long BYTES_PER_POSITION_ESTIMATE = 8;
+  // Calibrated against TestSnapshotRewriteDeleteCost rather than guessed. The two delete formats
+  // behave nothing alike, and pricing both at a flat rate per position -- which this used to do --
+  // overstated a v3 window's delete cost by roughly fifty times.
+  //
+  // A rewritten snapshot masks the rows inserted after it. An order-preserving compaction lays
+  // those out consecutively, so the masked set is a contiguous range, and Roaring stores a range as
+  // a run: a deletion vector costs about the same whether it hides two thousand rows or sixteen
+  // thousand. What is left is Puffin overhead, so v3 is priced per file and not per position.
+  private static final long DV_BYTES_ESTIMATE = 512;
+
+  // A v2 position-delete file stores a row per position, so it really is priced per position.
+  private static final long V2_BYTES_PER_POSITION_ESTIMATE = 2;
   private static final long DELETE_FILE_OVERHEAD_ESTIMATE = 1024;
-  private static final long METADATA_BYTES_PER_SNAPSHOT_ESTIMATE = 8 * 1024;
+
+  // A manifest plus a manifest list per rewritten snapshot. This is the term that decides whether a
+  // small window is worth anything: it outweighs the delete vectors by an order of magnitude or
+  // two.
+  private static final long METADATA_BYTES_PER_SNAPSHOT_ESTIMATE = 24 * 1024;
 
   private final Table table;
   private final TableMetadata base;
@@ -158,14 +173,28 @@ public class SnapshotRewrite {
         Math.round(estimated.resurrectedRows() * bytesPerRow),
         estimated.resurrections().size(),
         estimated.resurrectedRows(),
-        positions * BYTES_PER_POSITION_ESTIMATE
-            + (long) deleteFiles * DELETE_FILE_OVERHEAD_ESTIMATE,
+        estimatedDeleteBytes(positions, deleteFiles),
         deleteFiles,
         positions,
         (long) estimated.window().size() * METADATA_BYTES_PER_SNAPSHOT_ESTIMATE,
         targetBytes,
         estimated.targetRows(),
         true);
+  }
+
+  /**
+   * What the rewrite's delete files will cost, by format.
+   *
+   * <p>Under v3 the answer barely depends on the position count; under v2 it is proportional to it.
+   * See the constants for why.
+   */
+  private long estimatedDeleteBytes(long positions, int deleteFiles) {
+    if (base.formatVersion() >= 3) {
+      return deleteFiles * DV_BYTES_ESTIMATE;
+    }
+
+    return positions * V2_BYTES_PER_POSITION_ESTIMATE
+        + (long) deleteFiles * DELETE_FILE_OVERHEAD_ESTIMATE;
   }
 
   /** Runs the induction, writes the rewritten layout, and returns it uncommitted. */

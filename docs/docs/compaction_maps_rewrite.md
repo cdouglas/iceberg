@@ -56,13 +56,38 @@ predicted    18.02 MiB   ->  the saving is 98.8% of one copy of the table
 
 Two places it does not pay:
 
-- **Narrow rows.** Every rewritten snapshot deletes every row inserted after it, so a window of `m`
-  transactions each inserting `r` rows carries roughly `r · m² / 2` delete positions. A position costs
-  about a byte whatever the row's width, so the term was 0.7% of the saving above and **57%** on a
-  2-column table. On narrow rows, keep windows short.
-- **Small tables.** Each rewritten snapshot needs a manifest and a manifest list, several KiB of Avro
-  apiece. Below roughly that scale a rewrite costs more than it frees, and the report says so with a
-  negative rather than hiding it.
+### What the rewrite costs, in order of size
+
+Every rewritten snapshot must mask every row inserted after it, so a window of `m` transactions each
+inserting `r` rows carries on the order of `r · m² / 2` delete *positions*. That count is real. It is
+also, under v3, almost irrelevant to the bytes — measured by
+`TestSnapshotRewriteDeleteCost`, insert-only windows, oldest snapshot first:
+
+| rewritten snapshot | positions masked | delete-vector bytes |
+|---|---|---|
+| 0 | 16,000 | 493 |
+| 3 | 10,000 | 497 |
+| 7 | 2,000 | 492 |
+
+An eightfold difference in positions moves the bytes by under 2%. The rows a snapshot masks are the
+ones inserted after it, an order-preserving compaction lays those out consecutively, and Roaring
+stores a contiguous range as a *run*. What is left is Puffin overhead, so a deletion vector costs a
+flat ~490 bytes no matter how much it masks.
+
+The costs that actually decide it, largest first:
+
+- **Per-snapshot metadata, ~23-25 KiB.** Each rewritten snapshot needs its own manifest and manifest
+  list. This dominates the delete vectors by roughly fifty times, and it is what makes a rewrite lose
+  on a small table: below about 25 KiB of reclaimable data per snapshot in the window, the rewrite
+  costs more than it frees. The report prints the negative rather than hiding it.
+- **One copy of every row that died in the window**, at full row width. The only term that scales
+  with the schema, and what `maxDeadRatio` guards.
+- **Delete vectors, ~0.5 KiB per snapshot under v3.** Effectively noise.
+
+**Under v2 the third term is not noise.** A position-delete file stores a row per position, measured
+at 1.2-1.6 bytes each, so there the quadratic count is quadratic in bytes too: a 2-column table over
+an 8-transaction window came out a net loss, where the same window under v3 kept 35% of what it
+reclaimed. If the delete term matters to you, that is a v2 problem, not a row-width problem.
 
 Because the answer depends on the table, nothing is assumed. Price it first.
 
