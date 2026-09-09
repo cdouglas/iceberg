@@ -36,6 +36,7 @@ import org.apache.iceberg.data.Record;
 import org.apache.iceberg.data.WorkloadGenerator;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.snaprewrite.RewriteStampingHook;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteReport;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.junit.jupiter.api.Test;
@@ -263,15 +264,14 @@ public class TestSnapshotRewriteDeleteCost extends SnapshotRewriteTestBase {
       index += 1;
     }
 
+    // dataTotal sums per reference, and every snapshot references the same manifest, so it counts
+    // one file many times. What the rewrite actually wrote is the distinct set.
     System.out.printf(
-        "TOTAL data=%d deletes=%d lists=%d  (data is %.0f%% of rewrite metadata)%n",
-        dataTotal,
-        deleteTotal,
-        listTotal,
-        100.0 * dataTotal / (dataTotal + deleteTotal + listTotal));
+        "per-reference data=%d (double-counts the shared manifest); deletes=%d lists=%d%n",
+        dataTotal, deleteTotal, listTotal);
 
-    // Each rewritten snapshot has its own data manifest, at its own path: the entries differ by
-    // sequence number, so nothing can be shared. That duplication is the claim under test.
+    // One data manifest for the whole window: the entries agree on a sequence number below it, so
+    // every rewritten snapshot can reference the same file.
     Map<String, Long> dataManifestPaths = Maps.newHashMap();
     for (Snapshot original : result.plan().window()) {
       for (ManifestFile manifest :
@@ -281,16 +281,71 @@ public class TestSnapshotRewriteDeleteCost extends SnapshotRewriteTestBase {
     }
 
     assertThat(dataManifestPaths)
-        .as("one data manifest per rewritten snapshot, none shared")
-        .hasSize(result.plan().window().size());
+        .as("the compaction is described once for the window, not once per snapshot")
+        .hasSize(1);
 
-    // And it is nearly all fixed cost: an Avro manifest embeds the schema and spec in its header,
-    // so a manifest describing a single data file still runs to kilobytes.
-    assertThat(dataTotal / result.plan().window().size())
+    // An Avro manifest embeds the schema and spec in its header, so even a one-entry manifest runs
+    // to kilobytes -- which is why writing one instead of nine matters at this scale.
+    assertThat(dataManifestPaths.values().iterator().next())
         .as("a one-entry data manifest still costs kilobytes")
         .isGreaterThan(4096);
 
+    SnapshotRewriteResult perSnapshot =
+        RewriteStampingHook.materializePerSnapshotStamped(rewriter());
+    System.out.printf(
+        "metadata: shared-base=%d per-snapshot=%d (%.1fx)%n",
+        result.report().metadataBytes(),
+        perSnapshot.report().metadataBytes(),
+        (double) perSnapshot.report().metadataBytes() / result.report().metadataBytes());
+    assertThat(result.report().metadataBytes()).isLessThan(perSnapshot.report().metadataBytes());
+    perSnapshot.discard();
+
     result.discard();
+  }
+
+  /**
+   * The reduction grows with the compaction's file count, which is the point.
+   *
+   * <p>With one target file the shared manifest is a fraction of each snapshot's metadata, since
+   * the delete manifest and manifest list are irreducibly per-snapshot. With many target files the
+   * data manifest is the bulk of it, and sharing turns `files x window` into `files + window`. A
+   * real compaction has thousands of files, which this cannot reach; the trend is what it measures.
+   */
+  @Test
+  public void sharingScalesWithTheCompactionsFileCount() throws IOException {
+    System.out.printf(
+        "%n%-14s %13s %13s %8s%n", "target files", "shared-base", "per-snapshot", "ratio");
+
+    for (long rowsPerTarget : new long[] {30_000, 4_000, 1_000}) {
+      useSchema(WorkloadGenerator.SCHEMA, PartitionSpec.unpartitioned(), 3);
+
+      long seed = 20260909L + rowsPerTarget;
+      append(WorkloadGenerator.generateRows(seed++, 20_000));
+      LocalCompactor.compact(table, true, file -> true, rowsPerTarget);
+      for (int i = 0; i < 6; i += 1) {
+        append(WorkloadGenerator.generateRows(seed++, 1_000));
+      }
+
+      LocalCompactor.compact(table, true, file -> true, rowsPerTarget);
+
+      SnapshotRewriteResult shared = rewrite();
+      SnapshotRewriteResult perSnapshot =
+          RewriteStampingHook.materializePerSnapshotStamped(rewriter());
+
+      long sharedBytes = shared.report().metadataBytes();
+      long ownBytes = perSnapshot.report().metadataBytes();
+      System.out.printf(
+          "%-14d %13d %13d %7.2fx%n",
+          shared.plan().targetFiles().size(),
+          sharedBytes,
+          ownBytes,
+          (double) ownBytes / sharedBytes);
+
+      assertThat(sharedBytes).isLessThan(ownBytes);
+
+      shared.discard();
+      perSnapshot.discard();
+    }
   }
 
   /** Sizes of the delete files the rewrite wrote, counted once per distinct path. */
