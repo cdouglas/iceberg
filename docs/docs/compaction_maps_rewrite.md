@@ -76,10 +76,20 @@ flat ~490 bytes no matter how much it masks.
 
 The costs that actually decide it, largest first:
 
-- **Per-snapshot metadata, ~23-25 KiB.** Each rewritten snapshot needs its own manifest and manifest
-  list. This dominates the delete vectors by roughly fifty times, and it is what makes a rewrite lose
-  on a small table: below about 25 KiB of reclaimable data per snapshot in the window, the rewrite
-  costs more than it frees. The report prints the negative rather than hiding it.
+- **Per-snapshot metadata, ~23-25 KiB.** This dominates the delete vectors by roughly fifty times,
+  and it is what makes a rewrite lose on a small table: below about 25 KiB of reclaimable data per
+  snapshot in the window, the rewrite costs more than it frees. The report prints the negative
+  rather than hiding it.
+
+    Measured per rewritten snapshot, window of eight over a one-file compaction: a 9.5 KiB data
+    manifest holding **one** entry, an 8.9 KiB delete manifest, a 5.2 KiB manifest list. Almost all
+    of that is the Avro header, which embeds the schema and partition spec in every manifest.
+
+    The duplication is forced by the stamping rule, not by the rewrite. A manifest entry carries the
+    data sequence number, so two snapshots that disagree about a file's sequence number cannot share
+    a manifest -- and per-snapshot stamping makes every rewritten snapshot disagree with every other.
+    Iceberg otherwise shares manifests freely across snapshots; this gives that up, and over a
+    compaction of thousands of files the copies grow as `files x window`. Errata 13.
 - **One copy of every row that died in the window**, at full row width. The only term that scales
   with the schema, and what `maxDeadRatio` guards.
 - **Delete vectors, ~0.5 KiB per snapshot under v3.** Effectively noise.
@@ -568,3 +578,19 @@ rewritten table — and would arguably be right to.
 
 Satisfying the reference implementation is not the same as satisfying the specification. Treat a
 rewritten table as unportable until each reader that has to read it has actually been tried.
+
+### 13. Per-snapshot stamping duplicates the compaction's manifests
+
+Stamping every file at its snapshot's own sequence number is what makes the deletes apply, and it has
+a cost that is easy to miss: a manifest *entry* carries the data sequence number, so two snapshots
+that disagree about a file's sequence number cannot share a manifest. Every rewritten snapshot
+therefore gets its own copy of a data manifest listing the whole compaction, which is precisely what
+the manifest list's indirection exists to avoid.
+
+A single shared sequence number below the window's floor would work as well -- the deletes would apply
+by strict inequality instead of equality -- and would let every rewritten snapshot reference one
+restamped copy, turning `O(files x window)` into `O(files + window)`. It would also leave each
+physical file with two sequence numbers table-wide rather than one per rewritten snapshot.
+
+Per-snapshot stamping was chosen because it makes each snapshot internally uniform and easy to state,
+before this cost was measured. It is the first thing to change.
