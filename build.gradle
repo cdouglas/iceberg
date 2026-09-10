@@ -428,6 +428,28 @@ project(':iceberg-data') {
     // Only for TestSplitScan as of Gradle 5.0+
     maxHeapSize '1500m'
   }
+
+  // Sweeps snapshot-rewrite workload parameters and writes the byte accounting to CSV. Not a test:
+  // it runs for minutes, needs more heap than the test task allows, and asserts one invariant
+  // rather than an oracle.
+  tasks.register('snapshotRewriteSpaceBench', JavaExec) {
+    group = 'benchmark'
+    description = 'Sweep snapshot-rewrite space savings and emit CSV'
+    dependsOn tasks.named('testClasses')
+
+    mainClass = 'org.apache.iceberg.data.snaprewrite.SnapshotRewriteSpaceBench'
+    classpath = sourceSets.test.runtimeClasspath
+    // Resolve --out relative to the repo root, not to data/, which .gitignore excludes.
+    workingDir = rootProject.projectDir
+
+    maxHeapSize = project.findProperty('benchHeap') ?: '8g'
+    jvmArgs project.property('extraJvmArgs')
+
+    // Iceberg logs a full CommitReport per commit at INFO; a sweep makes thousands of them.
+    systemProperty 'org.slf4j.simpleLogger.defaultLogLevel', 'warn'
+
+    args = ((project.findProperty('benchArgs') ?: '') as String).split('\\s+').findAll { it }
+  }
 }
 
 project(':iceberg-aliyun') {
