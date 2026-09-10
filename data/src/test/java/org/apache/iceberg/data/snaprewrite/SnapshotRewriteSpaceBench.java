@@ -104,10 +104,11 @@ public class SnapshotRewriteSpaceBench extends SnapshotRewriteTestBase {
     "delete_bytes",
     "metadata_bytes",
     "reclaimable_bytes",
+    "source_compaction_bytes",
+    "interstitial_bytes",
+    "target_bytes",
     "added_bytes",
     "saved_bytes",
-    "predicted_saved_bytes",
-    "pinned_before_bytes",
     "dead_ratio",
     "setup_millis",
     "rewrite_millis",
@@ -117,6 +118,9 @@ public class SnapshotRewriteSpaceBench extends SnapshotRewriteTestBase {
   };
 
   private int formatVersion = 3;
+
+  /** Bytes of {@code C_A}'s output: the layer the rewrite detaches. */
+  private long sourceCompactionBytes = 0;
 
   // ------------------------------------------------------------------ entry point
 
@@ -189,8 +193,10 @@ public class SnapshotRewriteSpaceBench extends SnapshotRewriteTestBase {
     // recovery read scans a whole source file per request, so file size sets that cost.
     LocalCompactor.compact(table, true, file -> true, chunkRows);
     List<LiveRuns> pools = Lists.newArrayList();
+    this.sourceCompactionBytes = 0;
     for (DataFile file : dataFiles(table.currentSnapshot())) {
       pools.add(new LiveRuns(file.location(), (int) file.recordCount()));
+      this.sourceCompactionBytes += file.fileSizeInBytes();
     }
 
     Map<String, DeleteFile> currentDeletes = Maps.newHashMap();
@@ -328,6 +334,10 @@ public class SnapshotRewriteSpaceBench extends SnapshotRewriteTestBase {
 
     append(rows(schema, seed++, baseRows, 0));
     LocalCompactor.compact(table, true, file -> true, baseRows);
+    this.sourceCompactionBytes = 0;
+    for (DataFile file : dataFiles(table.currentSnapshot())) {
+      this.sourceCompactionBytes += file.fileSizeInBytes();
+    }
 
     for (int commit = 0; commit < commits; commit += 1) {
       append(rows(schema, seed++, perCommit, baseRows + commit * perCommit));
@@ -389,10 +399,15 @@ public class SnapshotRewriteSpaceBench extends SnapshotRewriteTestBase {
     row.put("delete_bytes", report.deleteBytes());
     row.put("metadata_bytes", report.metadataBytes());
     row.put("reclaimable_bytes", report.reclaimableBytes());
+    // Reclaimable is C_A's output plus everything the window added on top of it. Splitting
+    // it lets a reader see the layers the rewrite detaches rather than one total.
+    row.put("source_compaction_bytes", sourceCompactionBytes);
+    row.put("interstitial_bytes", report.reclaimableBytes() - sourceCompactionBytes);
+    // predictedSavedBytes() is the compacted table's own size, which is all it is used for
+    // here, so the column says that rather than carrying the prediction as a concept.
+    row.put("target_bytes", report.predictedSavedBytes());
     row.put("added_bytes", report.addedBytes());
     row.put("saved_bytes", report.savedBytes());
-    row.put("predicted_saved_bytes", report.predictedSavedBytes());
-    row.put("pinned_before_bytes", report.reclaimableBytes() + report.predictedSavedBytes());
     row.put("dead_ratio", report.deadRatio());
     row.put("setup_millis", setupMillis);
     row.put("rewrite_millis", rewriteMillis);
@@ -403,7 +418,8 @@ public class SnapshotRewriteSpaceBench extends SnapshotRewriteTestBase {
     System.out.printf(
         Locale.ROOT,
         "%-6s v%d %2dcol base=%7d m=%2d ins=%7d del=%7d d=%.2f | reclaim %8.2f MiB "
-            + "added %7.2f (res %6.2f dv %6.3f meta %6.3f) net %8.2f pred %8.2f | %5.1f%% | %5.1fs%n",
+            + "added %7.2f (res %6.2f dv %6.3f meta %6.3f) net %8.2f | C_A %7.2f "
+            + "inter %6.2f C_B %7.2f | %5.1fs%n",
         figure,
         formatVersion,
         table.schema().columns().size(),
@@ -418,8 +434,9 @@ public class SnapshotRewriteSpaceBench extends SnapshotRewriteTestBase {
         report.deleteBytes() / 1048576.0,
         report.metadataBytes() / 1048576.0,
         report.savedBytes() / 1048576.0,
+        sourceCompactionBytes / 1048576.0,
+        (report.reclaimableBytes() - sourceCompactionBytes) / 1048576.0,
         report.predictedSavedBytes() / 1048576.0,
-        100.0 * report.savedBytes() / (report.reclaimableBytes() + report.predictedSavedBytes()),
         (setupMillis + rewriteMillis) / 1000.0);
 
     return row;
