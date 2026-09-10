@@ -7,6 +7,9 @@ Usage:
 
 Requirements:
     pip install matplotlib pandas
+
+Figures are deliberately spare: what each one shows, and the parameters behind
+it, are written up in EXPERIMENTS.md rather than crowded onto the axes.
 """
 
 import sys
@@ -30,17 +33,12 @@ matplotlib.rcParams['ps.fonttype'] = 42
 plt.style.use('seaborn-v0_8-whitegrid')
 
 # Colorblind-safe palette (Wong palette), matching the remapping benchmark's plots.
-COLORS = {
-    'kept': '#0072B2',       # Blue
-    'recovered': '#E69F00',  # Orange
-    'metadata': '#009E73',   # Teal/Bluish-green
-}
-
-# One hue per format version, one dash pattern per schema width: the claim is that
-# the delete term is a v2 problem and not a row-width problem, so the two factors
-# have to be readable apart.
-VERSION_COLORS = {3: '#0072B2', 2: '#E69F00'}
-WIDTH_STYLES = {20: '-', 2: '--'}
+# Blue is the space you end up holding and orange is what recovery costs, in both
+# of the mix figures, so those two hues carry the same meaning across the pair.
+BLUE = '#0072B2'
+ORANGE = '#E69F00'
+TEAL = '#009E73'
+PURPLE = '#CC79A7'
 
 MIB = 1024.0 * 1024.0
 
@@ -53,166 +51,116 @@ def save(fig, output_dir: Path, name: str) -> None:
     print(f"  {output_dir / name}.{{png,pdf}}")
 
 
-def plot_mix(csv: Path, output_dir: Path) -> None:
-    """What the rewrite frees and what it spends, as the window shifts to deletions.
-
-    Of the bytes the rewrite frees, the two segments are what it keeps and what it
-    spends recovering rows that died in the window and so are absent from the
-    compaction. Delete vectors and metadata are the third term and are left out of
-    the bars because they would not render; the note states their bound instead.
-
-    Percentage is a separate panel rather than a second y-axis: two scales on one
-    plot invent an alignment that is not in the data.
-    """
-    df = pd.read_csv(csv).sort_values('delete_share')
-
+def plot_mix_reclaimed(df: pd.DataFrame, output_dir: Path) -> None:
+    """Of the bytes the rewrite frees, what it keeps and what recovery costs."""
     saved = df.saved_bytes / MIB
-    recovered = df.resurrected_bytes / MIB
-    overhead = (df.delete_bytes + df.metadata_bytes) / MIB
-    predicted = df.predicted_saved_bytes / MIB
-    pct = 100.0 * df.saved_bytes / df.pinned_before_bytes
+    recovered = (df.resurrected_bytes + df.delete_bytes + df.metadata_bytes) / MIB
     x = list(range(len(df)))
 
-    fig, (top, bot) = plt.subplots(
-        2, 1, sharex=True, figsize=(5, 4.4),
-        gridspec_kw={'height_ratios': [2.2, 1], 'hspace': 0.12})
-
+    fig, ax = plt.subplots(figsize=(5, 3.5))
     bar = dict(width=0.7, edgecolor='white', linewidth=0.5)
-    top.bar(x, saved, label='kept (net reclaimed)', color=COLORS['kept'], **bar)
-    top.bar(x, recovered, bottom=saved, label='spent recovering dead rows',
-            color=COLORS['recovered'], **bar)
+    ax.bar(x, saved, label='reclaimed', color=BLUE, **bar)
+    ax.bar(x, recovered, bottom=saved, label='spent recovering dead rows',
+           color=ORANGE, **bar)
 
-    # The design predicts the saving is one copy of the compacted table. Drawing it
-    # per bar makes the claim falsifiable on the slide rather than asserted beside it.
-    for i, value in enumerate(predicted):
-        top.plot([i - 0.35, i + 0.35], [value, value], color='k', linewidth=0.9,
-                 zorder=5, label='predicted (one table copy)' if i == 0 else None)
-
-    top.set_ylabel('Reclaimed (MiB)', fontsize=10)
-    top.set_title('Snapshot Rewrite Savings by Deletion Share', fontsize=11,
-                  fontweight='bold', pad=16)
-    top.annotate(
-        f'{int(df.base_rows.iloc[0]) // 1000}K base rows, '
-        f'{int(df.window_commits.iloc[0])}-commit window, '
-        f'{int(df.base_rows.iloc[0]) // 1000}K row-changes, v3, 20-column',
-        (0.0, 1.02), xycoords='axes fraction', va='bottom', fontsize=7.5, color='grey')
-    top.legend(loc='upper right', fontsize=8)
-    top.grid(False)
-    top.tick_params(labelsize=9)
+    ax.set_ylabel('Space freed by the rewrite (MiB)', fontsize=10)
+    ax.set_xlabel('Share of window row-changes that are deletions', fontsize=10)
+    ax.set_title('Space Reclaimed by Deletion Share', fontsize=11, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'{s:.2f}' for s in df.delete_share], fontsize=9)
+    ax.legend(loc='upper right', fontsize=8)
+    ax.grid(False)
+    ax.tick_params(labelsize=9)
 
     # Direct-label the ends only; the axis carries the rest.
     for i in (0, len(df) - 1):
-        top.annotate(f'{saved.iloc[i]:.0f}', (i, saved.iloc[i]), ha='center',
-                     va='bottom', xytext=(0, 3), textcoords='offset points',
-                     fontsize=8, fontweight='bold')
+        ax.annotate(f'{saved.iloc[i]:.0f}', (i, saved.iloc[i]), ha='center', va='bottom',
+                    xytext=(0, 3), textcoords='offset points', fontsize=8,
+                    fontweight='bold')
 
-    bot.plot(x, pct, color=COLORS['kept'], linewidth=1.5, marker='o', markersize=4)
-    bot.set_ylabel('% of pinned\nhistory', fontsize=10)
-    bot.set_xlabel('Share of window row-changes that are deletions', fontsize=10)
-    bot.set_xticks(x)
-    bot.set_xticklabels([f'{s:.2f}' for s in df.delete_share], fontsize=9)
-    bot.set_ylim(0, max(pct) * 1.45)
-    bot.grid(False)
-    bot.tick_params(labelsize=9)
-
-    # deadRatio = 0.5d / (1 - d) here, so the 0.5 default is reached at exactly d=0.5.
-    shares = list(df.delete_share)
-    if 0.5 in shares:
-        guard = shares.index(0.5)
-        bot.axvline(guard, color='grey', linewidth=0.8, zorder=0)
-        bot.annotate('dead-ratio 0.5:\ndefault guard refuses past here',
-                     (guard, max(pct) * 1.42), ha='center', va='top', fontsize=7,
-                     color='grey')
-
-    top.annotate(
-        f'delete vectors + metadata: {overhead.min():.2f}-{overhead.max():.2f} MiB, under '
-        f'{100 * (overhead / (df.reclaimable_bytes / MIB)).max():.1f}% of what is freed',
-        (0.0, -0.03), xycoords='axes fraction', va='top', fontsize=7, color='grey')
-
-    fig.align_ylabels([top, bot])
-    save(fig, output_dir, 'mix_savings_by_deletion_share')
+    save(fig, output_dir, 'mix_space_reclaimed')
 
 
-def plot_depth(csv: Path, output_dir: Path) -> None:
-    """What retaining one more snapshot costs, by format version and row width.
+def plot_mix_before_after(df: pd.DataFrame, output_dir: Path) -> None:
+    """What the history holds down before the rewrite and after it.
 
-    The window is insert-only, so nothing is recovered and the delete files plus the
-    per-snapshot metadata are the entire cost. Plotted as a share of pinned history
-    rather than MiB so all four series share one axis: the 2-column and 20-column
-    tables differ by two orders of magnitude in bytes and the crossing would vanish.
-
-    Series are stratified by format version and row width rather than averaged over
-    them, per PLOTTING_ERRATA.md in the remapping benchmark: averaging across a
-    parameter that changes the cost class produces a meaningless curve.
+    Before, the table pins the earlier compaction, everything the window wrote on
+    top of it, and the new compaction. After, C_A and the original interstitial
+    files are unreachable; what stands in their place is the rows the window
+    deleted, written back out, plus the delete vectors.
     """
-    df = pd.read_csv(csv)
-    df['pct'] = 100.0 * df.saved_bytes / df.pinned_before_bytes
+    x = list(range(len(df)))
+    width = 0.36
+    before = [i - width / 2 for i in x]
+    after = [i + width / 2 for i in x]
 
-    fig, (top, bot) = plt.subplots(
-        2, 1, sharex=True, figsize=(5, 5.0),
-        gridspec_kw={'height_ratios': [1.3, 1], 'hspace': 0.35})
+    ca = df.source_compaction_bytes / MIB
+    inter = df.interstitial_bytes / MIB
+    target = df.target_bytes / MIB
+    replacement = (df.resurrected_bytes + df.delete_bytes + df.metadata_bytes) / MIB
 
-    for version in (3, 2):
-        for cols in (20, 2):
+    fig, ax = plt.subplots(figsize=(6.5, 3.6))
+    bar = dict(width=width, edgecolor='white', linewidth=0.5)
+
+    ax.bar(before, ca, label='$C_A$ (earlier compaction)', color=PURPLE, **bar)
+    ax.bar(before, inter, bottom=ca, label='interstitial data + deletes',
+           color=TEAL, **bar)
+    ax.bar(before, target, bottom=ca + inter, label='$C_B$ (new compaction)',
+           color=BLUE, **bar)
+
+    ax.bar(after, replacement, label='recovered rows + vectors', color=ORANGE, **bar)
+    ax.bar(after, target, bottom=replacement, color=BLUE, **bar)
+
+    ax.set_ylabel('Bytes the history pins (MiB)', fontsize=10)
+    ax.set_xlabel('Share of window row-changes that are deletions\n'
+                  '(left bar: before the rewrite, right bar: after)', fontsize=10)
+    ax.set_title('Storage Before and After the Rewrite', fontsize=11, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'{s:.2f}' for s in df.delete_share], fontsize=9)
+    ax.legend(loc='upper right', fontsize=8)
+    ax.grid(False)
+    ax.tick_params(labelsize=9)
+
+    # Which bar is which goes in the axis label rather than as in-plot text: at eight
+    # groups there is no room beside the bars that does not collide with one.
+    ax.set_ylim(0, max(ca + inter + target) * 1.08)
+
+    save(fig, output_dir, 'mix_before_after')
+
+
+def plot_depth(df: pd.DataFrame, output_dir: Path) -> None:
+    """Whether an insert-only window's win survives depth, by row width.
+
+    Small multiples rather than one axis: the two schemas differ by two orders of
+    magnitude in bytes, and sharing a scale would hide the crossing entirely.
+    Stratified by format version and row width rather than averaged over them, per
+    PLOTTING_ERRATA.md in the remapping benchmark.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(7, 3.2), sharex=True)
+
+    for ax, cols, label in zip(axes, (20, 2), ('20-column rows', '2-column rows')):
+        for version, colour in ((3, BLUE), (2, ORANGE)):
             series = df[(df.format_version == version)
                         & (df.schema_cols == cols)].sort_values('window_commits')
-            top.plot(series.window_commits, series.pct, color=VERSION_COLORS[version],
-                     linestyle=WIDTH_STYLES[cols], linewidth=1.5, marker='o',
-                     markersize=4, label=f'v{version}, {cols}-column')
-            # Label only the two series that move; the flat pair would collide.
-            if cols == 2:
-                end = series.iloc[-1]
-                top.annotate(f'{end.pct:.0f}%', (end.window_commits, end.pct),
-                             xytext=(6, -3), textcoords='offset points', fontsize=8,
-                             fontweight='bold')
+            ax.plot(series.window_commits, series.saved_bytes / MIB, color=colour,
+                    linewidth=1.5, marker='o', markersize=4, label=f'v{version}')
 
-    top.axhline(0, color='k', linewidth=0.8, zorder=1)
-    top.set_ylabel('% of pinned\nhistory', fontsize=10)
-    top.set_title('Cost of Window Depth by Format Version', fontsize=11,
-                  fontweight='bold', pad=16)
-    top.annotate(
-        f'insert-only window, {int(df.base_rows.iloc[0]) // 1000}K base rows, '
-        f'{int(df.window_inserts.iloc[0] / df.window_commits.iloc[0])} rows per commit',
-        (0.0, 1.02), xycoords='axes fraction', va='bottom', fontsize=7.5, color='grey')
-    top.legend(loc='lower left', fontsize=8, ncol=2)
-    top.grid(False)
-    top.tick_params(labelsize=9)
-    top.annotate('below zero the rewrite costs more than it frees',
-                 (df.window_commits.min(), 0), xytext=(4, 5),
-                 textcoords='offset points', ha='left', fontsize=7, color='grey')
+        ax.axhline(0, color='k', linewidth=0.8, zorder=1)
+        ax.set_xscale('log', base=2)
+        ax.set_xticks(sorted(df.window_commits.unique()))
+        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        ax.get_xaxis().set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax.set_title(label, fontsize=10)
+        ax.set_xlabel('Commits retained (m)', fontsize=10)
+        ax.legend(loc='lower left', fontsize=8)
+        ax.grid(False)
+        ax.tick_params(labelsize=9)
 
-    # Per rewritten snapshot rather than per window: that is the unit in which a v3
-    # vector is genuinely flat, and it is the number a reader can carry away.
-    wide = df[df.schema_cols == 20].sort_values('window_commits')
-    for version in (2, 3):
-        series = wide[wide.format_version == version]
-        bot.plot(series.window_commits,
-                 series.delete_bytes / (series.window_commits + 1) / 1024.0,
-                 color=VERSION_COLORS[version], linewidth=1.5, marker='o',
-                 markersize=4, label=f'v{version} delete file')
-
-    meta = wide[wide.format_version == 3]
-    bot.plot(meta.window_commits, meta.metadata_bytes / (meta.window_commits + 1) / 1024.0,
-             color=COLORS['metadata'], linewidth=1.5, marker='o', markersize=4,
-             label='manifest + manifest list')
-
-    bot.set_yscale('log')
-    bot.set_xscale('log', base=2)
-    bot.set_ylabel('KiB per\nsnapshot', fontsize=10)
-    bot.set_xlabel('Commits retained in the window (m)', fontsize=10)
-    bot.set_xticks(sorted(df.window_commits.unique()))
-    bot.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-    bot.get_xaxis().set_minor_formatter(matplotlib.ticker.NullFormatter())
-    bot.set_xlim(df.window_commits.min() * 0.85, df.window_commits.max() * 1.4)
-    lower, upper = bot.get_ylim()
-    bot.set_ylim(lower, upper * 12)
-    bot.legend(loc='upper left', fontsize=8)
-    bot.grid(False)
-    bot.tick_params(labelsize=9)
-    bot.set_title('Per-snapshot cost, 20-column rows', fontsize=9)
-
-    fig.align_ylabels([top, bot])
-    save(fig, output_dir, 'depth_cost_by_format_version')
+    axes[0].set_ylabel('Space reclaimed (MiB)', fontsize=10)
+    fig.suptitle('Insert-Only Window: Reclaim vs Window Depth', fontsize=11,
+                 fontweight='bold')
+    fig.tight_layout()
+    save(fig, output_dir, 'depth_reclaim_by_format_version')
 
 
 def main() -> None:
@@ -220,12 +168,19 @@ def main() -> None:
     output_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else results_dir / 'plots'
 
     print(f"Reading {results_dir}")
-    for name, fn in (('mix.csv', plot_mix), ('depth.csv', plot_depth)):
-        csv = results_dir / name
-        if csv.exists():
-            fn(csv, output_dir)
-        else:
-            print(f"  no {name}, skipping")
+    mix = results_dir / 'mix.csv'
+    if mix.exists():
+        df = pd.read_csv(mix).sort_values('delete_share')
+        plot_mix_reclaimed(df, output_dir)
+        plot_mix_before_after(df, output_dir)
+    else:
+        print("  no mix.csv, skipping")
+
+    depth = results_dir / 'depth.csv'
+    if depth.exists():
+        plot_depth(pd.read_csv(depth), output_dir)
+    else:
+        print("  no depth.csv, skipping")
 
 
 if __name__ == '__main__':
