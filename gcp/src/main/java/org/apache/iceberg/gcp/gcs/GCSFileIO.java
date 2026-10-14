@@ -133,11 +133,8 @@ public class GCSFileIO
     GCSInputFile gcsInputFile = (GCSInputFile) replace;
     PrefixedStorage storage = clientForStoragePath(replace.location());
     BlobId pinnedId = gcsInputFile.pinnedBlobId();
-    GCSRapidStageAndMove zonalWriter = null;
-    if (storage.isZonalBucket(gcsInputFile.blobId().getBucket())) {
-      zonalWriter =
-          new GCSRapidStageAndMove(storage.grpcStorage(), storage.gcpProperties(), metrics);
-    }
+    GCSXmlPutWriter zonalWriter =
+        storage.isZonalBucket(gcsInputFile.blobId().getBucket()) ? storage.xmlPutWriter() : null;
     return GCSOutputFile.replacing(
         gcsInputFile.blobId(),
         pinnedId,

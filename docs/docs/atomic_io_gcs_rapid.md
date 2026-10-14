@@ -1,6 +1,6 @@
 # Atomic FileIO on GCS Rapid Storage
 
-This document records two rounds of empirical investigation into how to
+This document records three rounds of empirical investigation into how to
 implement `SupportsAtomicOperations` on GCS Rapid Storage. The
 short answer:
 
@@ -8,22 +8,75 @@ short answer:
   PoC (recorded below as the "April 2026" investigation) tried to use
   the appendable-object protocol's bidi API to fence concurrent
   writers and found silent data loss patterns under contention.
-- **Atomic CAS-replace IS implementable**, but not via the obvious
-  paths (`blobWriteSession`, `storage.create`, `copy/rewrite` are all
-  rejected by the server on Rapid; direct `blobAppendableUpload` writes
-  to the target are unsafe under exception paths). The viable pattern
-  is **stage-and-move**: write to a UUID-named temp via
-  `blobAppendableUpload`, then `Storage.moveBlob` with both source and
-  target generation preconditions to atomically replace the live
-  object. This was found in the "May 2026" investigation below.
+- **Atomic CAS-replace is one XML API PUT** (October 2026, below). Zonal
+  buckets reject the JSON API's `storage.create`, `blobWriteSession`
+  and `rewrite`, and a direct `blobAppendableUpload` to the target is
+  unsafe under exception paths, but they accept XML API object writes.
+  The May 2026 stage-and-move pattern (appendable upload to a temp,
+  then `moveBlob`) was correct and has been replaced: it took three
+  requests, a gRPC client, and had a two-second p90.
 
-`GCSFileIO.supportsAppend()` stays `false`. `GCSFileIO` will gain a
-zonal-aware CAS path that uses stage-and-move when the bucket is
-zonal/Rapid, and keeps the existing `blobWriteSession` path for
-standard buckets (where it remains the fastest option, see the
-performance section).
+`GCSFileIO.supportsAppend()` stays `false`.
 
-## May 2026: stage-and-move CAS
+## October 2026: single-request XML PUT
+
+Re-validated with google-cloud-storage 2.67.0 against the zonal bucket
+`lstx-consistency` (US-WEST4, RAPID) and standard `lst-consistency`
+(US-WEST1). Probes ran from a workstation outside both regions, so
+absolute latencies are WAN-dominated; ratios are the signal.
+
+**What still holds from May.** Zonal buckets reject `storage.create`
+(JSON multipart and gRPC: "This bucket requires appendable objects"),
+`blobWriteSession`, `writer` and `copy` ("Rapid storage class objects
+do not support rewrite"). An appendable upload aimed at the live object
+that fails halfway replaces it with the flushed half at a new
+generation, with either `CloseAction`. That is how appendable objects
+work (they are visible while being written), not an SDK bug, so no SDK
+upgrade will change it.
+
+**What is new.** Google's Rapid documentation says zonal buckets accept
+XML API writes other than XML multipart uploads. A plain XML PUT:
+
+| check | zonal | standard |
+| ----- | ----- | -------- |
+| `x-goog-if-generation-match` stale / `0` on existing | 412 / 412 | 412 / 412 |
+| `x-goog-hash: crc32c=` wrong | 400, unchanged | 400, unchanged |
+| client dies mid-body (declared 1 MiB, sent 256 KiB) | generation unchanged | generation unchanged |
+| reader polling during a 4 MiB → 32 MiB PUT | old or new only | old or new only |
+| 8 rounds × 8 racing writers | exactly one winner, its bytes stored | same |
+| result | finalized object (`timeFinalized` set), generation in `x-goog-generation` | same |
+
+Latency, CAS-replace of one object, n=30, back-to-back (ms):
+
+| path | 1 KiB p50 / p90 | 64 KiB p50 / p90 |
+| ---- | --------------- | ---------------- |
+| zonal, XML PUT | 131 / 231 | 209 / 306 |
+| zonal, stage-and-move | 324 / 2250 | 348 / 1920 |
+| standard, `storage.create` (1 request) | 84 / 1758* | 87 / 1842* |
+| standard, `blobWriteSession` (2 requests) | 158 / 186 | — |
+| standard, XML PUT | 84 / 100 | 117 / 130 |
+
+\* includes the SDK's own retries of 429s.
+
+**Per-object rate limit.** Back-to-back replaces of one object get 429
+("exceeded the rate limit for object mutation operations") on both
+bucket types, stage-and-move included in throughput terms: every path
+sustained 1.4–3 writes/s to a single object. The catalog's commit rate
+on GCS is bounded by this, not by the write path.
+
+**Implementation.** `GCSXmlPutWriter` builds the PUT on the `Storage`
+client's own HTTP transport, request initializer (credentials,
+timeouts, user agent) and host; java-storage has no XML upload surface.
+It sends the prepared CRC32C, the generation precondition, and
+user-project / CSEK headers, with no transport-level retries (a blind
+retry of a PUT that landed would come back as a spurious 412).
+Standard buckets use `storage.create`, also one request.
+`GcsRapidCanaries` (run with `RAPID_BUCKET`) pins all of the above:
+gap canaries for the rejected JSON surfaces, a hazard canary for the
+appendable partial publish, and positive canaries for the XML PUT's
+preconditions, CRC32C check and cut-off-body safety.
+
+## May 2026: stage-and-move CAS (superseded)
 
 After the April 2026 PoC ruled out atomic APPEND on Rapid, the next
 question was whether the FileIO catalog can run on Rapid at all — i.e.,
