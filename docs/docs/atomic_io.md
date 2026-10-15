@@ -276,7 +276,7 @@ The previous implementation used Data Lake writes. Both of its paths had problem
 
 ### Limitations
 
-- **Vended SAS**: under SAS auth the rename must carry the SAS in `x-ms-rename-source`. The SDK adds it for clients built with a SAS token (`adls.sas-token.*`), shared key or OAuth, but not for SAS added by `VendedAzureSasCredentialPolicy`, so CAS fails with 403 under vended credentials.
+- **SAS on the rename**: under SAS auth the rename must carry the SAS in `x-ms-rename-source`, which the service authorizes separately from the request. The SDK adds it for clients built with a SAS token (`adls.sas-token.*`); `VendedAzureSasCredentialPolicy` adds the vended token (without it, the rename fails with 403 `AuthorizationPermissionMismatch` whatever the token's permissions). Shared key and OAuth need nothing.
 - **50,000 appends per file**: an Append Blob holds at most 50,000 blocks; the next `AppendBlock` fails with 409 `BlockCountExceedsLimit`. A CAS (compaction) starts a fresh blob.
 - **Emulator**: Azurite has no Data Lake endpoint, so the CAS rename cannot run there; it does enforce the `AppendBlock` conditions.
 
@@ -326,5 +326,5 @@ try {
 
 1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. Provider tests declare this via `supportsAppend()`.
 2. **GCS APPEND**: Not supported. GCS objects are immutable — every write replaces the whole object — so `GCSFileIO.supportsAppend()` returns `false` and `GCSOutputFile.prepare()` rejects `Strategy.APPEND` with `IllegalArgumentException`. Callers that mix CAS and APPEND in a commit log must fall back to CAS-only.
-3. **ADLS APPEND**: One conditional `AppendBlock` per append; at most 50,000 appends per file between CAS compactions. CAS requires a hierarchical-namespace account (it renames) and does not work with vended SAS credentials.
+3. **ADLS APPEND**: One conditional `AppendBlock` per append; at most 50,000 appends per file between CAS compactions. CAS requires a hierarchical-namespace account (it renames).
 4. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large writes may exceed provider request timeouts.
