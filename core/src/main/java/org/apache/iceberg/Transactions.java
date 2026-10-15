@@ -85,6 +85,15 @@ public final class Transactions {
     return new BaseTransaction(tableName, ops, TransactionType.SIMPLE, ops.refresh());
   }
 
+  /**
+   * A transaction that starts from {@code start}, a version of the table that need not be the
+   * latest: a commit of it fails its requirements if the table has changed since.
+   */
+  public static Transaction newTransaction(
+      String tableName, TableOperations ops, TableMetadata start) {
+    return new BaseTransaction(tableName, ops, TransactionType.SIMPLE, start);
+  }
+
   public static Transaction newTransaction(
       String tableName, TableOperations ops, MetricsReporter reporter) {
     return new BaseTransaction(tableName, ops, TransactionType.SIMPLE, ops.refresh(), reporter);
