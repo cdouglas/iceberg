@@ -30,6 +30,7 @@ public class ADLSChecksum implements FileChecksum, CAS {
   private long length = 0L;
   private final MessageDigest checksum = getMD5DigestInstance();
   private final AtomicOutputFile.Strategy strategy;
+  private byte[] digest = null;
 
   ADLSChecksum(AtomicOutputFile.Strategy strategy) {
     this.strategy = strategy;
@@ -60,7 +61,11 @@ public class ADLSChecksum implements FileChecksum, CAS {
 
   @Override
   public byte[] contentChecksumBytes() {
-    return checksum.digest();
+    // MessageDigest.digest() resets the digest, so a second call would return the MD5 of nothing
+    if (digest == null) {
+      digest = checksum.digest();
+    }
+    return digest.clone();
   }
 
   @Override

@@ -18,22 +18,28 @@
  */
 package org.apache.iceberg.azure.adlsv2;
 
+import com.azure.core.http.HttpHeaderName;
 import com.azure.core.http.rest.Response;
 import com.azure.core.util.Context;
+import com.azure.storage.blob.models.AppendBlobRequestConditions;
+import com.azure.storage.blob.models.BlobRequestConditions;
+import com.azure.storage.blob.models.BlobStorageException;
+import com.azure.storage.blob.options.AppendBlobCreateOptions;
+import com.azure.storage.blob.specialized.AppendBlobClient;
+import com.azure.storage.blob.specialized.SpecializedBlobClientBuilder;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.DataLakeStorageException;
-import com.azure.storage.file.datalake.models.LeaseAction;
-import com.azure.storage.file.datalake.models.PathHttpHeaders;
-import com.azure.storage.file.datalake.models.PathInfo;
-import com.azure.storage.file.datalake.options.DataLakeFileAppendOptions;
-import com.azure.storage.file.datalake.options.DataLakeFileFlushOptions;
-import com.azure.storage.file.datalake.options.FileParallelUploadOptions;
-import com.azure.storage.file.datalake.specialized.DataLakeLeaseClientBuilder;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.util.Locale;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -44,19 +50,54 @@ import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/**
+ * Output file for ADLS Gen2 (hierarchical namespace). Atomic writes keep the file as an Append
+ * Blob:
+ *
+ * <ul>
+ *   <li><b>APPEND</b> is one {@code AppendBlock} conditioned on the snapshot's length ({@code
+ *       x-ms-blob-condition-appendpos}) and ETag ({@code If-Match}), carrying the block's MD5. The
+ *       service checks both conditions and applies the block in one step, so of N writers appending
+ *       to the same snapshot exactly one commits, and the committed bytes are its own.
+ *   <li><b>CAS</b> writes the new content to a temp Append Blob next to the target, then renames it
+ *       onto the target with the snapshot's ETag (or {@code If-None-Match: *}) as destination
+ *       condition. Rename is atomic on a hierarchical-namespace account: readers see the old file
+ *       or the new one, and a writer that fails before the rename leaves the target untouched.
+ * </ul>
+ *
+ * <p>This replaced the Data Lake {@code uploadWithResponse} CAS and the leased append + flush.
+ * {@code uploadWithResponse} is three requests (create, which truncates the file, then append and
+ * flush, only the first conditional), so a writer that died after the create left an empty file,
+ * and readers could observe one mid-write. Data Lake append + flush lets concurrent writers
+ * overwrite each other's uncommitted bytes, which the lease papered over. A file written through
+ * the Data Lake API cannot be appended with {@code AppendBlock} (409 {@code InvalidBlobType}); a
+ * CAS replaces it with an Append Blob.
+ *
+ * <p>The rename has to carry the SAS in {@code x-ms-rename-source}; the SDK does that for clients
+ * built with a SAS token ({@code adls.sas-token.*}), shared key or OAuth, but not for SAS added by
+ * {@link VendedAzureSasCredentialPolicy}, so CAS does not work with vended credentials.
+ */
 class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
+  private static final Logger LOG = LoggerFactory.getLogger(ADLSOutputFile.class);
 
   private Long length;
   private final DataLakeRequestConditions conditions;
+  // Builds the Data Lake client for another location in the same file system: CAS stages its
+  // temp next to the target. Clients built through ADLSFileIO carry the SAS the rename needs.
+  private final Function<String, DataLakeFileClient> clients;
 
   ADLSOutputFile(
       String location,
       DataLakeFileClient fileClient,
       AzureProperties azureProperties,
-      MetricsContext metrics) {
-    this(location, fileClient, azureProperties, 0, null, metrics);
+      MetricsContext metrics,
+      Function<String, DataLakeFileClient> clients) {
+    this(location, fileClient, azureProperties, 0, null, metrics, clients);
   }
 
   ADLSOutputFile(
@@ -65,10 +106,12 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       AzureProperties azureProperties,
       long length,
       DataLakeRequestConditions conditions,
-      MetricsContext metrics) {
+      MetricsContext metrics,
+      Function<String, DataLakeFileClient> clients) {
     super(location, fileClient, azureProperties, metrics);
     this.length = length;
     this.conditions = conditions;
+    this.clients = clients;
   }
 
   /**
@@ -128,150 +171,190 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
     }
   }
 
-  // Default lease duration covers a typical append+flush span. On flush failure the lease is
-  // explicitly released so a stale-snapshot writer doesn't lock other writers out for the full
-  // window; on writer crash the lease ages out and orphaned uncommitted bytes are GC'd by Azure.
-  private static final int APPEND_LEASE_SECONDS = 15;
-
-  /**
-   * Append to the live object atomically. ADLS Gen2's two-phase append/flush exposes a validation
-   * gap that no combination of return codes can close on its own: the bytes at uncommitted offset L
-   * are last-appender-wins and decoupled from which writer's flush wins the etag race, so a writeup
-   * that returns {@code 200} can still have committed a different concurrent writer's payload. (The
-   * position check on flush guarantees no torn or partial writes — committed bytes are always some
-   * concurrent writer's complete payload — but not whose.) We close the gap with a blob lease that
-   * serializes the append+flush span: the lease is acquired atomically with append (via {@link
-   * LeaseAction#ACQUIRE}) and released atomically with flush (via {@link LeaseAction#RELEASE}), so
-   * no extra round trips. While we hold the lease no other writer can touch the uncommitted buffer,
-   * so a successful flush implies *our* bytes are live. On flush failure we release the lease
-   * eagerly in the finally block; on writer crash the lease ages out and the next writer's
-   * same-position append cleanly overwrites the orphaned uncommitted bytes.
-   */
-  private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source) {
-    final String leaseId = UUID.randomUUID().toString();
-    boolean leaseHeld = false;
-    try {
-      final long appendLen = checksum.contentLength();
-      DataLakeFileAppendOptions appendOpts =
-          new DataLakeFileAppendOptions()
-              .setContentHash(checksum.contentChecksumBytes())
-              .setLeaseAction(LeaseAction.ACQUIRE)
-              .setProposedLeaseId(leaseId)
-              .setLeaseDuration(APPEND_LEASE_SECONDS);
-      fileClient()
-          .appendWithResponse(source.get(), length, appendLen, appendOpts, null, Context.NONE);
-      leaseHeld = true;
-
-      DataLakeRequestConditions flushConditions =
-          new DataLakeRequestConditions().setLeaseId(leaseId);
-      if (conditions != null) {
-        if (conditions.getIfMatch() != null) {
-          flushConditions.setIfMatch(conditions.getIfMatch());
-        }
-        if (conditions.getIfNoneMatch() != null) {
-          flushConditions.setIfNoneMatch(conditions.getIfNoneMatch());
-        }
-      }
-      final DataLakeFileFlushOptions flushOpts =
-          new DataLakeFileFlushOptions()
-              .setClose(true)
-              .setRequestConditions(flushConditions)
-              .setUncommittedDataRetained(false)
-              .setLeaseAction(LeaseAction.RELEASE);
-      // throws on failure
-      final Response<PathInfo> resp =
-          fileClient().flushWithResponse(length + appendLen, flushOpts, null, Context.NONE);
-      // RELEASE on the flush options drops the lease atomically with a successful flush.
-      leaseHeld = false;
+  /** One {@code AppendBlock} at the snapshot's length, conditioned on the snapshot's ETag. */
+  private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
+      throws IOException {
+    if (conditions == null || conditions.getIfMatch() == null || length < 0) {
+      throw new SupportsAtomicOperations.AppendException(
+          "Cannot append to " + location() + ": no snapshot of an existing file", null);
+    }
+    final long appendLen = checksum.contentLength();
+    try (InputStream src = source.get()) {
+      String etag =
+          appendBlob(fileClient())
+              .appendBlockWithResponse(
+                  src,
+                  appendLen,
+                  // The service rejects the block (400 Md5Mismatch) if the bytes sent are not the
+                  // ones prepare() checksummed.
+                  checksum.contentChecksumBytes(),
+                  new AppendBlobRequestConditions()
+                      .setAppendPosition(length)
+                      .setIfMatch(conditions.getIfMatch()),
+                  null,
+                  Context.NONE)
+              .getValue()
+              .getETag();
       this.length += appendLen;
-      final PathInfo info = resp.getValue();
-      return new ADLSInputFile(
-          location(),
-          length,
-          fileClient(),
-          azureProperties(),
-          metrics(),
-          new DataLakeRequestConditions().setIfMatch(info.getETag()));
-    } catch (DataLakeStorageException e) {
-      if (409 == e.getStatusCode() && e.getErrorCode() != null) {
-        String code = e.getErrorCode();
-        if ("LeaseAlreadyPresent".equals(code)
-            || "LeaseIdMismatchWithLeaseOperation".equals(code)
-            || "LeaseAlreadyBroken".equals(code)
-            || "LeaseIsBreakingAndCannotBeAcquired".equals(code)) {
-          throw new SupportsAtomicOperations.AppendException("Concurrent writer holds lease", e);
-        }
-      }
+      return snapshot(length, etag);
+    } catch (BlobStorageException e) {
       if (412 == e.getStatusCode()) {
-        // precondition failed
+        // ConditionNotMet (ETag) or AppendPositionConditionNotMet (length): another writer won
         throw new SupportsAtomicOperations.AppendException("Target modified", e);
       }
-      if (400 == e.getStatusCode() && "InvalidFlushPosition".equals(e.getErrorCode())) {
-        throw new SupportsAtomicOperations.AppendException("Wrong length", e);
+      if (404 == e.getStatusCode()) {
+        throw new SupportsAtomicOperations.AppendException("Target no longer exists", e);
+      }
+      // 409 InvalidBlobType (written through the Data Lake API; a CAS converts it) and 409
+      // BlockCountExceedsLimit (an Append Blob holds 50,000 blocks) propagate as they are: retrying
+      // the append cannot succeed.
+      throw e;
+    }
+  }
+
+  /**
+   * Stage the content in a temp Append Blob next to the target, then rename it onto the target with
+   * the snapshot's ETag as the destination condition.
+   */
+  private ADLSInputFile replaceDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
+      throws IOException {
+    Preconditions.checkState(
+        clients != null, "Atomic writes need a client factory: %s", location());
+    DataLakeFileClient temp = clients.apply(tempLocation());
+    AppendBlobClient tempBlob = appendBlob(temp);
+    boolean renamed = false;
+    try {
+      String etag = stage(tempBlob, checksum, source);
+      DataLakeRequestConditions destination = null;
+      if (conditions != null) {
+        destination =
+            new DataLakeRequestConditions()
+                .setIfMatch(conditions.getIfMatch())
+                .setIfNoneMatch(conditions.getIfNoneMatch());
+      }
+      Response<DataLakeFileClient> resp =
+          temp.renameWithResponse(
+              null,
+              fileClient().getFilePath(),
+              new DataLakeRequestConditions().setIfMatch(etag),
+              destination,
+              null,
+              Context.NONE);
+      renamed = true;
+      // The rename keeps the temp's ETag; the response carries it too. Never re-read it: a HEAD
+      // after the rename could see a later writer's ETag.
+      String renamedEtag = resp.getHeaders().getValue(HttpHeaderName.ETAG);
+      this.length = checksum.contentLength();
+      return snapshot(length, renamedEtag != null ? renamedEtag : etag);
+    } catch (DataLakeStorageException e) {
+      if (412 == e.getStatusCode()) {
+        // ConditionNotMet on the destination: the target moved on
+        throw new SupportsAtomicOperations.CASException("Target modified", e);
+      }
+      if (409 == e.getStatusCode() && "PathAlreadyExists".equals(e.getErrorCode())) {
+        throw new SupportsAtomicOperations.CASException("Location exists", e);
       }
       throw e;
     } finally {
-      // If append acquired the lease but flush failed, release the lease eagerly so we don't lock
-      // out other writers for the full lease duration.
-      if (leaseHeld) {
+      if (!renamed) {
         try {
-          new DataLakeLeaseClientBuilder()
-              .fileClient(fileClient())
-              .leaseId(leaseId)
-              .buildClient()
-              .releaseLease();
-        } catch (DataLakeStorageException ignored) {
-          // best effort: lease will expire on its own
+          tempBlob.deleteIfExists();
+        } catch (RuntimeException e) {
+          LOG.warn("Failed to delete CAS temp {}", temp.getFilePath(), e);
         }
       }
     }
   }
 
-  @SuppressWarnings("deprecation") // not clear how else to support atomic CAS
-  private ADLSInputFile replaceDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
+  /**
+   * Write the content to a new Append Blob, in blocks no larger than the service accepts, and check
+   * that it is what {@code prepare()} checksummed. Returns the blob's ETag.
+   */
+  private String stage(AppendBlobClient blob, ADLSChecksum checksum, Supplier<InputStream> source)
       throws IOException {
-    // Annoyingly, the checksum is not validated server-side, but stored as metadata. The
-    // partial-write problem is less of an issue using an InputStream, so the length validation can
-    // suffice
+    String etag =
+        blob.createWithResponse(
+                new AppendBlobCreateOptions()
+                    .setRequestConditions(new BlobRequestConditions().setIfNoneMatch("*")),
+                null,
+                Context.NONE)
+            .getValue()
+            .getETag();
+    MessageDigest whole = md5();
+    long written = 0;
+    byte[] buf =
+        new byte
+            [(int) Math.max(1, Math.min(blob.getMaxAppendBlockBytes(), checksum.contentLength()))];
     try (InputStream src = source.get()) {
-      final Response<PathInfo> resp =
-          fileClient()
-              .uploadWithResponse(
-                  new FileParallelUploadOptions(src, checksum.contentLength())
-                      .setRequestConditions(conditions)
-                      .setHeaders(
-                          new PathHttpHeaders()
-                              .setContentMd5(checksum.contentChecksumBytes())
-                              .setContentType("binary")),
-                  null, // no timeout
-                  Context.NONE);
-      this.length = checksum.contentLength();
-      final PathInfo info = resp.getValue();
-      return new ADLSInputFile(
-          location(),
-          checksum.contentLength(),
-          fileClient(),
-          azureProperties(),
-          metrics(),
-          new DataLakeRequestConditions().setIfMatch(info.getETag()));
-    } catch (DataLakeStorageException e) {
-      if (412 == e.getStatusCode()) {
-        // precondition failed
-        throw new SupportsAtomicOperations.CASException("Target modified", e);
+      int n;
+      while ((n = ByteStreams.read(src, buf, 0, buf.length)) > 0) {
+        whole.update(buf, 0, n);
+        MessageDigest block = md5();
+        block.update(buf, 0, n);
+        etag =
+            blob.appendBlockWithResponse(
+                    new ByteArrayInputStream(buf, 0, n),
+                    n,
+                    block.digest(),
+                    new AppendBlobRequestConditions().setAppendPosition(written).setIfMatch(etag),
+                    null,
+                    Context.NONE)
+                .getValue()
+                .getETag();
+        written += n;
       }
-      if (400 == e.getStatusCode() && "InvalidFlushPosition".equals(e.getErrorCode())) {
-        // spurious
-        throw new SupportsAtomicOperations.CASException("Target modified", e);
-      }
-      if (409 == e.getStatusCode() && "InvalidFlushOperation".equals(e.getErrorCode())) {
-        // spurious
-        throw new SupportsAtomicOperations.CASException("Target modified", e);
-      }
-      if (409 == e.getStatusCode() && "PathAlreadyExists".equals(e.getErrorCode())) {
-        // include among atomic errors
-        throw new SupportsAtomicOperations.CASException("Location exists", e);
-      }
-      throw e;
+    }
+    if (written != checksum.contentLength()
+        || !Arrays.equals(whole.digest(), checksum.contentChecksumBytes())) {
+      throw new IOException(
+          String.format(
+              Locale.ROOT,
+              "Source for %s changed since prepare(): %d bytes, prepared %d",
+              location(),
+              written,
+              checksum.contentLength()));
+    }
+    return etag;
+  }
+
+  private ADLSInputFile snapshot(long len, String etag) {
+    return new ADLSInputFile(
+        location(),
+        len,
+        fileClient(),
+        azureProperties(),
+        metrics(),
+        new DataLakeRequestConditions().setIfMatch(etag));
+  }
+
+  // A hidden sibling of the target: same directory, so the rename stays within it.
+  private String tempLocation() {
+    String loc = location();
+    int slash = loc.lastIndexOf('/');
+    return loc.substring(0, slash + 1)
+        + "."
+        + loc.substring(slash + 1)
+        + ".cas-"
+        + UUID.randomUUID()
+        + ".tmp";
+  }
+
+  /**
+   * The Blob API client for a Data Lake file: same pipeline (credentials, policies, retries), blob
+   * endpoint. Append Blob writes go through the Blob API; the Data Lake API has no equivalent.
+   */
+  static AppendBlobClient appendBlob(DataLakeFileClient file) {
+    return new SpecializedBlobClientBuilder()
+        .pipeline(file.getHttpPipeline())
+        .endpoint(file.getFileUrl().replaceFirst("^(https?://[^/]*?)\\.dfs\\.", "$1.blob."))
+        .buildAppendBlobClient();
+  }
+
+  private static MessageDigest md5() {
+    try {
+      return MessageDigest.getInstance("MD5");
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("Missing MD5 implementation", e);
     }
   }
 }
