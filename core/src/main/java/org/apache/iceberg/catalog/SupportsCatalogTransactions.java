@@ -20,6 +20,8 @@ package org.apache.iceberg.catalog;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 
@@ -33,11 +35,20 @@ public interface SupportsCatalogTransactions {
    */
   CatalogTransaction createTransaction(IsolationLevel isolationLevel);
 
-  // TODO wrong, but we're going to live with it
-  void commitTransaction(List<TableIdentifier> readTables, List<TableCommit> commits);
+  /**
+   * Commits {@code commits} atomically.
+   *
+   * @param reads for {@link IsolationLevel#SERIALIZABLE} isolation, every branch of a table the
+   *     transaction read, with the table's metadata as the transaction first read it. The commit
+   *     fails if any of them has changed since (see {@link
+   *     BaseCatalogTransaction#unchangedSinceRead}), up to the moment the commit takes effect.
+   * @param commits the changes to each table the transaction updated
+   */
+  void commitTransaction(
+      Map<BaseCatalogTransaction.TableRef, TableMetadata> reads, List<TableCommit> commits);
 
   default void commitTransaction(List<TableCommit> commits) {
-    commitTransaction(Collections.emptyList(), commits);
+    commitTransaction(Collections.emptyMap(), commits);
   }
 
   default void commitTransaction(TableCommit... commits) {
