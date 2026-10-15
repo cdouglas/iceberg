@@ -111,7 +111,7 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
 
   @Override
   public OutputFile newOutputFile(String path) {
-    return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics);
+    return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics, this::fileClient);
   }
 
   @Override
@@ -121,9 +121,15 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
       DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
       final long objLength = replace.exists() ? replace.getLength() : -1L;
       return new ADLSOutputFile(
-          path, fileClient(path), azureProperties, objLength, conditions, metrics);
+          path,
+          fileClient(path),
+          azureProperties,
+          objLength,
+          conditions,
+          metrics,
+          this::fileClient);
     }
-    return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics);
+    return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics, this::fileClient);
   }
 
   @Override
