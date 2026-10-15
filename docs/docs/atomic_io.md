@@ -87,7 +87,7 @@ public interface AtomicOutputFile extends OutputFile {
 
 ### GCSFileIO
 
-Implements `SupportsAtomicOperations` using GCS generation numbers, with a separate stage-and-move path for zonal (Rapid Storage) buckets. `supportsAppend()` returns `false` — GCS objects are immutable, so APPEND has no honest implementation and the catalog format coerces its commit policy to CAS-only on this backend.
+Implements `SupportsAtomicOperations` using GCS generation numbers. Every CAS write is a single request: `storage.create` on standard buckets, an XML API PUT on zonal (Rapid Storage) buckets, which reject the JSON API's single-request and resumable uploads. `supportsAppend()` returns `false` — GCS objects are immutable, so APPEND has no honest implementation and the catalog format coerces its commit policy to CAS-only on this backend.
 
 ```java
 public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
@@ -96,11 +96,8 @@ public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
         GCSInputFile gcsInputFile = (GCSInputFile) replace;
         PrefixedStorage storage = clientForStoragePath(replace.location());
         BlobId pinnedId = gcsInputFile.pinnedBlobId();
-        GCSRapidStageAndMove zonalWriter = null;
-        if (storage.isZonalBucket(gcsInputFile.blobId().getBucket())) {
-            zonalWriter = new GCSRapidStageAndMove(
-                storage.grpcStorage(), storage.gcpProperties(), metrics);
-        }
+        GCSXmlPutWriter zonalWriter =
+            storage.isZonalBucket(gcsInputFile.blobId().getBucket()) ? storage.xmlPutWriter() : null;
         return GCSOutputFile.replacing(
             gcsInputFile.blobId(), pinnedId, storage.storage(),
             storage.gcpProperties(), metrics, zonalWriter);
@@ -115,45 +112,41 @@ public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
 
 ### GCSOutputFile
 
-`prepare()` rejects `Strategy.APPEND` outright. `writeAtomic()` branches on bucket type:
+`prepare()` rejects `Strategy.APPEND` outright and checksums the source (CRC32C). `writeAtomic()` buffers the payload, checks it against the prepared checksum, and sends it in one request:
 
 ```java
 class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
     @Override
-    public CAS prepare(Supplier<InputStream> source, Strategy howto) throws IOException {
-        Preconditions.checkArgument(
-            howto == Strategy.CAS,
-            "GCS does not support append-mode atomic writes; use Strategy.CAS (got %s)",
-            howto);
-        GCSChecksum checksum = new GCSChecksum();
-        try (InputStream in = source.get();
-             FileChecksumOutputStream chk = new FileChecksumOutputStream(
-                 ByteStreams.nullOutputStream(), checksum)) {
-            ByteStreams.copy(in, chk);
-        }
-        return checksum;
-    }
-
-    @Override
     public InputFile writeAtomic(CAS token, Supplier<InputStream> source) throws IOException {
+        byte[] payload = ByteStreams.toByteArray(source.get());
+        // The SDK computes its own CRC32C over what it sends, so a source that changed since
+        // prepare() is caught here, before anything is written.
+        checkMatches(token, payload);
         if (zonalWriter != null) {
-            // Rapid/zonal: write to UUID temp via appendable upload, then moveBlob
-            // with source+target generation preconditions. See atomic_io_gcs_rapid.md.
-            byte[] payload = ByteStreams.toByteArray(source.get());
+            // Zonal/Rapid: one XML API PUT with x-goog-if-generation-match and
+            // x-goog-hash: crc32c=... See atomic_io_gcs_rapid.md.
             return zonalWriter.writeAtomic(
-                blobId(), pinnedSnapshot, token.contentHeaderString(), payload);
+                blobId(), pinnedSnapshot, token.contentHeaderString(), payload, metrics());
         }
-        // Standard buckets: blobWriteSession with generationMatch precondition.
-        ...
+        // Standard buckets: one multipart objects.insert with ifGenerationMatch; the response
+        // carries the new generation.
+        return createAtomic(payload);
     }
 }
 ```
 
 ### GCS Preconditions
 
-- **Standard buckets, CAS**: `BlobWriteOption.generationMatch(expectedGeneration)` — fails with 412 if generation changed
-- **Rapid/zonal buckets, CAS**: stage-and-move via `Storage.moveBlob` with source and target generation preconditions (see [atomic_io_gcs_rapid.md](atomic_io_gcs_rapid.md))
+- **Standard buckets, CAS**: `storage.create(..., BlobTargetOption.generationMatch(g))` — fails with 412 if the generation changed; `generationMatch(0)` requires that the object not exist
+- **Rapid/zonal buckets, CAS**: XML API PUT with `x-goog-if-generation-match: g` — 412 on a stale generation, 400 on a CRC32C mismatch (see [atomic_io_gcs_rapid.md](atomic_io_gcs_rapid.md))
+- **Throttling**: GCS limits mutations of a single object to about one per second (burst a few). Both bucket types return 429 past that; it maps to `StorageThrottleException`. A GCS catalog object therefore commits at most a few times per second whichever write path is used.
 - **APPEND**: Rejected at `prepare()` with `IllegalArgumentException`. GCS objects are immutable.
+
+### Regular writes on Rapid/zonal buckets
+
+`createOrOverwrite()` (manifests, data files, metadata JSON) streams through `GCSOutputStream`, a JSON resumable upload, which zonal buckets reject; so do the XML API's resumable upload and the single-request create. On zonal buckets `GCSOutputFile` streams through `GCSAppendableOutputStream` instead: an appendable upload (gRPC `BidiWriteObject`, the only streaming write zonal buckets accept) to the final name, finalized on close. `close()` checks that the finalized object holds every byte written. The channel's `write()` is non-blocking and returns 0 when its outbound queue is full; the stream then waits for GCS to acknowledge what is queued (`flush()`) rather than spinning.
+
+The object is visible, unfinalized, while it is written, and a writer that fails part way leaves the bytes it flushed. Iceberg reads only files a successful commit references, under names unique to each attempt, so such a file is an orphan, as a failed write leaves on other stores; it is not staged and moved, which would cost a request per file. `PrefixedStorage` builds the gRPC client on the first zonal write, from the same configuration as the HTTP client (or, for a caller-provided client, its credentials and project).
 
 ## S3 Implementation
 
