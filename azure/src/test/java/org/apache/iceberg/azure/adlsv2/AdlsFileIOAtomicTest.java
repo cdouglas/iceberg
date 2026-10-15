@@ -23,16 +23,22 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobStorageException;
-import com.azure.storage.file.datalake.DataLakeFileClient;
-import com.azure.storage.file.datalake.DataLakePathClientBuilder;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.CAS;
@@ -41,6 +47,7 @@ import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.io.SupportsAtomicOperationsContractTest;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assumptions;
@@ -74,15 +81,6 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
       properties.put(
           AzureProperties.ADLS_SAS_TOKEN_PREFIX + account + ".dfs.core.windows.net", sasToken);
     }
-  }
-
-  private static DataLakeFileClient fileClient(String path) {
-    return new DataLakePathClientBuilder()
-        .endpoint("https://" + account + ".dfs.core.windows.net")
-        .sasToken(sasToken)
-        .fileSystemName(container)
-        .pathName(path)
-        .buildFileClient();
   }
 
   @BeforeEach
@@ -181,164 +179,150 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
     assertThat(actual).isEqualTo(overbytes);
   }
 
-  // ─── ADLS append/lease behavior tests ───────────────────────────────────────────────────────
+  // ─── ADLS Append Blob behavior tests ─────────────────────────────────────────────────────────
   //
-  // These tests pin the documented behavior of the lease-based atomic append in
-  // ADLSOutputFile.appendDestObj and Azure's underlying append/flush model. They are not part of
-  // the cross-provider contract — they assert provider-specific guarantees that justify the lease.
+  // ADLSOutputFile appends with one conditional AppendBlock and replaces by renaming a staged temp
+  // Append Blob onto the target. These pin the properties that design is chosen for; they are not
+  // part of the cross-provider contract.
 
   /**
-   * Uncommitted data is invisible to readers; the file's reported length reflects only flushed
-   * bytes. After an unflushed append, both {@code newInputFile().getLength()} and a streamed read
-   * see only the seed.
+   * Writers racing from one snapshot, half appending and half replacing: exactly one commits, and
+   * the file holds exactly what that writer wrote. Repeated a few rounds.
    */
   @Test
-  void unflushedAppendIsNotVisibleToReaders() throws IOException {
-    String location = randomLocation("unflushed-invisible");
+  void mixedAppendAndCasRaceLeavesOneWinner() throws Exception {
+    String location = randomLocation("mixed-race");
     SupportsAtomicOperations io = newFileIO();
-    String path = pathOf(location);
-
-    byte[] seed = "seed".getBytes();
-    DataLakeFileClient client = fileClient(path);
-    client.upload(new ByteArrayInputStream(seed), seed.length, true);
-
-    // Stage uncommitted bytes via a raw appendWithResponse — never flush.
-    byte[] orphan = "orphaned-uncommitted-payload".getBytes();
-    client.appendWithResponse(
-        new ByteArrayInputStream(orphan), seed.length, orphan.length, null, null, null, null);
-
-    InputFile in = io.newInputFile(location);
-    assertThat(in.exists()).isTrue();
-    assertThat(in.getLength())
-        .as("reported length excludes uncommitted bytes")
-        .isEqualTo(seed.length);
-    try (InputStream is = in.newStream()) {
-      byte[] readBack = is.readAllBytes();
-      assertThat(readBack).as("readers see only flushed bytes").isEqualTo(seed);
-    }
-
-    io.deleteFile(location);
-  }
-
-  /**
-   * After a writer abandons an append and the lease becomes available, a subsequent writer can
-   * acquire a fresh lease, append at the file's *committed* end, and flush. The orphaned
-   * uncommitted bytes don't affect the committed content; the second writer's append at the same
-   * offset cleanly overwrites the orphaned uncommitted block, and its flush position matches the
-   * uncommitted region's new end.
-   *
-   * <p>Azure's minimum fixed-duration lease is 15s, so a faithful timeout test would block for at
-   * least that long; instead this test models lease expiry by explicitly breaking the lease with
-   * {@code breakPeriodInSeconds=0}. The end state — lease released, uncommitted bytes orphaned — is
-   * identical to natural expiry.
-   */
-  @Test
-  void abandonedAppendIsOverwrittenAfterLeaseRelease() throws IOException {
-    String location = randomLocation("orphan-recovery");
-    SupportsAtomicOperations io = newFileIO();
-    String path = pathOf(location);
-
-    byte[] seed = "seed".getBytes();
-    DataLakeFileClient client = fileClient(path);
-    client.upload(new ByteArrayInputStream(seed), seed.length, true);
-
-    // Writer A: stage uncommitted bytes via a raw appendWithResponse holding a lease.
-    byte[] orphan = "writer-A-orphan".getBytes();
-    String orphanLeaseId = UUID.randomUUID().toString();
-    com.azure.storage.file.datalake.options.DataLakeFileAppendOptions appendOpts =
-        new com.azure.storage.file.datalake.options.DataLakeFileAppendOptions()
-            .setLeaseAction(com.azure.storage.file.datalake.models.LeaseAction.ACQUIRE)
-            .setProposedLeaseId(orphanLeaseId)
-            .setLeaseDuration(15);
-    client.appendWithResponse(
-        new ByteArrayInputStream(orphan), seed.length, orphan.length, appendOpts, null, null);
-
-    // Model the lease timeout: break the lease immediately rather than waiting 15s.
-    new com.azure.storage.file.datalake.specialized.DataLakeLeaseClientBuilder()
-        .fileClient(client)
-        .leaseId(orphanLeaseId)
-        .buildClient()
-        .breakLeaseWithResponse(0, null, null, null);
-
-    // Writer B: snapshot the file's committed state, append, flush via the FileIO lease path.
-    InputFile snap = io.newInputFile(location);
-    assertThat(snap.getLength()).isEqualTo(seed.length);
-    AtomicOutputFile out = io.newOutputFile(snap);
-    byte[] payloadB = "writer-B-real".getBytes();
-    CAS tok =
-        out.prepare(() -> new ByteArrayInputStream(payloadB), AtomicOutputFile.Strategy.APPEND);
-    InputFile after = out.writeAtomic(tok, () -> new ByteArrayInputStream(payloadB));
-
-    // Live file is seed + B's bytes; A's orphaned uncommitted block is gone.
-    byte[] expected = new byte[seed.length + payloadB.length];
-    System.arraycopy(seed, 0, expected, 0, seed.length);
-    System.arraycopy(payloadB, 0, expected, seed.length, payloadB.length);
-    try (InputStream is = after.newStream()) {
-      assertThat(is.readAllBytes()).isEqualTo(expected);
-    }
-
-    io.deleteFile(location);
-  }
-
-  /**
-   * While writer A holds the append lease, writer B's atomic append fails with {@link
-   * SupportsAtomicOperations.AppendException} on lease conflict — the contention is detected at
-   * append time, not flush time, so B's bytes never enter the uncommitted buffer.
-   */
-  @Test
-  void concurrentAppendBlockedByActiveLease() throws IOException {
-    String location = randomLocation("lease-conflict");
-    SupportsAtomicOperations io = newFileIO();
-    String path = pathOf(location);
-
-    byte[] seed = "seed".getBytes();
-    DataLakeFileClient client = fileClient(path);
-    client.upload(new ByteArrayInputStream(seed), seed.length, true);
-
-    // Writer A: acquire the lease via a manual appendWithResponse and HOLD it (don't flush, don't
-    // release). This simulates an in-flight writer mid-append+flush span.
-    byte[] payloadA = "writer-A-bytes".getBytes();
-    String leaseA = UUID.randomUUID().toString();
-    com.azure.storage.file.datalake.options.DataLakeFileAppendOptions appendOpts =
-        new com.azure.storage.file.datalake.options.DataLakeFileAppendOptions()
-            .setLeaseAction(com.azure.storage.file.datalake.models.LeaseAction.ACQUIRE)
-            .setProposedLeaseId(leaseA)
-            .setLeaseDuration(60);
-    client.appendWithResponse(
-        new ByteArrayInputStream(payloadA), seed.length, payloadA.length, appendOpts, null, null);
-
+    int writers = 8;
+    ExecutorService pool = Executors.newFixedThreadPool(writers);
     try {
-      // Writer B: attempt a regular FileIO append. Should fail with AppendException because A
-      // holds the lease.
-      InputFile snap = io.newInputFile(location);
-      AtomicOutputFile out = io.newOutputFile(snap);
-      byte[] payloadB = "writer-B-bytes".getBytes();
-      CAS tok =
-          out.prepare(() -> new ByteArrayInputStream(payloadB), AtomicOutputFile.Strategy.APPEND);
-      assertThatThrownBy(() -> out.writeAtomic(tok, () -> new ByteArrayInputStream(payloadB)))
-          .isInstanceOf(SupportsAtomicOperations.AppendException.class);
-
-      // Live file is unchanged: A's uncommitted bytes are not visible, B's append never landed.
-      InputFile reread = io.newInputFile(location);
-      assertThat(reread.getLength()).isEqualTo(seed.length);
-    } finally {
-      // Clean up A's lease so the file can be deleted.
-      try {
-        new com.azure.storage.file.datalake.specialized.DataLakeLeaseClientBuilder()
-            .fileClient(client)
-            .leaseId(leaseA)
-            .buildClient()
-            .releaseLease();
-      } catch (RuntimeException ignored) {
-        // Already released, lease expired, or path is gone — fine.
+      InputFile current = createAtomically(io, location, "base|".getBytes(StandardCharsets.UTF_8));
+      for (int round = 0; round < 3; round++) {
+        ADLSInputFile snapshot = (ADLSInputFile) io.newInputFile(location);
+        byte[] before = read(snapshot);
+        snapshot.conditions(); // pin the ETag before the writers share the snapshot
+        CyclicBarrier start = new CyclicBarrier(writers);
+        List<Future<byte[]>> results = Lists.newArrayList();
+        for (int w = 0; w < writers; w++) {
+          boolean append = w % 2 == 0;
+          byte[] payload =
+              ((append ? "app-" : "cas-") + round + "-" + w + "|").getBytes(StandardCharsets.UTF_8);
+          results.add(
+              pool.submit(
+                  () -> {
+                    AtomicOutputFile out = io.newOutputFile(snapshot);
+                    AtomicOutputFile.Strategy strategy =
+                        append ? AtomicOutputFile.Strategy.APPEND : AtomicOutputFile.Strategy.CAS;
+                    CAS token = out.prepare(() -> new ByteArrayInputStream(payload), strategy);
+                    start.await();
+                    try {
+                      out.writeAtomic(token, () -> new ByteArrayInputStream(payload));
+                    } catch (SupportsAtomicOperations.CASException
+                        | SupportsAtomicOperations.AppendException e) {
+                      return null;
+                    }
+                    return append ? concat(before, payload) : payload;
+                  }));
+        }
+        List<byte[]> committed = Lists.newArrayList();
+        for (Future<byte[]> result : results) {
+          byte[] expected = result.get();
+          if (expected != null) {
+            committed.add(expected);
+          }
+        }
+        assertThat(committed).as("writers that committed in round %s", round).hasSize(1);
+        current = io.newInputFile(location);
+        assertThat(read(current)).isEqualTo(committed.get(0));
       }
+    } finally {
+      pool.shutdownNow();
       io.deleteFile(location);
     }
   }
 
-  private static String pathOf(String location) {
-    // location is "abfs://<container>@<account>.dfs.core.windows.net/<path>" — strip prefix.
-    int idx = location.indexOf(".dfs.core.windows.net/");
-    return location.substring(idx + ".dfs.core.windows.net/".length());
+  /** A CAS that loses its race deletes its staged temp: nothing but the target is left behind. */
+  @Test
+  void lostCasLeavesNoTemp() throws IOException {
+    String location = randomLocation("lost-cas");
+    SupportsAtomicOperations io = newFileIO();
+    try {
+      InputFile created = createAtomically(io, location, "v1".getBytes(StandardCharsets.UTF_8));
+      AtomicOutputFile winner = io.newOutputFile(created);
+      AtomicOutputFile loser = io.newOutputFile(created);
+      byte[] v2 = "v2".getBytes(StandardCharsets.UTF_8);
+      byte[] v3 = "v3".getBytes(StandardCharsets.UTF_8);
+      CAS winnerToken =
+          winner.prepare(() -> new ByteArrayInputStream(v2), AtomicOutputFile.Strategy.CAS);
+      CAS loserToken =
+          loser.prepare(() -> new ByteArrayInputStream(v3), AtomicOutputFile.Strategy.CAS);
+      winner.writeAtomic(winnerToken, () -> new ByteArrayInputStream(v2));
+      assertThatThrownBy(() -> loser.writeAtomic(loserToken, () -> new ByteArrayInputStream(v3)))
+          .isInstanceOf(SupportsAtomicOperations.CASException.class);
+
+      assertThat(read(io.newInputFile(location))).isEqualTo(v2);
+
+      String dir = location.substring(0, location.lastIndexOf('/'));
+      List<String> names = Lists.newArrayList();
+      try {
+        ((ADLSFileIO) io).listPrefix(dir).forEach(info -> names.add(info.location()));
+      } catch (DataLakeStorageException e) {
+        // Listing needs a container-scoped SAS (srt=c); an object-scoped one cannot check this.
+        Assumptions.assumeTrue(
+            e.getStatusCode() != 403, "credentials cannot list " + dir + ": " + e.getErrorCode());
+        throw e;
+      }
+      assertThat(names).noneMatch(name -> name.contains(".cas-"));
+    } finally {
+      io.deleteFile(location);
+    }
+  }
+
+  /**
+   * A file written through the Data Lake API (createOrOverwrite) is not an Append Blob. An APPEND
+   * onto it fails with the service's error rather than {@link
+   * SupportsAtomicOperations.AppendException}, so a caller does not retry it forever; a CAS turns
+   * it into an Append Blob, and appends work from there.
+   */
+  @Test
+  void dataLakeWrittenFileAcceptsAppendsAfterCas() throws IOException {
+    String location = randomLocation("dfs-then-cas");
+    ADLSFileIO io = (ADLSFileIO) newFileIO();
+    try {
+      try (OutputStream out = io.newOutputFile(location).createOrOverwrite()) {
+        out.write("seed|".getBytes(StandardCharsets.UTF_8));
+      }
+      InputFile seeded = io.newInputFile(location);
+      byte[] rec = "rec|".getBytes(StandardCharsets.UTF_8);
+      AtomicOutputFile append = io.newOutputFile(seeded);
+      CAS appendToken =
+          append.prepare(() -> new ByteArrayInputStream(rec), AtomicOutputFile.Strategy.APPEND);
+      assertThatThrownBy(() -> append.writeAtomic(appendToken, () -> new ByteArrayInputStream(rec)))
+          .isInstanceOf(BlobStorageException.class)
+          .satisfies(
+              e ->
+                  assertThat(((BlobStorageException) e).getErrorCode())
+                      .isEqualTo(BlobErrorCode.INVALID_BLOB_TYPE));
+
+      byte[] ckpt = "ckpt|".getBytes(StandardCharsets.UTF_8);
+      AtomicOutputFile replace = io.newOutputFile(io.newInputFile(location));
+      CAS casToken =
+          replace.prepare(() -> new ByteArrayInputStream(ckpt), AtomicOutputFile.Strategy.CAS);
+      InputFile replaced = replace.writeAtomic(casToken, () -> new ByteArrayInputStream(ckpt));
+
+      AtomicOutputFile next = io.newOutputFile(replaced);
+      CAS nextToken =
+          next.prepare(() -> new ByteArrayInputStream(rec), AtomicOutputFile.Strategy.APPEND);
+      InputFile appended = next.writeAtomic(nextToken, () -> new ByteArrayInputStream(rec));
+      assertThat(read(appended)).isEqualTo(concat(ckpt, rec));
+    } finally {
+      io.deleteFile(location);
+    }
+  }
+
+  private static byte[] concat(byte[] first, byte[] second) {
+    byte[] out = Arrays.copyOf(first, first.length + second.length);
+    System.arraycopy(second, 0, out, first.length, second.length);
+    return out;
   }
 }

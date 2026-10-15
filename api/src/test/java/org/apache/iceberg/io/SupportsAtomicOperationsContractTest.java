@@ -140,6 +140,33 @@ public abstract class SupportsAtomicOperationsContractTest {
     }
   }
 
+  /**
+   * A CAS write whose source fails partway, as when the writer dies mid-commit, must leave the
+   * target as it was. A replace that is not one atomic step (for example truncate, then append and
+   * flush) leaves an empty or partial object that every later reader sees.
+   */
+  @Test
+  void casReplaceThatFailsMidWriteLeavesTargetIntact() throws IOException {
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("cas-fails-mid-write");
+    try {
+      byte[] v1 = bytes("the complete first version");
+      InputFile created = createAtomically(io, loc, v1);
+
+      byte[] v2 = padTo(bytes("second"), 64 * 1024);
+      AtomicOutputFile out = io.newOutputFile(created);
+      CAS tok = out.prepare(supplier(v2), AtomicOutputFile.Strategy.CAS);
+      assertThatThrownBy(() -> out.writeAtomic(tok, () -> failingAfter(v2, v2.length / 2)))
+          .as("writeAtomic whose source fails halfway");
+
+      assertThat(read(io.newInputFile(loc)))
+          .as("target after a CAS write that failed mid-write")
+          .isEqualTo(v1);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
   @Test
   void casReplaceRaceLeavesOneWinner() throws IOException {
     SupportsAtomicOperations io = newFileIO();
@@ -487,5 +514,31 @@ public abstract class SupportsAtomicOperationsContractTest {
 
   private static Supplier<InputStream> supplier(byte[] data) {
     return () -> new ByteArrayInputStream(data);
+  }
+
+  /** A stream over {@code data} that fails after {@code okBytes}, like a writer dying mid-write. */
+  private static InputStream failingAfter(byte[] data, int okBytes) {
+    return new InputStream() {
+      private int pos = 0;
+
+      @Override
+      public int read() throws IOException {
+        if (pos >= okBytes) {
+          throw new IOException("writer failed mid-write");
+        }
+        return data[pos++] & 0xFF;
+      }
+
+      @Override
+      public int read(byte[] buf, int off, int len) throws IOException {
+        if (pos >= okBytes) {
+          throw new IOException("writer failed mid-write");
+        }
+        int n = Math.min(len, okBytes - pos);
+        System.arraycopy(data, pos, buf, off, n);
+        pos += n;
+        return n;
+      }
+    };
   }
 }
