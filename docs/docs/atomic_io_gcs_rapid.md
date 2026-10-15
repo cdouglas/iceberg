@@ -1,60 +1,239 @@
 # Atomic FileIO on GCS Rapid Storage
 
-This document records an empirical investigation into whether GCS Rapid
-Storage's appendable-object API can implement the `Strategy.APPEND`
-half of `SupportsAtomicOperations`. The short answer is **no, not safely
-under concurrent writers**. The longer answer — what works, what
-doesn't, and why — is below.
+This document records three rounds of empirical investigation into how to
+implement `SupportsAtomicOperations` on GCS Rapid Storage. The
+short answer:
 
-## Summary
+- **Atomic APPEND is not safely implementable** on Rapid. The original
+  PoC (recorded below as the "April 2026" investigation) tried to use
+  the appendable-object protocol's bidi API to fence concurrent
+  writers and found silent data loss patterns under contention.
+- **Atomic CAS-replace is one XML API PUT** (October 2026, below). Zonal
+  buckets reject the JSON API's `storage.create`, `blobWriteSession`
+  and `rewrite`, and a direct `blobAppendableUpload` to the target is
+  unsafe under exception paths, but they accept XML API object writes.
+  The May 2026 stage-and-move pattern (appendable upload to a temp,
+  then `moveBlob`) was correct and has been replaced: it took three
+  requests, a gRPC client, and had a two-second p90.
 
-Google Cloud Storage shipped *Rapid Storage* in early 2026: zonal
-buckets with a `RAPID` storage class and a new "appendable objects"
-gRPC API (`Storage.blobAppendableUpload`). The API exposes
-`open() / write() / flush() / finalizeAndClose()` semantics over a
-mutable-tail object that other clients can read while it grows. On
-paper this looked like the missing primitive that would let
-`GCSFileIO.supportsAppend()` return `true` — letting the FileIO catalog
-use the same checkpoint+log commit protocol on GCS that ADLS and S3
-Express already enable.
+`GCSFileIO.supportsAppend()` stays `false`.
 
-After running 14 probes against a real Rapid bucket, the conclusion is:
+## October 2026: single-request XML PUT
 
-- **Single-writer happy paths work cleanly.** Open, write, flush,
-  finalize. No surprises.
-- **`write_handle` is a resumable-upload session token, not a fence
-  token.** Two clients presenting the same handle at the same
-  `write_offset` silently last-writer-wins; the loser receives a
-  success response but its bytes never persist.
-- **Generation does not advance per flush.** It only moves at finalize.
-  So `if_generation_match` on `AppendObjectSpec` cannot fence two
-  appenders pinned to the same captured state — both will match.
-- **Fresh-stream concurrent contention is non-deterministic.** Some
-  races fence cleanly with `FAILED_PRECONDITION: A different writer has
-  become the exclusive writer of this object.`; others produce silent
-  data loss in which both writers' tentative bytes are visible to the
-  server, the loser sees `OUT_OF_RANGE` quoting them, and then the
-  bytes evaporate without committing.
-- **CAS-replace via the appendable API works.**
-  `blobAppendableUpload(... generationMatch(g)) + finalize` is reliable
-  and gives us the same atomic-replace semantics we already have on
-  standard GCS — at the cost of full-object rewrites per commit, which
-  defeats the point of using an appendable in the first place.
+Re-validated with google-cloud-storage 2.67.0 against the zonal bucket
+`lstx-consistency` (US-WEST4, RAPID) and standard `lst-consistency`
+(US-WEST1). Probes ran from a workstation outside both regions, so
+absolute latencies are WAN-dominated; ratios are the signal.
 
-The protocol's docs say "Appendable objects can only have one writer at
-a time." We had read that as a constraint to navigate; the experiments
-show it is the *design assumption* the entire protocol is built around.
-A single long-lived writer with `write_handle` to recover from network
-blips is the supported model. Multiple short-lived writers fencing each
-other through the storage layer is not.
+**What still holds from May.** Zonal buckets reject `storage.create`
+(JSON multipart and gRPC: "This bucket requires appendable objects"),
+`blobWriteSession`, `writer` and `copy` ("Rapid storage class objects
+do not support rewrite"). An appendable upload aimed at the live object
+that fails halfway replaces it with the flushed half at a new
+generation, with either `CloseAction`. That is how appendable objects
+work (they are visible while being written), not an SDK bug, so no SDK
+upgrade will change it.
 
-**Recommendation:** keep `GCSFileIO.supportsAppend()` returning `false`.
-The catalog falls back to CAS-only on Rapid the same way it does on
-standard GCS. Rapid is still useful for its read characteristics
-(sub-millisecond latency, ~15 TB/s aggregate) but offers no incremental-
-append benefit for our atomic write protocol.
+**What is new.** Google's Rapid documentation says zonal buckets accept
+XML API writes other than XML multipart uploads. A plain XML PUT:
 
-## Background
+| check | zonal | standard |
+| ----- | ----- | -------- |
+| `x-goog-if-generation-match` stale / `0` on existing | 412 / 412 | 412 / 412 |
+| `x-goog-hash: crc32c=` wrong | 400, unchanged | 400, unchanged |
+| client dies mid-body (declared 1 MiB, sent 256 KiB) | generation unchanged | generation unchanged |
+| reader polling during a 4 MiB → 32 MiB PUT | old or new only | old or new only |
+| 8 rounds × 8 racing writers | exactly one winner, its bytes stored | same |
+| result | finalized object (`timeFinalized` set), generation in `x-goog-generation` | same |
+
+Latency, CAS-replace of one object, n=30, back-to-back (ms):
+
+| path | 1 KiB p50 / p90 | 64 KiB p50 / p90 |
+| ---- | --------------- | ---------------- |
+| zonal, XML PUT | 131 / 231 | 209 / 306 |
+| zonal, stage-and-move | 324 / 2250 | 348 / 1920 |
+| standard, `storage.create` (1 request) | 84 / 1758* | 87 / 1842* |
+| standard, `blobWriteSession` (2 requests) | 158 / 186 | — |
+| standard, XML PUT | 84 / 100 | 117 / 130 |
+
+\* includes the SDK's own retries of 429s.
+
+**Per-object rate limit.** Back-to-back replaces of one object get 429
+("exceeded the rate limit for object mutation operations") on both
+bucket types, stage-and-move included in throughput terms: every path
+sustained 1.4–3 writes/s to a single object. The catalog's commit rate
+on GCS is bounded by this, not by the write path.
+
+**Implementation.** `GCSXmlPutWriter` builds the PUT on the `Storage`
+client's own HTTP transport, request initializer (credentials,
+timeouts, user agent) and host; java-storage has no XML upload surface.
+It sends the prepared CRC32C, the generation precondition, and
+user-project / CSEK headers, with no transport-level retries (a blind
+retry of a PUT that landed would come back as a spurious 412).
+Standard buckets use `storage.create`, also one request.
+`GcsRapidCanaries` (run with `RAPID_BUCKET`) pins all of the above:
+gap canaries for the rejected JSON surfaces, a hazard canary for the
+appendable partial publish, and positive canaries for the XML PUT's
+preconditions, CRC32C check and cut-off-body safety.
+
+**Regular writes.** Until October 2026 `GCSFileIO` could not write
+ordinary files (manifests, data files) to a zonal bucket at all:
+`GCSOutputStream` is a JSON resumable upload ("Zonal buckets are
+incompatible with resumable upload"), and the stage-and-move path only
+ever served CAS. The XML API's resumable upload is rejected too (400
+`ZonalBucketIncompatibleFeature`), and a single XML PUT would hold the
+whole file in memory, so regular writes now stream through an
+appendable upload to the final name, finalized on close
+(`GCSAppendableOutputStream`). The appendable channel's `write()` is
+non-blocking and may accept nothing while its queue is full; the stream
+waits on `flush()` (acknowledgement) then. A 20 MiB file written in
+odd-sized pieces round-trips in about 6 s over the WAN.
+`GcsFileIOAtomicRapidTest` covers this; `GcsRapidCanaries` asserts the
+XML resumable upload is still rejected.
+
+## May 2026: stage-and-move CAS (superseded)
+
+After the April 2026 PoC ruled out atomic APPEND on Rapid, the next
+question was whether the FileIO catalog can run on Rapid at all — i.e.,
+whether atomic CAS-replace has a working implementation. This required
+surveying the SDK and server behavior across all zonal-compatible
+write surfaces, since the obvious one (`blobWriteSession`) is rejected
+by zonal buckets with HTTP 400 ("Zonal buckets are incompatible with
+resumable upload").
+
+The probe code lives at:
+
+- `iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/GcsCasTransportProbe.java`
+  — matrix probe across `{HTTP, gRPC} × {blobWriteSession, blobAppendableUpload, storage.create} × {standard, zonal}`.
+- `iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/GcsCasViaRewriteProbe.java`
+  — focused probe on the partial-publish bug, `storage.copy/rewrite`,
+  `Storage.moveBlob`, and a small latency comparison.
+
+### Findings
+
+- **Direct write to the target is unsafe on Rapid.** The only
+  zonal-compatible write surface is `storage.blobAppendableUpload(...
+  generationMatch(g))`. Probes confirmed it accepts the `generationMatch`
+  precondition and rejects stale generations cleanly with
+  `StorageException(412, FAILED_PRECONDITION)`. But: the server
+  **silently drops `crc32cMatch`** on this path, and a writer that
+  encounters an exception mid-write and falls through to `close()`
+  publishes whatever bytes have been written as the new generation —
+  with no server-side integrity check. Setting
+  `BlobAppendableUploadConfig.CloseAction.CLOSE_WITHOUT_FINALIZING`
+  does **not** prevent the partial publish: the channel close still
+  exposes flushed bytes at a new generation. There is no in-place
+  defense against partial-write publication on the appendable path.
+- **`storage.copy` / `rewrite` are rejected on Rapid.** Both source-
+  and target-side return `StorageException(INVALID_ARGUMENT: Rapid
+  storage class objects do not support rewrite)`. This rules out the
+  classic "stage and rewrite" pattern.
+- **`storage.create(BlobInfo, byte[])` is rejected on Rapid** with
+  `INVALID_ARGUMENT: This bucket requires appendable objects.`
+- **`Storage.moveBlob(MoveBlobRequest)` works on Rapid.** The
+  `MoveBlobRequest` builder accepts `BlobSourceOption.generationMatch`
+  and `BlobTargetOption.generationMatch`, so it implements full
+  CAS-replace semantics. Probes confirmed: happy path replaces the
+  target with the temp's bytes at a new generation and **deletes the
+  temp atomically as part of the move**; stale destination generation
+  is rejected with HTTP 412; concurrent readers polling the target
+  during a move never observe an intermediate state (only `g_old` with
+  full old bytes or `g_new` with full new bytes).
+- **`moveBlob` also works on standard non-HNS buckets.** The API is
+  not gated on hierarchical namespace; the SDK accepts a non-HNS bucket
+  and the server performs the move-replacement atomically. So in
+  principle the same code path could serve both bucket types.
+
+### The pattern
+
+```
+1. write payload to bucket/<uuid>.tmp via blobAppendableUpload(doesNotExist) + finalizeAndClose
+   - on any exception: target is untouched; clean up the temp best-effort and propagate
+2. verify the temp's CRC32C client-side
+   - read up.getResult().get().getCrc32c() and compare to the expected CRC
+   - if mismatched (the partial-publish vector that bypasses server-side checks):
+     abandon, target is still untouched
+3. storage.moveBlob(MoveBlobRequest{
+       source           = bucket/<uuid>.tmp,
+       target           = bucket/catalog,
+       sourceOptions    = [generationMatch(tempGen)],
+       targetOptions    = [generationMatch(g_expected)]})
+   - 412 → CAS failure → caller refreshes target, retries from step 1
+   - 2xx → target is now at g_new with the temp's bytes; temp is deleted
+4. (no step 4 — moveBlob handles cleanup)
+```
+
+The pattern's exception safety comes from step 2's "never publish to
+the live target until we've confirmed the staged content is what we
+intended." Any failure before step 3 leaves the target unchanged. A
+failure during step 3 either rejects the move atomically (412 or other
+non-2xx) or completes it; the server does not expose intermediate
+state to readers.
+
+### Performance
+
+Latency comparison, N=10 fresh-target writes per cell, ~1 KB payload,
+single-threaded, run from a workstation against the US-WEST1 standard
+bucket and US-WEST4 zonal Rapid bucket used by the catalog-bench
+harness. The workstation is well outside the bucket regions, so the
+absolute numbers are dominated by WAN RTT; the *ratios* between cells
+on the same connection are the meaningful signal. This is order-of-
+magnitude characterization, not a proper benchmark.
+
+| path                                         | min   | p50   | p90   | mean  | max   |
+| -------------------------------------------- | ----- | ----- | ----- | ----- | ----- |
+| standard, direct `blobWriteSession` (HTTP)   | 157ms | 173ms | 241ms | 178ms | 241ms |
+| standard, stage-and-move (HTTP+gRPC)         | 224ms | 271ms | 360ms | 273ms | 360ms |
+| Rapid, stage-and-move (gRPC throughout)      | 386ms | 444ms | 840ms | 495ms | 840ms |
+| Rapid, direct `blobAppendableUpload` (gRPC)* | 234ms | 266ms | 875ms | 324ms | 875ms |
+
+\* Direct appendable on Rapid is unsafe under exception paths (see the
+findings above) — this row is included only as a baseline for the cost
+of the moveBlob round trip.
+
+Reading the table:
+
+- **Standard buckets should keep the existing direct path.**
+  Stage-and-move works on standard, but the extra `moveBlob` round trip
+  costs roughly one additional RTT (~100ms in this measurement) and we
+  gain nothing in correctness over what `blobWriteSession` already
+  provides. Keep the existing code on standard.
+- **Rapid stage-and-move is the safe path** at roughly 2.5× the p50
+  latency of standard direct (444ms vs 173ms). The extra cost is one
+  `moveBlob` round trip plus appendable-upload setup overhead; both
+  scale with RTT, so the ratio holds across regions even if the
+  absolute numbers shrink dramatically when run from in-region clients.
+- **Rapid is currently the slowest substrate for the FileIO catalog**
+  in single-threaded steady-state writes, on top of being the most
+  complex to implement safely. Its sub-millisecond *read* latency is
+  still the differentiator that justifies it for some workloads — but
+  if catalog-write throughput is the bottleneck, standard GCS or one
+  of the other providers is the better fit.
+
+### Production plan (sketch)
+
+`GCSFileIO` will detect bucket type lazily in `PrefixedStorage` (via
+`storage.get(bucket).getLocationType().equals("zonal")`, cached
+per-bucket) and fork in `newOutputFile(InputFile replace)`:
+
+- standard buckets: existing `GCSAtomicOutputStream` path through
+  `blobWriteSession`, untouched.
+- zonal buckets: new write path that performs the four-step
+  stage-and-move described above.
+
+The gRPC `Storage` client is required for both `blobAppendableUpload`
+and `moveBlob`, so zonal prefixes will hold a second client built via
+`StorageOptions.grpc()`. The two probe classes will be deleted once
+the production path lands and is covered by a `GcsFileIOAtomicRapidTest`
+that extends the existing contract test.
+
+`GCSFileIO.supportsAppend()` stays `false`. The catalog file format on
+Rapid follows the CAS-only commit policy, just as it does on standard
+GCS today.
+
+## April 2026: appendable-object PoC (atomic APPEND ruled out)
+
+### Background
 
 `SupportsAtomicOperations` requires backends to implement two
 strategies:
@@ -73,7 +252,7 @@ lease around a conditional append+flush pair (see
 `writeOffsetBytes` plus `if-match` ETag. Rapid Storage's appendable
 objects looked like the GCS analog.
 
-## The contract under test
+### The contract under test
 
 The contract test that matters for this investigation is in
 `api/src/test/java/org/apache/iceberg/io/SupportsAtomicOperationsContractTest.java`:
@@ -95,7 +274,7 @@ guarantee is "exactly one of N concurrent writers commits, the rest
 fail visibly" — silent data loss for the apparent winner is a contract
 violation.
 
-## What was probed
+### What was probed
 
 A self-contained PoC class
 (`gcp/src/test/java/org/apache/iceberg/gcp/gcs/RapidStoragePoC.java`,
@@ -120,9 +299,9 @@ exercised the API directly against a zonal Rapid bucket. The probes:
 | 13b/13c | Two concurrent fresh-stream takeovers (no handle), with and without `state_lookup` | non-deterministic. ~1 in 3 runs fence cleanly with `FAILED_PRECONDITION: A different writer has become the exclusive writer of this object.`; the rest produce **silent data loss** — winner reports `WIN persistedSize=8`, loser reports `OUT_OF_RANGE current size '8'`, post-read `metaSize=4` |
 | 14 | Does generation advance per flush? | no. `genAfterFirstFlush == genAfterSecondFlush`; only finalize advances generation |
 
-## Findings in detail
+### Findings in detail
 
-### `write_handle` is a resume token, not a fence
+#### `write_handle` is a resume token, not a fence
 
 The Java SDK's public surface (`BlobAppendableUpload.getResult()`)
 returns only a `BlobInfo`. The server actually returns a
@@ -151,7 +330,7 @@ actually land. The loser cannot tell from the response that they lost.
 This is correct behavior for "single client retrying through a flaky
 network" and incorrect for "multiple clients fencing each other".
 
-### Generation does not advance per flush
+#### Generation does not advance per flush
 
 `BlobInfo.getGeneration()` is stable across flushes within an
 unfinalized appendable's lifetime; only finalize advances it
@@ -159,7 +338,7 @@ unfinalized appendable's lifetime; only finalize advances it
 distinguish two writers that opened against the same captured state —
 they both match.
 
-### Concurrent fresh-stream takeovers are unsafe
+#### Concurrent fresh-stream takeovers are unsafe
 
 Removing `write_handle` from the request was the most plausible way
 to recover the fence — it forces the server back into a "fresh
@@ -185,20 +364,24 @@ existence of the bad pattern (probe 13c, 4/5 silent-loss without it
 versus 2/3 with it). The protocol does not guarantee that contention
 between two fresh-stream takeovers resolves with a winning side.
 
-### CAS-replace works
+#### CAS-replace works for the happy path only — see May 2026
 
 Probe 07 confirms `blobAppendableUpload(... generationMatch(g)) +
-finalize` reliably replaces an object atomically, with stale-gen
-retries cleanly rejected as `FAILED_PRECONDITION` (HTTP 412). This is
-the same shape as standard GCS CAS via
-`storage.create(... generationMatch(g))` — except that on Rapid the
-non-appendable `storage.create` path is forbidden (the bucket rejects
-it with `INVALID_ARGUMENT: This bucket requires appendable objects.`),
-so even CAS must go through the appendable API. Either way: every
-commit pays for a full-object rewrite. The Rapid-specific advantage
-of "incremental-cost growth" does not survive contention.
+finalize` reliably replaces an object atomically *under happy-path
+single-writer conditions*, with stale-gen retries cleanly rejected as
+`FAILED_PRECONDITION` (HTTP 412). At the time this was written, the
+intent was to use that pattern as the production CAS-replace path on
+Rapid.
 
-## Why the design is what it is
+The May 2026 follow-up showed this is **not safe** for our use case:
+when a writer encounters an exception mid-write and falls through to
+`close()`, the truncated bytes are published as the new generation
+with no server-side integrity check (CRC32C is silently dropped on
+this path). `CloseAction.CLOSE_WITHOUT_FINALIZING` does not prevent
+this. The production path on Rapid uses stage-and-move via
+`Storage.moveBlob` instead; see the May 2026 section above.
+
+### Why the design is what it is
 
 Rapid Storage's appendable objects are designed for **one long-lived
 writer per object**. The `write_handle` mechanism, the lack of
@@ -216,23 +399,48 @@ server-side mechanism that converts the "exclusive writer" arbitration
 we observe ~1 in 3 races into a deterministic outcome. None of these
 is in the public proto today.
 
-## Recommendation
+## April-2026 recommendation (superseded)
 
-- **`GCSFileIO.supportsAppend()` stays `false`.** No change to the
-  main code is warranted from this work. The FileIO catalog already
-  coerces to CAS-only when `supportsAppend()` is `false`; that path
-  works on Rapid, as it does on standard GCS.
-- **Rapid Storage is still worth using for its read characteristics**
-  in catalogs that read the object hot — sub-millisecond latency and
-  high aggregate throughput are real wins for catalog-file fetches.
-  Writes go through the same CAS-replace pattern as standard GCS.
-- **If we ever want incremental commits on Rapid**, the prerequisite
-  is an external serializer — a leader-elected catalog process, or a
-  separate lock service — that ensures Rapid's protocol sees only one
-  client at a time. That is an architectural change, not a config
-  flag.
+The original recommendation at the bottom of the April 2026 PoC was
+"keep `supportsAppend()` false; treat Rapid like standard GCS for
+writes." The first half (no append) still stands. The second half is
+**superseded** by the May 2026 finding that "writes on Rapid go through
+the same CAS-replace pattern as standard GCS" was incorrect: the SDK
+surfaces standard GCS uses (`blobWriteSession`, `storage.create`,
+`copy/rewrite`) are all rejected by zonal Rapid buckets. The actual
+production path on Rapid is stage-and-move via `Storage.moveBlob`;
+see the May 2026 section at the top of this document.
+
+The April 2026 recommendation about incremental commits requiring an
+external serializer remains correct — `supportsAppend()` cannot be
+flipped to `true` without one, regardless of how the CAS-replace path
+is implemented.
 
 ## Reproducibility
+
+### May 2026 probes (CAS-replace surface survey + stage-and-move)
+
+`GcsCasTransportProbe` and `GcsCasViaRewriteProbe` live in
+`iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/` and the
+test-only `google-cloud-storage:2.68.0` pin lives in `iceberg/build.gradle`
+on the `iceberg-gcp` module. They will be deleted (or pared down to a
+single regression smoke test) when the production stage-and-move
+path lands; until then they are runnable as:
+
+```
+STANDARD_BUCKET=<std-bucket> RAPID_BUCKET=<zonal-bucket> \
+GOOGLE_CLOUD_PROJECT=<project> \
+  ./gradlew :iceberg-gcp:test \
+  --tests 'org.apache.iceberg.gcp.gcs.GcsCasTransportProbe' \
+  --tests 'org.apache.iceberg.gcp.gcs.GcsCasViaRewriteProbe' \
+  -x generateGitProperties --info
+```
+
+The `[probe.*]` lines in stdout and the per-class summary tables are
+the load-bearing observations. Cells whose required bucket env var is
+unset are skipped via `Assumptions.assumeTrue`.
+
+### April 2026 PoC (atomic-APPEND investigation)
 
 The PoC class
 (`iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/RapidStoragePoC.java`),
