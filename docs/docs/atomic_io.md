@@ -48,7 +48,7 @@ public interface SupportsAtomicOperations extends FileIO {
      */
     class StorageThrottleException extends CASException { ... }
 
-    /** APPEND failed (etag/lease mismatch or wrong flush position). */
+    /** APPEND failed: the target changed since the snapshot (etag, or length / write offset). */
     class AppendException extends AtomicOperationException { ... }
 }
 ```
@@ -238,9 +238,9 @@ class S3Checksum implements CAS, FileChecksum {
 
 ## Azure ADLS Implementation
 
-### ADLSFileIO
+Requires a hierarchical-namespace (ADLS Gen2) account. Atomic writes keep the target as an **Append Blob**, written through the Blob API, and replace it with a Data Lake **rename**.
 
-Implements `SupportsAtomicOperations` using Azure DataLake ETags.
+### ADLSFileIO
 
 ```java
 public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
@@ -251,93 +251,45 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
             DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
             long objLength = replace.exists() ? replace.getLength() : -1L;
             return new ADLSOutputFile(
-                path, fileClient(path), azureProperties, objLength, conditions, metrics);
+                path, fileClient(path), azureProperties, objLength, conditions, metrics,
+                this::fileClient);  // builds the CAS temp's client, with the SAS the rename needs
         }
-        return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics);
+        return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics, this::fileClient);
     }
 }
 ```
 
 ### ADLSOutputFile
 
-Uses `DataLakeRequestConditions.setIfMatch()` for atomic writes:
+| Strategy | Requests | Precondition | Loser sees |
+|---|---|---|---|
+| APPEND | `AppendBlock` (1) | `x-ms-blob-condition-appendpos` = snapshot length, `If-Match` = snapshot ETag, `Content-MD5` of the block | 412 `ConditionNotMet` / `AppendPositionConditionNotMet` → `AppendException` |
+| CAS | create temp Append Blob, `AppendBlock` (one per ≤100 MiB), rename onto the target (3) | rename destination `If-Match` = snapshot ETag, or `If-None-Match: *` to create; source `If-Match` = temp ETag | 412 `ConditionNotMet` or 409 `PathAlreadyExists` → `CASException` |
 
-```java
-class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
-    @Override
-    public CAS prepare(Supplier<InputStream> source, Strategy howto) {
-        ADLSChecksum checksum = new ADLSChecksum(howto);
-        try (InputStream in = source.get();
-             FileChecksumOutputStream chk = new FileChecksumOutputStream(
-                 ByteStreams.nullOutputStream(), checksum)) {
-            ByteStreams.copy(in, chk);
-        }
-        return checksum;
-    }
+- **APPEND** is a single conditional request: the service checks both conditions and applies the block in one step, so of N writers appending to the same snapshot exactly one commits, and the committed bytes are its own. No lease.
+- **CAS** never touches the target until the rename, which is atomic on an HNS account. A writer that fails earlier leaves the target as it was (the temp is deleted in a `finally`); readers see the old file or the new one. The temp is a hidden sibling of the target (`.<name>.cas-<uuid>.tmp`), so the rename stays within one directory. Before the rename, the staged content's MD5 is checked against the prepared token, so a source that changed since `prepare()` is never published.
+- The rename keeps the temp's ETag and returns it, so the returned `InputFile` pins the new ETag without a HEAD (which could observe a later writer).
+- Append Blob writes go through a Blob API client built on the Data Lake client's own HTTP pipeline (credentials, policies, retries), at the blob endpoint.
 
-    @Override
-    public ADLSInputFile writeAtomic(CAS checksum, Supplier<InputStream> source) {
-        ADLSChecksum token = (ADLSChecksum) checksum;
-        switch (token.getStrategy()) {
-            case CAS:
-                return replaceDestObj(token, source);  // uploadWithResponse + conditions
-            case APPEND:
-                return appendDestObj(token, source);   // appendWithResponse + flushWithResponse
-            default:
-                throw new UnsupportedOperationException();
-        }
-    }
-}
-```
+Measured on a real account (2026-10-14, p50): APPEND 15 ms; CAS of 64 KiB 144 ms. Mixed races (4 appenders and 4 CAS writers on one snapshot, 10 rounds) and 12 rounds of 8 racing appenders had exactly one winner each time, with the winner's bytes stored.
 
-### Azure Preconditions
+### Why not the Data Lake API
 
-- **CAS**: `FileParallelUploadOptions.setRequestConditions(conditions.setIfMatch(etag))` - fails with 412
-- **APPEND**: `appendWithResponse()` + `flushWithResponse()` with position validation, serialized by a blob lease (see below) - fails with 400 InvalidFlushPosition or 412 ConditionNotMet
+The previous implementation used Data Lake writes. Both of its paths had problems the Blob API avoids:
 
-### Azure APPEND validation gap and lease serialization
+- **CAS** with `DataLakeFileClient.uploadWithResponse` is three requests in every SDK version: `PUT ?resource=file` (conditional, and it truncates the file to 0 bytes), then append and flush, unconditioned. A writer that died after the first request left an empty file, and readers could see the file empty mid-CAS (both observed on a real account). `SupportsAtomicOperationsContractTest.casReplaceThatFailsMidWriteLeavesTargetIntact` reproduces it.
+- **APPEND** with `appendWithResponse` + `flushWithResponse`: concurrent same-position appends replace each other's uncommitted bytes, independently of which flush wins the ETag race, so a successful flush did not prove *your* bytes committed. A blob lease held across the pair closed that gap at the cost of a lease (and a failed lease-acquiring append can still leave a lease behind).
+- The two APIs do not mix on one file: a file written through the Data Lake API cannot be appended with `AppendBlock` (409 `InvalidBlobType`), and one written through the Blob API cannot be appended through the Data Lake API (409 `InvalidAppendOperation`). A CAS replaces such a file with an Append Blob.
 
-ADLS Gen2's append is a two-phase operation:
+### Limitations
 
-1. `appendWithResponse(stream, position=L, length=N, ...)` uploads bytes to an **uncommitted block** at file offset `L`.
-2. `flushWithResponse(position=L+N, ifMatch=etag, ...)` commits the uncommitted region; the position must equal the uncommitted region's end and the etag must match the snapshot.
-
-This pair has a validation gap that no combination of the SDK's response codes can close on its own. Concurrent same-position appends share the uncommitted buffer at offset `L`: a second append at the same position **completely replaces** both the bytes and the effective length of the prior uncommitted block. The flush then commits whatever bytes are there. With same-length concurrent payloads, both writers' flush positions match `L+N`, the etag race elects one flush winner, but the bytes at the offset are last-appender-wins **independently** of the flush winner. A `200` from `flushWithResponse` therefore tells the caller "some atomic append happened" but not "*your* bytes were committed" — empirically this anomaly fires on roughly half of contended same-length writes.
-
-The position-flush check does prevent torn or partial writes: if the uncommitted region's end no longer matches our position, the flush fails cleanly with `400 InvalidFlushPosition` and commits nothing. So committed bytes are always *some* concurrent writer's complete payload — never a mix. But the FileIO contract demands the stronger guarantee that a successful `writeAtomic` means *this writer's* bytes are live, so `ADLSOutputFile.appendDestObj` serializes the append+flush span with a blob lease:
-
-| Step | Call | Lease action |
-|---|---|---|
-| Append | `appendWithResponse(..., DataLakeFileAppendOptions.setLeaseAction(ACQUIRE).setProposedLeaseId(...).setLeaseDuration(15))` | Acquire on the same RPC as the byte upload |
-| Flush | `flushWithResponse(..., DataLakeFileFlushOptions.setRequestConditions(setLeaseId(...).setIfMatch(...)).setLeaseAction(RELEASE))` | Release on the same RPC as the etag-checked commit |
-| Flush failure | `finally { DataLakeLeaseClient.releaseLease() }` | Eager release so a stale-snapshot writer doesn't lock other writers out for the full duration |
-
-The lease is piggybacked on the calls that were already happening — no extra round trips. While we hold it, no other writer can stage uncommitted data at our offset, so a `200` from flush implies our bytes are live.
-
-**Lease timeout semantics** — uncommitted data is *not* tied to lease lifetime. If a writer crashes between append and flush:
-
-- The lease ages out (15s) and becomes available again.
-- The writer's uncommitted bytes remain orphaned at the file's offset, **invisible to readers** (`getLength()` reports only flushed bytes; streamed reads see only the committed file).
-- The next writer pins the file's committed length, appends at that offset, and flushes. Their append at the same offset cleanly overwrites the orphaned uncommitted block.
-- Azure's block-blob storage reclaims orphaned uncommitted data after its TTL (~7 days).
-
-There is no scenario in which a lease timeout leads to a partial commit, a torn write, or visibility of unflushed bytes.
-
-**Lease contention** — two simultaneous `LeaseAction.ACQUIRE` requests resolve at the *append* call: one writer acquires the lease, the other gets `409 LeaseAlreadyPresent` and is translated to `AppendException`. The loser's bytes never enter the uncommitted buffer.
+- **Vended SAS**: under SAS auth the rename must carry the SAS in `x-ms-rename-source`. The SDK adds it for clients built with a SAS token (`adls.sas-token.*`), shared key or OAuth, but not for SAS added by `VendedAzureSasCredentialPolicy`, so CAS fails with 403 under vended credentials.
+- **50,000 appends per file**: an Append Blob holds at most 50,000 blocks; the next `AppendBlock` fails with 409 `BlockCountExceedsLimit`. A CAS (compaction) starts a fresh blob.
+- **Emulator**: Azurite has no Data Lake endpoint, so the CAS rename cannot run there; it does enforce the `AppendBlock` conditions.
 
 ### Azure Checksums
 
-Azure uses MD5 checksums stored in content headers:
-
-```java
-class ADLSChecksum implements CAS, FileChecksum {
-    private final MessageDigest md5 = MessageDigest.getInstance("MD5");
-
-    public byte[] contentChecksumBytes() {
-        return md5.digest();
-    }
-}
-```
+`ADLSChecksum` computes the content MD5 in `prepare()` (computed once; `MessageDigest.digest()` resets the digest). APPEND sends it as the block's `Content-MD5`, which the service checks; CAS compares it with the staged content before the rename.
 
 ## Usage Example
 
@@ -373,7 +325,7 @@ try {
 | GCS | 412 Precondition Failed → `StorageInvariantException`; 429/5xx → `StorageThrottleException` | N/A (`supportsAppend() == false`) |
 | S3 standard | 412 PreconditionFailed, 409 ConditionalRequestConflict → `CASException` | N/A (writeOffsetBytes rejected) |
 | S3 Express One Zone | 412 PreconditionFailed, 409 ConditionalRequestConflict → `CASException` | InvalidWriteOffsetException → `AppendException` |
-| Azure ADLS | 412 Precondition Failed → `CASException` | 412, 400 InvalidFlushPosition, or 409 LeaseAlreadyPresent → `AppendException` |
+| Azure ADLS | 412 ConditionNotMet or 409 PathAlreadyExists (rename) → `CASException` | 412 ConditionNotMet / AppendPositionConditionNotMet → `AppendException` |
 
 `CASException` is the base type for atomic-CAS failures; callers that need to distinguish "snapshot is stale, must reconcile" from "transient, retry the same bytes" can catch `StorageInvariantException` and `StorageThrottleException` separately. `AppendException` covers all APPEND-strategy failures.
 
@@ -381,5 +333,5 @@ try {
 
 1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. Provider tests declare this via `supportsAppend()`.
 2. **GCS APPEND**: Not supported. GCS objects are immutable — every write replaces the whole object — so `GCSFileIO.supportsAppend()` returns `false` and `GCSOutputFile.prepare()` rejects `Strategy.APPEND` with `IllegalArgumentException`. Callers that mix CAS and APPEND in a commit log must fall back to CAS-only.
-3. **ADLS APPEND**: Atomic via the lease mechanism described above. Concurrent writers serialize on the file's blob lease; the loser sees `AppendException` at append time, before any bytes are staged.
+3. **ADLS APPEND**: One conditional `AppendBlock` per append; at most 50,000 appends per file between CAS compactions. CAS requires a hierarchical-namespace account (it renames) and does not work with vended SAS credentials.
 4. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large writes may exceed provider request timeouts.
