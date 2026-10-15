@@ -78,9 +78,9 @@ import org.slf4j.LoggerFactory;
  * the Data Lake API cannot be appended with {@code AppendBlock} (409 {@code InvalidBlobType}); a
  * CAS replaces it with an Append Blob.
  *
- * <p>The rename has to carry the SAS in {@code x-ms-rename-source}; the SDK does that for clients
- * built with a SAS token ({@code adls.sas-token.*}), shared key or OAuth, but not for SAS added by
- * {@link VendedAzureSasCredentialPolicy}, so CAS does not work with vended credentials.
+ * <p>Under SAS auth the rename has to carry the SAS in {@code x-ms-rename-source}. The SDK adds it
+ * for clients built with a SAS token ({@code adls.sas-token.*}); {@link
+ * VendedAzureSasCredentialPolicy} adds the vended one. Shared key and OAuth need nothing.
  */
 class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
   private static final Logger LOG = LoggerFactory.getLogger(ADLSOutputFile.class);
