@@ -94,4 +94,40 @@ public class TestVendedAzureSasCredentialPolicy extends VendedCredentialsTestBas
             "If you are using a SAS token, and the server returned an error message that says 'Signature did not match'");
     mockServer.verify(mockRequestWithExpiredSasToken, VerificationTimes.atLeast(1));
   }
+
+  /**
+   * A Data Lake rename carries its source in {@code x-ms-rename-source}, which the service
+   * authorizes with its own SAS. The policy signs it with the vended token, and with the current
+   * one after the token rotates.
+   */
+  @Test
+  public void vendedSasTokenSignsRenameSource() {
+    String container = "container1";
+    VendedAdlsCredentialProvider vendedAdlsCredentialProvider =
+        mock(VendedAdlsCredentialProvider.class);
+    DataLakeFileSystemClient client =
+        new DataLakeFileSystemClientBuilder()
+            .httpClient(HttpClient.createDefault())
+            .addPolicy(
+                new VendedAzureSasCredentialPolicy(STORAGE_ACCOUNT, vendedAdlsCredentialProvider))
+            .fileSystemName(container)
+            .endpoint(ACCOUNT_ENDPOINT)
+            .buildClient();
+
+    String destination = String.format("/%s/%s/%s", STORAGE_ACCOUNT, container, "dest");
+    for (String token : new String[] {"tokenInstance=1", "tokenInstance=2"}) {
+      mockServer.reset();
+      HttpRequest signedRename =
+          request(destination)
+              .withMethod(HttpMethod.PUT.name())
+              .withQueryStringParameter("tokenInstance", token.substring(token.indexOf('=') + 1))
+              .withHeader("x-ms-rename-source", "/" + container + "/src\\?" + token);
+      mockServer.when(signedRename).respond(HttpResponse.response().withStatusCode(201));
+      when(vendedAdlsCredentialProvider.credentialForAccount(STORAGE_ACCOUNT))
+          .thenReturn(Mono.just(token));
+
+      client.getFileClient("src").rename(null, "dest");
+      mockServer.verify(signedRename, VerificationTimes.exactly(1));
+    }
+  }
 }
