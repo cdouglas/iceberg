@@ -28,6 +28,7 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.Transaction;
 import org.apache.iceberg.catalog.BaseCatalogTransaction;
 import org.apache.iceberg.catalog.Catalog;
@@ -312,7 +313,8 @@ public class RESTCatalog
    *     applied across multiple tables.
    */
   @Override
-  public void commitTransaction(List<TableIdentifier> ignored, List<TableCommit> commits) {
+  public void commitTransaction(
+      Map<BaseCatalogTransaction.TableRef, TableMetadata> ignored, List<TableCommit> commits) {
     sessionCatalog.commitTransaction(context, commits);
   }
 
