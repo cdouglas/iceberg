@@ -46,7 +46,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.PureJavaCrc32C;
 import org.apache.iceberg.TestHelpers;
 import org.apache.iceberg.common.DynMethods;
-import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileChecksumOutputStream;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.IOUtil;
@@ -115,7 +114,7 @@ public class GCSFileIOTest {
   @BeforeEach
   public void before(TestInfo info) {
     testName = info.getTestMethod().orElseThrow(RuntimeException::new).getName();
-    io = new GCSFileIO(() -> storage, new GCPProperties());
+    io = new GCSFileIO(() -> storage);
   }
 
   @Test

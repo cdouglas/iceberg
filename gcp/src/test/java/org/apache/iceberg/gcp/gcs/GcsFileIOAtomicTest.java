@@ -21,18 +21,16 @@ package org.apache.iceberg.gcp.gcs;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.testing.RemoteStorageHelper;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.Random;
 import java.util.UUID;
-import java.util.regex.Pattern;
-import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.AtomicOutputFile;
 import org.apache.iceberg.io.CAS;
 import org.apache.iceberg.io.IOUtil;
@@ -79,7 +77,7 @@ public class GcsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
 
   @Override
   protected SupportsAtomicOperations newFileIO() {
-    return new GCSFileIO(() -> storage, new GCPProperties());
+    return new GCSFileIO(() -> storage);
   }
 
   @Override
@@ -90,12 +88,14 @@ public class GcsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
   // ─── GCS-specific behavior tests ────────────────────────────────────────────────────────────
 
   /**
-   * GCS-specific: a CAS write whose stream is short of the prepared content length triggers
-   * server-side CRC32C validation failure. The contract test only covers the success path; this
-   * verifies the SDK enforces the integrity check end-to-end on a partial write.
+   * GCS-specific: a CAS write whose source no longer matches what {@code prepare()} checksummed
+   * (here, cut to half the prepared length) is refused before anything is sent, and the target
+   * keeps its content. The SDK computes its own CRC32C over the bytes it uploads, so the server
+   * cannot catch this; {@code writeAtomic} compares the buffered payload against the prepared
+   * token.
    */
   @Test
-  void partialWriteRejectedByCrc32cMismatch() throws IOException {
+  void writeRejectedWhenSourceChangedSincePrepare() throws IOException {
     Random random = new Random();
     String location = randomLocation("partial-write");
     SupportsAtomicOperations io = newFileIO();
@@ -116,16 +116,18 @@ public class GcsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
     CAS chk =
         overwrite.prepare(() -> new ByteArrayInputStream(overbytes), AtomicOutputFile.Strategy.CAS);
 
-    StorageException failure =
+    IOException failure =
         Assertions.assertThrows(
-            StorageException.class,
-            () -> {
-              // partial write: stream cut to half the prepared content length
-              overwrite.writeAtomic(chk, () -> new ByteArrayInputStream(overbytes, 0, 512 * 1024));
-            });
-    assertThat(failure.getCause().getMessage())
-        .containsPattern(
-            Pattern.compile(
-                "Provided CRC32C \\\\\"[A-Za-z0-9+/=]+\\\\\" doesn't match calculated CRC32C \\\\\"[A-Za-z0-9+/=]+\\\\\""));
+            IOException.class,
+            () ->
+                overwrite.writeAtomic(
+                    chk, () -> new ByteArrayInputStream(overbytes, 0, 512 * 1024)));
+    assertThat(failure.getMessage()).contains("changed since prepare()");
+
+    byte[] actual = new byte[expected.length];
+    try (InputStream stream = io.newInputFile(location).newStream()) {
+      IOUtil.readFully(stream, actual, 0, actual.length);
+    }
+    assertThat(actual).isEqualTo(expected);
   }
 }
