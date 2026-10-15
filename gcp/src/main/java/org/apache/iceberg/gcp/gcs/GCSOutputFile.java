@@ -57,20 +57,26 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
   // storage.create request (createAtomic).
   private final GCSXmlPutWriter zonalWriter;
 
+  // Non-null when the target is a zonal/Rapid bucket, which rejects resumable uploads:
+  // createOrOverwrite streams through an appendable upload on this gRPC client instead.
+  private final Supplier<Storage> appendableStorage;
+
   static GCSOutputFile fromLocation(
       String location, PrefixedStorage storage, MetricsContext metrics) {
+    BlobId blobId = BlobId.fromGsUtilUri(location);
     return new GCSOutputFile(
         storage.storage(),
-        BlobId.fromGsUtilUri(location),
+        blobId,
         storage.gcpProperties(),
         metrics,
         null,
-        null);
+        null,
+        storage.isZonalBucket(blobId.getBucket()) ? storage::grpcStorage : null);
   }
 
   static GCSOutputFile fromBlobId(
       BlobId blobId, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
-    return new GCSOutputFile(storage, blobId, gcpProperties, metrics, null, null);
+    return new GCSOutputFile(storage, blobId, gcpProperties, metrics, null, null, null);
   }
 
   /**
@@ -81,6 +87,8 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
    *     generation, {@code 0} pins "object must not exist"
    * @param zonalWriter non-null when the target's bucket is zonal/Rapid; routes {@code writeAtomic}
    *     through a single XML API PUT. Null on standard buckets (single-request create).
+   * @param appendableStorage non-null when the target's bucket is zonal/Rapid; {@code
+   *     createOrOverwrite} streams through an appendable upload on it
    */
   static GCSOutputFile replacing(
       BlobId target,
@@ -88,8 +96,10 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
       Storage storage,
       GCPProperties gcpProperties,
       MetricsContext metrics,
-      GCSXmlPutWriter zonalWriter) {
-    return new GCSOutputFile(storage, target, gcpProperties, metrics, pinnedSnapshot, zonalWriter);
+      GCSXmlPutWriter zonalWriter,
+      Supplier<Storage> appendableStorage) {
+    return new GCSOutputFile(
+        storage, target, gcpProperties, metrics, pinnedSnapshot, zonalWriter, appendableStorage);
   }
 
   GCSOutputFile(
@@ -98,10 +108,12 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
       GCPProperties gcpProperties,
       MetricsContext metrics,
       BlobId pinnedSnapshot,
-      GCSXmlPutWriter zonalWriter) {
+      GCSXmlPutWriter zonalWriter,
+      Supplier<Storage> appendableStorage) {
     super(storage, blobId, gcpProperties, metrics);
     this.pinnedSnapshot = pinnedSnapshot;
     this.zonalWriter = zonalWriter;
+    this.appendableStorage = appendableStorage;
   }
 
   /**
@@ -122,6 +134,10 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
   @Override
   public PositionOutputStream createOrOverwrite() {
     try {
+      if (appendableStorage != null) {
+        return new GCSAppendableOutputStream(
+            appendableStorage.get(), blobId(), gcpProperties(), metrics());
+      }
       return new GCSOutputStream(storage(), blobId(), gcpProperties(), metrics());
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to create output stream for location: " + uri(), e);

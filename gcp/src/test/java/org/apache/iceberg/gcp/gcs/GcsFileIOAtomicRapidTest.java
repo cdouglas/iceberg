@@ -18,15 +18,28 @@
  */
 package org.apache.iceberg.gcp.gcs;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
 import java.util.UUID;
+import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.gcp.GCPProperties;
+import org.apache.iceberg.io.AtomicOutputFile;
+import org.apache.iceberg.io.CAS;
+import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.io.SupportsAtomicOperationsContractTest;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Contract test for {@link SupportsAtomicOperations} against a zonal/Rapid GCS bucket. Validates
@@ -75,5 +88,75 @@ public class GcsFileIOAtomicRapidTest extends SupportsAtomicOperationsContractTe
   @Override
   protected String randomLocation(String slug) {
     return String.format("gs://%s/%s/%s-%s", rapidBucket, runId, slug, UUID.randomUUID());
+  }
+
+  // ─── Regular (non-atomic) writes ────────────────────────────────────────────────────────────
+  //
+  // Zonal buckets reject resumable uploads, so GCSOutputFile.createOrOverwrite streams through an
+  // appendable upload (GCSAppendableOutputStream) there. These cover what Iceberg writes that way:
+  // manifests, data files, metadata JSON.
+
+  /** A large file written in odd-sized pieces reads back intact, at the length written. */
+  @Test
+  void regularWriteStreamsALargeFile() throws IOException {
+    String location = randomLocation("regular-large");
+    SupportsAtomicOperations io = newFileIO();
+    try {
+      byte[] data = new byte[(20 << 20) + 12345];
+      new Random(42).nextBytes(data);
+      try (PositionOutputStream out = io.newOutputFile(location).createOrOverwrite()) {
+        int off = 0;
+        int step = 1;
+        while (off < data.length) {
+          int len = Math.min(step, data.length - off);
+          out.write(data, off, len);
+          off += len;
+          step = step * 3 + 7; // 1, 10, 37, ... crosses every internal buffer boundary
+        }
+        assertThat(out.getPos()).isEqualTo(data.length);
+      }
+      InputFile in = io.newInputFile(location);
+      assertThat(in.getLength()).isEqualTo(data.length);
+      assertThat(read(in)).isEqualTo(data);
+    } finally {
+      cleanup(io, location);
+    }
+  }
+
+  /** A file written by a regular write can be replaced by CAS, as a catalog's first file is. */
+  @Test
+  void regularWriteThenCas() throws IOException {
+    String location = randomLocation("regular-then-cas");
+    SupportsAtomicOperations io = newFileIO();
+    try {
+      try (PositionOutputStream out = io.newOutputFile(location).createOrOverwrite()) {
+        out.write("v1".getBytes(StandardCharsets.UTF_8));
+      }
+      InputFile v1 = io.newInputFile(location);
+      byte[] v2 = "v2".getBytes(StandardCharsets.UTF_8);
+      AtomicOutputFile replace = io.newOutputFile(v1);
+      CAS token =
+          replace.prepare(() -> new ByteArrayInputStream(v2), AtomicOutputFile.Strategy.CAS);
+      InputFile replaced = replace.writeAtomic(token, () -> new ByteArrayInputStream(v2));
+      assertThat(read(replaced)).isEqualTo(v2);
+    } finally {
+      cleanup(io, location);
+    }
+  }
+
+  /** {@code create()} refuses an existing object, as on standard buckets. */
+  @Test
+  void createRefusesAnExistingObject() throws IOException {
+    String location = randomLocation("regular-create");
+    SupportsAtomicOperations io = newFileIO();
+    try {
+      try (PositionOutputStream out = io.newOutputFile(location).create()) {
+        out.write(1);
+      }
+      assertThatThrownBy(() -> io.newOutputFile(location).create())
+          .isInstanceOf(AlreadyExistsException.class);
+    } finally {
+      cleanup(io, location);
+    }
   }
 }

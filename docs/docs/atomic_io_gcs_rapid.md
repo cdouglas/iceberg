@@ -76,6 +76,21 @@ gap canaries for the rejected JSON surfaces, a hazard canary for the
 appendable partial publish, and positive canaries for the XML PUT's
 preconditions, CRC32C check and cut-off-body safety.
 
+**Regular writes.** Until October 2026 `GCSFileIO` could not write
+ordinary files (manifests, data files) to a zonal bucket at all:
+`GCSOutputStream` is a JSON resumable upload ("Zonal buckets are
+incompatible with resumable upload"), and the stage-and-move path only
+ever served CAS. The XML API's resumable upload is rejected too (400
+`ZonalBucketIncompatibleFeature`), and a single XML PUT would hold the
+whole file in memory, so regular writes now stream through an
+appendable upload to the final name, finalized on close
+(`GCSAppendableOutputStream`). The appendable channel's `write()` is
+non-blocking and may accept nothing while its queue is full; the stream
+waits on `flush()` (acknowledgement) then. A 20 MiB file written in
+odd-sized pieces round-trips in about 6 s over the WAN.
+`GcsFileIOAtomicRapidTest` covers this; `GcsRapidCanaries` asserts the
+XML resumable upload is still rejected.
+
 ## May 2026: stage-and-move CAS (superseded)
 
 After the April 2026 PoC ruled out atomic APPEND on Rapid, the next

@@ -142,6 +142,12 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 - **Throttling**: GCS limits mutations of a single object to about one per second (burst a few). Both bucket types return 429 past that; it maps to `StorageThrottleException`. A GCS catalog object therefore commits at most a few times per second whichever write path is used.
 - **APPEND**: Rejected at `prepare()` with `IllegalArgumentException`. GCS objects are immutable.
 
+### Regular writes on Rapid/zonal buckets
+
+`createOrOverwrite()` (manifests, data files, metadata JSON) streams through `GCSOutputStream`, a JSON resumable upload, which zonal buckets reject; so do the XML API's resumable upload and the single-request create. On zonal buckets `GCSOutputFile` streams through `GCSAppendableOutputStream` instead: an appendable upload (gRPC `BidiWriteObject`, the only streaming write zonal buckets accept) to the final name, finalized on close. `close()` checks that the finalized object holds every byte written. The channel's `write()` is non-blocking and returns 0 when its outbound queue is full; the stream then waits for GCS to acknowledge what is queued (`flush()`) rather than spinning.
+
+The object is visible, unfinalized, while it is written, and a writer that fails part way leaves the bytes it flushed. Iceberg reads only files a successful commit references, under names unique to each attempt, so such a file is an orphan, as a failed write leaves on other stores; it is not staged and moved, which would cost a request per file. `PrefixedStorage` builds the gRPC client on the first zonal write, from the same configuration as the HTTP client (or, for a caller-provided client, its credentials and project).
+
 ## S3 Implementation
 
 ### S3FileIO

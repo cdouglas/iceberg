@@ -60,8 +60,10 @@ import org.junit.jupiter.api.Test;
  *
  * <ul>
  *   <li><b>Gap canaries</b> assert that zonal buckets still reject the JSON-API single-request
- *       create and the resumable upload. When one fails, the standard-bucket path ({@code
- *       storage.create}) may serve zonal buckets too and the XML writer can go.
+ *       create and the resumable upload, and the XML API's resumable upload. When one of the first
+ *       two fails, the standard-bucket paths may serve zonal buckets too ({@code storage.create}
+ *       for CAS, {@link GCSOutputStream} for regular writes); when the third does, regular writes
+ *       could stream over HTTP instead of a gRPC appendable upload.
  *   <li>The <b>hazard canary</b> asserts that an appendable upload aimed at the live object still
  *       publishes partial bytes when the writer fails. That is why nothing writes appendable
  *       objects to a catalog's live file.
@@ -159,6 +161,25 @@ public class GcsRapidCanaries {
         .as("The zonal bucket accepted a resumable upload; see zonalRejectsJsonCreate")
         .hasRootCauseInstanceOf(com.google.api.client.http.HttpResponseException.class);
     assertThat(read(id)).isEqualTo("v1");
+  }
+
+  @Test
+  void zonalRejectsXmlResumableUpload() throws Exception {
+    BlobId id = object("xml-resumable");
+    HttpResponse<String> response =
+        HTTP.send(
+            put(id, 0)
+                .header("x-goog-resumable", "start")
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build(),
+            HttpResponse.BodyHandlers.ofString());
+    assertThat(response.statusCode())
+        .as(
+            "The zonal bucket accepted an XML resumable upload. It would stream regular writes "
+                + "over HTTP and publish them only when complete; consider it in place of the "
+                + "gRPC appendable upload in GCSAppendableOutputStream.")
+        .isEqualTo(400);
+    assertThat(response.body()).contains("ZonalBucketIncompatibleFeature");
   }
 
   // ─── hazard canary ──────────────────────────────────────────────────────────────────────────

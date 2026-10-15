@@ -21,6 +21,7 @@ package org.apache.iceberg.gcp.gcs;
 import com.google.api.gax.rpc.FixedHeaderProvider;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.storage.Bucket;
+import com.google.cloud.storage.GrpcStorageOptions;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BucketField;
 import com.google.cloud.storage.Storage.BucketGetOption;
@@ -53,6 +54,11 @@ class PrefixedStorage implements AutoCloseable {
   private transient volatile Storage storageClient;
   // CAS writer for zonal/Rapid buckets, built on first zonal-bucket write.
   private transient volatile GCSXmlPutWriter xmlPutWriter;
+  // gRPC client for regular (streaming) writes to zonal/Rapid buckets, whose only streaming write
+  // is an appendable upload. Built on the first such write.
+  private transient volatile Storage grpcStorageClient;
+  // Set when this PrefixedStorage builds its own clients; null with a caller-provided Storage.
+  private final boolean ownsClients;
 
   // Bucket type (zonal/Rapid vs standard/regional) is fixed for the bucket's lifetime; probe once
   // per bucket via storage.get(bucket).getLocationType() and cache. A probe failure (auth,
@@ -69,6 +75,7 @@ class PrefixedStorage implements AutoCloseable {
     this.storagePrefix = storagePrefix;
     this.storage = storage;
     this.gcpProperties = new GCPProperties(properties);
+    this.ownsClients = null == storage;
 
     if (null == storage) {
       this.storage = () -> configureBuilder(StorageOptions.newBuilder()).build().getService();
@@ -114,6 +121,34 @@ class PrefixedStorage implements AutoCloseable {
     }
 
     return storageClient;
+  }
+
+  /**
+   * A gRPC-transport client for appendable uploads to zonal/Rapid buckets. Configured like the HTTP
+   * client when this PrefixedStorage builds its own; with a caller-provided Storage, it takes that
+   * client's credentials and project.
+   */
+  Storage grpcStorage() {
+    if (null == grpcStorageClient) {
+      synchronized (this) {
+        if (null == grpcStorageClient) {
+          GrpcStorageOptions.Builder builder = StorageOptions.grpc();
+          // The default-enabled gRPC OpenTelemetry metrics pull com.google.monitoring.v3 proto
+          // classes that can collide with the protobuf classpath of bundled environments (e.g. the
+          // YCSB binding) and throw ClassCastException while building the client. We don't
+          // consume them.
+          builder.setEnableGrpcClientMetrics(false);
+          if (ownsClients) {
+            configureBuilder(builder);
+          } else {
+            StorageOptions options = storage().getOptions();
+            builder.setCredentials(options.getCredentials()).setProjectId(options.getProjectId());
+          }
+          this.grpcStorageClient = builder.build().getService();
+        }
+      }
+    }
+    return grpcStorageClient;
   }
 
   /** The single-request XML PUT writer used for CAS on zonal/Rapid buckets. */
@@ -170,6 +205,16 @@ class PrefixedStorage implements AutoCloseable {
       } catch (IOException ioe) {
         throw new UncheckedIOException(ioe);
       }
+    }
+
+    // The gRPC client holds channels; the HTTP client does not need closing.
+    if (null != grpcStorageClient) {
+      try {
+        grpcStorageClient.close();
+      } catch (Exception e) {
+        LOG.debug("Closing gRPC Storage client failed; ignoring", e);
+      }
+      grpcStorageClient = null;
     }
 
     if (null != storage) {
