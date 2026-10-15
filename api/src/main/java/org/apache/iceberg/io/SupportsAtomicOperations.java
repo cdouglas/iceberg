@@ -61,6 +61,10 @@ public interface SupportsAtomicOperations extends FileIO {
    * longer matches the snapshot we pinned, or "object must not exist" lost a create race. Retrying
    * the same write will fail again -- the caller must re-read state and reconcile before another
    * attempt.
+   *
+   * <p>This is no proof that the write did not land: when an SDK retries a write whose reply was
+   * lost, the retry fails its precondition on the version the first attempt wrote. That write
+   * landed before the reply, so a read that does not show it rules it out.
    */
   class StorageInvariantException extends CASException {
     public StorageInvariantException(String message, Exception cause) {
@@ -70,8 +74,13 @@ public interface SupportsAtomicOperations extends FileIO {
 
   /**
    * Storage applied backpressure (HTTP 429 rate limit, 5xx transient server error, GCS per-object
-   * update rate). Underlying invariants still hold; the caller should retry the same write after a
-   * backoff.
+   * update rate). The caller may retry the same write after a backoff: its precondition still
+   * guards it.
+   *
+   * <p>The write may have landed nonetheless. A 5xx can follow a write the service applied, and an
+   * SDK that retries internally reports only its last attempt, which a write that landed on an
+   * earlier one does not prevent. A retry of a write that landed fails its precondition; if the
+   * caller stops retrying instead, it must read the target to learn whether the write took effect.
    */
   class StorageThrottleException extends CASException {
     public StorageThrottleException(String message, Exception cause) {
