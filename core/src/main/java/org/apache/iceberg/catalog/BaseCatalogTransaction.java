@@ -18,7 +18,6 @@
  */
 package org.apache.iceberg.catalog;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -100,15 +99,13 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       // only commit if there were change
       if (!tableCommits.isEmpty()) {
         // TODO: remove this cast once commitTransaction(..) is defined at the Catalog level
-        // TODO: Again, this is a hack and we need to propagate the version this transaction
-        // actually depends on
-        final List<TableIdentifier> readIdent =
+        // validateSerializableIsolation checked the read tables before the commit; the catalog
+        // checks them again as the commit takes effect, against the versions read here.
+        final Map<TableRef, TableMetadata> reads =
             IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()
-                ? initiallyReadTableMetadataByRef.keySet().stream()
-                    .map(TableRef::identifier)
-                    .collect(Collectors.toList())
-                : Collections.emptyList();
-        ((SupportsCatalogTransactions) origin).commitTransaction(readIdent, tableCommits);
+                ? Maps.newHashMap(initiallyReadTableMetadataByRef)
+                : Maps.newHashMap();
+        ((SupportsCatalogTransactions) origin).commitTransaction(reads, tableCommits);
       }
 
       // TODO: we should probably be refreshing metadata from all affected tables after the TX
@@ -151,31 +148,38 @@ public class BaseCatalogTransaction implements CatalogTransaction {
         // check all read tables to determine whether they changed outside the catalog
         // TX after they were initially read on a particular branch
         BaseTable table = (BaseTable) origin.loadTable(readTable.identifier());
-        SnapshotRef snapshotRef = table.operations().current().ref(readTable.ref());
-        SnapshotRef snapshotRefInsideTx =
-            initiallyReadTableMetadataByRef.get(readTable).ref(readTable.ref());
-
-        if (null != snapshotRef
-            && null != snapshotRefInsideTx
-            && snapshotRef.snapshotId() != snapshotRefInsideTx.snapshotId()) {
-          throw new ValidationException(
-              "%s isolation violation: Found table metadata updates to table '%s' after it was read on branch '%s'",
-              isolationLevel(), readTable.identifier().toString(), readTable.ref());
-        }
-
-        if (null == snapshotRef || null == snapshotRefInsideTx) {
-          TableMetadata currentTableMetadata = table.operations().current();
-
-          if (!currentTableMetadata
-              .metadataFileLocation()
-              .equals(initiallyReadTableMetadataByRef.get(readTable).metadataFileLocation())) {
+        TableMetadata read = initiallyReadTableMetadataByRef.get(readTable);
+        TableMetadata current = table.operations().current();
+        if (!unchangedSinceRead(readTable.ref(), read, current)) {
+          if (read.ref(readTable.ref()) != null && current.ref(readTable.ref()) != null) {
             throw new ValidationException(
-                "%s isolation violation: Found table metadata updates to table '%s' after it was read",
-                isolationLevel(), readTable.identifier());
+                "%s isolation violation: Found table metadata updates to table '%s' after it was read on branch '%s'",
+                isolationLevel(), readTable.identifier().toString(), readTable.ref());
           }
+          throw new ValidationException(
+              "%s isolation violation: Found table metadata updates to table '%s' after it was read",
+              isolationLevel(), readTable.identifier());
         }
       }
     }
+  }
+
+  /**
+   * Whether branch {@code ref} of a table is as a serializable transaction read it: it points to
+   * the snapshot it did then or, if it pointed to none then or points to none now, the table's
+   * metadata has not changed. A change to another branch does not count. {@code current} is null if
+   * the table no longer exists.
+   */
+  public static boolean unchangedSinceRead(String ref, TableMetadata read, TableMetadata current) {
+    if (current == null || !java.util.Objects.equals(current.uuid(), read.uuid())) {
+      return false;
+    }
+    SnapshotRef now = current.ref(ref);
+    SnapshotRef then = read.ref(ref);
+    if (now != null && then != null) {
+      return now.snapshotId() == then.snapshotId();
+    }
+    return current.metadataFileLocation().equals(read.metadataFileLocation());
   }
 
   private void rollback() {
@@ -216,9 +220,12 @@ public class BaseCatalogTransaction implements CatalogTransaction {
    * particular table.
    */
   private Transaction txForTable(Table table) {
+    // Start from the table as this transaction read it, not as it is now: a change since then is
+    // a conflict, which the commit's requirements catch.
+    TableOperations ops = ((HasTableOperations) table).operations();
     return txByTable.computeIfAbsent(
         identifierWithoutCatalog(table.name()),
-        k -> Transactions.newTransaction(table.name(), ((HasTableOperations) table).operations()));
+        k -> Transactions.newTransaction(table.name(), ops, ops.current()));
   }
 
   // TODO: this functionality should probably live somewhere else to be reusable
@@ -404,8 +411,9 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     }
   }
 
+  /** A branch or tag of a table, as a serializable transaction read it. */
   @Value.Immutable
-  interface TableRef {
+  public interface TableRef {
     TableIdentifier identifier();
 
     String ref();

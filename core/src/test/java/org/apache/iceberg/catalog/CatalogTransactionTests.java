@@ -438,6 +438,35 @@ public abstract class CatalogTransactionTests<
 
   @ParameterizedTest
   @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void writeToTableChangedSinceReadInsideTx(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    TableIdentifier identifier = TableIdentifier.of("ns", "table");
+    catalog().createNamespace(identifier.namespace());
+    catalog()
+        .buildTable(identifier, SCHEMA)
+        .withPartitionSpec(SPEC)
+        .create()
+        .newFastAppend()
+        .appendFile(FILE_A)
+        .commit();
+
+    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    Catalog txCatalog = catalogTransaction.asCatalog();
+    // the TX reads the table, which then changes outside it
+    assertThat(Iterables.size(txCatalog.loadTable(identifier).newScan().planFiles())).isEqualTo(1);
+    catalog().loadTable(identifier).newDelete().deleteFile(FILE_A).commit();
+
+    // the TX writes the version of the table it read: committing it would undo the delete, or
+    // apply the append to a version the TX never read
+    txCatalog.loadTable(identifier).newFastAppend().appendFile(FILE_B).commit();
+    assertThatThrownBy(catalogTransaction::commitTransaction)
+        .isInstanceOfAny(CommitFailedException.class, ValidationException.class);
+
+    assertThat(Iterables.size(catalog().loadTable(identifier).newScan().planFiles())).isEqualTo(0);
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
   public void concurrentTx(CatalogTransaction.IsolationLevel isolationLevel) {
     TableIdentifier identifier = TableIdentifier.of("ns", "tbl");
     catalog().createNamespace(identifier.namespace());
