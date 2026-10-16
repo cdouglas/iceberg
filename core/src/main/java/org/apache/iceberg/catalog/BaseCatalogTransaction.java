@@ -217,23 +217,16 @@ public class BaseCatalogTransaction implements CatalogTransaction {
 
   /**
    * We're using a {@link Transaction} per table so that we can keep track of pending changes for a
-   * particular table.
+   * particular table. A table is known by the identifier {@link AsTransactionalCatalog#loadTable}
+   * loaded it by: its name joins the catalog's name to that identifier, and cannot be split back
+   * into the two.
    */
-  private Transaction txForTable(Table table) {
+  private Transaction txForTable(TableIdentifier identifier, Table table) {
     // Start from the table as this transaction read it, not as it is now: a change since then is
     // a conflict, which the commit's requirements catch.
     TableOperations ops = ((HasTableOperations) table).operations();
     return txByTable.computeIfAbsent(
-        identifierWithoutCatalog(table.name()),
-        k -> Transactions.newTransaction(table.name(), ops, ops.current()));
-  }
-
-  // TODO: this functionality should probably live somewhere else to be reusable
-  private TableIdentifier identifierWithoutCatalog(String tableWithCatalog) {
-    if (tableWithCatalog.startsWith(origin.name())) {
-      return TableIdentifier.parse(tableWithCatalog.replace(origin.name() + ".", ""));
-    }
-    return TableIdentifier.parse(tableWithCatalog);
+        identifier, k -> Transactions.newTransaction(table.name(), ops, ops.current()));
   }
 
   public class AsTransactionalCatalog implements Catalog {
@@ -264,7 +257,7 @@ public class BaseCatalogTransaction implements CatalogTransaction {
                                 return loadTable;
                               }));
 
-      return new TransactionalTable(table, opsFromTable(table));
+      return new TransactionalTable(identifier, table, opsFromTable(table));
     }
 
     @Override
@@ -290,10 +283,12 @@ public class BaseCatalogTransaction implements CatalogTransaction {
   }
 
   private class TransactionalTable extends BaseTable {
+    private final TableIdentifier identifier;
     private final Table table;
 
-    private TransactionalTable(Table table, TableOperations ops) {
+    private TransactionalTable(TableIdentifier identifier, Table table, TableOperations ops) {
       super(ops, table.name());
+      this.identifier = identifier;
       this.table = table;
     }
 
@@ -301,7 +296,7 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     public TableScan newScan() {
       TableScan tableScan = super.newScan();
       if (tableScan instanceof DataTableScan) {
-        return new TransactionalTableScan((DataTableScan) tableScan);
+        return new TransactionalTableScan(identifier, (DataTableScan) tableScan);
       }
 
       return tableScan;
@@ -309,88 +304,91 @@ public class BaseCatalogTransaction implements CatalogTransaction {
 
     @Override
     public UpdateSchema updateSchema() {
-      return txForTable(table).updateSchema();
+      return txForTable(identifier, table).updateSchema();
     }
 
     @Override
     public UpdatePartitionSpec updateSpec() {
-      return txForTable(table).updateSpec();
+      return txForTable(identifier, table).updateSpec();
     }
 
     @Override
     public UpdateProperties updateProperties() {
-      return txForTable(table).updateProperties();
+      return txForTable(identifier, table).updateProperties();
     }
 
     @Override
     public ReplaceSortOrder replaceSortOrder() {
-      return txForTable(table).replaceSortOrder();
+      return txForTable(identifier, table).replaceSortOrder();
     }
 
     @Override
     public UpdateLocation updateLocation() {
-      return txForTable(table).updateLocation();
+      return txForTable(identifier, table).updateLocation();
     }
 
     @Override
     public AppendFiles newAppend() {
-      return txForTable(table).newAppend();
+      return txForTable(identifier, table).newAppend();
     }
 
     @Override
     public AppendFiles newFastAppend() {
-      return txForTable(table).newFastAppend();
+      return txForTable(identifier, table).newFastAppend();
     }
 
     @Override
     public RewriteFiles newRewrite() {
-      return txForTable(table).newRewrite();
+      return txForTable(identifier, table).newRewrite();
     }
 
     @Override
     public RewriteManifests rewriteManifests() {
-      return txForTable(table).rewriteManifests();
+      return txForTable(identifier, table).rewriteManifests();
     }
 
     @Override
     public OverwriteFiles newOverwrite() {
-      return txForTable(table).newOverwrite();
+      return txForTable(identifier, table).newOverwrite();
     }
 
     @Override
     public RowDelta newRowDelta() {
-      return txForTable(table).newRowDelta();
+      return txForTable(identifier, table).newRowDelta();
     }
 
     @Override
     public ReplacePartitions newReplacePartitions() {
-      return txForTable(table).newReplacePartitions();
+      return txForTable(identifier, table).newReplacePartitions();
     }
 
     @Override
     public DeleteFiles newDelete() {
-      return txForTable(table).newDelete();
+      return txForTable(identifier, table).newDelete();
     }
 
     @Override
     public UpdateStatistics updateStatistics() {
-      return txForTable(table).updateStatistics();
+      return txForTable(identifier, table).updateStatistics();
     }
 
     @Override
     public ExpireSnapshots expireSnapshots() {
-      return txForTable(table).expireSnapshots();
+      return txForTable(identifier, table).expireSnapshots();
     }
 
     @Override
     public ManageSnapshots manageSnapshots() {
-      return txForTable(table).manageSnapshots();
+      return txForTable(identifier, table).manageSnapshots();
     }
   }
 
   private class TransactionalTableScan extends DataTableScan {
-    protected TransactionalTableScan(DataTableScan delegate) {
+    private final TableIdentifier identifier;
+
+    protected TransactionalTableScan(TableIdentifier identifier, DataTableScan delegate) {
       super(delegate.table(), delegate.schema(), delegate.context());
+      this.identifier = identifier;
     }
 
     @Override
@@ -400,10 +398,7 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       if (IsolationLevel.SERIALIZABLE == isolationLevel()) {
         // store which version of the table on the given branch we read the first time
         initiallyReadTableMetadataByRef.computeIfAbsent(
-            ImmutableTableRef.builder()
-                .identifier(identifierWithoutCatalog(table().name()))
-                .ref(name)
-                .build(),
+            ImmutableTableRef.builder().identifier(identifier).ref(name).build(),
             ident -> opsFromTable(table()).current());
       }
 
