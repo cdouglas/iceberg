@@ -723,4 +723,50 @@ public abstract class CatalogTransactionTests<
             Iterables.size(catalog().loadTable(identifier).newScan().useRef(branchB).planFiles()))
         .isEqualTo(2);
   }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void tablesWhoseNamesRepeatTheCatalogsOrEachOthers(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    // A table's name is the catalog's name and the table's identifier, joined by dots: these
+    // names repeat the catalog's name, or are each other's. A transaction knows its tables by
+    // their identifiers.
+    List<TableIdentifier> identifiers =
+        Arrays.asList(
+            TableIdentifier.of(Namespace.of(catalog().name()), "t"),
+            TableIdentifier.of(Namespace.of("x" + catalog().name()), "t"),
+            TableIdentifier.of(Namespace.of("a.b"), "t"),
+            TableIdentifier.of(Namespace.of("a", "b"), "t"));
+    List<DataFile> files = Arrays.asList(FILE_A, FILE_B, FILE_C, FILE_D);
+    for (TableIdentifier identifier : identifiers) {
+      String[] levels = identifier.namespace().levels();
+      for (int length = 1; length <= levels.length; length++) {
+        Namespace namespace = Namespace.of(Arrays.copyOf(levels, length));
+        if (!catalog().namespaceExists(namespace)) {
+          catalog().createNamespace(namespace);
+        }
+      }
+      catalog().createTable(identifier, SCHEMA, SPEC);
+    }
+
+    CatalogTransaction catalogTx = catalog().createTransaction(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    for (int i = 0; i < identifiers.size(); i++) {
+      txCatalog.loadTable(identifiers.get(i)).newFastAppend().appendFile(files.get(i)).commit();
+    }
+    for (TableIdentifier identifier : identifiers) {
+      assertThat(txCatalog.loadTable(identifier).currentSnapshot())
+          .as("%s", identifier)
+          .isNotNull();
+    }
+    catalogTx.commitTransaction();
+
+    for (int i = 0; i < identifiers.size(); i++) {
+      Table table = catalog().loadTable(identifiers.get(i));
+      assertThat(table.snapshots()).as("%s", identifiers.get(i)).hasSize(1);
+      assertThat(table.currentSnapshot().addedDataFiles(table.io()))
+          .extracting(DataFile::location)
+          .containsExactly(files.get(i).location());
+    }
+  }
 }
