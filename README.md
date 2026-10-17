@@ -67,8 +67,14 @@ This fork builds with the upstream Gradle setup (Java 17 or 21). Most
 downstream work consumes it via `publishToMavenLocal`:
 
 ```bash
-./gradlew publishToMavenLocal -x test -x integrationTest -x generateGitProperties
+./gradlew publishToMavenLocal -x test -x integrationTest
 ```
+
+It publishes the version of the release it is based on, marked as the fork's:
+`1.12.0-atomicio-SNAPSHOT` on Iceberg 1.12.0. Don't skip `generateGitProperties`
+(it works in git worktrees here): without it the jars carry a stale
+`iceberg-build.properties`, and snapshot summaries name the wrong Iceberg
+version.
 
 Cloud-provider integration tests under `iceberg-aws`, `iceberg-gcp`, and
 `iceberg-azure` require credentials or emulators; they skip cleanly when none
