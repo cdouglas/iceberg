@@ -38,6 +38,7 @@ import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -166,10 +167,12 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
 
   @Override
   public List<ManifestFile> apply(TableMetadata base, Snapshot snapshot) {
-    List<ManifestFile> currentManifests = base.currentSnapshot().allManifests(ops().io());
+    // a table without a current snapshot has no manifests to rewrite
+    List<ManifestFile> currentManifests =
+        snapshot != null ? snapshot.allManifests(ops().io()) : ImmutableList.of();
     Set<ManifestFile> currentManifestSet = ImmutableSet.copyOf(currentManifests);
 
-    validateDeletedManifests(currentManifestSet, base.currentSnapshot().snapshotId());
+    validateDeletedManifests(currentManifestSet, snapshot != null ? snapshot.snapshotId() : null);
 
     if (requiresRewrite(currentManifestSet)) {
       performRewrite(currentManifests);
@@ -282,7 +285,7 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
   }
 
   private void validateDeletedManifests(
-      Set<ManifestFile> currentManifests, long currentSnapshotID) {
+      Set<ManifestFile> currentManifests, Long currentSnapshotID) {
     // directly deleted manifests must be still present in the current snapshot
     deletedManifests.stream()
         .filter(manifest -> !currentManifests.contains(manifest))

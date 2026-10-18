@@ -1110,6 +1110,34 @@ public class TestRewriteManifests extends TestBase {
   }
 
   @TestTemplate
+  public void testRewriteManifestsWithoutSnapshot() {
+    assertThat(table.currentSnapshot()).isNull();
+
+    table.rewriteManifests().clusterBy(dataFile -> "file").commit();
+
+    Snapshot rewrite = table.currentSnapshot();
+    assertThat(rewrite.operation()).isEqualTo(DataOperations.REPLACE);
+    assertThat(rewrite.parentId()).isNull();
+    assertThat(rewrite.allManifests(table.io())).isEmpty();
+  }
+
+  @TestTemplate
+  public void testRewriteManifestsWithConcurrentReplace() {
+    table.newFastAppend().appendFile(FILE_A).commit();
+    RewriteManifests rewriteManifests = table.rewriteManifests().clusterBy(dataFile -> "file");
+
+    // the replace leaves the table without a current snapshot
+    TestTables.beginReplace(tableDir, "test", SCHEMA, SPEC).commitTransaction();
+
+    rewriteManifests.commit();
+
+    Snapshot rewrite = table.currentSnapshot();
+    assertThat(rewrite.operation()).isEqualTo(DataOperations.REPLACE);
+    assertThat(rewrite.parentId()).isNull();
+    assertThat(rewrite.allManifests(table.io())).isEmpty();
+  }
+
+  @TestTemplate
   public void testRewriteDataManifestsPreservesDeletes() {
     assumeThat(formatVersion).isGreaterThan(1);
 
