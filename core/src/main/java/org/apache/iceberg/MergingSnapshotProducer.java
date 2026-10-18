@@ -1237,7 +1237,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   private class DataFileFilterManager extends ManifestFilterManager<DataFile> {
     private DataFileFilterManager() {
-      super(ops().current().specsById(), MergingSnapshotProducer.this::workerPool);
+      super(() -> ops().current().specsById(), MergingSnapshotProducer.this::workerPool);
     }
 
     @Override
@@ -1306,7 +1306,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   private class DeleteFileFilterManager extends ManifestFilterManager<DeleteFile> {
     private DeleteFileFilterManager() {
-      super(ops().current().specsById(), MergingSnapshotProducer.this::workerPool);
+      super(() -> ops().current().specsById(), MergingSnapshotProducer.this::workerPool);
     }
 
     @Override

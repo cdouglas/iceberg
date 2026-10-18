@@ -49,7 +49,6 @@ import org.apache.iceberg.util.Tasks;
 public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
     implements RewriteManifests {
   private final String tableName;
-  private final Map<Integer, PartitionSpec> specsById;
   private final long manifestTargetSizeBytes;
 
   private final Set<ManifestFile> deletedManifests = Sets.newHashSet();
@@ -71,7 +70,6 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
   BaseRewriteManifests(String tableName, TableOperations ops) {
     super(ops);
     this.tableName = tableName;
-    this.specsById = ops().current().specsById();
     this.manifestTargetSizeBytes =
         ops()
             .current()
@@ -160,7 +158,7 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
         manifest.partitionSpecId(),
         manifest.firstRowId(),
         toCopy,
-        specsById,
+        current.specsById(),
         newFile,
         snapshotId(),
         summaryBuilder);
@@ -339,7 +337,8 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
 
   private WriterWrapper getWriter(Object key, int partitionSpecId) {
     return writers.computeIfAbsent(
-        Pair.of(key, partitionSpecId), k -> new WriterWrapper(specsById.get(partitionSpecId)));
+        Pair.of(key, partitionSpecId),
+        k -> new WriterWrapper(ops().current().spec(partitionSpecId)));
   }
 
   @Override

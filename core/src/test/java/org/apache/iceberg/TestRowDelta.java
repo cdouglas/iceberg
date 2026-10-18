@@ -1045,6 +1045,24 @@ public class TestRowDelta extends TestBase {
   }
 
   @TestTemplate
+  public void testRemoveDeletesWithConcurrentSpecChange() {
+    DeleteFile deleteFile = newDeletes(FILE_A);
+    commit(table, table.newRowDelta().addRows(FILE_A).addDeletes(deleteFile), branch);
+    Table stale = load();
+
+    table.updateSpec().addField("id").commit();
+    DataFile fileInNewSpec = newDataFile("data_bucket=0/id=1");
+    DeleteFile deleteFileInNewSpec = newDeletes(fileInNewSpec);
+    commit(
+        table, table.newRowDelta().addRows(fileInNewSpec).addDeletes(deleteFileInNewSpec), branch);
+
+    commit(stale, stale.newRowDelta().removeDeletes(deleteFile), branch);
+
+    table.refresh();
+    validateBranchDeleteFiles(table, branch, deleteFileInNewSpec);
+  }
+
+  @TestTemplate
   public void testAddDeleteFilesMultipleSpecs() {
     // enable partition summaries
     table.updateProperties().set(TableProperties.WRITE_PARTITION_SUMMARY_LIMIT, "10").commit();

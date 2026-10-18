@@ -70,7 +70,9 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
     }
   }
 
-  private final Map<Integer, PartitionSpec> specsById;
+  // the specs of the metadata a commit attempt applies to, which may have specs added since this
+  // manager was created
+  private final Supplier<Map<Integer, PartitionSpec>> specsById;
   private final PartitionSet deleteFilePartitions;
   private final Set<F> deleteFiles = newFileSet();
   private final Set<String> manifestsWithDeletes = Sets.newHashSet();
@@ -99,10 +101,10 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
   private final Supplier<ExecutorService> workerPoolSupplier;
 
   protected ManifestFilterManager(
-      Map<Integer, PartitionSpec> specsById, Supplier<ExecutorService> executorSupplier) {
+      Supplier<Map<Integer, PartitionSpec>> specsById, Supplier<ExecutorService> executorSupplier) {
     this.specsById = specsById;
-    this.deleteFilePartitions = PartitionSet.create(specsById);
-    this.dropPartitions = PartitionSet.create(specsById);
+    this.deleteFilePartitions = PartitionSet.create(specsById.get());
+    this.dropPartitions = PartitionSet.create(specsById.get());
     this.workerPoolSupplier = executorSupplier;
   }
 
@@ -258,7 +260,7 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
     SnapshotSummary.Builder summaryBuilder = SnapshotSummary.builder();
 
     for (ManifestFile manifest : manifests) {
-      PartitionSpec manifestSpec = specsById.get(manifest.partitionSpecId());
+      PartitionSpec manifestSpec = specsById.get().get(manifest.partitionSpecId());
       Pair<Set<F>, Integer> result = filteredManifestResults.get(manifest);
       if (result != null) {
         for (F file : result.first()) {
@@ -420,7 +422,7 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
     if (deleteExpression != null && deleteExpression != Expressions.alwaysFalse()) {
       ManifestEvaluator manifestEvaluator =
           ManifestEvaluator.forRowFilter(
-              deleteExpression, specsById.get(manifest.partitionSpecId()), caseSensitive);
+              deleteExpression, specsById.get().get(manifest.partitionSpecId()), caseSensitive);
       return manifestEvaluator.eval(manifest);
     }
 
@@ -429,7 +431,7 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
 
   private boolean canContainDroppedPartitions(ManifestFile manifest) {
     if (!dropPartitions.isEmpty()) {
-      return ManifestFileUtil.canContainAny(manifest, dropPartitions, specsById);
+      return ManifestFileUtil.canContainAny(manifest, dropPartitions, specsById.get());
     }
 
     return false;
@@ -439,7 +441,7 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
     if (!deletePaths.isEmpty()) {
       return true;
     } else if (!deleteFiles.isEmpty()) {
-      return ManifestFileUtil.canContainAny(manifest, deleteFilePartitions, specsById);
+      return ManifestFileUtil.canContainAny(manifest, deleteFilePartitions, specsById.get());
     } else if (!removedDataFilePaths.isEmpty()) {
       return true;
     }

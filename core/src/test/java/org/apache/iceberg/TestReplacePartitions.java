@@ -158,6 +158,21 @@ public class TestReplacePartitions extends TestBase {
   }
 
   @TestTemplate
+  public void testReplacePartitionsWithConcurrentSpecChange() {
+    Table stale = load();
+
+    table.updateSpec().addField("id").commit();
+    DataFile fileInNewSpec = newDataFile("data_bucket=0/id=1");
+    commit(table, table.newFastAppend().appendFile(FILE_B).appendFile(fileInNewSpec), branch);
+
+    // replaces data_bucket=0 in the stale handle's spec, and so not the file in the new spec
+    commit(stale, stale.newReplacePartitions().addFile(FILE_A), branch);
+
+    table.refresh();
+    validateBranchFiles(table, branch, FILE_A, FILE_B, fileInNewSpec);
+  }
+
+  @TestTemplate
   public void testReplaceAndMergeOnePartition() {
     // ensure the overwrite results in a merge
     table.updateProperties().set(TableProperties.MANIFEST_MIN_MERGE_COUNT, "1").commit();

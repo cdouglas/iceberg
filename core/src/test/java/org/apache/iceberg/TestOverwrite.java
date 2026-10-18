@@ -317,6 +317,36 @@ public class TestOverwrite extends TestBase {
   }
 
   @TestTemplate
+  public void testOverwriteByRowFilterWithConcurrentSpecChange() {
+    Table stale = TestTables.load(tableDir, TABLE_NAME);
+
+    table.updateSpec().addField("id").commit();
+    DataFile fileInNewSpec =
+        DataFiles.builder(table.spec())
+            .withPath("/path/to/data-3.parquet")
+            .withFileSizeInBytes(0)
+            .withPartitionPath("date=2018-06-10/id=10")
+            .withRecordCount(1)
+            .build();
+    commit(table, table.newFastAppend().appendFile(fileInNewSpec), branch);
+
+    DataFile replacement =
+        DataFiles.builder(PARTITION_BY_DATE)
+            .withPath("/path/to/data-4.parquet")
+            .withFileSizeInBytes(0)
+            .withPartitionPath("date=2018-06-10")
+            .withRecordCount(1)
+            .build();
+    commit(
+        stale,
+        stale.newOverwrite().overwriteByRowFilter(equal("date", "2018-06-10")).addFile(replacement),
+        branch);
+
+    table.refresh();
+    validateBranchFiles(table, branch, FILE_0_TO_4, FILE_5_TO_9, replacement);
+  }
+
+  @TestTemplate
   public void testValidatedOverwriteWithAppendSuccess() {
     TableMetadata base = TestTables.readMetadata(TABLE_NAME);
     long baseId =

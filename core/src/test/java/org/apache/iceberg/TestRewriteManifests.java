@@ -606,6 +606,25 @@ public class TestRewriteManifests extends TestBase {
   }
 
   @TestTemplate
+  public void testRewriteManifestsWithConcurrentSpecChange() {
+    table.newFastAppend().appendFile(FILE_A).commit();
+    Table stale = load();
+
+    table.updateSpec().addField("id").commit();
+    DataFile fileInNewSpec = newDataFile("data_bucket=0/id=1");
+    table.newFastAppend().appendFile(fileInNewSpec).commit();
+
+    stale.rewriteManifests().clusterBy(dataFile -> "file").commit();
+
+    table.refresh();
+    List<ManifestFile> manifestFiles = table.currentSnapshot().allManifests(table.io());
+    assertThat(manifestFiles).hasSize(2);
+    matchNumberOfManifestFileWithSpecId(manifestFiles, FILE_A.specId(), 1);
+    matchNumberOfManifestFileWithSpecId(manifestFiles, fileInNewSpec.specId(), 1);
+    validateTableFiles(table, FILE_A, fileInNewSpec);
+  }
+
+  @TestTemplate
   public void testManifestSizeWithMultiplePartitionSpec() throws IOException {
     assertThat(table.currentSnapshot()).isNull();
 

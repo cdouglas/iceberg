@@ -339,6 +339,23 @@ public class TestDeleteFiles extends TestBase {
   }
 
   @TestTemplate
+  public void testDeleteByPathWithConcurrentSpecChange() {
+    Table stale = load();
+
+    table.updateSpec().addField("id").commit();
+    DataFile fileInNewSpec = newDataFile("data_bucket=0/id=1");
+    commit(table, table.newFastAppend().appendFile(FILE_A).appendFile(fileInNewSpec), branch);
+
+    Snapshot delete = commit(stale, stale.newDelete().deleteFile(fileInNewSpec.location()), branch);
+
+    assertThat(delete.summary())
+        .containsEntry(SnapshotSummary.DELETED_FILES_PROP, "1")
+        .containsEntry(SnapshotSummary.DELETED_RECORDS_PROP, "1");
+    table.refresh();
+    validateBranchFiles(table, branch, FILE_A);
+  }
+
+  @TestTemplate
   public void testDeleteCaseSensitivity() {
     Snapshot append =
         commit(table, table.newFastAppend().appendFile(DATA_FILE_BUCKET_0_IDS_0_2), branch);
