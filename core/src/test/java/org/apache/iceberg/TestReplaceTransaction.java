@@ -316,6 +316,26 @@ public class TestReplaceTransaction extends TestBase {
   }
 
   @TestTemplate
+  public void testReplaceTransactionWithConcurrentExpiry() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long expiredId = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_B).commit();
+    long keptId = table.currentSnapshot().snapshotId();
+
+    Transaction replace = TestTables.beginReplace(tableDir, "test", table.schema(), table.spec());
+    replace.newAppend().appendFile(FILE_C).commit();
+
+    table.expireSnapshots().expireSnapshotId(expiredId).commit();
+    replace.commitTransaction();
+
+    table.refresh();
+    assertThat(table.snapshot(expiredId)).isNull();
+    assertThat(table.snapshot(keptId)).isNotNull();
+    assertThat(table.snapshots()).hasSize(2);
+    validateSnapshot(null, table.currentSnapshot(), FILE_C);
+  }
+
+  @TestTemplate
   public void testReplaceToCreateAndAppend() throws IOException {
     // this table doesn't exist.
     Transaction replace = TestTables.beginReplace(tableDir, "test_append", SCHEMA, unpartitioned());

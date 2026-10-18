@@ -296,6 +296,8 @@ public class BaseTransaction implements Transaction {
 
   private void commitReplaceTransaction(boolean orCreate) {
     Map<String, String> props = base != null ? base.properties() : current.properties();
+    // the replacement keeps the snapshots that the table had when the transaction began
+    Set<Long> startingSnapshotIds = snapshotIds(base);
 
     try {
       Tasks.foreach(ops)
@@ -323,6 +325,13 @@ public class BaseTransaction implements Transaction {
                 // metadata. even if it was just updated.
                 if (base != underlyingOps.current()) {
                   this.base = underlyingOps.current(); // just refreshed
+
+                  // but not those that the table no longer has, such as one expired since
+                  Set<Long> removed = Sets.difference(startingSnapshotIds, snapshotIds(base));
+                  if (!removed.isEmpty()) {
+                    this.current =
+                        TableMetadata.buildFrom(current).removeSnapshots(removed).build();
+                  }
                 }
 
                 underlyingOps.commit(base, current);
@@ -345,6 +354,14 @@ public class BaseTransaction implements Transaction {
       // a concern, it is safe to delete all the deleted files from individual operations
       deleteUncommittedFiles(deletedFiles);
     }
+  }
+
+  private static Set<Long> snapshotIds(TableMetadata metadata) {
+    if (metadata == null) {
+      return Set.of();
+    }
+
+    return metadata.snapshots().stream().map(Snapshot::snapshotId).collect(Collectors.toSet());
   }
 
   private void commitSimpleTransaction() {
