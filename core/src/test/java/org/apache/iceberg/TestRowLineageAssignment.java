@@ -31,8 +31,11 @@ import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.util.concurrent.MoreExecutors;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.NestedField;
+import org.apache.iceberg.util.Pair;
 import org.apache.iceberg.util.PartitionUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -568,6 +571,26 @@ public class TestRowLineageAssignment {
   }
 
   @Test
+  public void testAllDataFilesAfterUpgrade(@TempDir File altLocation) {
+    // data manifests: [added(FILE_C)], [existing(FILE_A), deleted(FILE_B)], which the manifest
+    // lists from before the upgrade have without first_row_id
+    testTableUpgrade(altLocation);
+    BaseTable upgradeTable = TestTables.load(altLocation, "test_upgrade");
+    upgradeTable.newFastAppend().commit();
+
+    assertThat(fileRowIds(upgradeTable, MetadataTableType.DATA_FILES))
+        .containsExactlyInAnyOrder(
+            Pair.of(FILE_C.location(), 0L), Pair.of(FILE_A.location(), FILE_C.recordCount()));
+    assertThat(fileRowIds(upgradeTable, MetadataTableType.ALL_DATA_FILES))
+        .containsExactlyInAnyOrder(
+            Pair.of(FILE_C.location(), 0L),
+            Pair.of(FILE_A.location(), FILE_C.recordCount()),
+            // the manifest of the first append, which no snapshot since the upgrade has
+            Pair.of(FILE_A.location(), null),
+            Pair.of(FILE_B.location(), null));
+  }
+
+  @Test
   public void testDeleteAssignmentAfterUpgrade(@TempDir File altLocation) {
     // data manifests: [added(FILE_C)], [existing(FILE_A), deleted(FILE_B)]
     testTableUpgrade(altLocation);
@@ -922,5 +945,29 @@ public class TestRowLineageAssignment {
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  // plans on the calling thread, so that an all_* table reads the snapshots' manifest lists in
+  // order, the oldest first
+  private static List<Pair<String, Long>> fileRowIds(Table table, MetadataTableType type) {
+    Table filesTable = MetadataTableUtils.createMetadataTableInstance(table, type);
+    List<NestedField> columns = filesTable.schema().columns();
+    int pathPos = columns.indexOf(filesTable.schema().findField(DataFile.FILE_PATH.name()));
+    int rowIdPos = columns.indexOf(filesTable.schema().findField(DataFile.FIRST_ROW_ID.name()));
+    List<Pair<String, Long>> rowIds = Lists.newArrayList();
+    try (CloseableIterable<FileScanTask> tasks =
+        filesTable.newScan().planWith(MoreExecutors.newDirectExecutorService()).planFiles()) {
+      for (FileScanTask task : tasks) {
+        try (CloseableIterable<StructLike> rows = task.asDataTask().rows()) {
+          for (StructLike row : rows) {
+            rowIds.add(Pair.of(row.get(pathPos, String.class), row.get(rowIdPos, Long.class)));
+          }
+        }
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+
+    return rowIds;
   }
 }

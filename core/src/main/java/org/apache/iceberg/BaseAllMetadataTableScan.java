@@ -21,13 +21,14 @@ package org.apache.iceberg;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Locale;
+import java.util.Map;
 import org.apache.iceberg.events.Listeners;
 import org.apache.iceberg.events.ScanEvent;
 import org.apache.iceberg.expressions.ExpressionUtil;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.base.Function;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
-import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.ParallelIterable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,9 +80,28 @@ abstract class BaseAllMetadataTableScan extends BaseMetadataTableScan {
 
     try (CloseableIterable<ManifestFile> iterable =
         new ParallelIterable<>(manifestIterables, planExecutor())) {
-      return CloseableIterable.withNoopClose(Sets.newHashSet(iterable));
+      // each snapshot that has a manifest lists it, and a list written before an upgrade to v3
+      // has no first_row_id for a manifest that a later list assigns one
+      Map<String, ManifestFile> manifestsByPath = Maps.newHashMap();
+      for (ManifestFile manifest : iterable) {
+        manifestsByPath.merge(
+            manifest.path(), manifest, BaseAllMetadataTableScan::withAssignedFirstRowId);
+      }
+
+      return CloseableIterable.withNoopClose(manifestsByPath.values());
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to close parallel iterable", e);
     }
+  }
+
+  private static ManifestFile withAssignedFirstRowId(ManifestFile first, ManifestFile second) {
+    if (first.firstRowId() == null) {
+      return second;
+    } else if (second.firstRowId() == null) {
+      return first;
+    }
+
+    // a manifest is assigned one first_row_id, but take the same copy whatever the read order
+    return first.firstRowId() <= second.firstRowId() ? first : second;
   }
 }
