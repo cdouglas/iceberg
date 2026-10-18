@@ -66,7 +66,7 @@ import org.slf4j.LoggerFactory;
  * — there is no separate manifest-list file to rewrite. Calling {@link #replacePaths} or {@link
  * #rewriteManifestList} on such a table fails fast with {@link IllegalStateException}; the table
  * must be evicted to pointer mode (separate Avro manifest list files) before running the
- * path-rewrite migration. See {@code fileio-catalog/docs/errata.md#D3}.
+ * path-rewrite migration. See D4 in {@code fileio-catalog/docs/errata.md}.
  */
 public class RewriteTablePathUtil {
 

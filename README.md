@@ -41,12 +41,27 @@ separate repository: <https://github.com/cdouglas/catalog>.
 - **`SupportsCatalogTransactions` / `BaseCatalogTransaction`** — multi-table
   transaction interfaces in `iceberg-core`, wired into `RESTCatalog` and reused
   by the external `FileIOCatalog`.
+- **Inline manifest lists** — `ManifestListSink`, a `TableOperations` mix-in
+  to which `SnapshotProducer` hands each commit's manifest-list delta instead
+  of writing an Avro manifest list, and `InlineSnapshot`, a snapshot that
+  holds its list in memory (`manifestListLocation()` is `null`).
+  `RewriteTablePathUtil` rejects such snapshots.
+- **`TableMetadata.Builder` additions** — `setLastUpdatedMillis`, so a catalog
+  replaying a commit keeps the writer's `last-updated-ms`, and
+  `replaceSnapshots`, which swaps snapshot implementations (e.g. for
+  `InlineSnapshot`) on load.
 - **Abstract test suites** (`CatalogTransactionTests`, atomic-FileIO contract
   tests) published as a `tests` classifier JAR for downstream consumers.
 
-The atomic primitives, the per-provider preconditions, the ADLS append-flush
-lease serialization, and the GCS Rapid stage-and-move CAS path are documented
-in detail in [`docs/docs/atomic_io.md`](docs/docs/atomic_io.md) and
+`atomicio` sits on branch `core-fixes`: one upstream-style commit for each of
+the Iceberg core bugs C2–C7 that the companion catalog's fuzzers found, with
+its tests. The bugs are documented in that repository's
+`docs/ICEBERG_ISSUES.md`.
+
+The atomic primitives, the per-provider preconditions, the ADLS Append Blob
+writes (APPEND is one conditional `AppendBlock`; CAS renames a staged temp onto
+the target), and the GCS zonal-bucket write paths (CAS is one XML API PUT) are
+documented in detail in [`docs/docs/atomic_io.md`](docs/docs/atomic_io.md) and
 [`docs/docs/atomic_io_gcs_rapid.md`](docs/docs/atomic_io_gcs_rapid.md).
 
 ## Motivation
