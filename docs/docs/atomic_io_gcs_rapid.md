@@ -103,9 +103,9 @@ resumable upload").
 
 The probe code lives at:
 
-- `iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/GcsCasTransportProbe.java`
+- `gcp/src/test/java/org/apache/iceberg/gcp/gcs/GcsCasTransportProbe.java`
   — matrix probe across `{HTTP, gRPC} × {blobWriteSession, blobAppendableUpload, storage.create} × {standard, zonal}`.
-- `iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/GcsCasViaRewriteProbe.java`
+- `gcp/src/test/java/org/apache/iceberg/gcp/gcs/GcsCasViaRewriteProbe.java`
   — focused probe on the partial-publish bug, `storage.copy/rewrite`,
   `Storage.moveBlob`, and a small latency comparison.
 
@@ -225,7 +225,8 @@ The gRPC `Storage` client is required for both `blobAppendableUpload`
 and `moveBlob`, so zonal prefixes will hold a second client built via
 `StorageOptions.grpc()`. The two probe classes will be deleted once
 the production path lands and is covered by a `GcsFileIOAtomicRapidTest`
-that extends the existing contract test.
+that extends the existing contract test. (They were kept; see
+[Reproducibility](#reproducibility).)
 
 `GCSFileIO.supportsAppend()` stays `false`. The catalog file format on
 Rapid follows the CAS-only commit policy, just as it does on standard
@@ -246,10 +247,11 @@ strategies:
   and the catalog will coerce its commit policy to CAS-only.
 
 Standard GCS objects are immutable; `GCSFileIO.supportsAppend()`
-returns `false` today. The ADLS provider implements APPEND via a blob
-lease around a conditional append+flush pair (see
-`docs/atomic_io.md`). S3 Express implements it via PutObject with
-`writeOffsetBytes` plus `if-match` ETag. Rapid Storage's appendable
+returns `false` today. The ADLS provider then implemented APPEND via
+a blob lease around a conditional append+flush pair (since replaced by
+one conditional `AppendBlock`; see [atomic_io.md](atomic_io.md)). S3
+Express implements it via PutObject with `writeOffsetBytes` plus
+`if-match` ETag. Rapid Storage's appendable
 objects looked like the GCS analog.
 
 ### The contract under test
@@ -378,8 +380,9 @@ when a writer encounters an exception mid-write and falls through to
 `close()`, the truncated bytes are published as the new generation
 with no server-side integrity check (CRC32C is silently dropped on
 this path). `CloseAction.CLOSE_WITHOUT_FINALIZING` does not prevent
-this. The production path on Rapid uses stage-and-move via
-`Storage.moveBlob` instead; see the May 2026 section above.
+this. The production path on Rapid became stage-and-move via
+`Storage.moveBlob` (May 2026, above), since replaced by one XML API
+PUT (October 2026, above).
 
 ### Why the design is what it is
 
@@ -406,10 +409,11 @@ The original recommendation at the bottom of the April 2026 PoC was
 writes." The first half (no append) still stands. The second half is
 **superseded** by the May 2026 finding that "writes on Rapid go through
 the same CAS-replace pattern as standard GCS" was incorrect: the SDK
-surfaces standard GCS uses (`blobWriteSession`, `storage.create`,
-`copy/rewrite`) are all rejected by zonal Rapid buckets. The actual
-production path on Rapid is stage-and-move via `Storage.moveBlob`;
-see the May 2026 section at the top of this document.
+surfaces standard GCS used (`blobWriteSession`, `storage.create`,
+`copy/rewrite`) are all rejected by zonal Rapid buckets. The production
+path on Rapid became stage-and-move via `Storage.moveBlob` (May 2026)
+and is now one XML API PUT (`GCSXmlPutWriter`); see the October 2026
+section at the top of this document.
 
 The April 2026 recommendation about incremental commits requiring an
 external serializer remains correct — `supportsAppend()` cannot be
@@ -421,11 +425,12 @@ is implemented.
 ### May 2026 probes (CAS-replace surface survey + stage-and-move)
 
 `GcsCasTransportProbe` and `GcsCasViaRewriteProbe` live in
-`iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/` and the
-test-only `google-cloud-storage:2.68.0` pin lives in `iceberg/build.gradle`
-on the `iceberg-gcp` module. They will be deleted (or pared down to a
-single regression smoke test) when the production stage-and-move
-path lands; until then they are runnable as:
+`gcp/src/test/java/org/apache/iceberg/gcp/gcs/`. The stage-and-move
+path they led to landed and was replaced by the XML PUT (October 2026);
+the probes are kept as the record of the surface survey. They build
+against the SDK version the build resolves (google-cloud-storage
+2.73.0, from libraries-bom 26.88.1); the test-only 2.68.0 pin they once
+needed is gone. Run them as:
 
 ```
 STANDARD_BUCKET=<std-bucket> RAPID_BUCKET=<zonal-bucket> \
@@ -433,7 +438,7 @@ GOOGLE_CLOUD_PROJECT=<project> \
   ./gradlew :iceberg-gcp:test \
   --tests 'org.apache.iceberg.gcp.gcs.GcsCasTransportProbe' \
   --tests 'org.apache.iceberg.gcp.gcs.GcsCasViaRewriteProbe' \
-  -x generateGitProperties --info
+  --info
 ```
 
 The `[probe.*]` lines in stdout and the per-class summary tables are
@@ -443,32 +448,48 @@ unset are skipped via `Assumptions.assumeTrue`.
 ### April 2026 PoC (atomic-APPEND investigation)
 
 The PoC class
-(`iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/RapidStoragePoC.java`),
+(`gcp/src/test/java/org/apache/iceberg/gcp/gcs/RapidStoragePoC.java`),
 the package-friend backdoor
-(`iceberg/gcp/src/test/java/com/google/cloud/storage/RapidStorageBackdoor.java`),
+(`gcp/src/test/java/com/google/cloud/storage/RapidStorageBackdoor.java`),
 and the SDK version bump
-(`iceberg/build.gradle` testImplementation pin to
+(`build.gradle` testImplementation pin to
 `google-cloud-storage:2.68.0`) live at commit
-`d6fd260bb` in this repository's history. They are
+`d6fd260bb`, reachable from tag `atomicio-1.10.1` (the fork's history
+before its rebase onto 1.12.0). They are
 not present in `HEAD` because they include intentionally-failing tests
 that document the silent-data-loss outcome and would block CI; they
 are preserved in history so the experiments are reproducible against
 a real Rapid bucket if the protocol's behavior ever changes.
 
 To rerun (requires a Rapid bucket and `gcloud auth
-application-default login`):
+application-default login`), take only the two test files from that
+commit; its `build.gradle` is the 1.10.1 build:
 
 ```
 git checkout d6fd260bb -- \
-  iceberg/build.gradle \
-  iceberg/gcp/src/test/java/com/google/cloud/storage/RapidStorageBackdoor.java \
-  iceberg/gcp/src/test/java/org/apache/iceberg/gcp/gcs/RapidStoragePoC.java
+  gcp/src/test/java/com/google/cloud/storage/RapidStorageBackdoor.java \
+  gcp/src/test/java/org/apache/iceberg/gcp/gcs/RapidStoragePoC.java
+```
 
+Then add the SDK pin by hand to the `project(':iceberg-gcp')`
+dependencies in `build.gradle`. The backdoor reads SDK internals as of
+2.68.0, and libraries-bom 26.88.1 resolves 2.73.0, which a plain
+`testImplementation` pin does not override, so pin it strictly:
+
+```
+testImplementation('com.google.cloud:google-cloud-storage') {
+  version { strictly '2.68.0' }
+}
+```
+
+```
 RAPID_BUCKET=<bucket> GOOGLE_CLOUD_PROJECT=<project> \
   ./gradlew :iceberg-gcp:test \
   --tests org.apache.iceberg.gcp.gcs.RapidStoragePoC \
-  -x generateGitProperties --info
+  --info
 ```
+
+Not rerun since the rebase onto 1.12.0.
 
 The `[poc.NN]` lines in stdout are the load-bearing observations. Probes
 03/06/11/13b/13c are intentionally-failing under the current GCS
