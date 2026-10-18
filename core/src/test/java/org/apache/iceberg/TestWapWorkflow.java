@@ -607,6 +607,68 @@ public class TestWapWorkflow extends TestBase {
   }
 
   @TestTemplate
+  public void testCherrypickAgainAfterItsPickExpired() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).stageOnly().commit();
+    long stagedId = readMetadata().snapshots().get(1).snapshotId();
+    table.newAppend().appendFile(FILE_C).commit();
+    table.manageSnapshots().cherrypick(stagedId).commit();
+    long pickId = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_D).commit();
+
+    // the expiry removes the ancestor that records the earlier pick
+    table.expireSnapshots().expireSnapshotId(pickId).commit();
+
+    assertThatThrownBy(() -> table.manageSnapshots().cherrypick(stagedId).commit())
+        .isInstanceOf(ValidationException.class)
+        .hasMessage(
+            "Cannot cherry-pick snapshot %s: data file %s is already in the table",
+            stagedId, FILE_B.location());
+    validateTableFiles(table, FILE_A, FILE_B, FILE_C, FILE_D);
+  }
+
+  @TestTemplate
+  public void testWapPublishAgainAfterItsPublishExpired() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).set("wap.id", "123456789").stageOnly().commit();
+    long stagedId = readMetadata().snapshots().get(1).snapshotId();
+    table.newAppend().appendFile(FILE_C).commit();
+    table.manageSnapshots().cherrypick(stagedId).commit();
+    long publishId = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_D).commit();
+
+    // the expiry removes the ancestor that records the published wap.id
+    table.expireSnapshots().expireSnapshotId(publishId).commit();
+
+    assertThatThrownBy(() -> table.manageSnapshots().cherrypick(stagedId).commit())
+        .isInstanceOf(ValidationException.class)
+        .hasMessage(
+            "Cannot cherry-pick snapshot %s: data file %s is already in the table",
+            stagedId, FILE_B.location());
+    validateTableFiles(table, FILE_A, FILE_B, FILE_C, FILE_D);
+  }
+
+  @TestTemplate
+  public void testCherrypickAfterAnExpiry() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long firstId = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_B).commit();
+    table.expireSnapshots().expireSnapshotId(firstId).commit();
+    table.newAppend().appendFile(FILE_C).stageOnly().commit();
+    long stagedId =
+        Streams.stream(table.snapshots())
+            .filter(snapshot -> snapshot.summary().containsKey("added-data-files"))
+            .filter(snapshot -> !snapshot.equals(table.currentSnapshot()))
+            .mapToLong(Snapshot::snapshotId)
+            .max()
+            .getAsLong();
+
+    table.manageSnapshots().cherrypick(stagedId).commit();
+
+    validateTableFiles(table, FILE_A, FILE_B, FILE_C);
+  }
+
+  @TestTemplate
   public void testNonWapCherrypick() {
     table.newAppend().appendFile(FILE_A).commit();
     TableMetadata base = readMetadata();

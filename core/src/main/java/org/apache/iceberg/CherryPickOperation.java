@@ -23,13 +23,16 @@ import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import org.apache.iceberg.exceptions.CherrypickAncestorCommitException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.ParallelIterable;
 import org.apache.iceberg.util.PartitionSet;
 import org.apache.iceberg.util.PropertyUtil;
@@ -48,6 +51,7 @@ class CherryPickOperation extends MergingSnapshotProducer<CherryPickOperation> {
   private Snapshot cherrypickSnapshot = null;
   private boolean requireFastForward = false;
   private PartitionSet replacedPartitions = null;
+  private final Set<String> pickedDataFiles = Sets.newHashSet();
 
   CherryPickOperation(String tableName, TableOperations ops) {
     super(tableName, ops);
@@ -88,6 +92,7 @@ class CherryPickOperation extends MergingSnapshotProducer<CherryPickOperation> {
       // Pick modifications from the snapshot
       for (DataFile addedFile : changes.addedDataFiles()) {
         add(addedFile);
+        pickedDataFiles.add(addedFile.location());
       }
 
     } else if (cherrypickSnapshot.operation().equals(DataOperations.OVERWRITE)
@@ -121,6 +126,7 @@ class CherryPickOperation extends MergingSnapshotProducer<CherryPickOperation> {
       for (DataFile addedFile : changes.addedDataFiles()) {
         add(addedFile);
         replacedPartitions.add(addedFile.specId(), addedFile.partition());
+        pickedDataFiles.add(addedFile.location());
       }
 
       // copy deletes from the picked snapshot
@@ -167,7 +173,62 @@ class CherryPickOperation extends MergingSnapshotProducer<CherryPickOperation> {
       validateReplacedPartitions(
           base, cherrypickSnapshot.parentId(), replacedPartitions, ops().io());
       WapUtil.validateWapPublish(base, cherrypickSnapshot.snapshotId());
+      validatePickedDataFilesNotLive(base);
     }
+  }
+
+  /**
+   * Validates that no data file the pick adds is in the current state, when an earlier pick of the
+   * same snapshot may not be among the current snapshot's ancestors: when an expiry removed
+   * ancestors made after the picked snapshot, which validateNonAncestor and validateWapPublish
+   * search for one.
+   */
+  private void validatePickedDataFilesNotLive(TableMetadata base) {
+    if (pickedDataFiles.isEmpty() || !mayHaveExpiredAPick(base)) {
+      return;
+    }
+
+    for (ManifestFile manifest : base.currentSnapshot().dataManifests(ops().io())) {
+      if (!manifest.hasAddedFiles() && !manifest.hasExistingFiles()) {
+        continue;
+      }
+
+      try (ManifestReader<DataFile> reader =
+          ManifestFiles.read(manifest, ops().io(), base.specsById())
+              .select(ImmutableList.of(DataFile.FILE_PATH.name()))) {
+        for (DataFile file : reader) {
+          ValidationException.check(
+              !pickedDataFiles.contains(file.location()),
+              "Cannot cherry-pick snapshot %s: data file %s is already in the table",
+              cherrypickSnapshot.snapshotId(),
+              file.location());
+        }
+      } catch (IOException e) {
+        throw new UncheckedIOException("Failed to validate picked data files", e);
+      }
+    }
+  }
+
+  private boolean mayHaveExpiredAPick(TableMetadata base) {
+    if (base.currentSnapshot() == null) {
+      return false;
+    }
+
+    Snapshot oldest = null;
+    for (Snapshot ancestor :
+        SnapshotUtil.ancestorsOf(base.currentSnapshot().snapshotId(), base::snapshot)) {
+      oldest = ancestor;
+    }
+
+    if (oldest.parentId() == null) {
+      // the current snapshot's ancestors are all in the table
+      return false;
+    }
+
+    // a pick of the snapshot has a higher sequence number than the snapshot, and the expired
+    // ancestors lower ones than the oldest that remains. v1 tables have no sequence numbers.
+    return base.formatVersion() == 1
+        || oldest.sequenceNumber() > cherrypickSnapshot.sequenceNumber();
   }
 
   private boolean isFastForward(TableMetadata base) {
