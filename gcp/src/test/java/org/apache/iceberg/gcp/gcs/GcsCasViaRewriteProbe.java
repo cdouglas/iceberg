@@ -94,8 +94,7 @@ import org.junit.jupiter.api.Test;
  * STANDARD_BUCKET=lst-consistency RAPID_BUCKET=lstx-consistency \
  * GOOGLE_CLOUD_PROJECT=lst-consistency \
  *   ./gradlew :iceberg-gcp:test \
- *   --tests org.apache.iceberg.gcp.gcs.GcsCasViaRewriteProbe \
- *   -x generateGitProperties --info
+ *   --tests org.apache.iceberg.gcp.gcs.GcsCasViaRewriteProbe --info
  * }</pre>
  */
 public class GcsCasViaRewriteProbe {
