@@ -61,10 +61,12 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Stage 0 SDK survey for GCS CAS-replace.
  *
- * <p>The current production path uses {@code storage.blobWriteSession(...)} on an HTTP-transport
- * {@link Storage} client. That path fails on zonal Rapid buckets with HTTP 400 ("Zonal buckets are
- * incompatible with resumable upload") because the default session config selects resumable upload,
- * which zonal buckets reject.
+ * <p>When this survey ran (May 2026), the production path used {@code
+ * storage.blobWriteSession(...)} on an HTTP-transport {@link Storage} client. That path fails on
+ * zonal Rapid buckets with HTTP 400 ("Zonal buckets are incompatible with resumable upload")
+ * because the default session config selects resumable upload, which zonal buckets reject.
+ * Production CAS is now one request on both: {@code objects.insert} on standard buckets, an XML API
+ * PUT on zonal ones ({@link GCSXmlPutWriter}); see docs/docs/atomic_io_gcs_rapid.md.
  *
  * <p>This probe surveys whether the SDK exposes a single CAS-replace API that works against both
  * standard and zonal buckets, so we can avoid forking the production write path on bucket type.
@@ -87,8 +89,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json \
  * STANDARD_BUCKET=lst-consistency RAPID_BUCKET=lstx-consistency \
  *   ./gradlew :iceberg-gcp:test \
- *   --tests org.apache.iceberg.gcp.gcs.GcsCasTransportProbe \
- *   -x generateGitProperties --info
+ *   --tests org.apache.iceberg.gcp.gcs.GcsCasTransportProbe --info
  * }</pre>
  *
  * Cells whose bucket env var is unset are skipped.
@@ -327,7 +328,7 @@ public class GcsCasTransportProbe {
     String shortName();
   }
 
-  /** {@code storage.blobWriteSession(info, options)} — current production path. */
+  /** {@code storage.blobWriteSession(info, options)}, the production path when this ran. */
   static final class BlobWriteSessionWriter implements Writer {
     @Override
     public long write(Storage storage, BlobId target, byte[] payload, long expectedGen, byte[] crc)

@@ -24,8 +24,9 @@ public interface SupportsAtomicOperations extends FileIO {
 
     /**
      * Whether this FileIO exposes the APPEND strategy. Backends without an append primitive
-     * (e.g. GCS objects are immutable; standard S3 buckets reject writeOffsetBytes) return
-     * false; callers that mix CAS and APPEND must fall back to CAS-only on those backends.
+     * (e.g. GCS objects are immutable) return false; callers that mix CAS and APPEND must fall
+     * back to CAS-only on those backends. Of the fork's implementations only GCSFileIO returns
+     * false; see Limitations for standard S3 buckets.
      */
     default boolean supportsAppend() { return true; }
 
@@ -39,12 +40,20 @@ public interface SupportsAtomicOperations extends FileIO {
      * Storage rejected the write because its CAS precondition failed (etag/generation mismatch,
      * or a "must not exist" lost a create race). Retrying the same write will fail again — the
      * caller must re-read state and reconcile before another attempt.
+     *
+     * This is no proof that the write did not land: an SDK retry of a write whose reply was
+     * lost fails its precondition on the version the first attempt wrote. A read that does not
+     * show the write rules it out.
      */
     class StorageInvariantException extends CASException { ... }
 
     /**
-     * Storage applied backpressure (HTTP 429, 5xx, GCS per-object update rate). Underlying
-     * invariants still hold; the caller should retry the same write after a backoff.
+     * Storage applied backpressure (HTTP 429, 5xx, GCS per-object update rate). The caller may
+     * retry the same write after a backoff: its precondition still guards it.
+     *
+     * The write may have landed nonetheless (a 5xx can follow an applied write; an SDK that
+     * retries reports only its last attempt). A retry of a write that landed fails its
+     * precondition; a caller that stops retrying must read the target to learn the outcome.
      */
     class StorageThrottleException extends CASException { ... }
 
@@ -96,11 +105,12 @@ public class GCSFileIO implements DelegateFileIO, SupportsAtomicOperations {
         GCSInputFile gcsInputFile = (GCSInputFile) replace;
         PrefixedStorage storage = clientForStoragePath(replace.location());
         BlobId pinnedId = gcsInputFile.pinnedBlobId();
-        GCSXmlPutWriter zonalWriter =
-            storage.isZonalBucket(gcsInputFile.blobId().getBucket()) ? storage.xmlPutWriter() : null;
+        boolean zonal = storage.isZonalBucket(gcsInputFile.blobId().getBucket());
         return GCSOutputFile.replacing(
-            gcsInputFile.blobId(), pinnedId, storage.storage(),
-            storage.gcpProperties(), metrics, zonalWriter);
+            gcsInputFile.blobId(), pinnedId, storage.storage(), storage.gcsFileSystem(),
+            storage.gcpProperties(), metrics,
+            zonal ? storage.xmlPutWriter() : null,  // CAS: one XML API PUT
+            zonal ? storage::grpcStorage : null);   // regular writes: appendable upload
     }
 
     @Override
@@ -126,7 +136,8 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
             // Zonal/Rapid: one XML API PUT with x-goog-if-generation-match and
             // x-goog-hash: crc32c=... See atomic_io_gcs_rapid.md.
             return zonalWriter.writeAtomic(
-                blobId(), pinnedSnapshot, token.contentHeaderString(), payload, metrics());
+                blobId(), pinnedSnapshot, token.contentHeaderString(), payload,
+                gcsFileSystem(), metrics());
         }
         // Standard buckets: one multipart objects.insert with ifGenerationMatch; the response
         // carries the new generation.
@@ -324,7 +335,7 @@ try {
 
 ## Limitations
 
-1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. Provider tests declare this via `supportsAppend()`.
+1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. `S3FileIO.supportsAppend()` returns `true` for both, so a catalog on a standard bucket must not append: set `fileio.catalog.max.append.count=0` (CAS only) for `FileIOCatalog`. The standard-bucket contract test (`S3StandardFileIOAtomicTest`) overrides the contract test's `supportsAppend()` hook to skip the APPEND cases.
 2. **GCS APPEND**: Not supported. GCS objects are immutable — every write replaces the whole object — so `GCSFileIO.supportsAppend()` returns `false` and `GCSOutputFile.prepare()` rejects `Strategy.APPEND` with `IllegalArgumentException`. Callers that mix CAS and APPEND in a commit log must fall back to CAS-only.
 3. **ADLS APPEND**: One conditional `AppendBlock` per append; at most 50,000 appends per file between CAS compactions. CAS requires a hierarchical-namespace account (it renames).
 4. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large writes may exceed provider request timeouts.
