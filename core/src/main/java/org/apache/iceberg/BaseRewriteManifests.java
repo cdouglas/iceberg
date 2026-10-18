@@ -26,6 +26,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
@@ -174,7 +175,7 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
 
     validateDeletedManifests(currentManifestSet, snapshot != null ? snapshot.snapshotId() : null);
 
-    if (requiresRewrite(currentManifestSet)) {
+    if (requiresRewrite(currentManifests)) {
       performRewrite(currentManifests);
     } else {
       keepActiveManifests(currentManifests);
@@ -204,7 +205,7 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
         tableName, operation(), snapshotId, sequenceNumber, snapshot.summary());
   }
 
-  private boolean requiresRewrite(Set<ManifestFile> currentManifests) {
+  private boolean requiresRewrite(List<ManifestFile> currentManifests) {
     if (clusterByFunc == null) {
       // manifests are deleted and added directly so don't perform a rewrite
       return false;
@@ -215,8 +216,17 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
       return true;
     }
 
-    // if any processed manifest is not in the current manifest list, perform a full rewrite
-    return rewrittenManifests.stream().anyMatch(manifest -> !currentManifests.contains(manifest));
+    // if any processed manifest is not in the current manifest list, or another commit has assigned
+    // it a first row id since it was processed, perform a full rewrite
+    Map<String, ManifestFile> currentManifestsByPath = Maps.newHashMap();
+    currentManifests.forEach(manifest -> currentManifestsByPath.put(manifest.path(), manifest));
+    return rewrittenManifests.stream()
+        .anyMatch(
+            manifest -> {
+              ManifestFile current = currentManifestsByPath.get(manifest.path());
+              return current == null
+                  || !Objects.equals(current.firstRowId(), manifest.firstRowId());
+            });
   }
 
   private void keepActiveManifests(List<ManifestFile> currentManifests) {

@@ -28,6 +28,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import org.apache.iceberg.ManifestEntry.Status;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
@@ -37,6 +38,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Multimaps;
 import org.apache.iceberg.util.BinPacking.ListPacker;
 import org.apache.iceberg.util.Exceptions;
+import org.apache.iceberg.util.Pair;
 import org.apache.iceberg.util.Tasks;
 
 abstract class ManifestMergeManager<F extends ContentFile<F>> {
@@ -46,8 +48,10 @@ abstract class ManifestMergeManager<F extends ContentFile<F>> {
 
   // track manifests replaced during bin-packing
   private final AtomicInteger replacedManifestsCount = new AtomicInteger(0);
-  // cache merge results to reuse when retrying
-  private final Map<List<ManifestFile>, ManifestFile> mergedManifests = Maps.newConcurrentMap();
+  // cache merge results to reuse when retrying, with the first row ids of the merged manifests: a
+  // commit to a v3 table may assign one to a manifest that an earlier attempt merged without one
+  private final Map<List<ManifestFile>, Pair<List<Long>, ManifestFile>> mergedManifests =
+      Maps.newConcurrentMap();
 
   private final Supplier<ExecutorService> workerPoolSupplier;
 
@@ -107,23 +111,43 @@ abstract class ManifestMergeManager<F extends ContentFile<F>> {
 
   void cleanUncommitted(Set<ManifestFile> committed) {
     // iterate over a copy of entries to avoid concurrent modification
-    List<Map.Entry<List<ManifestFile>, ManifestFile>> entries =
+    List<Map.Entry<List<ManifestFile>, Pair<List<Long>, ManifestFile>>> entries =
         Lists.newArrayList(mergedManifests.entrySet());
 
-    for (Map.Entry<List<ManifestFile>, ManifestFile> entry : entries) {
+    for (Map.Entry<List<ManifestFile>, Pair<List<Long>, ManifestFile>> entry : entries) {
       // delete any new merged manifests that aren't in the committed list
-      ManifestFile merged = entry.getValue();
+      ManifestFile merged = entry.getValue().second();
       if (!committed.contains(merged)) {
-        deleteFile(merged.path());
-        List<ManifestFile> bin = entry.getKey();
-        mergedManifests.remove(bin);
-        for (ManifestFile m : bin) {
-          if (snapshotId() != m.snapshotId()) {
-            replacedManifestsCount.decrementAndGet();
-          }
-        }
+        uncache(entry.getKey(), merged);
       }
     }
+  }
+
+  private void uncache(List<ManifestFile> bin, ManifestFile merged) {
+    deleteFile(merged.path());
+    mergedManifests.remove(bin);
+    for (ManifestFile m : bin) {
+      if (snapshotId() != m.snapshotId()) {
+        replacedManifestsCount.decrementAndGet();
+      }
+    }
+  }
+
+  private ManifestFile cachedMerge(List<ManifestFile> bin) {
+    Pair<List<Long>, ManifestFile> cached = mergedManifests.get(bin);
+    if (cached == null) {
+      return null;
+    } else if (cached.first().equals(firstRowIds(bin))) {
+      return cached.second();
+    }
+
+    // merged before another commit assigned a first row id to a manifest in the bin
+    uncache(bin, cached.second());
+    return null;
+  }
+
+  private static List<Long> firstRowIds(List<ManifestFile> bin) {
+    return bin.stream().map(ManifestFile::firstRowId).collect(Collectors.toList());
   }
 
   private ListMultimap<Integer, ManifestFile> groupBySpec(
@@ -188,8 +212,9 @@ abstract class ManifestMergeManager<F extends ContentFile<F>> {
     // if this merge was already rewritten, use the existing file.
     // if the new files are in this merge, then the ManifestFile for the new files has changed and
     // will be a cache miss.
-    if (mergedManifests.containsKey(bin)) {
-      return mergedManifests.get(bin);
+    ManifestFile cached = cachedMerge(bin);
+    if (cached != null) {
+      return cached;
     }
 
     ManifestWriter<F> writer = newManifestWriter(spec(specId));
@@ -227,7 +252,7 @@ abstract class ManifestMergeManager<F extends ContentFile<F>> {
     ManifestFile manifest = writer.toManifestFile();
 
     // cache the merged manifest to reuse when retrying and track replaced manifests
-    mergedManifests.put(bin, manifest);
+    mergedManifests.put(bin, Pair.of(firstRowIds(bin), manifest));
     for (ManifestFile m : bin) {
       // only count manifests from previous snapshots; in-memory manifests are not replaced
       if (snapshotId() != m.snapshotId()) {

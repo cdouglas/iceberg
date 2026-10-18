@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -91,8 +92,11 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
   // data file paths
   private Set<String> removedDataFilePaths = Sets.newHashSet();
 
-  // cache filtered manifests to avoid extra work when commits fail.
-  private final Map<ManifestFile, ManifestFile> filteredManifests = Maps.newConcurrentMap();
+  // cache filtered manifests to avoid extra work when commits fail, with the first row id of the
+  // manifest each was filtered from: a commit to a v3 table may assign one to a manifest that an
+  // earlier attempt filtered without one
+  private final Map<ManifestFile, Pair<Long, ManifestFile>> filteredManifests =
+      Maps.newConcurrentMap();
 
   // tracking where files were deleted to validate retries quickly
   private final Map<ManifestFile, Pair<Set<F>, Integer>> filteredManifestResults =
@@ -339,25 +343,28 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
    */
   void cleanUncommitted(Set<ManifestFile> committed) {
     // iterate over a copy of entries to avoid concurrent modification
-    List<Map.Entry<ManifestFile, ManifestFile>> filterEntries =
+    List<Map.Entry<ManifestFile, Pair<Long, ManifestFile>>> filterEntries =
         Lists.newArrayList(filteredManifests.entrySet());
 
-    for (Map.Entry<ManifestFile, ManifestFile> entry : filterEntries) {
+    for (Map.Entry<ManifestFile, Pair<Long, ManifestFile>> entry : filterEntries) {
       // remove any new filtered manifests that aren't in the committed list
-      ManifestFile manifest = entry.getKey();
-      ManifestFile filtered = entry.getValue();
+      ManifestFile filtered = entry.getValue().second();
       if (!committed.contains(filtered)) {
-        // only delete if the filtered copy was created (manifest was replaced)
-        if (!manifest.equals(filtered)) {
-          deleteFile(filtered.path());
-          replacedManifestsCount.decrementAndGet();
-        }
-
-        // remove the entry from the cache
-        filteredManifests.remove(manifest);
-        filteredManifestResults.remove(filtered);
+        uncache(entry.getKey(), filtered);
       }
     }
+  }
+
+  private void uncache(ManifestFile manifest, ManifestFile filtered) {
+    // only delete if the filtered copy was created (manifest was replaced)
+    if (!manifest.equals(filtered)) {
+      deleteFile(filtered.path());
+      replacedManifestsCount.decrementAndGet();
+    }
+
+    // remove the entry from the cache
+    filteredManifests.remove(manifest);
+    filteredManifestResults.remove(filtered);
   }
 
   private void invalidateFilteredCache() {
@@ -370,13 +377,18 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
    */
   private ManifestFile filterManifest(
       Schema tableSchema, ManifestFile manifest, boolean trustManifestReferences) {
-    ManifestFile cached = filteredManifests.get(manifest);
+    Pair<Long, ManifestFile> cached = filteredManifests.get(manifest);
     if (cached != null) {
-      return cached;
+      if (Objects.equals(cached.first(), manifest.firstRowId())) {
+        return cached.second();
+      }
+
+      // filtered before another commit assigned the manifest a first row id
+      uncache(manifest, cached.second());
     }
 
     if (!canContainDeletedFiles(manifest, trustManifestReferences)) {
-      filteredManifests.put(manifest, manifest);
+      filteredManifests.put(manifest, Pair.of(manifest.firstRowId(), manifest));
       return manifest;
     }
 
@@ -392,7 +404,7 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
         replacedManifestsCount.incrementAndGet();
         return filtered;
       } else {
-        filteredManifests.put(manifest, manifest);
+        filteredManifests.put(manifest, Pair.of(manifest.firstRowId(), manifest));
         return manifest;
       }
     } catch (IOException e) {
@@ -569,7 +581,7 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
       ManifestFile filtered = writer.toManifestFile();
 
       // update caches
-      filteredManifests.put(manifest, filtered);
+      filteredManifests.put(manifest, Pair.of(manifest.firstRowId(), filtered));
       filteredManifestResults.put(filtered, Pair.of(deletedFiles, duplicateDeleteCount.get()));
 
       return filtered;

@@ -32,6 +32,7 @@ import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.util.concurrent.MoreExecutors;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.NestedField;
@@ -87,6 +88,13 @@ public class TestRowLineageAssignment {
           .withPath("/path/to/data-c.parquet")
           .withFileSizeInBytes(100)
           .withRecordCount(90)
+          .build();
+
+  static final DataFile FILE_D =
+      DataFiles.builder(PartitionSpec.unpartitioned())
+          .withPath("/path/to/data-d.parquet")
+          .withFileSizeInBytes(100)
+          .withRecordCount(50)
           .build();
 
   @TempDir private File location;
@@ -591,6 +599,104 @@ public class TestRowLineageAssignment {
   }
 
   @Test
+  public void testFastAppendRetryAfterUpgrade(@TempDir File altLocation) {
+    // data manifests: [added(FILE_C)], [existing(FILE_A), deleted(FILE_B)]
+    testTableUpgrade(altLocation);
+    BaseTable upgradeTable = TestTables.load(altLocation, "test_upgrade");
+    // random snapshot ids, so that the concurrent commit's snapshot id is not the retry's
+    upgradeTable.updateProperties().set("random-snapshot-ids", "true").commit();
+
+    AppendFiles append = upgradeTable.newFastAppend().appendFile(FILE_D);
+    append.apply(); // the first attempt, while the existing manifests have no first_row_id
+
+    Map<String, Long> assigned = assignRowIdsConcurrently(altLocation);
+    append.commit();
+
+    upgradeTable.refresh();
+    assertThat(dataFileRowIds(upgradeTable))
+        .containsAllEntriesOf(assigned)
+        .containsEntry(FILE_D.location(), FILE_C.recordCount() + FILE_A.recordCount());
+  }
+
+  @Test
+  public void testMergeAppendRetryAfterUpgrade(@TempDir File altLocation) {
+    // data manifests: [added(FILE_C)], [existing(FILE_A), deleted(FILE_B)]
+    testTableUpgrade(altLocation);
+    BaseTable upgradeTable = TestTables.load(altLocation, "test_upgrade");
+    // random snapshot ids, so that the concurrent commit's snapshot id is not the retry's
+    upgradeTable.updateProperties().set("random-snapshot-ids", "true").commit();
+    upgradeTable.updateProperties().set(TableProperties.MANIFEST_MIN_MERGE_COUNT, "1").commit();
+
+    AppendFiles append = upgradeTable.newAppend().appendFile(FILE_D);
+    // the first attempt merges the existing manifests while they have no first_row_id
+    assertThat(append.apply().dataManifests(upgradeTable.io())).hasSize(1);
+
+    Map<String, Long> assigned = assignRowIdsConcurrently(altLocation);
+    append.commit();
+
+    upgradeTable.refresh();
+    assertThat(upgradeTable.currentSnapshot().dataManifests(upgradeTable.io())).hasSize(1);
+    assertThat(dataFileRowIds(upgradeTable)).containsAllEntriesOf(assigned);
+  }
+
+  @Test
+  public void testDeleteRetryAfterUpgrade(@TempDir File altLocation) {
+    BaseTable upgradeTable =
+        TestTables.create(
+            altLocation,
+            "test_upgrade",
+            SCHEMA,
+            PartitionSpec.unpartitioned(),
+            2,
+            Map.of("random-snapshot-ids", "true"));
+    upgradeTable.newFastAppend().appendFile(FILE_A).appendFile(FILE_B).commit();
+    upgradeTable.newFastAppend().appendFile(FILE_C).commit();
+    // data manifests: [added(FILE_C)], [added(FILE_A), added(FILE_B)]
+    TestTables.upgrade(altLocation, "test_upgrade", 3);
+    upgradeTable.refresh();
+
+    DeleteFiles delete = upgradeTable.newDelete().deleteFile(FILE_B);
+    // the first attempt rewrites the manifest of FILE_B and keeps the other one, while neither
+    // has a first_row_id
+    delete.apply();
+
+    Map<String, Long> assigned = assignRowIdsConcurrently(altLocation);
+    assigned.remove(FILE_B.location());
+    delete.commit();
+
+    upgradeTable.refresh();
+    assertThat(dataFileRowIds(upgradeTable)).isEqualTo(assigned);
+  }
+
+  @Test
+  public void testRewriteManifestsRetryAfterUpgrade(@TempDir File altLocation) {
+    // data manifests: [added(FILE_C)], [existing(FILE_A), deleted(FILE_B)]
+    testTableUpgrade(altLocation);
+    BaseTable upgradeTable = TestTables.load(altLocation, "test_upgrade");
+    // random snapshot ids, so that the concurrent commit's snapshot id is not the retry's
+    upgradeTable.updateProperties().set("random-snapshot-ids", "true").commit();
+
+    RewriteManifests rewrite = upgradeTable.rewriteManifests().clusterBy(file -> "file");
+    // the first attempt rewrites the existing manifests while they have no first_row_id
+    assertThat(rewrite.apply().dataManifests(upgradeTable.io())).hasSize(1);
+
+    Map<String, Long> assigned = assignRowIdsConcurrently(altLocation);
+    rewrite.commit();
+
+    upgradeTable.refresh();
+    assertThat(dataFileRowIds(upgradeTable)).isEqualTo(assigned);
+  }
+
+  /** Assigns first_row_id to an upgraded table's manifests, through another table reference. */
+  private static Map<String, Long> assignRowIdsConcurrently(File altLocation) {
+    BaseTable sameTable = TestTables.load(altLocation, "test_upgrade");
+    sameTable.newFastAppend().commit();
+    Map<String, Long> assigned = dataFileRowIds(sameTable);
+    assertThat(assigned.values()).doesNotContainNull();
+    return assigned;
+  }
+
+  @Test
   public void testDeleteAssignmentAfterUpgrade(@TempDir File altLocation) {
     // data manifests: [added(FILE_C)], [existing(FILE_A), deleted(FILE_B)]
     testTableUpgrade(altLocation);
@@ -963,6 +1069,20 @@ public class TestRowLineageAssignment {
             rowIds.add(Pair.of(row.get(pathPos, String.class), row.get(rowIdPos, Long.class)));
           }
         }
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+
+    return rowIds;
+  }
+
+  /** The first_row_id of each data file in the table's current snapshot. */
+  private static Map<String, Long> dataFileRowIds(Table table) {
+    Map<String, Long> rowIds = Maps.newHashMap();
+    try (CloseableIterable<FileScanTask> tasks = table.newScan().planFiles()) {
+      for (FileScanTask task : tasks) {
+        rowIds.put(task.file().location(), task.file().firstRowId());
       }
     } catch (IOException e) {
       throw new UncheckedIOException(e);

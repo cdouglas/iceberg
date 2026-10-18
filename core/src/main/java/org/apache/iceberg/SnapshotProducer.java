@@ -131,15 +131,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
     this.ops = ops;
     this.strictCleanup = ops.requireStrictCleanup();
     this.base = ops.current();
-    this.manifestsWithMetadata =
-        Caffeine.newBuilder()
-            .build(
-                file -> {
-                  if (file.snapshotId() != null) {
-                    return file;
-                  }
-                  return addMetadata(ops, file);
-                });
+    this.manifestsWithMetadata = Caffeine.newBuilder().build(file -> addMetadata(ops, file));
     this.targetManifestSizeBytes =
         ops.current()
             .propertyAsLong(MANIFEST_TARGET_SIZE_BYTES, MANIFEST_TARGET_SIZE_BYTES_DEFAULT);
@@ -325,7 +317,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
           .stopOnFailure()
           .throwFailureWhenFinished()
           .executeWith(workerPool())
-          .run(index -> manifestFiles[index] = manifestsWithMetadata.get(manifests.get(index)));
+          .run(index -> manifestFiles[index] = withMetadata(manifests.get(index)));
 
       writer.addAll(Arrays.asList(manifestFiles));
     } catch (IOException e) {
@@ -823,6 +815,12 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
   static int manifestWriterCount(int workerPoolSize, int fileCount) {
     int limit = IntMath.divide(fileCount, MIN_FILE_GROUP_SIZE, RoundingMode.HALF_UP);
     return Math.max(1, Math.min(workerPoolSize, limit));
+  }
+
+  private ManifestFile withMetadata(ManifestFile manifest) {
+    // a manifest with a snapshot id has its metadata, and is not cached: a commit to a v3 table
+    // may assign first_row_id to a manifest that an earlier attempt saw without one
+    return manifest.snapshotId() != null ? manifest : manifestsWithMetadata.get(manifest);
   }
 
   private static ManifestFile addMetadata(TableOperations ops, ManifestFile manifest) {
