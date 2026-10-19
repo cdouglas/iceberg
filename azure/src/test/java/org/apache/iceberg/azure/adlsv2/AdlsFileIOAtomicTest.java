@@ -96,6 +96,11 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
   }
 
   @Override
+  protected int segmentLimit() {
+    return 50_000;
+  }
+
+  @Override
   protected String randomLocation(String slug) {
     return String.format(
         "abfs://%s@%s.dfs.core.windows.net/%s/%s-%s",
