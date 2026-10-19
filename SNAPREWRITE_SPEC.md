@@ -263,11 +263,19 @@ That is the assertion §4.1 confines to `SnapshotRewriteUnsafe`.
   the returned slice. No exception, no log line — the deletes are dropped and the deleted
   rows reappear in the scan.
 - **v3 DVs**: `findDV` (`DeleteFileIndex.java:199`) raises `ValidationException` when
-  `dv.dataSequenceNumber() < seq` (`:207`). Loud failure.
+  `dv.dataSequenceNumber() < seq` (`:207`). Loud failure, but at planning, after the rewrite
+  has committed: the table it published cannot be planned until its metadata is rolled back.
 
 Because phase 1 is v2, a mis-stamped rewrite produces a *plausible table that reads wrong*.
 This makes the §8.2 oracle and the §8.4 round-trip load-bearing rather than confirmatory,
 and it is the single strongest argument for the non-destructive default in §4.4.
+
+**So the rewrite checks the rule itself.** `SnapshotRewriteResult.checkStamping()` reads each
+rewritten snapshot and requires every delete file the rewrite wrote to have a data sequence
+number at least that of each data file it applies to: its referenced file for a DV, every data
+file in its partition for a v2 position delete. `commit()` runs it first, so a mis-stamped
+rewrite is refused before it is committed on either format version: v2 no longer depends on
+the oracle to notice, and v3 fails before the table is published rather than at its first scan.
 
 **Decision (shared base sequence number).** Stamp every *data* file in the window --- `C_B`'s
 files and the resurrection files --- at a single `σ_base`, one below the window's oldest

@@ -47,7 +47,10 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
  *   <li><b>Satisfied by construction.</b> The guard still runs on every read and still passes. If
  *       the construction is wrong, Iceberg says so. The sequence-number stamping rule is the main
  *       one, enforced by {@code DeleteFileIndex.findDV} for v3 deletion vectors and -- silently --
- *       by {@code DeleteFileIndex.PositionDeletes.filter} for v2 position deletes.
+ *       by {@code DeleteFileIndex.PositionDeletes.filter} for v2 position deletes. Because the
+ *       second is silent and the first fails only when a committed table is planned, {@code
+ *       SnapshotRewriteResult.checkStamping}, which {@code commit} runs, checks the rule before
+ *       committing.
  *   <li><b>Stated in prose, enforced nowhere.</b> No failure is possible because nothing checks.
  *       {@link ManifestWriter#existing} documents that an existing entry must preserve the file's
  *       original sequence numbers and snapshot id; a rewrite overwrites all three.

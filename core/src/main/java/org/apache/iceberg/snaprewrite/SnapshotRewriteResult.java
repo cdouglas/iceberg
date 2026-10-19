@@ -18,12 +18,18 @@
  */
 package org.apache.iceberg.snaprewrite;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.ManifestFiles;
+import org.apache.iceberg.ManifestReader;
 import org.apache.iceberg.PartitionStatisticsFile;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StatisticsFile;
@@ -32,6 +38,7 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -145,7 +152,76 @@ public class SnapshotRewriteResult {
    * against operations that accept a whole-metadata commit.
    */
   public void commit(TableOperations ops) {
+    checkStamping();
     ops.commit(base, rewritten);
+  }
+
+  /**
+   * Checks the sequence-number rule the rewrite depends on (SNAPREWRITE_SPEC.md 4.2): in each
+   * rewritten snapshot, each delete file the rewrite wrote has a data sequence number at least that
+   * of every data file it applies to -- the file it references, if it names one (a DV), else every
+   * data file in its partition.
+   *
+   * <p>Readers check this too late or not at all. A v2 reader leaves a mis-stamped position delete
+   * out of the deletes it applies, so the rewrite reads wrong without an error; a v3 reader refuses
+   * to plan a DV older than its data file, but only once the rewrite is committed. {@link #commit}
+   * runs this first.
+   *
+   * @throws IllegalStateException naming the first delete file that breaks the rule
+   */
+  public void checkStamping() {
+    Set<String> written = Sets.newHashSet();
+    for (DeleteFile file : deleteFiles.values()) {
+      written.add(file.location());
+    }
+
+    for (SnapshotRewritePlan.RewrittenSnapshot rewrittenSnapshot : plan.rewrittenSnapshots()) {
+      long snapshotId = rewrittenSnapshot.original().snapshotId();
+      Snapshot snapshot = rewritten.snapshot(snapshotId);
+      Map<String, Long> seqByPath = Maps.newHashMap();
+      Map<String, Long> maxSeqByPartition = Maps.newHashMap();
+      for (ManifestFile manifest : snapshot.dataManifests(io)) {
+        try (ManifestReader<DataFile> reader =
+            ManifestFiles.read(manifest, io, rewritten.specsById())) {
+          for (DataFile file : reader) {
+            seqByPath.put(file.location(), file.dataSequenceNumber());
+            maxSeqByPartition.merge(partitionKey(file), file.dataSequenceNumber(), Math::max);
+          }
+        } catch (IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      }
+
+      for (ManifestFile manifest : snapshot.deleteManifests(io)) {
+        try (ManifestReader<DeleteFile> reader =
+            ManifestFiles.readDeleteManifest(manifest, io, rewritten.specsById())) {
+          for (DeleteFile file : reader) {
+            if (!written.contains(file.location())) {
+              continue;
+            }
+
+            Long target =
+                file.referencedDataFile() != null
+                    ? seqByPath.get(file.referencedDataFile())
+                    : maxSeqByPartition.get(partitionKey(file));
+            Preconditions.checkState(
+                target == null || file.dataSequenceNumber() >= target,
+                "Mis-stamped rewrite: delete file %s in snapshot %s has data sequence number %s,"
+                    + " below the %s of a data file it applies to",
+                file.location(),
+                snapshotId,
+                file.dataSequenceNumber(),
+                target);
+          }
+        } catch (IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      }
+    }
+  }
+
+  private String partitionKey(ContentFile<?> file) {
+    return file.specId() + "/" + rewritten.spec(file.specId()).partitionToPath(file.partition());
   }
 
   /**

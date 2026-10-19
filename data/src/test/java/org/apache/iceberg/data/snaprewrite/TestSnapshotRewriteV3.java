@@ -40,7 +40,6 @@ import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
-import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -404,15 +403,14 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
   }
 
   /**
-   * On v3 a mis-stamped rewrite fails loudly rather than silently.
+   * On v3 a mis-stamped rewrite fails its own stamping check, and cannot be committed.
    *
-   * <p>{@code DeleteFileIndex.findDV} raises when a deletion vector sorts below the data file it
-   * references, where v2 simply drops the delete from the returned slice and the rows reappear.
-   * Same mistake, opposite failure mode -- worth pinning, because it is the reason the v2 oracle
-   * has to carry the weight that v3 gets from the format.
+   * <p>{@code DeleteFileIndex.findDV} would refuse to plan the result, since a deletion vector
+   * sorts below the data file it references, but only after the rewrite had committed it. The
+   * stamping check refuses it first, and the table is left as it was.
    */
   @Test
-  public void misStampedV3RewriteFailsLoudly() throws IOException {
+  public void misStampedV3RewriteFailsItsStampingCheck() throws IOException {
     useFormatVersion(3);
 
     append(records(1, 6, "base"));
@@ -423,10 +421,15 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
     SnapshotRewriteResult broken =
         org.apache.iceberg.snaprewrite.RewriteStampingHook.materializeMisStamped(rewriter());
 
-    assertThatThrownBy(() -> assertLossless(broken))
-        .as("v3 refuses to plan a scan whose DV sorts below its data file")
-        .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("DV data sequence number");
+    assertThatThrownBy(broken::checkStamping)
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Mis-stamped rewrite");
+    TableMetadata before = ((HasTableOperations) table).operations().refresh();
+    assertThatThrownBy(() -> broken.commit(((HasTableOperations) table).operations()))
+        .isInstanceOf(IllegalStateException.class);
+    assertThat(((HasTableOperations) table).operations().refresh().metadataFileLocation())
+        .as("a refused commit leaves the table as it was")
+        .isEqualTo(before.metadataFileLocation());
 
     broken.discard();
   }
