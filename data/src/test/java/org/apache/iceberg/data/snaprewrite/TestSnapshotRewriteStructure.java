@@ -132,6 +132,10 @@ public class TestSnapshotRewriteStructure extends SnapshotRewriteTestBase {
         .as("a mis-stamped rewrite resurrects rows that should stay hidden")
         .isInstanceOf(AssertionError.class)
         .hasMessageContaining("must read the same after the rewrite");
+    assertThatThrownBy(broken::checkStamping)
+        .as("and its own check names the delete")
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Mis-stamped rewrite");
 
     broken.discard();
   }
