@@ -287,7 +287,9 @@ public abstract class SnapshotRewriteTestBase {
   }
 
   protected SnapshotRewriteResult rewrite() {
-    return rewriter().materialize();
+    SnapshotRewriteResult result = rewriter().materialize();
+    result.checkStamping();
+    return result;
   }
 
   /**
