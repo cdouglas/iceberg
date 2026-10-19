@@ -64,6 +64,11 @@ public class S3ExpressFileIOAtomicTest extends SupportsAtomicOperationsContractT
   }
 
   @Override
+  protected int segmentLimit() {
+    return 10_000;
+  }
+
+  @Override
   protected String randomLocation(String slug) {
     return String.format("s3://%s/%s-%s-%s", EXPR_BUCKET, runId, slug, UUID.randomUUID());
   }

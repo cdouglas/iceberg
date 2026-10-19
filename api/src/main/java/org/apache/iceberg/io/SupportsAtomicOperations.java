@@ -93,4 +93,17 @@ public interface SupportsAtomicOperations extends FileIO {
       super(message, cause);
     }
   }
+
+  /**
+   * Storage rejected an APPEND because the object holds as many writes as the store allows: S3
+   * Express caps an object at 10,000 parts, and Azure an Append Blob at 50,000 blocks. Nothing
+   * landed, and no append to this object can succeed; the caller must replace the object (CAS) to
+   * append again. Not an {@link AppendException}, which a caller retries as an append at the
+   * object's new length.
+   */
+  class SegmentLimitException extends AtomicOperationException {
+    public SegmentLimitException(String message, Exception cause) {
+      super(message, cause);
+    }
+  }
 }
