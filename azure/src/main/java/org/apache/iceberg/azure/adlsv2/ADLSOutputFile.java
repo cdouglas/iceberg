@@ -22,6 +22,7 @@ import com.azure.core.http.HttpHeaderName;
 import com.azure.core.http.rest.Response;
 import com.azure.core.util.Context;
 import com.azure.storage.blob.models.AppendBlobRequestConditions;
+import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobRequestConditions;
 import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.options.AppendBlobCreateOptions;
@@ -205,9 +206,14 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       if (404 == e.getStatusCode()) {
         throw new SupportsAtomicOperations.AppendException("Target no longer exists", e);
       }
-      // 409 InvalidBlobType (written through the Data Lake API; a CAS converts it) and 409
-      // BlockCountExceedsLimit (an Append Blob holds 50,000 blocks) propagate as they are: retrying
-      // the append cannot succeed.
+      if (409 == e.getStatusCode()
+          && BlobErrorCode.BLOCK_COUNT_EXCEEDS_LIMIT.equals(e.getErrorCode())) {
+        // an Append Blob holds 50,000 blocks; a CAS replaces it
+        throw new SupportsAtomicOperations.SegmentLimitException(
+            "Cannot append to " + location() + ": the blob holds the most blocks Azure allows", e);
+      }
+      // 409 InvalidBlobType (written through the Data Lake API; a CAS converts it) propagates as it
+      // is: retrying the append cannot succeed.
       throw e;
     }
   }
