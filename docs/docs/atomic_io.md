@@ -288,7 +288,7 @@ The previous implementation used Data Lake writes. Both of its paths had problem
 ### Limitations
 
 - **SAS on the rename**: under SAS auth the rename must carry the SAS in `x-ms-rename-source`, which the service authorizes separately from the request. The SDK adds it for clients built with a SAS token (`adls.sas-token.*`); `VendedAzureSasCredentialPolicy` adds the vended token (without it, the rename fails with 403 `AuthorizationPermissionMismatch` whatever the token's permissions). Shared key and OAuth need nothing.
-- **50,000 appends per file**: an Append Blob holds at most 50,000 blocks; the next `AppendBlock` fails with 409 `BlockCountExceedsLimit`. A CAS (compaction) starts a fresh blob.
+- **50,000 appends per file**: an Append Blob holds at most 50,000 blocks; the next `AppendBlock` fails with 409 `BlockCountExceedsLimit`, which `ADLSOutputFile` throws as `SegmentLimitException`. A CAS (compaction) starts a fresh blob.
 - **Emulator**: Azurite has no Data Lake endpoint, so the CAS rename cannot run there; it does enforce the `AppendBlock` conditions.
 
 ### Azure Checksums
@@ -328,14 +328,15 @@ try {
 |----------|-------------|----------------|
 | GCS | 412 Precondition Failed → `StorageInvariantException`; 429/5xx → `StorageThrottleException` | N/A (`supportsAppend() == false`) |
 | S3 standard | 412 PreconditionFailed, 409 ConditionalRequestConflict → `CASException` | N/A (writeOffsetBytes rejected) |
-| S3 Express One Zone | 412 PreconditionFailed, 409 ConditionalRequestConflict → `CASException` | InvalidWriteOffsetException → `AppendException` |
-| Azure ADLS | 412 ConditionNotMet or 409 PathAlreadyExists (rename) → `CASException` | 412 ConditionNotMet / AppendPositionConditionNotMet → `AppendException` |
+| S3 Express One Zone | 412 PreconditionFailed, 409 ConditionalRequestConflict → `CASException` | InvalidWriteOffsetException → `AppendException`; TooManyPartsException → `SegmentLimitException` |
+| Azure ADLS | 412 ConditionNotMet or 409 PathAlreadyExists (rename) → `CASException` | 412 ConditionNotMet / AppendPositionConditionNotMet → `AppendException`; 409 BlockCountExceedsLimit → `SegmentLimitException` |
 
-`CASException` is the base type for atomic-CAS failures; callers that need to distinguish "snapshot is stale, must reconcile" from "transient, retry the same bytes" can catch `StorageInvariantException` and `StorageThrottleException` separately. `AppendException` covers all APPEND-strategy failures.
+`CASException` is the base type for atomic-CAS failures; callers that need to distinguish "snapshot is stale, must reconcile" from "transient, retry the same bytes" can catch `StorageInvariantException` and `StorageThrottleException` separately. `AppendException` covers the APPEND-strategy failures a caller retries as an append (another writer appended first); `SegmentLimitException` is a separate type, because only a CAS can follow it.
 
 ## Limitations
 
 1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. `S3FileIO.supportsAppend()` returns `true` for both, so a catalog on a standard bucket must not append: set `fileio.catalog.max.append.count=0` (CAS only) for `FileIOCatalog`. The standard-bucket contract test (`S3StandardFileIOAtomicTest`) overrides the contract test's `supportsAppend()` hook to skip the APPEND cases.
 2. **GCS APPEND**: Not supported. GCS objects are immutable — every write replaces the whole object — so `GCSFileIO.supportsAppend()` returns `false` and `GCSOutputFile.prepare()` rejects `Strategy.APPEND` with `IllegalArgumentException`. Callers that mix CAS and APPEND in a commit log must fall back to CAS-only.
 3. **ADLS APPEND**: One conditional `AppendBlock` per append; at most 50,000 appends per file between CAS compactions. CAS requires a hierarchical-namespace account (it renames).
-4. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large writes may exceed provider request timeouts.
+4. **Writes per object**: an S3 Express object holds at most 10,000 parts (the write that creates or replaces it, and each append), and an Azure Append Blob 50,000 blocks. An append past the limit fails with `SupportsAtomicOperations.SegmentLimitException`, not an `AppendException`: nothing landed, and no append to the object can succeed, so the caller must replace it by CAS. `SupportsAtomicOperationsContractTest.appendPastTheSegmentLimitFails` checks this against the real store when run with `ATOMIC_SEGMENT_LIMIT_TEST=true` (it makes that many requests).
+5. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large writes may exceed provider request timeouts.
