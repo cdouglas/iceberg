@@ -2693,10 +2693,6 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
 
   @Test
   public void testCreateOrReplaceTransactionConcurrentCreate() {
-    assumeThat(supportsServerSideRetry())
-        .as("Conversion to replace transaction is not supported by REST catalog")
-        .isTrue();
-
     C catalog = catalog();
 
     if (requiresNamespaceCreate()) {

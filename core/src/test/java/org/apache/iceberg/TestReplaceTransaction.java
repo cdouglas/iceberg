@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
@@ -333,6 +334,39 @@ public class TestReplaceTransaction extends TestBase {
     assertThat(table.snapshot(keptId)).isNotNull();
     assertThat(table.snapshots()).hasSize(2);
     validateSnapshot(null, table.currentSnapshot(), FILE_C);
+  }
+
+  @TestTemplate
+  public void testCreateOrReplaceTransactionWithConcurrentCreate() {
+    // this table doesn't exist when the transaction begins
+    String name = "test_concurrent_create";
+    TableMetadata newTable =
+        TableMetadata.newTableMetadata(
+            SCHEMA,
+            unpartitioned(),
+            SortOrder.unsorted(),
+            tableDir.toURI().toString(),
+            ImmutableMap.of(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion)));
+    Transaction replace =
+        Transactions.createOrReplaceTableTransaction(
+            name, new TestTables.TestTableOperations(name, tableDir), newTable);
+    replace.newAppend().appendFile(FILE_A).commit();
+
+    TestTables.TestTable created =
+        TestTables.create(tableDir, name, SCHEMA, unpartitioned(), formatVersion);
+    created.newAppend().appendFile(FILE_B).commit();
+    String uuid = created.ops().current().uuid();
+    long appended = created.currentSnapshot().snapshotId();
+
+    assertThatThrownBy(replace::commitTransaction)
+        .isInstanceOf(AlreadyExistsException.class)
+        .hasMessage("Table already exists: %s", name);
+
+    // the table another writer created is unchanged
+    created.refresh();
+    assertThat(created.ops().current().uuid()).isEqualTo(uuid);
+    assertThat(created.snapshots()).hasSize(1);
+    assertThat(created.currentSnapshot().snapshotId()).isEqualTo(appended);
   }
 
   @TestTemplate

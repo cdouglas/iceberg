@@ -35,6 +35,7 @@ import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
@@ -298,6 +299,8 @@ public class BaseTransaction implements Transaction {
     Map<String, String> props = base != null ? base.properties() : current.properties();
     // the replacement keeps the snapshots that the table had when the transaction began
     Set<Long> startingSnapshotIds = snapshotIds(base);
+    // without a table when it began, the transaction built its replacement as a new table
+    boolean replacesNoTable = base == null;
 
     try {
       Tasks.foreach(ops)
@@ -319,6 +322,12 @@ public class BaseTransaction implements Transaction {
                   if (!orCreate) {
                     throw e;
                   }
+                }
+
+                // committing that new table over one another writer created since would replace
+                // that table with a different one, dropping its history: fail as a create does
+                if (replacesNoTable && underlyingOps.current() != null) {
+                  throw new AlreadyExistsException("Table already exists: %s", tableName);
                 }
 
                 // because this is a replace table, it will always completely replace the table
