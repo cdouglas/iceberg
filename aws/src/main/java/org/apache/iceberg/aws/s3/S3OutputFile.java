@@ -41,6 +41,7 @@ import software.amazon.awssdk.services.s3.model.InvalidWriteOffsetException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.TooManyPartsException;
 
 public class S3OutputFile extends BaseS3File implements AtomicOutputFile, NativelyEncryptedFile {
   private NativeFileCryptoParameters nativeEncryptionParameters;
@@ -232,6 +233,9 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
           response.eTag());
     } catch (InvalidWriteOffsetException e) {
       throw new SupportsAtomicOperations.AppendException("Wrong offset", e);
+    } catch (TooManyPartsException e) {
+      throw new SupportsAtomicOperations.SegmentLimitException(
+          "Cannot append to " + location() + ": the object holds the most parts S3 allows", e);
     } catch (S3Exception e) {
       if (409 == e.statusCode()
           && "ConditionalRequestConflict".equals(e.awsErrorDetails().errorCode())) {

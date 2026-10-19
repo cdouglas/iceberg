@@ -75,6 +75,16 @@ public abstract class SupportsAtomicOperationsContractTest {
     return newFileIO().supportsAppend();
   }
 
+  /**
+   * The most writes an object of the backing store holds, the one that creates or replaces it
+   * included (S3 Express: 10,000 parts; an Azure Append Blob: 50,000 blocks), or 0 for no limit
+   * this suite should test. The test that reaches it makes that many requests, so it runs only with
+   * the environment variable {@code ATOMIC_SEGMENT_LIMIT_TEST=true}.
+   */
+  protected int segmentLimit() {
+    return 0;
+  }
+
   /** Best-effort cleanup hook called after each successful test. Subclasses may override. */
   protected void cleanup(SupportsAtomicOperations io, String location) {
     try {
@@ -190,6 +200,44 @@ public abstract class SupportsAtomicOperationsContractTest {
       InputFile created = createAtomically(io, loc, head);
       InputFile after = appendAtomically(io, created, tail);
       assertThat(read(after)).isEqualTo(concat(head, tail));
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /**
+   * An append past the store's limit on writes per object fails with {@link
+   * SupportsAtomicOperations.SegmentLimitException}, not as an append race (which a caller retries
+   * as an append), and lands nothing; a CAS replaces the object, after which appends succeed.
+   */
+  @Test
+  void appendPastTheSegmentLimitFails() throws IOException {
+    Assumptions.assumeTrue(supportsAppend() && segmentLimit() > 0, "no segment limit to test");
+    Assumptions.assumeTrue(
+        "true".equals(System.getenv("ATOMIC_SEGMENT_LIMIT_TEST")),
+        "makes segmentLimit() requests: run with ATOMIC_SEGMENT_LIMIT_TEST=true");
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("segment-limit");
+    try {
+      InputFile current = createAtomically(io, loc, bytes("0"));
+      for (int written = 1; written < segmentLimit(); written += 1) {
+        current = appendAtomically(io, current, bytes("."));
+      }
+      InputFile full = current;
+      byte[] before = read(io.newInputFile(loc));
+      assertThat(before).hasSize(segmentLimit());
+
+      assertThatThrownBy(() -> appendAtomically(io, full, bytes("!")))
+          .isInstanceOf(SupportsAtomicOperations.SegmentLimitException.class);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(before);
+
+      AtomicOutputFile out = io.newOutputFile(io.newInputFile(loc));
+      byte[] fresh = bytes("fresh");
+      InputFile replaced =
+          out.writeAtomic(
+              out.prepare(supplier(fresh), AtomicOutputFile.Strategy.CAS), supplier(fresh));
+      InputFile after = appendAtomically(io, replaced, bytes("more"));
+      assertThat(read(after)).isEqualTo(concat(fresh, bytes("more")));
     } finally {
       cleanup(io, loc);
     }
