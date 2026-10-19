@@ -79,7 +79,9 @@ public class S3StandardFileIOAtomicTest extends SupportsAtomicOperationsContract
 
   @Override
   protected SupportsAtomicOperations newFileIO() {
-    S3FileIO io = new S3FileIO(() -> s3);
+    // Each FileIO gets its own client: S3FileIO closes its clients when it is closed or
+    // finalized, and a test's FileIO collected mid-suite closed one shared by every later test.
+    S3FileIO io = new S3FileIO(() -> AwsClientFactories.defaultFactory().s3());
     io.initialize(Maps.newHashMap());
     return io;
   }
