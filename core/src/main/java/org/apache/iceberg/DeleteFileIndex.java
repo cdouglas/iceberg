@@ -59,6 +59,8 @@ import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.util.PartitionMap;
 import org.apache.iceberg.util.PartitionSet;
 import org.apache.iceberg.util.Tasks;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An index of {@link DeleteFile delete files} by sequence number.
@@ -68,6 +70,7 @@ import org.apache.iceberg.util.Tasks;
  * file.
  */
 class DeleteFileIndex {
+  private static final Logger LOG = LoggerFactory.getLogger(DeleteFileIndex.class);
   private static final DeleteFile[] EMPTY_DELETES = new DeleteFile[0];
 
   private final EqualityDeletes globalDeletes;
@@ -221,11 +224,18 @@ class DeleteFileIndex {
 
     DeleteFile dv = dvByPath.get(dataFile.location());
     if (dv != null) {
-      ValidationException.check(
-          dv.dataSequenceNumber() >= seq,
-          "DV data sequence number (%s) must be greater than or equal to data file sequence number (%s)",
-          dv.dataSequenceNumber(),
-          seq);
+      if (dv.dataSequenceNumber() < seq) {
+        // A DV applies only to data files no newer than itself. One older than its data file was
+        // written for an earlier file at the same path, which a later commit added again; it
+        // deletes nothing in this one.
+        LOG.warn(
+            "Ignoring DV {} for {}: its data sequence number ({}) is below the data file's ({})",
+            dv.location(),
+            dataFile.location(),
+            dv.dataSequenceNumber(),
+            seq);
+        return null;
+      }
       validatePartitionMatch(dv, dataFile);
     }
     return dv;

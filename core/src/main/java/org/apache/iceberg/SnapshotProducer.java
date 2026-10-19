@@ -34,6 +34,7 @@ import static org.apache.iceberg.TableProperties.SNAPSHOT_ID_INHERITANCE_ENABLED
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.RoundingMode;
 import java.util.Arrays;
 import java.util.Collection;
@@ -65,11 +66,16 @@ import org.apache.iceberg.metrics.MetricsReporter;
 import org.apache.iceberg.metrics.Timer.Timed;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.relocated.com.google.common.math.IntMath;
+import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.util.Exceptions;
+import org.apache.iceberg.util.ManifestFileUtil;
+import org.apache.iceberg.util.Pair;
 import org.apache.iceberg.util.PropertyUtil;
 import org.apache.iceberg.util.SnapshotUtil;
 import org.apache.iceberg.util.Tasks;
@@ -273,6 +279,60 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
    * @param snapshot ending snapshot on the lineage which is being validated
    */
   protected void validate(TableMetadata currentMetadata, Snapshot snapshot) {}
+
+  /**
+   * Validates that no data file in {@code added} has a live DV in {@code parent}. A DV names its
+   * data file by path, so one left in the table after its file was removed, or committed for a file
+   * not in the table, would name the file again once a commit added it at that path, with a data
+   * sequence number older than the file's: a DV that deletes nothing in it. Reads only the parent's
+   * delete manifests that can hold an added file's partition.
+   */
+  protected void validateNoDVsForAddedDataFiles(
+      TableMetadata currentMetadata, Snapshot parent, Iterable<DataFile> added) {
+    if (parent == null || currentMetadata.formatVersion() < 3) {
+      return;
+    }
+
+    Map<String, DataFile> addedByPath = Maps.newHashMap();
+    List<Pair<Integer, StructLike>> partitions = Lists.newArrayList();
+    for (DataFile file : added) {
+      addedByPath.put(file.location(), file);
+      partitions.add(Pair.of(file.specId(), file.partition()));
+    }
+
+    if (addedByPath.isEmpty()) {
+      return;
+    }
+
+    for (ManifestFile manifest : parent.deleteManifests(ops.io())) {
+      if ((manifest.hasAddedFiles() || manifest.hasExistingFiles())
+          && ManifestFileUtil.canContainAny(manifest, partitions, currentMetadata.specsById())) {
+        validateNoDVsFor(addedByPath, manifest, currentMetadata);
+      }
+    }
+  }
+
+  private void validateNoDVsFor(
+      Map<String, DataFile> addedByPath, ManifestFile manifest, TableMetadata currentMetadata) {
+    try (ManifestReader<DeleteFile> reader =
+        ManifestFiles.readDeleteManifest(manifest, ops.io(), currentMetadata.specsById())
+            .select(
+                ImmutableList.of(
+                    DataFile.CONTENT.name(),
+                    DataFile.FILE_PATH.name(),
+                    DataFile.FILE_FORMAT.name(),
+                    DataFile.REFERENCED_DATA_FILE.name()))) {
+      for (DeleteFile file : reader) {
+        if (ContentFileUtil.isDV(file) && addedByPath.containsKey(file.referencedDataFile())) {
+          throw new ValidationException(
+              "Cannot add data file %s: DV %s for a data file at that path is in the table",
+              file.referencedDataFile(), file.location());
+        }
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to validate the DVs of added data files", e);
+    }
+  }
 
   /**
    * Apply the update's changes to the given metadata and snapshot. Return the new manifest list.

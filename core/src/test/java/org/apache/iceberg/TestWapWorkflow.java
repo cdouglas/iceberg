@@ -20,6 +20,7 @@ package org.apache.iceberg;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 import org.apache.iceberg.exceptions.CherrypickAncestorCommitException;
 import org.apache.iceberg.exceptions.DuplicateWAPCommitException;
@@ -666,6 +667,26 @@ public class TestWapWorkflow extends TestBase {
     table.manageSnapshots().cherrypick(stagedId).commit();
 
     validateTableFiles(table, FILE_A, FILE_B, FILE_C);
+  }
+
+  @TestTemplate
+  public void testCherrypickOfAFileADVNames() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).stageOnly().commit();
+    long stagedId =
+        Streams.stream(table.snapshots())
+            .filter(snapshot -> !snapshot.equals(table.currentSnapshot()))
+            .mapToLong(Snapshot::snapshotId)
+            .max()
+            .getAsLong();
+    // a DV for FILE_B, which is not live on main: a row delta does not check by default
+    table.newRowDelta().addDeletes(newDV(FILE_B)).commit();
+
+    assertThatThrownBy(() -> table.manageSnapshots().cherrypick(stagedId).commit())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageStartingWith("Cannot add data file " + FILE_B.location());
+    validateTableFiles(table, FILE_A);
   }
 
   @TestTemplate

@@ -787,13 +787,12 @@ public abstract class DeleteFileIndexTestBase<
   }
 
   @TestTemplate
-  public void testInvalidDVSequenceNumber() {
+  public void testDVOlderThanItsDataFileDoesNotApply() {
     assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
     DeleteFile dv = withDataSequenceNumber(1, newDV(FILE_A));
     List<DeleteFile> dvs = Collections.singletonList(dv);
     DeleteFileIndex index = DeleteFileIndex.builderFor(dvs).specsById(table.specs()).build();
-    assertThatThrownBy(() -> index.forDataFile(2, FILE_A))
-        .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("must be greater than or equal to data file sequence number");
+    assertThat(index.forDataFile(1, FILE_A)).as("a DV applies to a file of its age").hasSize(1);
+    assertThat(index.forDataFile(2, FILE_A)).as("a DV older than its data file").isEmpty();
   }
 }

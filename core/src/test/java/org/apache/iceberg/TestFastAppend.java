@@ -20,6 +20,7 @@ package org.apache.iceberg;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 import java.io.File;
 import java.io.IOException;
@@ -29,6 +30,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.iceberg.ManifestEntry.Status;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -123,6 +125,22 @@ public class TestFastAppend extends TestBase {
     assertThatThrownBy(() -> table.newFastAppend().appendFile(null).commit())
         .isInstanceOf(NullPointerException.class)
         .hasMessage("Invalid data file: null");
+  }
+
+  @TestTemplate
+  public void testAppendOfAFileADVNames() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
+    table.newFastAppend().appendFile(FILE_A).commit();
+    // a DV for FILE_B, which is not in the table: a row delta does not check by default
+    table.newRowDelta().addDeletes(newDV(FILE_B)).commit();
+
+    assertThatThrownBy(() -> table.newFastAppend().appendFile(FILE_B).commit())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageStartingWith("Cannot add data file " + FILE_B.location());
+    assertThatThrownBy(() -> table.newAppend().appendFile(FILE_B).commit())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageStartingWith("Cannot add data file " + FILE_B.location());
+    table.newFastAppend().appendFile(FILE_C).commit();
   }
 
   @TestTemplate

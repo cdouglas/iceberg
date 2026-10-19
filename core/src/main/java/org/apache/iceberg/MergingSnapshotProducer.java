@@ -1017,6 +1017,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   @Override
   public List<ManifestFile> apply(TableMetadata base, Snapshot snapshot) {
     validateDeleteFilesForVersion(base.formatVersion());
+    validateNoDVsForAddedDataFiles(base, snapshot, addedDataFiles());
     // filter any existing manifests
     List<ManifestFile> filtered =
         filterManager.filterManifests(

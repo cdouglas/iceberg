@@ -144,6 +144,11 @@ class FastAppend extends SnapshotProducer<AppendFiles> implements AppendFiles {
   }
 
   @Override
+  protected void validate(TableMetadata base, Snapshot snapshot) {
+    validateNoDVsForAddedDataFiles(base, snapshot, Iterables.concat(newDataFilesBySpec.values()));
+  }
+
+  @Override
   public List<ManifestFile> apply(TableMetadata base, Snapshot snapshot) {
     List<ManifestFile> manifests = Lists.newArrayList();
 
