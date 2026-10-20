@@ -69,8 +69,11 @@ class RemoveSnapshots implements ExpireSnapshots {
   // the snapshots the caller expires by id
   private final Set<Long> idsToRemove = Sets.newHashSet();
   private final long now;
-  private final long defaultMaxRefAgeMs;
+  // what the caller sets, else the table's retention: see internalApply
+  private Long expireOlderThan = null;
+  private Integer minNumSnapshots = null;
   private TableMetadata base;
+  private long defaultMaxRefAgeMs;
   private long defaultExpireOlderThan;
   private int defaultMinNumSnapshots;
   private Consumer<String> deleteFunc = null;
@@ -85,22 +88,14 @@ class RemoveSnapshots implements ExpireSnapshots {
   RemoveSnapshots(TableOperations ops) {
     this.ops = ops;
     this.base = ops.current();
-    ValidationException.check(
-        PropertyUtil.propertyAsBoolean(base.properties(), GC_ENABLED, GC_ENABLED_DEFAULT),
-        "Cannot expire snapshots: GC is disabled (deleting files may corrupt other tables)");
-
-    long defaultMaxSnapshotAgeMs =
-        PropertyUtil.propertyAsLong(
-            base.properties(), MAX_SNAPSHOT_AGE_MS, MAX_SNAPSHOT_AGE_MS_DEFAULT);
-
+    checkGcEnabled(base);
     this.now = System.currentTimeMillis();
-    this.defaultExpireOlderThan = now - defaultMaxSnapshotAgeMs;
-    this.defaultMinNumSnapshots =
-        PropertyUtil.propertyAsInt(
-            base.properties(), MIN_SNAPSHOTS_TO_KEEP, MIN_SNAPSHOTS_TO_KEEP_DEFAULT);
+  }
 
-    this.defaultMaxRefAgeMs =
-        PropertyUtil.propertyAsLong(base.properties(), MAX_REF_AGE_MS, MAX_REF_AGE_MS_DEFAULT);
+  private static void checkGcEnabled(TableMetadata metadata) {
+    ValidationException.check(
+        PropertyUtil.propertyAsBoolean(metadata.properties(), GC_ENABLED, GC_ENABLED_DEFAULT),
+        "Cannot expire snapshots: GC is disabled (deleting files may corrupt other tables)");
   }
 
   @Override
@@ -128,7 +123,7 @@ class RemoveSnapshots implements ExpireSnapshots {
         "Expiring snapshots older than: {} ({})",
         DateTimeUtil.formatTimestampMillis(timestampMillis),
         timestampMillis);
-    this.defaultExpireOlderThan = timestampMillis;
+    this.expireOlderThan = timestampMillis;
     return this;
   }
 
@@ -138,7 +133,7 @@ class RemoveSnapshots implements ExpireSnapshots {
         1 <= numSnapshots,
         "Number of snapshots to retain must be at least 1, cannot be: %s",
         numSnapshots);
-    this.defaultMinNumSnapshots = numSnapshots;
+    this.minNumSnapshots = numSnapshots;
     return this;
   }
 
@@ -196,6 +191,22 @@ class RemoveSnapshots implements ExpireSnapshots {
 
   private TableMetadata internalApply() {
     this.base = ops.refresh();
+    // the table's GC and retention settings, from the metadata this attempt commits on: another
+    // writer may have changed them since this expiry was created
+    checkGcEnabled(base);
+    this.defaultExpireOlderThan =
+        expireOlderThan != null
+            ? expireOlderThan
+            : now
+                - PropertyUtil.propertyAsLong(
+                    base.properties(), MAX_SNAPSHOT_AGE_MS, MAX_SNAPSHOT_AGE_MS_DEFAULT);
+    this.defaultMinNumSnapshots =
+        minNumSnapshots != null
+            ? minNumSnapshots
+            : PropertyUtil.propertyAsInt(
+                base.properties(), MIN_SNAPSHOTS_TO_KEEP, MIN_SNAPSHOTS_TO_KEEP_DEFAULT);
+    this.defaultMaxRefAgeMs =
+        PropertyUtil.propertyAsLong(base.properties(), MAX_REF_AGE_MS, MAX_REF_AGE_MS_DEFAULT);
     // attempt to clean expired metadata even if there are no snapshots to expire
     // table metadata builder takes care of the case when this should actually be a no-op
     if (base.snapshots().isEmpty() && !cleanExpiredMetadata) {

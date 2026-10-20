@@ -2033,6 +2033,68 @@ public class TestRemoveSnapshots extends TestBase {
     assertThat(table.snapshot(current)).isNotNull();
   }
 
+  @TestTemplate
+  public void testRetentionRaisedSinceCreated() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    table.newAppend().appendFile(FILE_C).commit();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+    ExpireSnapshots expire = removeSnapshots(table).expireOlderThan(tAfterCommits);
+
+    // another writer raises the table's retention before the expiry commits
+    TestTables.load(tableDir, "test")
+        .updateProperties()
+        .set(TableProperties.MIN_SNAPSHOTS_TO_KEEP, "3")
+        .commit();
+    expire.commit();
+
+    table.refresh();
+    assertThat(table.snapshots()).hasSize(3);
+  }
+
+  @TestTemplate
+  public void testRefAgeSetSinceCreated() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long tagged = table.currentSnapshot().snapshotId();
+    table.manageSnapshots().createTag("tag", tagged).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    waitUntilAfter(table.snapshot(tagged).timestampMillis() + 1);
+    ExpireSnapshots expire = removeSnapshots(table);
+
+    // another writer gives refs a maximum age, which the tag has passed, before the expiry commits
+    TestTables.load(tableDir, "test")
+        .updateProperties()
+        .set(TableProperties.MAX_REF_AGE_MS, "1")
+        .commit();
+    expire.commit();
+
+    table.refresh();
+    assertThat(table.refs()).doesNotContainKey("tag");
+  }
+
+  @TestTemplate
+  public void testGcDisabledSinceCreated() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+    Set<String> deleted = Sets.newHashSet();
+    ExpireSnapshots expire =
+        removeSnapshots(table).expireOlderThan(tAfterCommits).deleteWith(deleted::add);
+
+    // another writer disables GC, as for a table that shares files, before the expiry commits
+    TestTables.load(tableDir, "test")
+        .updateProperties()
+        .set(TableProperties.GC_ENABLED, "false")
+        .commit();
+
+    assertThatThrownBy(expire::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessageStartingWith("Cannot expire snapshots: GC is disabled");
+    assertThat(deleted).isEmpty();
+    table.refresh();
+    assertThat(table.snapshots()).hasSize(2);
+  }
+
   private RemoveSnapshots removeSnapshots(Table table) {
     RemoveSnapshots removeSnapshots = (RemoveSnapshots) table.expireSnapshots();
     return (RemoveSnapshots) removeSnapshots.withIncrementalCleanup(incrementalCleanup);
