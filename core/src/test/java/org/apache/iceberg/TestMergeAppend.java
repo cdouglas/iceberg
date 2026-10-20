@@ -36,6 +36,7 @@ import java.util.stream.Stream;
 import org.apache.iceberg.ManifestEntry.Status;
 import org.apache.iceberg.TestHelpers.Row;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -1628,5 +1629,56 @@ public class TestMergeAppend extends TestBase {
         .containsEntry(SnapshotSummary.CREATED_MANIFESTS_COUNT, "1")
         .containsEntry(SnapshotSummary.REPLACED_MANIFESTS_COUNT, "0")
         .containsEntry(SnapshotSummary.KEPT_MANIFESTS_COUNT, "0");
+  }
+
+  @TestTemplate
+  public void testAppendAfterConcurrentSpecRemoval() {
+    AppendFiles append = table.newAppend().appendFile(FILE_A);
+    removeSpecOfFileA();
+
+    assertThatThrownBy(() -> commit(table, append, branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
+    table.refresh();
+    assertThat(latestSnapshot(table, branch)).isNull();
+  }
+
+  @TestTemplate
+  public void testRetryAfterConcurrentSpecRemoval() {
+    // the first attempt writes a manifest of the spec, and the retry must not commit it
+    Table racingTable = new BaseTable(racing(this::removeSpecOfFileA), "test");
+
+    assertThatThrownBy(
+            () -> commit(racingTable, racingTable.newAppend().appendFile(FILE_A), branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageEndingWith("its partition spec 0 was removed concurrently");
+    table.refresh();
+    assertThat(latestSnapshot(table, branch)).isNull();
+  }
+
+  /** Table operations that run another writer's commit just before their first commit. */
+  private TestTables.TestTableOperations racing(Runnable otherCommit) {
+    return new TestTables.TestTableOperations("test", tableDir) {
+      private boolean raced = false;
+
+      @Override
+      public void commit(TableMetadata base, TableMetadata updated) {
+        if (!raced) {
+          raced = true;
+          otherCommit.run();
+        }
+        super.commit(base, updated);
+      }
+    };
+  }
+
+  /**
+   * As another writer, replaces the table's spec and expires with metadata cleanup, removing it.
+   */
+  private void removeSpecOfFileA() {
+    Table other = TestTables.load(tableDir, "test");
+    other.updateSpec().addField("id").commit();
+    other.expireSnapshots().cleanExpiredMetadata(true).commit();
+    assertThat(other.specs()).doesNotContainKey(FILE_A.specId());
   }
 }

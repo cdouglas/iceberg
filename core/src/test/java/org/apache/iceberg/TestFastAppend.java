@@ -684,4 +684,66 @@ public class TestFastAppend extends TestBase {
         .hasMessage(
             "some-tag is a tag, not a branch. Tags cannot be targets for producing snapshots");
   }
+
+  @TestTemplate
+  public void testAppendAfterConcurrentSpecRemoval() {
+    AppendFiles append = table.newFastAppend().appendFile(FILE_A);
+    removeSpecOfFileA();
+
+    assertThatThrownBy(append::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
+    table.refresh();
+    assertThat(table.currentSnapshot()).isNull();
+  }
+
+  @TestTemplate
+  public void testRetryAfterConcurrentSpecRemoval() {
+    // the first attempt writes a manifest of the spec, and the retry must not commit it
+    Table racingTable = new BaseTable(racing(this::removeSpecOfFileA), "test");
+
+    assertThatThrownBy(() -> racingTable.newFastAppend().appendFile(FILE_A).commit())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageEndingWith("its partition spec 0 was removed concurrently");
+    table.refresh();
+    assertThat(table.currentSnapshot()).isNull();
+  }
+
+  @TestTemplate
+  public void testAppendManifestAfterConcurrentSpecRemoval() throws IOException {
+    AppendFiles append = table.newFastAppend().appendManifest(writeManifest(FILE_A));
+    removeSpecOfFileA();
+
+    assertThatThrownBy(append::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessageEndingWith("its partition spec 0 was removed concurrently");
+    table.refresh();
+    assertThat(table.currentSnapshot()).isNull();
+  }
+
+  /** Table operations that run another writer's commit just before their first commit. */
+  private TestTables.TestTableOperations racing(Runnable otherCommit) {
+    return new TestTables.TestTableOperations("test", tableDir) {
+      private boolean raced = false;
+
+      @Override
+      public void commit(TableMetadata base, TableMetadata updated) {
+        if (!raced) {
+          raced = true;
+          otherCommit.run();
+        }
+        super.commit(base, updated);
+      }
+    };
+  }
+
+  /**
+   * As another writer, replaces the table's spec and expires with metadata cleanup, removing it.
+   */
+  private void removeSpecOfFileA() {
+    Table other = TestTables.load(tableDir, "test");
+    other.updateSpec().addField("id").commit();
+    other.expireSnapshots().cleanExpiredMetadata(true).commit();
+    assertThat(other.specs()).doesNotContainKey(FILE_A.specId());
+  }
 }

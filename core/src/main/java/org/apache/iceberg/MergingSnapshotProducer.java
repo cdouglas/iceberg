@@ -1156,7 +1156,8 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
       newDataFilesBySpec.forEach(
           (specId, dataFiles) -> {
             List<ManifestFile> newDataManifests =
-                writeDataManifests(dataFiles, newDataFilesDataSequenceNumber, spec(specId));
+                writeDataManifests(
+                    dataFiles, newDataFilesDataSequenceNumber, specForNewFiles(specId));
             cachedNewDataManifests.addAll(newDataManifests);
           });
       this.hasNewDataFiles = false;
@@ -1195,7 +1196,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
       newDeleteFilesBySpec.forEach(
           (specId, deleteFiles) -> {
-            PartitionSpec spec = ops().current().spec(specId);
+            PartitionSpec spec = specForNewFiles(specId);
             deleteFiles.forEach(file -> addedDeleteFilesSummary.addedFile(spec, file));
             List<ManifestFile> newDeleteManifests = writeDeleteManifests(deleteFiles, spec);
             cachedNewDeleteManifests.addAll(newDeleteManifests);

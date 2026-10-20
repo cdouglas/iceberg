@@ -2733,4 +2733,37 @@ public class TestRowDelta extends TestBase {
     return TestTables.create(
         encryptedTableDir, tableName, SCHEMA, SPEC, SortOrder.unsorted(), formatVersion, ops);
   }
+
+  @TestTemplate
+  public void testAddDeletesAfterConcurrentSpecRemoval() {
+    // in v3 a DV for a deleted file fails its history check first
+    assumeThat(formatVersion).isEqualTo(2);
+    commit(table, table.newFastAppend().appendFile(FILE_A), branch);
+    RowDelta rowDelta = table.newRowDelta().addDeletes(fileADeletes());
+
+    // another writer deletes the file, so that once it expires the snapshots that had the file, no
+    // snapshot uses its spec, and removes it
+    Table other = TestTables.load(tableDir, "test");
+    other.updateSpec().addField("id").commit();
+    commit(other, other.newDelete().deleteFile(FILE_A), branch);
+    DataFile newSpecFile =
+        DataFiles.builder(other.spec())
+            .withPath("/path/to/data-new-spec.parquet")
+            .withFileSizeInBytes(10)
+            .withPartitionPath("data_bucket=0/id=1")
+            .withRecordCount(1)
+            .build();
+    commit(other, other.newAppend().appendFile(newSpecFile), branch);
+    other
+        .expireSnapshots()
+        .expireOlderThan(System.currentTimeMillis() + 1)
+        .retainLast(1)
+        .cleanExpiredMetadata(true)
+        .commit();
+    assertThat(other.specs()).doesNotContainKey(FILE_A.specId());
+
+    assertThatThrownBy(() -> commit(table, rowDelta, branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
+  }
 }

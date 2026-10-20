@@ -214,7 +214,8 @@ class FastAppend extends SnapshotProducer<AppendFiles> implements AppendFiles {
 
     if (newManifests.isEmpty() && !newDataFilesBySpec.isEmpty()) {
       newDataFilesBySpec.forEach(
-          (specId, dataFiles) -> newManifests.addAll(writeDataManifests(dataFiles, spec(specId))));
+          (specId, dataFiles) ->
+              newManifests.addAll(writeDataManifests(dataFiles, specForNewFiles(specId))));
       hasNewFiles = false;
     }
 

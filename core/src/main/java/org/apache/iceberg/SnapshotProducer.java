@@ -355,6 +355,15 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
 
     List<ManifestFile> manifests = apply(base, parentSnapshot);
 
+    // a manifest written by an earlier attempt, or appended, may be of a spec removed since
+    for (ManifestFile manifest : manifests) {
+      ValidationException.check(
+          base.spec(manifest.partitionSpecId()) != null,
+          "Cannot commit manifest %s: its partition spec %s was removed concurrently",
+          manifest.path(),
+          manifest.partitionSpecId());
+    }
+
     OutputFile manifestList = manifestListPath();
 
     ManifestListWriter writer =
@@ -529,6 +538,26 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
   protected TableMetadata refresh() {
     this.base = ops.refresh();
     return base;
+  }
+
+  /**
+   * Returns the partition spec of files this commit adds, from the metadata it applies to.
+   *
+   * <p>Another writer may have removed the spec since the files were added: an expiry that cleans
+   * expired metadata removes the specs no remaining snapshot uses. The files cannot be read without
+   * their spec, so the commit fails.
+   *
+   * @param specId the spec id of the files
+   * @return the partition spec with that id
+   * @throws ValidationException if the metadata this commit applies to has no spec with that id
+   */
+  protected PartitionSpec specForNewFiles(int specId) {
+    PartitionSpec spec = base.spec(specId);
+    ValidationException.check(
+        spec != null,
+        "Cannot commit files of partition spec %s: the spec was removed concurrently",
+        specId);
+    return spec;
   }
 
   @Override
