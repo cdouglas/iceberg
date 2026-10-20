@@ -1965,6 +1965,74 @@ public class TestRemoveSnapshots extends TestBase {
     return snapshot.allManifests(io).stream().map(ManifestFile::path).collect(Collectors.toSet());
   }
 
+  @TestTemplate
+  public void testRetryAfterConcurrentExpiry() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    table.newAppend().appendFile(FILE_C).commit();
+    long current = table.currentSnapshot().snapshotId();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+
+    // another writer expires the same snapshots between this expiry's apply and its commit
+    TestTables.TestTableOperations racing =
+        new TestTables.TestTableOperations("test", tableDir) {
+          private boolean raced = false;
+
+          @Override
+          public void commit(TableMetadata base, TableMetadata updated) {
+            if (!raced) {
+              raced = true;
+              removeSnapshots(table).expireOlderThan(tAfterCommits).retainLast(1).commit();
+            }
+            super.commit(base, updated);
+          }
+        };
+    new RemoveSnapshots(racing)
+        .withIncrementalCleanup(incrementalCleanup)
+        .expireOlderThan(tAfterCommits)
+        .retainLast(1)
+        .commit();
+
+    table.refresh();
+    assertThat(table.snapshots()).extracting(Snapshot::snapshotId).containsExactly(current);
+  }
+
+  @TestTemplate
+  public void testRetryAfterConcurrentTag() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long tagged = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_B).commit();
+    long expired = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_C).commit();
+    long current = table.currentSnapshot().snapshotId();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+
+    // another writer tags a snapshot this expiry's first attempt removes
+    TestTables.TestTableOperations racing =
+        new TestTables.TestTableOperations("test", tableDir) {
+          private boolean raced = false;
+
+          @Override
+          public void commit(TableMetadata base, TableMetadata updated) {
+            if (!raced) {
+              raced = true;
+              table.manageSnapshots().createTag("tag", tagged).commit();
+            }
+            super.commit(base, updated);
+          }
+        };
+    new RemoveSnapshots(racing)
+        .withIncrementalCleanup(false)
+        .expireOlderThan(tAfterCommits)
+        .retainLast(1)
+        .commit();
+
+    table.refresh();
+    assertThat(table.snapshot(tagged)).isNotNull();
+    assertThat(table.snapshot(expired)).isNull();
+    assertThat(table.snapshot(current)).isNotNull();
+  }
+
   private RemoveSnapshots removeSnapshots(Table table) {
     RemoveSnapshots removeSnapshots = (RemoveSnapshots) table.expireSnapshots();
     return (RemoveSnapshots) removeSnapshots.withIncrementalCleanup(incrementalCleanup);

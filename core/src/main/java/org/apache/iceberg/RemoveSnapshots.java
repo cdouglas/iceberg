@@ -66,6 +66,7 @@ class RemoveSnapshots implements ExpireSnapshots {
       MoreExecutors.newDirectExecutorService();
 
   private final TableOperations ops;
+  // the snapshots the caller expires by id
   private final Set<Long> idsToRemove = Sets.newHashSet();
   private final long now;
   private final long defaultMaxRefAgeMs;
@@ -230,11 +231,14 @@ class RemoveSnapshots implements ExpireSnapshots {
         .filter(ref -> !retainedRefs.containsKey(ref))
         .forEach(updatedMetaBuilder::removeRef);
 
-    base.snapshots().stream()
-        .map(Snapshot::snapshotId)
-        .filter(snapshot -> !idsToRetain.contains(snapshot))
-        .forEach(idsToRemove::add);
-    updatedMetaBuilder.removeSnapshots(idsToRemove);
+    // computed on each attempt's metadata: a retry after a conflict must not remove a snapshot
+    // that an earlier attempt's metadata did not retain but this one does, nor one that is gone
+    Set<Long> snapshotsToRemove =
+        base.snapshots().stream()
+            .map(Snapshot::snapshotId)
+            .filter(snapshot -> idsToRemove.contains(snapshot) || !idsToRetain.contains(snapshot))
+            .collect(Collectors.toSet());
+    updatedMetaBuilder.removeSnapshots(snapshotsToRemove);
 
     if (cleanExpiredMetadata) {
       Set<Integer> reachableSpecs = Sets.newConcurrentHashSet();
