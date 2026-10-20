@@ -251,6 +251,12 @@ class CherryPickOperation extends MergingSnapshotProducer<CherryPickOperation> {
       return base.currentSnapshot();
     }
 
+    // another writer may have expired the picked snapshot since it was picked
+    ValidationException.check(
+        base.snapshot(cherrypickSnapshot.snapshotId()) != null,
+        "Cannot cherry-pick snapshot %s: the table no longer has it",
+        cherrypickSnapshot.snapshotId());
+
     boolean isFastForward = isFastForward(base);
     if (requireFastForward || isFastForward) {
       ValidationException.check(

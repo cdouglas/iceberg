@@ -670,6 +670,47 @@ public class TestWapWorkflow extends TestBase {
   }
 
   @TestTemplate
+  public void testCherrypickOfASnapshotExpiredSincePicked() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).stageOnly().commit();
+    long stagedId = stagedSnapshotId();
+    table.newAppend().appendFile(FILE_C).commit(); // so the pick is not a fast-forward
+    ManageSnapshots pick = table.manageSnapshots().cherrypick(stagedId);
+
+    // another writer expires the picked snapshot before the pick commits
+    TestTables.load(tableDir, "test").expireSnapshots().expireSnapshotId(stagedId).commit();
+
+    assertThatThrownBy(pick::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot cherry-pick snapshot %s: the table no longer has it", stagedId);
+    validateTableFiles(table, FILE_A, FILE_C);
+  }
+
+  @TestTemplate
+  public void testFastForwardToASnapshotExpiredSincePicked() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).stageOnly().commit();
+    long stagedId = stagedSnapshotId();
+    ManageSnapshots pick = table.manageSnapshots().cherrypick(stagedId);
+
+    // another writer expires the picked snapshot before the pick commits
+    TestTables.load(tableDir, "test").expireSnapshots().expireSnapshotId(stagedId).commit();
+
+    assertThatThrownBy(pick::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot cherry-pick snapshot %s: the table no longer has it", stagedId);
+    validateTableFiles(table, FILE_A);
+  }
+
+  private long stagedSnapshotId() {
+    return Streams.stream(table.snapshots())
+        .filter(snapshot -> !snapshot.equals(table.currentSnapshot()))
+        .mapToLong(Snapshot::snapshotId)
+        .max()
+        .getAsLong();
+  }
+
+  @TestTemplate
   public void testCherrypickOfAFileADVNames() {
     assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
     table.newAppend().appendFile(FILE_A).commit();
