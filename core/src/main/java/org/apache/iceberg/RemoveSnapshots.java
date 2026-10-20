@@ -401,7 +401,15 @@ class RemoveSnapshots implements ExpireSnapshots {
   }
 
   private void cleanExpiredSnapshots() {
-    TableMetadata current = ops.refresh();
+    // The expiry has committed: a cleanup that cannot run leaves files behind, and the expiry
+    // stands
+    TableMetadata current;
+    try {
+      current = ops.refresh();
+    } catch (RuntimeException e) {
+      LOG.warn("Failed to refresh the table after expiring snapshots, skipping file cleanup", e);
+      return;
+    }
 
     if (Boolean.TRUE.equals(incrementalCleanup)) {
       validateCleanupCanBeIncremental(current);
@@ -422,7 +430,11 @@ class RemoveSnapshots implements ExpireSnapshots {
             : new ReachableFileCleanup(
                 ops.io(), deleteExecutorService, planExecutorService(), deleteFunc);
 
-    cleanupStrategy.cleanFiles(base, current, cleanupLevel);
+    try {
+      cleanupStrategy.cleanFiles(base, current, cleanupLevel);
+    } catch (RuntimeException e) {
+      LOG.warn("Failed to clean up the files of expired snapshots", e);
+    }
   }
 
   private void validateCleanupCanBeIncremental(TableMetadata current) {

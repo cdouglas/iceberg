@@ -19,6 +19,7 @@
 package org.apache.iceberg;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assumptions.assumeThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -41,11 +42,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.apache.iceberg.ManifestEntry.Status;
+import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.puffin.Blob;
 import org.apache.iceberg.puffin.Puffin;
@@ -2093,6 +2097,94 @@ public class TestRemoveSnapshots extends TestBase {
     assertThat(deleted).isEmpty();
     table.refresh();
     assertThat(table.snapshots()).hasSize(2);
+  }
+
+  @TestTemplate
+  public void testCommittedExpiryWhoseRefreshFails() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+
+    // reading the table back after the expiry commits fails
+    TestTables.TestTableOperations failingRefresh =
+        new TestTables.TestTableOperations("test", tableDir) {
+          private boolean committed = false;
+
+          @Override
+          public void commit(TableMetadata base, TableMetadata updated) {
+            super.commit(base, updated);
+            committed = true;
+          }
+
+          @Override
+          public TableMetadata refresh() {
+            if (committed) {
+              throw new RuntimeIOException("injected: refresh failed");
+            }
+            return super.refresh();
+          }
+        };
+
+    assertThatCode(
+            () ->
+                new RemoveSnapshots(failingRefresh)
+                    .withIncrementalCleanup(incrementalCleanup)
+                    .expireOlderThan(tAfterCommits)
+                    .commit())
+        .doesNotThrowAnyException();
+    table.refresh();
+    assertThat(table.snapshots()).hasSize(1);
+  }
+
+  @TestTemplate
+  public void testCommittedExpiryWhoseCleanupFails() {
+    // incremental cleanup suppresses the failures of its reads already
+    assumeThat(incrementalCleanup).isFalse();
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+
+    // reading a manifest list after the expiry commits fails
+    boolean[] committed = {false};
+    FileIO io = table.io();
+    FileIO failingReads =
+        new FileIO() {
+          @Override
+          public InputFile newInputFile(String path) {
+            if (committed[0] && path.contains("snap-")) {
+              throw new RuntimeIOException("injected: read of %s failed", path);
+            }
+            return io.newInputFile(path);
+          }
+
+          @Override
+          public OutputFile newOutputFile(String path) {
+            return io.newOutputFile(path);
+          }
+
+          @Override
+          public void deleteFile(String path) {
+            io.deleteFile(path);
+          }
+        };
+    TestTables.TestTableOperations ops =
+        new TestTables.TestTableOperations("test", tableDir, failingReads) {
+          @Override
+          public void commit(TableMetadata base, TableMetadata updated) {
+            super.commit(base, updated);
+            committed[0] = true;
+          }
+        };
+
+    assertThatCode(
+            () ->
+                new RemoveSnapshots(ops)
+                    .withIncrementalCleanup(false)
+                    .expireOlderThan(tAfterCommits)
+                    .commit())
+        .doesNotThrowAnyException();
+    table.refresh();
+    assertThat(table.snapshots()).hasSize(1);
   }
 
   private RemoveSnapshots removeSnapshots(Table table) {
