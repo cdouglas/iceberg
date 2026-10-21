@@ -59,6 +59,13 @@ public interface SupportsAtomicOperations extends FileIO {
 
     /** APPEND failed: the target changed since the snapshot (etag, or length / write offset). */
     class AppendException extends AtomicOperationException { ... }
+
+    /**
+     * APPEND refused: the object holds as many writes as the store allows (S3 Express: 10,000
+     * parts; an Azure Append Blob: 50,000 blocks). Nothing landed, and no append to the object
+     * can succeed; the caller must replace it (CAS) to append again.
+     */
+    class SegmentLimitException extends AtomicOperationException { ... }
 }
 ```
 
@@ -90,7 +97,7 @@ public interface AtomicOutputFile extends OutputFile {
 ### Write Strategies
 
 - **CAS (Compare-and-Swap)**: Replace the entire file atomically. Fails if the file was modified since the InputFile was read.
-- **APPEND**: Append to an existing file at a specific offset. Fails if the file size changed (useful for log-structured formats).
+- **APPEND**: Append to an existing file at a specific offset. Fails if the file size changed (useful for log-structured formats), or with `SegmentLimitException` once the object holds as many writes as its store allows.
 
 ## GCS Implementation
 
@@ -338,5 +345,9 @@ try {
 1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. `S3FileIO.supportsAppend()` returns `true` for both, so a catalog on a standard bucket must not append: set `fileio.catalog.max.append.count=0` (CAS only) for `FileIOCatalog`. The standard-bucket contract test (`S3StandardFileIOAtomicTest`) overrides the contract test's `supportsAppend()` hook to skip the APPEND cases.
 2. **GCS APPEND**: Not supported. GCS objects are immutable — every write replaces the whole object — so `GCSFileIO.supportsAppend()` returns `false` and `GCSOutputFile.prepare()` rejects `Strategy.APPEND` with `IllegalArgumentException`. Callers that mix CAS and APPEND in a commit log must fall back to CAS-only.
 3. **ADLS APPEND**: One conditional `AppendBlock` per append; at most 50,000 appends per file between CAS compactions. CAS requires a hierarchical-namespace account (it renames).
-4. **Writes per object**: an S3 Express object holds at most 10,000 parts and an Azure Append Blob 50,000 blocks, counting the write that creates or replaces it and each append. An append past the limit fails with `SupportsAtomicOperations.SegmentLimitException`, not an `AppendException`: nothing landed, and no append to the object can succeed, so the caller must replace it by CAS. `SupportsAtomicOperationsContractTest.appendPastTheSegmentLimitFails` checks this against the real store when run with `ATOMIC_SEGMENT_LIMIT_TEST=true` (it makes that many requests).
+4. **Writes per object**: an S3 Express object holds at most 10,000 parts and an Azure Append Blob 50,000 blocks, counting the write that creates or replaces it and each append. An append past the limit fails with `SupportsAtomicOperations.SegmentLimitException`, not an `AppendException`: nothing landed, and no append to the object can succeed, so the caller must replace it by CAS. `SupportsAtomicOperationsContractTest.appendPastTheSegmentLimitFails` checks this against the real store when run with `ATOMIC_SEGMENT_LIMIT_TEST=true`. It makes that many requests and would fail only if the store changed its behavior, so it is a canary to run on such a change, not part of a regular run.
 5. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large writes may exceed provider request timeouts.
+
+## Testing
+
+`SupportsAtomicOperationsContractTest` states this contract as tests, and a subclass per store runs it against real storage: `S3StandardFileIOAtomicTest`, `S3ExpressFileIOAtomicTest`, `GcsFileIOAtomicTest`, `GcsFileIOAtomicRapidTest` and `AdlsFileIOAtomicTest`. The fork's [README](../../README.md#testing-on-real-cloud-storage) lists the environment each needs.
