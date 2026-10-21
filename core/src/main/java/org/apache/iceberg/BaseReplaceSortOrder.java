@@ -60,7 +60,9 @@ public class BaseReplaceSortOrder implements ReplaceSortOrder {
         .run(
             taskOps -> {
               this.base = ops.refresh();
-              SortOrder newOrder = apply();
+              // bound by field id to the schema this attempt commits on: another writer may have
+              // renamed a column since the order was built
+              SortOrder newOrder = apply().toUnbound().bind(base.schema());
               TableMetadata updated = base.replaceSortOrder(newOrder);
               taskOps.commit(base, updated);
             });

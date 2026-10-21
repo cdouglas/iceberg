@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Set;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expressions;
+import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.SortOrderUtil;
 import org.junit.jupiter.api.AfterEach;
@@ -298,6 +299,37 @@ public class TestSortOrder {
 
     // ensure that the table metadata can be serialized and reloaded with an invalid order
     TableMetadataParser.fromJson(TableMetadataParser.toJson(table.ops().current()));
+  }
+
+  @TestTemplate
+  public void testReplaceSortOrderAfterConcurrentRename() {
+    PartitionSpec spec = PartitionSpec.unpartitioned();
+    TestTables.TestTable table = TestTables.create(tableDir, "test", SCHEMA, spec, formatVersion);
+    ReplaceSortOrder replace = table.replaceSortOrder().asc("data");
+
+    // another writer renames the column before the order commits
+    TestTables.load(tableDir, "test").updateSchema().renameColumn("data", "payload").commit();
+    replace.commit();
+
+    table.refresh();
+    SortField field = Iterables.getOnlyElement(table.sortOrder().fields());
+    assertThat(table.schema().findColumnName(field.sourceId())).isEqualTo("payload");
+  }
+
+  @TestTemplate
+  public void testReplaceSortOrderAfterConcurrentDrop() {
+    PartitionSpec spec = PartitionSpec.unpartitioned();
+    TestTables.TestTable table = TestTables.create(tableDir, "test", SCHEMA, spec, formatVersion);
+    ReplaceSortOrder replace = table.replaceSortOrder().asc("data");
+
+    // another writer drops the column before the order commits
+    TestTables.load(tableDir, "test").updateSchema().deleteColumn("data").commit();
+
+    assertThatThrownBy(replace::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessageStartingWith("Cannot find source column for sort field");
+    table.refresh();
+    assertThat(table.sortOrder().isUnsorted()).isTrue();
   }
 
   @TestTemplate
