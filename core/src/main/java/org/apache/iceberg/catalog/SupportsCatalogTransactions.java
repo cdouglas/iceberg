@@ -39,9 +39,11 @@ public interface SupportsCatalogTransactions {
    * Commits {@code commits} atomically.
    *
    * @param reads for {@link IsolationLevel#SERIALIZABLE} isolation, every branch of a table the
-   *     transaction read, with the table's metadata as the transaction first read it. The commit
-   *     fails if any of them has changed since (see {@link
-   *     BaseCatalogTransaction#unchangedSinceRead}), up to the moment the commit takes effect.
+   *     transaction read, with the table's metadata as the transaction first read it; and, for
+   *     either isolation level, every table it writes, with a null ref, as it first read it. The
+   *     commit fails if any of them has changed since (see {@link
+   *     BaseCatalogTransaction#unchangedSinceRead}), up to the moment the commit takes effect: a
+   *     table it writes, if its metadata changed at all.
    * @param commits the changes to each table the transaction updated
    */
   void commitTransaction(

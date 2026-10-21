@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.BaseTransaction;
@@ -100,11 +101,23 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       if (!tableCommits.isEmpty()) {
         // TODO: remove this cast once commitTransaction(..) is defined at the Catalog level
         // validateSerializableIsolation checked the read tables before the commit; the catalog
-        // checks them again as the commit takes effect, against the versions read here.
+        // checks them again as the commit takes effect, against the versions read here. The
+        // transaction also conflicts on the whole version of each table it writes, as it first
+        // read it, under either isolation level: a change since, even to a property or another
+        // branch, fails the commit.
         final Map<TableRef, TableMetadata> reads =
             IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()
                 ? Maps.newHashMap(initiallyReadTableMetadataByRef)
                 : Maps.newHashMap();
+        txByTable.forEach(
+            (identifier, tx) -> {
+              if (tx instanceof BaseTransaction
+                  && !((BaseTransaction) tx).currentMetadata().changes().isEmpty()) {
+                reads.put(
+                    ImmutableTableRef.builder().identifier(identifier).build(),
+                    ((BaseTransaction) tx).startMetadata());
+              }
+            });
         ((SupportsCatalogTransactions) origin).commitTransaction(reads, tableCommits);
       }
 
@@ -167,12 +180,16 @@ public class BaseCatalogTransaction implements CatalogTransaction {
   /**
    * Whether branch {@code ref} of a table is as a serializable transaction read it: it points to
    * the snapshot it did then or, if it pointed to none then or points to none now, the table's
-   * metadata has not changed. A change to another branch does not count. {@code current} is null if
-   * the table no longer exists.
+   * metadata has not changed. A change to another branch does not count. With a null {@code ref},
+   * whether the table's metadata has not changed at all, as for a table the transaction writes.
+   * {@code current} is null if the table no longer exists.
    */
   public static boolean unchangedSinceRead(String ref, TableMetadata read, TableMetadata current) {
     if (current == null || !java.util.Objects.equals(current.uuid(), read.uuid())) {
       return false;
+    }
+    if (ref == null) {
+      return current.metadataFileLocation().equals(read.metadataFileLocation());
     }
     SnapshotRef now = current.ref(ref);
     SnapshotRef then = read.ref(ref);
@@ -406,16 +423,20 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     }
   }
 
-  /** A branch or tag of a table, as a serializable transaction read it. */
+  /**
+   * A branch or tag of a table, as a serializable transaction read it, or, with a null ref, the
+   * whole table, as a transaction that writes it first read it.
+   */
   @Value.Immutable
   public interface TableRef {
     TableIdentifier identifier();
 
+    @Nullable
     String ref();
 
     @Value.Lazy
     default String name() {
-      return identifier().toString() + "@" + ref();
+      return ref() != null ? identifier().toString() + "@" + ref() : identifier().toString();
     }
   }
 }

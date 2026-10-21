@@ -90,6 +90,14 @@ public abstract class CatalogTransactionTests<
 
   protected abstract C catalog();
 
+  /**
+   * Whether a transaction conflicts on any change to a table it writes since it first read the
+   * table, rather than only on the changes its commit's requirements name.
+   */
+  protected boolean conflictsOnTableVersions() {
+    return false;
+  }
+
   @Test
   public void testNulls() {
     assertThatThrownBy(() -> new BaseCatalogTransaction(null, null))
@@ -467,6 +475,36 @@ public abstract class CatalogTransactionTests<
 
   @ParameterizedTest
   @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void propertyChangeToTableWrittenInsideTx(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    TableIdentifier identifier = TableIdentifier.of("ns", "table");
+    catalog().createNamespace(identifier.namespace());
+    catalog().buildTable(identifier, SCHEMA).withPartitionSpec(SPEC).create();
+    catalog().loadTable(identifier).newFastAppend().appendFile(FILE_A).commit();
+
+    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    Catalog txCatalog = catalogTransaction.asCatalog();
+    txCatalog.loadTable(identifier).newFastAppend().appendFile(FILE_B).commit();
+
+    // a change outside the TX that no requirement of its append names
+    catalog().loadTable(identifier).updateProperties().set("k", "v").commit();
+
+    if (conflictsOnTableVersions()) {
+      assertThatThrownBy(catalogTransaction::commitTransaction)
+          .isInstanceOf(CommitFailedException.class);
+      assertThat(Iterables.size(catalog().loadTable(identifier).newScan().planFiles()))
+          .isEqualTo(1);
+    } else {
+      catalogTransaction.commitTransaction();
+      assertThat(Iterables.size(catalog().loadTable(identifier).newScan().planFiles()))
+          .isEqualTo(2);
+    }
+
+    assertThat(catalog().loadTable(identifier).properties()).containsEntry("k", "v");
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
   public void concurrentTx(CatalogTransaction.IsolationLevel isolationLevel) {
     TableIdentifier identifier = TableIdentifier.of("ns", "tbl");
     catalog().createNamespace(identifier.namespace());
@@ -712,6 +750,14 @@ public abstract class CatalogTransactionTests<
     txCatalog.loadTable(identifier).newFastAppend().appendFile(FILE_D).toBranch(branchB).commit();
 
     table.newFastAppend().appendFile(FILE_B).appendFile(FILE_C).toBranch(branchA).commit();
+
+    if (conflictsOnTableVersions()) {
+      // the commit to branch A changed the table the transaction writes
+      assertThatThrownBy(catalogTransaction::commitTransaction)
+          .isInstanceOf(CommitFailedException.class);
+      assertThat(catalog().loadTable(identifier).refs()).doesNotContainKey(branchB);
+      return;
+    }
 
     catalogTransaction.commitTransaction();
 
