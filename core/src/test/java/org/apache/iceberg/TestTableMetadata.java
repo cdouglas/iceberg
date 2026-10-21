@@ -2112,6 +2112,60 @@ public class TestTableMetadata {
   }
 
   @Test
+  public void testRemovingAReferencedSnapshotIsRetryable() {
+    TableMetadata base =
+        TableMetadata.newTableMetadata(
+            TEST_SCHEMA, PartitionSpec.unpartitioned(), "location", ImmutableMap.of());
+    Snapshot s1 =
+        new BaseSnapshot(
+            1,
+            1L,
+            null,
+            System.currentTimeMillis(),
+            null,
+            null,
+            null,
+            "file:/s1.avro",
+            null,
+            null,
+            null);
+    Snapshot s2 =
+        new BaseSnapshot(
+            2,
+            2L,
+            1L,
+            System.currentTimeMillis(),
+            null,
+            null,
+            null,
+            "file:/s2.avro",
+            null,
+            null,
+            null);
+    // another writer tagged the snapshot that an expiry, computed before, removes
+    TableMetadata tagged =
+        TableMetadata.buildFrom(base)
+            .addSnapshot(s1)
+            .setBranchSnapshot(s2, SnapshotRef.MAIN_BRANCH)
+            .setRef("tag", SnapshotRef.tagBuilder(1L).build())
+            .build();
+    MetadataUpdate removal = new MetadataUpdate.RemoveSnapshots(Sets.newHashSet(1L));
+
+    TableMetadata.Builder builder = TableMetadata.buildFrom(tagged);
+    assertThatThrownBy(() -> removal.applyTo(builder))
+        .isInstanceOf(RetryableValidationException.class)
+        .hasMessage("Cannot remove snapshot 1: ref tag points to it");
+
+    // the expiry removes the refs of the snapshots it removes first
+    TableMetadata.Builder removesRefFirst = TableMetadata.buildFrom(tagged);
+    new MetadataUpdate.RemoveSnapshotRef("tag").applyTo(removesRefFirst);
+    removal.applyTo(removesRefFirst);
+    TableMetadata expired = removesRefFirst.build();
+    assertThat(expired.snapshot(1L)).isNull();
+    assertThat(expired.currentSnapshot().snapshotId()).isEqualTo(2L);
+  }
+
+  @Test
   public void testAddSnapshotWithStaleFirstRowIdIsRetryable() {
     TableMetadata base =
         TableMetadata.newTableMetadata(

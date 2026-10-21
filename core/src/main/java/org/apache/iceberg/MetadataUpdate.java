@@ -346,7 +346,8 @@ public interface MetadataUpdate extends Serializable {
 
     @Override
     public void applyTo(TableMetadata.Builder metadataBuilder) {
-      metadataBuilder.removeSnapshots(snapshotIds);
+      // a ref that points to a removed snapshot was set since the removal was computed
+      metadataBuilder.removeUnreferencedSnapshots(snapshotIds);
     }
   }
 

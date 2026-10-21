@@ -1431,6 +1431,28 @@ public class TableMetadata implements Serializable {
     }
 
     /**
+     * Removes snapshots as applying a {@link MetadataUpdate.RemoveSnapshots} does. Unlike {@link
+     * #removeSnapshots(Collection)}, which also removes the refs that point to the snapshots, this
+     * fails if a ref points to one: a writer that removes snapshots removes their refs first, so
+     * such a ref was set by another writer since the removal was computed.
+     *
+     * @param idsToRemove the ids of the snapshots to remove
+     * @return this for method chaining
+     * @throws RetryableValidationException if a ref points to one of the snapshots
+     */
+    Builder removeUnreferencedSnapshots(Collection<Long> idsToRemove) {
+      for (Map.Entry<String, SnapshotRef> ref : refs.entrySet()) {
+        RetryableValidationException.check(
+            !idsToRemove.contains(ref.getValue().snapshotId()),
+            "Cannot remove snapshot %s: ref %s points to it",
+            ref.getValue().snapshotId(),
+            ref.getKey());
+      }
+
+      return removeSnapshots(idsToRemove);
+    }
+
+    /**
      * Rewrite this builder's snapshots by removing the snapshots for a list of IDs.
      *
      * <p>If suppress is true, changes are not created.
