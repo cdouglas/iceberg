@@ -101,6 +101,58 @@ public class TestSetPartitionStatistics extends TestBase {
     assertThat(metadata.partitionStatisticsFiles()).isEmpty();
   }
 
+  @TestTemplate
+  public void setPartitionStatisticsRetryWithConcurrentModification() {
+    table.newFastAppend().appendFile(FILE_A).commit();
+    long snapshotId = readMetadata().currentSnapshot().snapshotId();
+    PartitionStatisticsFile partitionStatisticsFile =
+        ImmutableGenericPartitionStatisticsFile.builder()
+            .snapshotId(snapshotId)
+            .path("/some/partition/statistics/file.parquet")
+            .fileSizeInBytes(42L)
+            .build();
+
+    // On the first commit attempt, another writer modifies the table
+    TableOperations concurrentOps =
+        new TestTables.TestTableOperations("test", tableDir, table.ops().io()) {
+          private boolean firstAttempt = true;
+
+          @Override
+          public void commit(TableMetadata base, TableMetadata metadata) {
+            if (firstAttempt) {
+              firstAttempt = false;
+              table.newFastAppend().appendFile(FILE_B).commit();
+            }
+
+            super.commit(base, metadata);
+          }
+        };
+
+    new SetPartitionStatistics(concurrentOps)
+        .setPartitionStatistics(partitionStatisticsFile)
+        .commit();
+
+    assertThat(readMetadata().partitionStatisticsFiles()).containsExactly(partitionStatisticsFile);
+  }
+
+  @TestTemplate
+  public void setPartitionStatisticsRetrySuccess() {
+    table.newFastAppend().appendFile(FILE_A).commit();
+    long snapshotId = readMetadata().currentSnapshot().snapshotId();
+    PartitionStatisticsFile partitionStatisticsFile =
+        ImmutableGenericPartitionStatisticsFile.builder()
+            .snapshotId(snapshotId)
+            .path("/some/partition/statistics/file.parquet")
+            .fileSizeInBytes(42L)
+            .build();
+
+    table.ops().failCommits(2);
+
+    table.updatePartitionStatistics().setPartitionStatistics(partitionStatisticsFile).commit();
+
+    assertThat(readMetadata().partitionStatisticsFiles()).containsExactly(partitionStatisticsFile);
+  }
+
   private void assertTableMetadataVersion(int expected) {
     assertThat(version()).isEqualTo(expected);
   }

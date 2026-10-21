@@ -18,11 +18,22 @@
  */
 package org.apache.iceberg;
 
+import static org.apache.iceberg.TableProperties.COMMIT_MAX_RETRY_WAIT_MS;
+import static org.apache.iceberg.TableProperties.COMMIT_MAX_RETRY_WAIT_MS_DEFAULT;
+import static org.apache.iceberg.TableProperties.COMMIT_MIN_RETRY_WAIT_MS;
+import static org.apache.iceberg.TableProperties.COMMIT_MIN_RETRY_WAIT_MS_DEFAULT;
+import static org.apache.iceberg.TableProperties.COMMIT_NUM_RETRIES;
+import static org.apache.iceberg.TableProperties.COMMIT_NUM_RETRIES_DEFAULT;
+import static org.apache.iceberg.TableProperties.COMMIT_TOTAL_RETRY_TIME_MS;
+import static org.apache.iceberg.TableProperties.COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.util.Tasks;
 
 public class SetPartitionStatistics implements UpdatePartitionStatistics {
   private final TableOperations ops;
@@ -56,9 +67,21 @@ public class SetPartitionStatistics implements UpdatePartitionStatistics {
 
   @Override
   public void commit() {
-    TableMetadata base = ops.current();
-    TableMetadata newMetadata = internalApply(base);
-    ops.commit(base, newMetadata);
+    TableMetadata current = ops.current();
+    Tasks.foreach(ops)
+        .retry(current.propertyAsInt(COMMIT_NUM_RETRIES, COMMIT_NUM_RETRIES_DEFAULT))
+        .exponentialBackoff(
+            current.propertyAsInt(COMMIT_MIN_RETRY_WAIT_MS, COMMIT_MIN_RETRY_WAIT_MS_DEFAULT),
+            current.propertyAsInt(COMMIT_MAX_RETRY_WAIT_MS, COMMIT_MAX_RETRY_WAIT_MS_DEFAULT),
+            current.propertyAsInt(COMMIT_TOTAL_RETRY_TIME_MS, COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT),
+            2.0 /* exponential */)
+        .onlyRetryOn(CommitFailedException.class)
+        .run(
+            taskOps -> {
+              // each attempt commits on the table as it is then, as SetStatistics does
+              TableMetadata base = taskOps.refresh();
+              taskOps.commit(base, internalApply(base));
+            });
   }
 
   private TableMetadata internalApply(TableMetadata base) {

@@ -52,15 +52,20 @@ public class SetLocation implements UpdateLocation {
 
   @Override
   public void commit() {
-    TableMetadata base = ops.refresh();
+    TableMetadata current = ops.current();
     Tasks.foreach(ops)
-        .retry(base.propertyAsInt(COMMIT_NUM_RETRIES, COMMIT_NUM_RETRIES_DEFAULT))
+        .retry(current.propertyAsInt(COMMIT_NUM_RETRIES, COMMIT_NUM_RETRIES_DEFAULT))
         .exponentialBackoff(
-            base.propertyAsInt(COMMIT_MIN_RETRY_WAIT_MS, COMMIT_MIN_RETRY_WAIT_MS_DEFAULT),
-            base.propertyAsInt(COMMIT_MAX_RETRY_WAIT_MS, COMMIT_MAX_RETRY_WAIT_MS_DEFAULT),
-            base.propertyAsInt(COMMIT_TOTAL_RETRY_TIME_MS, COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT),
+            current.propertyAsInt(COMMIT_MIN_RETRY_WAIT_MS, COMMIT_MIN_RETRY_WAIT_MS_DEFAULT),
+            current.propertyAsInt(COMMIT_MAX_RETRY_WAIT_MS, COMMIT_MAX_RETRY_WAIT_MS_DEFAULT),
+            current.propertyAsInt(COMMIT_TOTAL_RETRY_TIME_MS, COMMIT_TOTAL_RETRY_TIME_MS_DEFAULT),
             2.0 /* exponential */)
         .onlyRetryOn(CommitFailedException.class)
-        .run(taskOps -> taskOps.commit(base, base.updateLocation(newLocation)));
+        .run(
+            taskOps -> {
+              // each attempt commits on the table as it is then: a retry follows another commit
+              TableMetadata base = taskOps.refresh();
+              taskOps.commit(base, base.updateLocation(newLocation));
+            });
   }
 }

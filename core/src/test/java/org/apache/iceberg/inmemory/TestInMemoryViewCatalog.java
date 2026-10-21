@@ -18,11 +18,21 @@
  */
 package org.apache.iceberg.inmemory;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.Schema;
 import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.types.Types;
+import org.apache.iceberg.view.BaseView;
+import org.apache.iceberg.view.View;
 import org.apache.iceberg.view.ViewCatalogTests;
+import org.apache.iceberg.view.ViewMetadata;
+import org.apache.iceberg.view.ViewOperations;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestInMemoryViewCatalog extends ViewCatalogTests<InMemoryCatalog> {
   private InMemoryCatalog catalog;
@@ -59,5 +69,51 @@ public class TestInMemoryViewCatalog extends ViewCatalogTests<InMemoryCatalog> {
   @Override
   protected boolean supportsEmptyNamespace() {
     return true;
+  }
+
+  @Test
+  public void updateViewLocationRetryWithConcurrentModification() {
+    TableIdentifier identifier = TableIdentifier.of("ns", "view");
+    catalog.createNamespace(identifier.namespace());
+    catalog
+        .buildView(identifier)
+        .withSchema(new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get())))
+        .withDefaultNamespace(identifier.namespace())
+        .withQuery("spark", "select * from ns.tbl")
+        .create();
+
+    // On the first commit attempt, another writer modifies the view
+    ViewOperations ops = ((BaseView) catalog.loadView(identifier)).operations();
+    ViewOperations concurrentOps =
+        new ViewOperations() {
+          private boolean firstAttempt = true;
+
+          @Override
+          public ViewMetadata current() {
+            return ops.current();
+          }
+
+          @Override
+          public ViewMetadata refresh() {
+            return ops.refresh();
+          }
+
+          @Override
+          public void commit(ViewMetadata base, ViewMetadata metadata) {
+            if (firstAttempt) {
+              firstAttempt = false;
+              catalog.loadView(identifier).updateProperties().set("key", "value").commit();
+            }
+
+            ops.commit(base, metadata);
+          }
+        };
+
+    String location = "file:///tmp/new-view-location";
+    new BaseView(concurrentOps, identifier.name()).updateLocation().setLocation(location).commit();
+
+    View view = catalog.loadView(identifier);
+    assertThat(view.location()).isEqualTo(location);
+    assertThat(view.properties()).containsEntry("key", "value");
   }
 }
