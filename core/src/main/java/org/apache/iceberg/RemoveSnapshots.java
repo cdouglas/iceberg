@@ -84,6 +84,8 @@ class RemoveSnapshots implements ExpireSnapshots {
   private boolean cleanExpiredMetadata = false;
   private boolean cleanExpiredFiles = true;
   private CleanupLevel cleanupLevel = CleanupLevel.ALL;
+  // set in a transaction, which cleans up once it has committed: see cleanUpAfterTransaction
+  private boolean cleanUpAfterTransaction = false;
 
   RemoveSnapshots(TableOperations ops) {
     this.ops = ops;
@@ -391,6 +393,33 @@ class RemoveSnapshots implements ExpireSnapshots {
         cleanupLevel.name());
 
     if (CleanupLevel.NONE != cleanupLevel && !base.snapshots().isEmpty()) {
+      if (!cleanUpAfterTransaction) {
+        cleanExpiredSnapshots();
+      } else if (Boolean.TRUE.equals(incrementalCleanup)) {
+        // fail now, as an expiry outside a transaction does, rather than once it has committed
+        validateCleanupCanBeIncremental(ops.current());
+      }
+    }
+  }
+
+  /**
+   * Defers the cleanup of expired files to {@link #cleanUpAfterTransaction()}. A transaction
+   * commits its expiry when the transaction commits, which may fail, and a retry may remove other
+   * snapshots: until then, the files of the snapshots this expiry removes are still committed.
+   */
+  RemoveSnapshots cleanUpOnceTransactionCommits() {
+    this.cleanUpAfterTransaction = true;
+    return this;
+  }
+
+  /**
+   * Cleans up the files of the snapshots this expiry removed, once the transaction it is part of
+   * has committed. {@code ops} is the transaction's, whose metadata is then what it committed.
+   */
+  void cleanUpAfterTransaction() {
+    if (cleanUpAfterTransaction
+        && CleanupLevel.NONE != cleanupLevel
+        && !base.snapshots().isEmpty()) {
       cleanExpiredSnapshots();
     }
   }

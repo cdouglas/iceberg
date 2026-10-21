@@ -227,7 +227,8 @@ public class BaseTransaction implements Transaction {
 
   @Override
   public ExpireSnapshots expireSnapshots() {
-    return appendUpdate(new RemoveSnapshots(transactionOps));
+    // its files are cleaned up once the transaction commits, from what it committed
+    return appendUpdate(new RemoveSnapshots(transactionOps).cleanUpOnceTransactionCommits());
   }
 
   @Override
@@ -276,6 +277,7 @@ public class BaseTransaction implements Transaction {
     // process has created the same table.
     try {
       ops.commit(null, current);
+      cleanUpExpiredSnapshots();
 
     } catch (CommitStateUnknownException e) {
       throw e;
@@ -345,6 +347,7 @@ public class BaseTransaction implements Transaction {
 
                 underlyingOps.commit(base, current);
               });
+      cleanUpExpiredSnapshots();
 
     } catch (CommitStateUnknownException e) {
       throw e;
@@ -435,6 +438,22 @@ public class BaseTransaction implements Transaction {
 
     } catch (RuntimeException e) {
       LOG.warn("Failed to load committed metadata, skipping clean-up", e);
+    }
+
+    cleanUpExpiredSnapshots();
+  }
+
+  // the files of the snapshots that the transaction's expiries removed, now that it has committed
+  // their removal
+  private void cleanUpExpiredSnapshots() {
+    for (PendingUpdate update : updates) {
+      if (update instanceof RemoveSnapshots) {
+        try {
+          ((RemoveSnapshots) update).cleanUpAfterTransaction();
+        } catch (RuntimeException e) {
+          LOG.warn("Failed to clean up the files of expired snapshots", e);
+        }
+      }
     }
   }
 

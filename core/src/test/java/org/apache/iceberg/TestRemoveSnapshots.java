@@ -42,6 +42,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.apache.iceberg.ManifestEntry.Status;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expressions;
@@ -2185,6 +2186,56 @@ public class TestRemoveSnapshots extends TestBase {
         .doesNotThrowAnyException();
     table.refresh();
     assertThat(table.snapshots()).hasSize(1);
+  }
+
+  @TestTemplate
+  public void testTransactionExpiryDeletesNothingWhenTheTransactionFails() {
+    table.newAppend().appendFile(FILE_A).commit();
+    Snapshot expired = table.currentSnapshot();
+    table.newAppend().appendFile(FILE_B).commit();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+
+    Transaction txn = table.newTransaction();
+    removeSnapshots(txn.table()).expireOlderThan(tAfterCommits).retainLast(1).commit();
+    txn.updateSchema().addColumn("x", Types.IntegerType.get()).commit();
+    assertThat(new File(expired.manifestListLocation())).exists();
+
+    // another writer commits first, and the transaction's schema update cannot apply on top
+    table.newAppend().appendFile(FILE_C).commit();
+    assertThatThrownBy(txn::commitTransaction)
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage("Table metadata refresh is required");
+
+    table.refresh();
+    assertThat(table.snapshot(expired.snapshotId())).isNotNull();
+    assertThat(new File(expired.manifestListLocation())).exists();
+  }
+
+  @TestTemplate
+  public void testTransactionExpiryRetriedAfterConcurrentTag() {
+    // the expiry leaves the tagged snapshot outside main's ancestry, which incremental cleanup
+    // refuses
+    assumeThat(incrementalCleanup).isFalse();
+    table.newAppend().appendFile(FILE_A).commit();
+    Snapshot tagged = table.currentSnapshot();
+    table.newAppend().appendFile(FILE_B).commit();
+    Snapshot expired = table.currentSnapshot();
+    table.newAppend().appendFile(FILE_C).commit();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+
+    Transaction txn = table.newTransaction();
+    removeSnapshots(txn.table()).expireOlderThan(tAfterCommits).retainLast(1).commit();
+    assertThat(new File(tagged.manifestListLocation())).exists();
+
+    // another writer tags a snapshot the expiry removes, and the transaction's retry keeps it
+    table.manageSnapshots().createTag("tag", tagged.snapshotId()).commit();
+    txn.commitTransaction();
+
+    table.refresh();
+    assertThat(table.snapshot(tagged.snapshotId())).isNotNull();
+    assertThat(new File(tagged.manifestListLocation())).exists();
+    assertThat(table.snapshot(expired.snapshotId())).isNull();
+    assertThat(new File(expired.manifestListLocation())).doesNotExist();
   }
 
   private RemoveSnapshots removeSnapshots(Table table) {
