@@ -20,10 +20,10 @@ short answer:
 
 ## October 2026: single-request XML PUT
 
-Re-validated with google-cloud-storage 2.67.0 against the zonal bucket
-`lstx-consistency` (US-WEST4, RAPID) and standard `lst-consistency`
-(US-WEST1). Probes ran from a workstation outside both regions, so
-absolute latencies are WAN-dominated; ratios are the signal.
+Re-validated with google-cloud-storage 2.67.0 against a zonal bucket
+(US-WEST4, RAPID) and a standard one (US-WEST1). Probes ran from a
+workstation outside both regions, so absolute latencies are
+WAN-dominated; ratios are the signal.
 
 **What still holds from May.** Zonal buckets reject `storage.create`
 (JSON multipart and gRPC: "This bucket requires appendable objects"),
