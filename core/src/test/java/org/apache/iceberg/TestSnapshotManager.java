@@ -701,6 +701,61 @@ public class TestSnapshotManager extends TestBase {
   }
 
   @TestTemplate
+  public void testRollbackToAfterConcurrentRollbackPastIt() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long first = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_B).commit();
+    long second = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_C).commit();
+    ManageSnapshots rollback = table.manageSnapshots().rollbackTo(second);
+
+    // another writer rolls the table back further, past the snapshot this rollback targets
+    table.manageSnapshots().rollbackTo(first).commit();
+
+    assertThatThrownBy(rollback::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot roll back to %s: not an ancestor of the current table state", second);
+    table.refresh();
+    assertThat(table.currentSnapshot().snapshotId()).isEqualTo(first);
+  }
+
+  @TestTemplate
+  public void testRollbackToSnapshotExpiredConcurrently() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long first = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_B).commit();
+    long second = table.currentSnapshot().snapshotId();
+    ManageSnapshots rollback = table.manageSnapshots().rollbackTo(first);
+
+    // another writer expires the snapshot this rollback targets
+    table.expireSnapshots().expireSnapshotId(first).commit();
+
+    assertThatThrownBy(rollback::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot roll back to %s: the table no longer has it", first);
+    table.refresh();
+    assertThat(table.currentSnapshot().snapshotId()).isEqualTo(second);
+  }
+
+  @TestTemplate
+  public void testSetCurrentSnapshotExpiredConcurrently() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long first = table.currentSnapshot().snapshotId();
+    table.newAppend().appendFile(FILE_B).commit();
+    long second = table.currentSnapshot().snapshotId();
+    ManageSnapshots setCurrent = table.manageSnapshots().setCurrentSnapshot(first);
+
+    // another writer expires the snapshot this sets as current
+    table.expireSnapshots().expireSnapshotId(first).commit();
+
+    assertThatThrownBy(setCurrent::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot roll back to %s: the table no longer has it", first);
+    table.refresh();
+    assertThat(table.currentSnapshot().snapshotId()).isEqualTo(second);
+  }
+
+  @TestTemplate
   public void testSnapshotManagerThroughTransaction() {
     table.newAppend().appendFile(FILE_A).commit();
     Snapshot snapshotAfterFirstAppend = readMetadata().currentSnapshot();

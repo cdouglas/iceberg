@@ -85,7 +85,11 @@ class SetSnapshotOperation implements PendingUpdate<Snapshot> {
         isCurrentAncestor(current, snapshotId),
         "Cannot roll back to snapshot, not an ancestor of the current state: %s",
         snapshotId);
-    return setCurrentSnapshot(snapshotId);
+    setCurrentSnapshot(snapshotId);
+    // checked again on each attempt: another writer may roll the table back past the snapshot
+    this.isRollback = true;
+
+    return this;
   }
 
   @Override
@@ -96,6 +100,12 @@ class SetSnapshotOperation implements PendingUpdate<Snapshot> {
       // if no target snapshot was configured then NOOP by returning current state
       return base.currentSnapshot();
     }
+
+    // another writer may have expired the snapshot since it was set
+    ValidationException.check(
+        base.snapshot(targetSnapshotId) != null,
+        "Cannot roll back to %s: the table no longer has it",
+        targetSnapshotId);
 
     ValidationException.check(
         !isRollback || isCurrentAncestor(base, targetSnapshotId),
