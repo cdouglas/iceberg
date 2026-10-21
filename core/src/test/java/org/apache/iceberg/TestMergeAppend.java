@@ -1656,6 +1656,29 @@ public class TestMergeAppend extends TestBase {
     assertThat(latestSnapshot(table, branch)).isNull();
   }
 
+  @TestTemplate
+  public void testMergeAppendedManifestsAfterConcurrentSpecRemoval() throws IOException {
+    table.updateProperties().set(TableProperties.MANIFEST_MIN_MERGE_COUNT, "2").commit();
+    AppendFiles append =
+        table
+            .newAppend()
+            .appendManifest(
+                writeManifest(
+                    manifestFormat().addExtension("input-a"),
+                    manifestEntry(Status.ADDED, null, FILE_A)))
+            .appendManifest(
+                writeManifest(
+                    manifestFormat().addExtension("input-b"),
+                    manifestEntry(Status.ADDED, null, FILE_B)));
+    removeSpecOfFileA();
+
+    assertThatThrownBy(() -> commit(table, append, branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
+    table.refresh();
+    assertThat(latestSnapshot(table, branch)).isNull();
+  }
+
   /** Table operations that run another writer's commit just before their first commit. */
   private TestTables.TestTableOperations racing(Runnable otherCommit) {
     return new TestTables.TestTableOperations("test", tableDir) {

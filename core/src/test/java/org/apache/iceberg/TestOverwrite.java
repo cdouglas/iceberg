@@ -365,4 +365,28 @@ public class TestOverwrite extends TestBase {
 
     assertThat(latestSnapshot(base, branch).snapshotId()).isEqualTo(baseId);
   }
+
+  @TestTemplate
+  public void testOverwriteMatchingFilterAfterConcurrentSpecRemoval() {
+    Table empty =
+        TestTables.create(tableDir, "empty_table", DATE_SCHEMA, PARTITION_BY_DATE, formatVersion);
+    OverwriteFiles overwrite =
+        empty
+            .newOverwrite()
+            .overwriteByRowFilter(equal("date", "2018-06-09"))
+            .addFile(FILE_5_TO_9)
+            .validateAddedFilesMatchOverwriteFilter();
+
+    // another writer replaces the table's spec and expires with metadata cleanup, removing it
+    Table other = TestTables.load(tableDir, "empty_table");
+    other.updateSpec().addField("id").commit();
+    other.expireSnapshots().cleanExpiredMetadata(true).commit();
+    assertThat(other.specs()).doesNotContainKey(PARTITION_BY_DATE.specId());
+
+    assertThatThrownBy(() -> commit(empty, overwrite, branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
+    empty.refresh();
+    assertThat(latestSnapshot(empty, branch)).isNull();
+  }
 }

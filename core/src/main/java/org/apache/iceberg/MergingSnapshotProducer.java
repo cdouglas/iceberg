@@ -158,7 +158,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     Preconditions.checkState(
         specIds.size() == 1,
         "Cannot return a single partition spec: data files with different partition specs have been added");
-    return spec(Iterables.getOnlyElement(specIds));
+    return specForNewFiles(Iterables.getOnlyElement(specIds));
   }
 
   protected Expression rowFilter() {
@@ -1281,7 +1281,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
     @Override
     protected PartitionSpec spec(int specId) {
-      return ops().current().spec(specId);
+      return specForNewFiles(specId);
     }
 
     @Override
@@ -1345,7 +1345,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
     @Override
     protected PartitionSpec spec(int specId) {
-      return ops().current().spec(specId);
+      return specForNewFiles(specId);
     }
 
     @Override

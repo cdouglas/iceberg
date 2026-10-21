@@ -987,4 +987,43 @@ public class TestReplacePartitions extends TestBase {
         files(fileADeletes(), fileBDeletes()),
         statuses(Status.DELETED, Status.EXISTING));
   }
+
+  @TestTemplate
+  public void testReplaceAfterConcurrentSpecRemoval() {
+    ReplacePartitions replace = table.newReplacePartitions().addFile(FILE_A);
+    removeSpecOfFileA();
+
+    assertThatThrownBy(() -> commit(table, replace, branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
+    table.refresh();
+    assertThat(latestSnapshot(table, branch)).isNull();
+  }
+
+  @TestTemplate
+  public void testReplaceWithValidationAfterConcurrentSpecRemoval() {
+    ReplacePartitions replace =
+        table
+            .newReplacePartitions()
+            .addFile(FILE_A)
+            .validateNoConflictingData()
+            .validateNoConflictingDeletes();
+    removeSpecOfFileA();
+
+    assertThatThrownBy(() -> commit(table, replace, branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
+    table.refresh();
+    assertThat(latestSnapshot(table, branch)).isNull();
+  }
+
+  /**
+   * As another writer, replaces the table's spec and expires with metadata cleanup, removing it.
+   */
+  private void removeSpecOfFileA() {
+    Table other = TestTables.load(tableDir, "test");
+    other.updateSpec().addField("id").commit();
+    other.expireSnapshots().cleanExpiredMetadata(true).commit();
+    assertThat(other.specs()).doesNotContainKey(FILE_A.specId());
+  }
 }
