@@ -2735,6 +2735,28 @@ public class TestRowDelta extends TestBase {
   }
 
   @TestTemplate
+  public void testValidateFromSnapshotExpiredConcurrently() {
+    commit(table, table.newFastAppend().appendFile(FILE_A), branch);
+    long read = latestSnapshot(table, branch).snapshotId();
+    RowDelta rowDelta =
+        table
+            .newRowDelta()
+            .addRows(FILE_B)
+            .validateFromSnapshot(read)
+            .validateNoConflictingDataFiles();
+
+    // another writer commits on top of the snapshot the row delta read, and expires it
+    commit(table, table.newFastAppend().appendFile(FILE_C), branch);
+    long head = latestSnapshot(table, branch).snapshotId();
+    table.expireSnapshots().expireSnapshotId(read).commit();
+
+    assertThatThrownBy(() -> commit(table, rowDelta, branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Snapshot %s is not an ancestor of %s", read, head);
+    assertThat(latestSnapshot(table, branch).snapshotId()).isEqualTo(head);
+  }
+
+  @TestTemplate
   public void testAddDeletesAfterConcurrentSpecRemoval() {
     // in v3 a DV for a deleted file fails its history check first
     assumeThat(formatVersion).isEqualTo(2);

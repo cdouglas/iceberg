@@ -132,7 +132,9 @@ public class BaseRowDelta extends MergingSnapshotProducer<RowDelta> implements R
   protected void validate(TableMetadata base, Snapshot parent) {
     if (parent != null) {
       if (startingSnapshotId != null) {
-        Preconditions.checkArgument(
+        // checked on the metadata this attempt commits on: another writer may have rolled the
+        // branch back past the snapshot, or expired it
+        ValidationException.check(
             SnapshotUtil.isAncestorOf(parent.snapshotId(), startingSnapshotId, base::snapshot),
             "Snapshot %s is not an ancestor of %s",
             startingSnapshotId,
