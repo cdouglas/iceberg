@@ -450,11 +450,23 @@ abstract class ManifestFilterManager<F extends ContentFile<F>> {
   }
 
   private boolean canContainDroppedFiles(ManifestFile manifest) {
+    if (manifest.content() == ManifestContent.DELETES
+        && minSequenceNumber > 0
+        && manifest.minSequenceNumber() < minSequenceNumber) {
+      return true;
+    }
+
     if (!deletePaths.isEmpty()) {
       return true;
-    } else if (!deleteFiles.isEmpty()) {
-      return ManifestFileUtil.canContainAny(manifest, deleteFilePartitions, specsById.get());
-    } else if (!removedDataFilePaths.isEmpty()) {
+    }
+
+    if (!deleteFiles.isEmpty()
+        && ManifestFileUtil.canContainAny(manifest, deleteFilePartitions, specsById.get())) {
+      return true;
+    }
+
+    // a deletion vector of a removed data file may be in any delete manifest
+    if (!removedDataFilePaths.isEmpty()) {
       return true;
     }
 
