@@ -33,6 +33,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -72,6 +73,11 @@ public class BaseTransaction implements Transaction {
       Sets.newHashSet(); // keep track of files deleted in the most recent commit
   private final Consumer<String> enqueueDelete = deletedFiles::add;
   private final TransactionType type;
+  // rebuilds a replace transaction's replacement on the table as it is when it commits; null to
+  // commit the replacement as the transaction began with it
+  private final UnaryOperator<TableMetadata> replacement;
+  // the replacement as the transaction began with it, which a rebuild must match
+  private final TableMetadata startingReplacement;
   private TableMetadata base;
   private TableMetadata current;
   private boolean hasLastOpCommitted;
@@ -88,6 +94,16 @@ public class BaseTransaction implements Transaction {
       TransactionType type,
       TableMetadata start,
       MetricsReporter reporter) {
+    this(tableName, ops, type, start, null, reporter);
+  }
+
+  BaseTransaction(
+      String tableName,
+      TableOperations ops,
+      TransactionType type,
+      TableMetadata start,
+      UnaryOperator<TableMetadata> replacement,
+      MetricsReporter reporter) {
     this.tableName = tableName;
     this.ops = ops;
     this.transactionTable = new TransactionTable();
@@ -96,6 +112,8 @@ public class BaseTransaction implements Transaction {
     this.updates = Lists.newArrayList();
     this.base = ops.current();
     this.type = type;
+    this.replacement = replacement;
+    this.startingReplacement = start;
     this.hasLastOpCommitted = true;
     this.reporter = reporter;
   }
@@ -318,54 +336,133 @@ public class BaseTransaction implements Transaction {
           .onlyRetryOn(CommitFailedException.class)
           .run(
               underlyingOps -> {
-                try {
-                  underlyingOps.refresh();
-                } catch (NoSuchTableException e) {
-                  if (!orCreate) {
-                    throw e;
-                  }
-                }
-
-                // committing that new table over one another writer created since would replace
-                // that table with a different one, dropping its history: fail as a create does
-                if (replacesNoTable && underlyingOps.current() != null) {
-                  throw new AlreadyExistsException("Table already exists: %s", tableName);
-                }
-
-                // because this is a replace table, it will always completely replace the table
-                // metadata. even if it was just updated.
-                if (base != underlyingOps.current()) {
-                  this.base = underlyingOps.current(); // just refreshed
-
-                  // but not those that the table no longer has, such as one expired since
-                  Set<Long> removed = Sets.difference(startingSnapshotIds, snapshotIds(base));
-                  if (!removed.isEmpty()) {
-                    this.current =
-                        TableMetadata.buildFrom(current).removeSnapshots(removed).build();
-                  }
-                }
-
+                refreshReplacement(underlyingOps, orCreate, replacesNoTable, startingSnapshotIds);
                 underlyingOps.commit(base, current);
               });
-      cleanUpExpiredSnapshots();
 
     } catch (CommitStateUnknownException e) {
       throw e;
 
+    } catch (PendingUpdateFailedException e) {
+      cleanUp();
+      throw e.wrapped();
+
     } catch (RuntimeException e) {
       // the commit failed and no files were committed. clean up each update.
       if (!ops.requireStrictCleanup() || e instanceof CleanableFailure) {
-        cleanAllUpdates();
+        cleanUp();
       }
 
       throw e;
-
-    } finally {
-      // replace table never needs to retry because the table state is completely replaced. because
-      // retries are not
-      // a concern, it is safe to delete all the deleted files from individual operations
-      deleteUncommittedFiles(deletedFiles);
     }
+
+    // the commit succeeded. a rebuild may have reused files that an earlier attempt's commit
+    // replaced, so delete only those that the committed snapshots don't reference
+    cleanUpAfterCommit(snapshotIds(base));
+    cleanUpExpiredSnapshots();
+  }
+
+  /**
+   * Refreshes the table the replace commits over and, if another writer changed it since the
+   * transaction began, the replacement too.
+   */
+  private void refreshReplacement(
+      TableOperations underlyingOps,
+      boolean orCreate,
+      boolean replacesNoTable,
+      Set<Long> startingSnapshotIds) {
+    try {
+      underlyingOps.refresh();
+    } catch (NoSuchTableException e) {
+      if (!orCreate) {
+        throw e;
+      }
+    }
+
+    // committing that new table over one another writer created since would replace
+    // that table with a different one, dropping its history: fail as a create does
+    TableMetadata refreshed = underlyingOps.current();
+    if (replacesNoTable && refreshed != null) {
+      throw new AlreadyExistsException("Table already exists: %s", tableName);
+    }
+
+    // a replace replaces the table's data, schema and partitioning, whatever changed
+    // since it began, but keeps the table's history: its replacement keeps the
+    // snapshots, refs and properties of the table as the transaction began with it
+    if (base != refreshed) {
+      if (replacement != null && !sameVersion(base, refreshed)) {
+        rebuildReplacement(refreshed);
+      } else {
+        this.base = refreshed;
+
+        // without a way to rebuild it, at least not those the table no longer has,
+        // such as one expired since
+        Set<Long> removed = Sets.difference(startingSnapshotIds, snapshotIds(base));
+        if (!removed.isEmpty()) {
+          this.current = TableMetadata.buildFrom(current).removeSnapshots(removed).build();
+        }
+      }
+    }
+  }
+
+  /**
+   * Rebuilds the replacement on {@code refreshed}, the table as other writers left it since the
+   * transaction began, and applies the transaction's updates to it again, so that the replace keeps
+   * what they committed, as it would had it begun after them. Fails the commit when that cannot be
+   * done exactly: the files the transaction wrote depend on its replacement's schema, partition
+   * spec, sort order and format version, and an update may not apply again.
+   */
+  private void rebuildReplacement(TableMetadata refreshed) {
+    if (refreshed == null) {
+      throw cannotRebuild("was dropped", null);
+    }
+
+    TableMetadata rebuilt;
+    try {
+      rebuilt = replacement.apply(refreshed);
+    } catch (RuntimeException e) {
+      throw cannotRebuild("cannot be replaced as the transaction began", e);
+    }
+
+    if (!rebuilt.schema().sameSchema(startingReplacement.schema())
+        || rebuilt.currentSchemaId() != startingReplacement.currentSchemaId()
+        || !rebuilt.spec().equals(startingReplacement.spec())
+        || !rebuilt.sortOrder().equals(startingReplacement.sortOrder())
+        || rebuilt.formatVersion() != startingReplacement.formatVersion()) {
+      throw cannotRebuild(
+          "its replacement would have another schema, partition spec, sort order or format", null);
+    }
+
+    this.base = refreshed;
+    this.current = rebuilt;
+    try {
+      for (PendingUpdate update : updates) {
+        update.commit();
+      }
+    } catch (RuntimeException e) {
+      throw cannotRebuild("the transaction's updates cannot apply to it again", e);
+    }
+  }
+
+  private PendingUpdateFailedException cannotRebuild(String reason, Throwable cause) {
+    return new PendingUpdateFailedException(
+        new CommitFailedException(
+            cause,
+            "Cannot commit replace transaction: table %s changed since it began and %s",
+            tableName,
+            reason));
+  }
+
+  // whether the table read again is the version read before: the same metadata file
+  private static boolean sameVersion(TableMetadata before, TableMetadata now) {
+    if (before == now) {
+      return true;
+    } else if (before == null || now == null) {
+      return false;
+    }
+
+    return before.metadataFileLocation() != null
+        && before.metadataFileLocation().equals(now.metadataFileLocation());
   }
 
   private static Set<Long> snapshotIds(TableMetadata metadata) {
@@ -415,7 +512,11 @@ public class BaseTransaction implements Transaction {
     }
 
     // the commit succeeded
+    cleanUpAfterCommit(startingSnapshots);
+    cleanUpExpiredSnapshots();
+  }
 
+  private void cleanUpAfterCommit(Set<Long> startingSnapshots) {
     try {
       // clean up the data files that were deleted by each operation. first, get the list of
       // committed manifests to ensure that no committed manifest is deleted.
@@ -439,8 +540,6 @@ public class BaseTransaction implements Transaction {
     } catch (RuntimeException e) {
       LOG.warn("Failed to load committed metadata, skipping clean-up", e);
     }
-
-    cleanUpExpiredSnapshots();
   }
 
   // the files of the snapshots that the transaction's expiries removed, now that it has committed

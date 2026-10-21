@@ -2975,6 +2975,16 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     assertUUIDsMatch(original, afterFirstReplace);
     assertFiles(afterFirstReplace, FILE_B);
 
+    if (!supportsServerSideRetry()) {
+      // the second replacement, rebuilt on the table as the first left it, would number the
+      // schema's columns differently from the schema its files were written with
+      assertThatThrownBy(secondReplace::commitTransaction)
+          .isInstanceOf(CommitFailedException.class)
+          .hasMessageContaining("changed since it began");
+      assertFiles(catalog.loadTable(TABLE), FILE_B);
+      return;
+    }
+
     secondReplace.commitTransaction();
 
     Table afterSecondReplace = catalog.loadTable(TABLE);
@@ -3255,6 +3265,16 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
     assertUUIDsMatch(original, afterFirstReplace);
     assertFiles(afterFirstReplace, FILE_B);
 
+    if (!supportsServerSideRetry()) {
+      // the second replacement, rebuilt on the table as the first left it, would give its order
+      // another id than the one its files were written with
+      assertThatThrownBy(secondReplace::commitTransaction)
+          .isInstanceOf(CommitFailedException.class)
+          .hasMessageContaining("changed since it began");
+      assertFiles(catalog.loadTable(TABLE), FILE_B);
+      return;
+    }
+
     secondReplace.commitTransaction();
 
     Table afterSecondReplace = catalog.loadTable(TABLE);
@@ -3263,6 +3283,96 @@ public abstract class CatalogTests<C extends Catalog & SupportsNamespaces> {
         .isEqualTo(TABLE_WRITE_ORDER.fields());
     assertUUIDsMatch(original, afterSecondReplace);
     assertFiles(afterSecondReplace, FILE_C);
+  }
+
+  @Test
+  public void replaceTransactionKeepsConcurrentSnapshot() {
+    C catalog = catalog();
+
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(NS);
+    }
+
+    Table table = catalog.buildTable(TABLE, SCHEMA).create();
+    table.newFastAppend().appendFile(FILE_A).commit();
+
+    Transaction replace = catalog.buildTable(TABLE, SCHEMA).replaceTransaction();
+    replace.newFastAppend().appendFile(FILE_B).commit();
+
+    table.newFastAppend().appendFile(FILE_C).commit();
+    long concurrentSnapshotId = table.currentSnapshot().snapshotId();
+
+    replace.commitTransaction();
+
+    Table replaced = catalog.loadTable(TABLE);
+    assertFiles(replaced, FILE_B);
+    assertThat(replaced.snapshot(concurrentSnapshotId))
+        .as("Concurrent snapshot should stay in history")
+        .isNotNull();
+  }
+
+  @Test
+  public void replaceTransactionDoesNotRestoreExpiredSnapshot() {
+    C catalog = catalog();
+
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(NS);
+    }
+
+    Table table =
+        catalog.buildTable(TABLE, SCHEMA).withProperty(TableProperties.GC_ENABLED, "true").create();
+    table.newFastAppend().appendFile(FILE_A).commit();
+    long expiredSnapshotId = table.currentSnapshot().snapshotId();
+    table.newFastAppend().appendFile(FILE_B).commit();
+
+    Transaction replace = catalog.buildTable(TABLE, SCHEMA).replaceTransaction();
+    replace.newFastAppend().appendFile(FILE_C).commit();
+
+    table.expireSnapshots().expireSnapshotId(expiredSnapshotId).commit();
+
+    replace.commitTransaction();
+
+    Table replaced = catalog.loadTable(TABLE);
+    assertFiles(replaced, FILE_C);
+    assertThat(replaced.snapshot(expiredSnapshotId))
+        .as("Expired snapshot should not be restored")
+        .isNull();
+  }
+
+  @Test
+  public void replaceTransactionThatCannotApplyAgain() {
+    C catalog = catalog();
+
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(NS);
+    }
+
+    Table table = catalog.buildTable(TABLE, SCHEMA).create();
+    table.newFastAppend().appendFile(FILE_A).commit();
+
+    Transaction replace = catalog.buildTable(TABLE, SCHEMA).replaceTransaction();
+    replace.newFastAppend().appendFile(FILE_B).commit();
+    // a schema update commits once, on the metadata it was created on
+    replace.updateSchema().commit();
+    replace.newFastAppend().appendFile(FILE_C).commit();
+
+    table.updateProperties().set("concurrent", "true").commit();
+
+    if (supportsServerSideRetry()) {
+      // a REST server applies the replace's changes to the table as it is now
+      replace.commitTransaction();
+      assertFiles(catalog.loadTable(TABLE), FILE_B, FILE_C);
+      return;
+    }
+
+    // the replace can't be rebuilt on the table as it is now, and committing it as it began
+    // would drop the concurrent change
+    assertThatThrownBy(replace::commitTransaction)
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessageContaining("changed since it began");
+    Table unchanged = catalog.loadTable(TABLE);
+    assertFiles(unchanged, FILE_A);
+    assertThat(unchanged.properties()).containsEntry("concurrent", "true");
   }
 
   @ParameterizedTest

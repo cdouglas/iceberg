@@ -337,6 +337,107 @@ public class TestReplaceTransaction extends TestBase {
   }
 
   @TestTemplate
+  public void testReplaceTransactionKeepsConcurrentHistory() {
+    // TestTables assigns sequential snapshot ids, which collide between the two writers
+    table.updateProperties().set("random-snapshot-ids", "true").commit();
+    table.newAppend().appendFile(FILE_A).commit();
+    long first = table.currentSnapshot().snapshotId();
+    table.manageSnapshots().createBranch("branch", first).commit();
+
+    Transaction replace = TestTables.beginReplace(tableDir, "test", table.schema(), table.spec());
+    replace.newAppend().appendFile(FILE_C).commit();
+
+    // other writers commit to main and to a branch, tag a snapshot and disable GC
+    Table other = TestTables.load(tableDir, "test");
+    other.newAppend().appendFile(FILE_B).commit();
+    long concurrent = other.currentSnapshot().snapshotId();
+    other.newAppend().appendFile(FILE_D).toBranch("branch").commit();
+    long branchCommit = other.refs().get("branch").snapshotId();
+    other.manageSnapshots().createTag("tag", first).commit();
+    other.updateProperties().set(TableProperties.GC_ENABLED, "false").commit();
+
+    replace.commitTransaction();
+
+    // the replace replaced main's data, and kept everything else, as had it begun after them
+    table.refresh();
+    validateSnapshot(null, table.currentSnapshot(), FILE_C);
+    assertThat(table.snapshot(first)).isNotNull();
+    assertThat(table.snapshot(concurrent)).isNotNull();
+    assertThat(table.refs().get("branch").snapshotId()).isEqualTo(branchCommit);
+    assertThat(table.refs().get("tag").snapshotId()).isEqualTo(first);
+    assertThat(table.properties()).containsEntry(TableProperties.GC_ENABLED, "false");
+  }
+
+  @TestTemplate
+  public void testReplaceTransactionWithConcurrentUpgrade() {
+    assumeThat(formatVersion).isLessThan(TestHelpers.MAX_FORMAT_VERSION);
+    Transaction replace = TestTables.beginReplace(tableDir, "test", table.schema(), table.spec());
+    replace.newAppend().appendFile(FILE_A).commit();
+
+    // another writer upgrades the table: the replace wrote its files for the format it began with
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion + 1))
+        .commit();
+
+    assertThatThrownBy(replace::commitTransaction)
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Cannot commit replace transaction: table test changed since it began and its "
+                + "replacement would have another schema, partition spec, sort order or format");
+
+    table.refresh();
+    assertThat(table.ops().current().formatVersion()).isEqualTo(formatVersion + 1);
+    assertThat(table.currentSnapshot()).isNull();
+  }
+
+  @TestTemplate
+  public void testReplaceTransactionWithConcurrentSortOrder() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long first = table.currentSnapshot().snapshotId();
+
+    SortOrder requested = SortOrder.builderFor(table.schema()).asc("data").build();
+    Transaction replace =
+        TestTables.beginReplace(
+            tableDir, "test", table.schema(), table.spec(), requested, ImmutableMap.of());
+    replace.newAppend().appendFile(FILE_B).commit();
+
+    // another writer sorts the table: rebuilt there, the replace's order would get another id
+    // than the one its files were written with
+    table.replaceSortOrder().asc("id").commit();
+
+    assertThatThrownBy(replace::commitTransaction)
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessageStartingWith("Cannot commit replace transaction: table test changed");
+
+    table.refresh();
+    assertThat(table.currentSnapshot().snapshotId()).isEqualTo(first);
+  }
+
+  @TestTemplate
+  public void testReplaceTransactionThatCannotApplyAgain() {
+    table.newAppend().appendFile(FILE_A).commit();
+    long first = table.currentSnapshot().snapshotId();
+
+    Transaction replace = TestTables.beginReplace(tableDir, "test", table.schema(), table.spec());
+    replace.newAppend().appendFile(FILE_B).commit();
+    // a schema update commits once, on the metadata it was created on
+    replace.updateSchema().addColumn("extra", Types.IntegerType.get()).commit();
+
+    table.updateProperties().set("concurrent", "true").commit();
+
+    assertThatThrownBy(replace::commitTransaction)
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Cannot commit replace transaction: table test changed since it began and the "
+                + "transaction's updates cannot apply to it again");
+
+    table.refresh();
+    assertThat(table.currentSnapshot().snapshotId()).isEqualTo(first);
+    assertThat(table.properties()).containsEntry("concurrent", "true");
+  }
+
+  @TestTemplate
   public void testCreateOrReplaceTransactionWithConcurrentCreate() {
     // this table doesn't exist when the transaction begins
     String name = "test_concurrent_create";
