@@ -426,13 +426,17 @@ public class TestUpdateRequirements {
     requirements.forEach(req -> req.validate(metadata));
 
     assertThat(requirements)
-        .hasSize(2)
+        .hasSize(3)
         .hasOnlyElementsOfTypes(
-            UpdateRequirement.AssertTableUUID.class, UpdateRequirement.AssertDefaultSpecID.class);
+            UpdateRequirement.AssertTableUUID.class,
+            UpdateRequirement.AssertDefaultSpecID.class,
+            UpdateRequirement.AssertRefSnapshotID.class);
 
     assertTableUUID(requirements);
 
     assertDefaultSpecId(requirements, 1, defaultSpecId);
+
+    assertNoMainBranch(requirements, 2);
   }
 
   @Test
@@ -450,7 +454,7 @@ public class TestUpdateRequirements {
     requirements.forEach(req -> req.validate(metadata));
 
     assertThat(requirements)
-        .hasSize(3)
+        .hasSize(4)
         .hasOnlyElementsOfTypes(
             UpdateRequirement.AssertTableUUID.class,
             UpdateRequirement.AssertDefaultSpecID.class,
@@ -461,6 +465,8 @@ public class TestUpdateRequirements {
     assertDefaultSpecId(requirements, 1, defaultSpecId);
 
     assertRefSnapshotId(requirements, 2, snapshotId);
+
+    assertNoMainBranch(requirements, 3);
   }
 
   @Test
@@ -503,6 +509,51 @@ public class TestUpdateRequirements {
             branch, snapshotId, snapshotId + 1);
   }
 
+  @Test
+  public void removePartitionSpecsWithMainChangedFailure() {
+    int defaultSpecId = 3;
+    when(metadata.defaultSpecId()).thenReturn(defaultSpecId);
+    when(updated.defaultSpecId()).thenReturn(defaultSpecId);
+
+    long snapshotId = 42L;
+    mockBranchChanged(SnapshotRef.MAIN_BRANCH, snapshotId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata,
+            ImmutableList.of(new MetadataUpdate.RemovePartitionSpecs(Sets.newHashSet(1, 2))));
+    requirements.forEach(req -> req.validate(metadata));
+    assertRefSnapshotId(requirements, 2, snapshotId);
+
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Requirement failed: branch %s has changed: expected id %s != %s",
+            SnapshotRef.MAIN_BRANCH, snapshotId, snapshotId + 1);
+  }
+
+  @Test
+  public void removePartitionSpecsWithMainCreatedFailure() {
+    int defaultSpecId = 3;
+    when(metadata.defaultSpecId()).thenReturn(defaultSpecId);
+    when(updated.defaultSpecId()).thenReturn(defaultSpecId);
+
+    // another writer committed the table's first snapshot
+    SnapshotRef main = mock(SnapshotRef.class);
+    when(main.snapshotId()).thenReturn(42L);
+    when(main.isBranch()).thenReturn(true);
+    when(updated.ref(SnapshotRef.MAIN_BRANCH)).thenReturn(main);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata,
+            ImmutableList.of(new MetadataUpdate.RemovePartitionSpecs(Sets.newHashSet(1, 2))));
+
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage("Requirement failed: branch main was created concurrently");
+  }
+
   private void mockBranchChanged(String branch, long snapshotId) {
     mockBranch(branch, snapshotId);
 
@@ -531,13 +582,17 @@ public class TestUpdateRequirements {
     requirements.forEach(req -> req.validate(metadata));
 
     assertThat(requirements)
-        .hasSize(2)
+        .hasSize(3)
         .hasOnlyElementsOfTypes(
-            UpdateRequirement.AssertTableUUID.class, UpdateRequirement.AssertCurrentSchemaID.class);
+            UpdateRequirement.AssertTableUUID.class,
+            UpdateRequirement.AssertCurrentSchemaID.class,
+            UpdateRequirement.AssertRefSnapshotID.class);
 
     assertTableUUID(requirements);
 
     assertCurrentSchemaId(requirements, 1, currentSchemaId);
+
+    assertNoMainBranch(requirements, 2);
   }
 
   @Test
@@ -554,7 +609,7 @@ public class TestUpdateRequirements {
     requirements.forEach(req -> req.validate(metadata));
 
     assertThat(requirements)
-        .hasSize(3)
+        .hasSize(4)
         .hasOnlyElementsOfTypes(
             UpdateRequirement.AssertTableUUID.class,
             UpdateRequirement.AssertCurrentSchemaID.class,
@@ -565,6 +620,8 @@ public class TestUpdateRequirements {
     assertCurrentSchemaId(requirements, 1, currentSchemaId);
 
     assertRefSnapshotId(requirements, 2, snapshotId);
+
+    assertNoMainBranch(requirements, 3);
   }
 
   @Test
@@ -603,6 +660,28 @@ public class TestUpdateRequirements {
         .hasMessage(
             "Requirement failed: branch %s has changed: expected id %s != %s",
             branch, snapshotId, snapshotId + 1);
+  }
+
+  @Test
+  public void removeSchemasWithMainChangedFailure() {
+    int currentSchemaId = 3;
+    when(metadata.currentSchemaId()).thenReturn(currentSchemaId);
+    when(updated.currentSchemaId()).thenReturn(currentSchemaId);
+
+    long snapshotId = 42L;
+    mockBranchChanged(SnapshotRef.MAIN_BRANCH, snapshotId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSchemas(Sets.newHashSet(1, 2))));
+    requirements.forEach(req -> req.validate(metadata));
+    assertRefSnapshotId(requirements, 2, snapshotId);
+
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Requirement failed: branch %s has changed: expected id %s != %s",
+            SnapshotRef.MAIN_BRANCH, snapshotId, snapshotId + 1);
   }
 
   @Test
@@ -777,6 +856,44 @@ public class TestUpdateRequirements {
         .hasOnlyElementsOfTypes(UpdateRequirement.AssertTableUUID.class);
 
     assertTableUUID(requirements);
+  }
+
+  @Test
+  public void removeSnapshotRef() {
+    long snapshotId = 14L;
+    String refName = "branch";
+    mockBranch(refName, snapshotId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSnapshotRef(refName)));
+    requirements.forEach(req -> req.validate(metadata));
+
+    assertThat(requirements)
+        .hasSize(2)
+        .hasOnlyElementsOfTypes(
+            UpdateRequirement.AssertTableUUID.class, UpdateRequirement.AssertRefSnapshotID.class);
+
+    assertTableUUID(requirements);
+
+    assertRefSnapshotId(requirements, 1, snapshotId);
+  }
+
+  @Test
+  public void removeSnapshotRefFailure() {
+    long snapshotId = 14L;
+    String refName = "branch";
+    mockBranchChanged(refName, snapshotId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSnapshotRef(refName)));
+
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Requirement failed: branch %s has changed: expected id %s != %s",
+            refName, snapshotId, snapshotId + 1);
   }
 
   @Test
@@ -1009,6 +1126,16 @@ public class TestUpdateRequirements {
         .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertCurrentSchemaID.class))
         .extracting(UpdateRequirement.AssertCurrentSchemaID::schemaId)
         .isEqualTo(currentSchemaId);
+  }
+
+  private void assertNoMainBranch(List<UpdateRequirement> requirements, int idx) {
+    assertThat(requirements)
+        .element(idx)
+        .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertRefSnapshotID.class))
+        .extracting(
+            UpdateRequirement.AssertRefSnapshotID::refName,
+            UpdateRequirement.AssertRefSnapshotID::snapshotId)
+        .containsExactly(SnapshotRef.MAIN_BRANCH, null);
   }
 
   private void assertRefSnapshotId(List<UpdateRequirement> requirements, int idx, long snapshotId) {

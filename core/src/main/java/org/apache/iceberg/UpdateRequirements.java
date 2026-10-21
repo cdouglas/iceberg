@@ -95,6 +95,8 @@ public class UpdateRequirements {
       // add requirements based on the change
       if (update instanceof MetadataUpdate.SetSnapshotRef) {
         update((MetadataUpdate.SetSnapshotRef) update);
+      } else if (update instanceof MetadataUpdate.RemoveSnapshotRef) {
+        update((MetadataUpdate.RemoveSnapshotRef) update);
       } else if (update instanceof MetadataUpdate.AddSchema) {
         update((MetadataUpdate.AddSchema) update);
       } else if (update instanceof MetadataUpdate.SetCurrentSchema) {
@@ -116,7 +118,16 @@ public class UpdateRequirements {
 
     private void update(MetadataUpdate.SetSnapshotRef setRef) {
       // require that the ref is unchanged from the base
-      String name = setRef.name();
+      requireRefNotChanged(setRef.name());
+    }
+
+    private void update(MetadataUpdate.RemoveSnapshotRef removeRef) {
+      // require that the ref is unchanged from the base: removing a ref that another writer has
+      // moved since would drop the snapshots committed to it
+      requireRefNotChanged(removeRef.name());
+    }
+
+    private void requireRefNotChanged(String name) {
       // add returns true the first time the ref name is added
       boolean added = changedRefs.add(name);
       if (added && base != null && !isReplace) {
@@ -202,10 +213,13 @@ public class UpdateRequirements {
         base.refs()
             .forEach(
                 (name, ref) -> {
-                  if (ref.isBranch() && !name.equals(SnapshotRef.MAIN_BRANCH)) {
-                    require(new UpdateRequirement.AssertRefSnapshotID(name, ref.snapshotId()));
+                  if (ref.isBranch()) {
+                    requireRefNotChanged(name);
                   }
                 });
+        // main too, and that it still does not exist if it did not: a commit to it may add files
+        // of any of the table's specs, written with any of its schemas
+        requireRefNotChanged(SnapshotRef.MAIN_BRANCH);
       }
     }
 
