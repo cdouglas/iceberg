@@ -38,6 +38,16 @@ public interface SupportsAtomicOperations extends FileIO {
     return true;
   }
 
+  /**
+   * The most bytes one {@link AtomicOutputFile.Strategy#APPEND} to the object at {@code location}
+   * may write, or 0 if the store sets no limit an append could reach. A larger append fails without
+   * landing (Azure caps an {@code AppendBlock}: 4 MiB before service version 2022-11-02, 100 MiB
+   * since); a CAS is not bound by it. Defaults to 0.
+   */
+  default long maxAppendBytes(String location) {
+    return 0L;
+  }
+
   class AtomicOperationException extends RuntimeException {
     public AtomicOperationException(String message, Exception cause) {
       super(message, cause);
