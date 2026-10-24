@@ -114,6 +114,12 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
     return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics, this::fileClient);
   }
 
+  /** An append is one {@code AppendBlock}, whose limit is set by the client's service version. */
+  @Override
+  public long maxAppendBytes(String location) {
+    return ADLSOutputFile.appendBlob(fileClient(location)).getMaxAppendBlockBytes();
+  }
+
   @Override
   public AtomicOutputFile newOutputFile(InputFile replace) {
     final String path = replace.location();
