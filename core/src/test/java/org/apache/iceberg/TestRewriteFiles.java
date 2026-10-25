@@ -388,6 +388,38 @@ public class TestRewriteFiles extends TestBase {
   }
 
   @TestTemplate
+  public void testRewriteWithOldSequenceNumberKeepsTheDeletesAfterIt() {
+    assumeThat(formatVersion)
+        .as("Sequence number is only supported in iceberg format v2 or later")
+        .isGreaterThan(1);
+
+    // a compaction reads FILE_A at its sequence number, before the equality delete commits
+    commit(table, table.newAppend().appendFile(FILE_A), branch);
+    long oldSequenceNumber = latestSnapshot(table, branch).sequenceNumber();
+    commit(table, table.newRowDelta().addDeletes(FILE_A_EQUALITY_DELETES), branch);
+    // an unrelated commit leaves no live data file older than the delete
+    commit(table, table.newAppend().appendFile(FILE_B), branch);
+
+    Snapshot pending =
+        apply(
+            table
+                .newRewrite()
+                .rewriteFiles(ImmutableSet.of(FILE_A), ImmutableSet.of(FILE_A2), oldSequenceNumber),
+            branch);
+
+    // FILE_A2 keeps FILE_A's data sequence number, so the equality delete still applies to it
+    List<ManifestFile> deleteManifests = pending.deleteManifests(table.io());
+    assertThat(deleteManifests).hasSize(1);
+    validateDeleteManifest(
+        deleteManifests.get(0),
+        dataSeqs(oldSequenceNumber + 1),
+        fileSeqs(oldSequenceNumber + 1),
+        ids(latestSnapshot(table, branch).parentId()),
+        files(FILE_A_EQUALITY_DELETES),
+        statuses(ADDED));
+  }
+
+  @TestTemplate
   public void testFailure() {
     commit(table, table.newAppend().appendFile(FILE_A), branch);
 

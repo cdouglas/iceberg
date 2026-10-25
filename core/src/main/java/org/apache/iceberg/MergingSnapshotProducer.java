@@ -1032,6 +1032,10 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
                         != ManifestWriter
                             .UNASSIGNED_SEQ) // filter out unassigned in rewritten manifests
             .reduce(base.lastSequenceNumber(), Math::min);
+    if (newDataFilesDataSequenceNumber != null && addsDataFiles()) {
+      // new data files that keep an older data sequence number still need the deletes after it
+      minDataSequenceNumber = Math.min(minDataSequenceNumber, newDataFilesDataSequenceNumber);
+    }
     deleteFilterManager.dropDeleteFilesOlderThan(minDataSequenceNumber);
 
     // retrieve the data files to be deleted from the DataFileFilterManager and pass it to the
