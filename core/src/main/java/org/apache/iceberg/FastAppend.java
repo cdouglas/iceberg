@@ -143,6 +143,18 @@ class FastAppend extends SnapshotProducer<AppendFiles> implements AppendFiles {
         summaryBuilder);
   }
 
+  /**
+   * Blind, unless it validates its ancestry or appends a manifest that keeps its path: it writes
+   * only new manifests, and its retry checks only that no deletion vector names a file it adds,
+   * which a file at a new path cannot have.
+   */
+  @Override
+  protected CommitFootprint footprint(TableMetadata base, Snapshot parent) {
+    return validatesAncestry() || !appendManifests.isEmpty()
+        ? CommitFootprint.OPAQUE
+        : CommitFootprint.BLIND;
+  }
+
   @Override
   protected void validate(TableMetadata base, Snapshot snapshot) {
     validateNoDVsForAddedDataFiles(base, snapshot, Iterables.concat(newDataFilesBySpec.values()));

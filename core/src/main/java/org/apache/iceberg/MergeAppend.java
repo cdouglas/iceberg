@@ -48,6 +48,19 @@ class MergeAppend extends MergingSnapshotProducer<AppendFiles> implements Append
     return this;
   }
 
+  /**
+   * Blind, unless it validates its ancestry or appends a manifest that keeps its path: it adds
+   * files and validates nothing, so its retry commits on any version of its branch. It may merge
+   * the parent's manifests into new ones; a catalog that merges it onto another version must find
+   * those still listed.
+   */
+  @Override
+  protected CommitFootprint footprint(TableMetadata base, Snapshot parent) {
+    return validatesAncestry() || appendsManifests()
+        ? CommitFootprint.OPAQUE
+        : CommitFootprint.BLIND;
+  }
+
   @Override
   public AppendFiles appendManifest(ManifestFile manifest) {
     Preconditions.checkArgument(
