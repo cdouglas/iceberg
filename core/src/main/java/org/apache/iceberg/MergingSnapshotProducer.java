@@ -318,6 +318,11 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     return ops().current().formatVersion();
   }
 
+  /** Whether the commit appends a manifest that keeps its path (one that inherits its ids). */
+  protected boolean appendsManifests() {
+    return !appendManifests.isEmpty();
+  }
+
   /** Add all files in a manifest to the new snapshot. */
   protected void add(ManifestFile manifest) {
     Preconditions.checkArgument(
