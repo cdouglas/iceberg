@@ -416,7 +416,8 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
 
     // Sink path: return an InlineSnapshot that carries the manifest list in-memory,
     // so subsequent commits (which read parentSnapshot.allManifests) don't attempt
-    // a FileIO read of a nonexistent manifest list file.
+    // a FileIO read of a nonexistent manifest list file. It carries the commit's footprint, which
+    // the catalog writes with it.
     if (result.inlineManifests != null) {
       return new InlineSnapshot(
           sequenceNumber,
@@ -429,7 +430,8 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
           nextRowId,
           assignedRows,
           null,
-          result.inlineManifests);
+          result.inlineManifests,
+          footprint(base, parentSnapshot));
     }
 
     return new BaseSnapshot(
@@ -631,6 +633,24 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
   }
 
   protected abstract Map<String, String> summary();
+
+  /**
+   * What this commit, applied to {@code base} on {@code parent}, depends on beyond what it writes:
+   * what its retry on a table that changed since would check again ({@link CommitFootprint}). A
+   * producer that cannot say is {@link CommitFootprint#OPAQUE}, the default.
+   *
+   * @param base the metadata the commit applies to
+   * @param parent the snapshot the commit's snapshot follows, or null
+   * @return the commit's footprint
+   */
+  protected CommitFootprint footprint(TableMetadata base, Snapshot parent) {
+    return CommitFootprint.OPAQUE;
+  }
+
+  /** Whether the commit validates its snapshot's ancestry with a validator of its caller's. */
+  protected boolean validatesAncestry() {
+    return snapshotAncestryValidator != SnapshotAncestryValidator.NON_VALIDATING;
+  }
 
   /** Returns the snapshot summary from the implementation and updates totals. */
   private Map<String, String> summary(TableMetadata previous) {
