@@ -164,6 +164,12 @@ class CherryPickOperation extends MergingSnapshotProducer<CherryPickOperation> {
     }
   }
 
+  /** Opaque: its retry re-checks the picked snapshot against the branch in its own way. */
+  @Override
+  protected CommitFootprint footprint(TableMetadata base, Snapshot parent) {
+    return CommitFootprint.OPAQUE;
+  }
+
   @Override
   protected void validate(TableMetadata base, Snapshot snapshot) {
     // this is only called after apply() passes off to super, but check fast-forward status just in
