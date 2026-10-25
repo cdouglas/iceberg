@@ -449,6 +449,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
   }
 
   private void runValidations(Snapshot parentSnapshot) {
+    beforeValidation();
     validate(base, parentSnapshot);
 
     // Validate snapshot ancestry
@@ -646,6 +647,9 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
   protected CommitFootprint footprint(TableMetadata base, Snapshot parent) {
     return CommitFootprint.OPAQUE;
   }
+
+  /** Called before each attempt's {@code validate}. */
+  protected void beforeValidation() {}
 
   /** Whether the commit validates its snapshot's ancestry with a validator of its caller's. */
   protected boolean validatesAncestry() {
