@@ -102,6 +102,10 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   private final SnapshotSummary.Builder addedDeleteFilesSummary = SnapshotSummary.builder();
   private final SnapshotSummary.Builder appendedManifestsSummary = SnapshotSummary.builder();
   private Expression deleteExpression = Expressions.alwaysFalse();
+  // what the attempt's validate() checked, and the partitions a retry drops afresh, for the
+  // commit's footprint
+  private final List<CommitFootprint.Check> checks = Lists.newArrayList();
+  private final List<Pair<Integer, StructLike>> droppedPartitions = Lists.newArrayList();
 
   // cache new data manifests after writing
   private final List<ManifestFile> cachedNewDataManifests = Lists.newLinkedList();
@@ -196,6 +200,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   /** Add a partition tuple to drop from the table during the delete phase. */
   protected void dropPartition(int specId, StructLike partition) {
+    droppedPartitions.add(Pair.of(specId, partition));
     // dropping the data in a partition also drops all deletes in the partition
     filterManager.dropPartition(specId, partition);
     deleteFilterManager.dropPartition(specId, partition);
@@ -318,6 +323,63 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     return ops().current().formatVersion();
   }
 
+  @Override
+  protected void beforeValidation() {
+    checks.clear();
+  }
+
+  /** Records a check the attempt's validation makes, for the commit's footprint. */
+  private void check(CommitFootprint.Check.Kind kind, CommitFootprint.Scope scope) {
+    checks.add(CommitFootprint.Check.of(kind, scope));
+  }
+
+  private static CommitFootprint.Scope scope(Expression filter) {
+    return CommitFootprint.Scope.filter(filter);
+  }
+
+  private static CommitFootprint.Scope scope(PartitionSet partitions) {
+    return partitions != null
+        ? CommitFootprint.Scope.partitions(partitions)
+        : CommitFootprint.Scope.everything();
+  }
+
+  private static CommitFootprint.Scope scope(Iterable<DataFile> files) {
+    List<Pair<Integer, StructLike>> partitions = Lists.newArrayList();
+    for (DataFile file : files) {
+      partitions.add(Pair.of(file.specId(), file.partition()));
+    }
+    return CommitFootprint.Scope.partitions(partitions);
+  }
+
+  /**
+   * Validated: its retry checks what this attempt's validation did (each validation helper records
+   * its check), and deletes afresh the rows of the filter it deletes by and the partitions it
+   * drops, which commits since must not have added files to. Opaque if it validates its ancestry,
+   * appends a manifest that keeps its path, or had no parent: a validation may skip a table with no
+   * history, which its retry, on one that has some, would run.
+   */
+  @Override
+  protected CommitFootprint footprint(TableMetadata base, Snapshot parent) {
+    if (validatesAncestry() || appendsManifests() || parent == null) {
+      return CommitFootprint.OPAQUE;
+    }
+    List<CommitFootprint.Check> all = Lists.newArrayList(checks);
+    if (deleteExpression != Expressions.alwaysFalse()) {
+      all.add(
+          CommitFootprint.Check.of(
+              CommitFootprint.Check.Kind.NO_DATA_ADDED, scope(deleteExpression)));
+      all.add(
+          CommitFootprint.Check.of(
+              CommitFootprint.Check.Kind.NO_DELETES_ADDED, scope(deleteExpression)));
+    }
+    if (!droppedPartitions.isEmpty()) {
+      CommitFootprint.Scope dropped = CommitFootprint.Scope.partitions(droppedPartitions);
+      all.add(CommitFootprint.Check.of(CommitFootprint.Check.Kind.NO_DATA_ADDED, dropped));
+      all.add(CommitFootprint.Check.of(CommitFootprint.Check.Kind.NO_DELETES_ADDED, dropped));
+    }
+    return CommitFootprint.validated(all);
+  }
+
   /** Whether the commit appends a manifest that keeps its path (one that inherits its ids). */
   protected boolean appendsManifests() {
     return !appendManifests.isEmpty();
@@ -366,6 +428,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
    */
   protected void validateAddedDataFiles(
       TableMetadata base, Long startingSnapshotId, PartitionSet partitionSet, Snapshot parent) {
+    check(CommitFootprint.Check.Kind.NO_DATA_ADDED, scope(partitionSet));
     CloseableIterable<ManifestEntry<DataFile>> conflictEntries =
         addedDataFiles(base, startingSnapshotId, null, partitionSet, parent);
 
@@ -397,6 +460,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
       Long startingSnapshotId,
       Expression conflictDetectionFilter,
       Snapshot parent) {
+    check(CommitFootprint.Check.Kind.NO_DATA_ADDED, scope(conflictDetectionFilter));
     CloseableIterable<ManifestEntry<DataFile>> conflictEntries =
         addedDataFiles(base, startingSnapshotId, conflictDetectionFilter, null, parent);
 
@@ -527,6 +591,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
       Iterable<DataFile> dataFiles,
       boolean ignoreEqualityDeletes,
       Snapshot parent) {
+    check(CommitFootprint.Check.Kind.NO_DELETES_ADDED, scope(dataFiles));
     // if there is no current table state, no files have been added
     if (parent == null || base.formatVersion() < 2) {
       return;
@@ -577,6 +642,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
    */
   protected void validateNoNewDeleteFiles(
       TableMetadata base, Long startingSnapshotId, Expression dataFilter, Snapshot parent) {
+    check(CommitFootprint.Check.Kind.NO_DELETES_ADDED, scope(dataFilter));
     Set<String> locations =
         referencedDeleteFileLocations(
             addedDeleteFilesIndexedPerSnapshot(base, startingSnapshotId, dataFilter, null, parent));
@@ -598,6 +664,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
    */
   protected void validateNoNewDeleteFiles(
       TableMetadata base, Long startingSnapshotId, PartitionSet partitionSet, Snapshot parent) {
+    check(CommitFootprint.Check.Kind.NO_DELETES_ADDED, scope(partitionSet));
     Set<String> locations =
         referencedDeleteFileLocations(
             addedDeleteFilesIndexedPerSnapshot(
@@ -683,6 +750,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
    */
   protected void validateDeletedDataFiles(
       TableMetadata base, Long startingSnapshotId, Expression dataFilter, Snapshot parent) {
+    check(CommitFootprint.Check.Kind.NO_DATA_REMOVED, scope(dataFilter));
     CloseableIterable<ManifestEntry<DataFile>> conflictEntries =
         deletedDataFiles(base, startingSnapshotId, dataFilter, null, parent);
 
@@ -712,6 +780,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
    */
   protected void validateDeletedDataFiles(
       TableMetadata base, Long startingSnapshotId, PartitionSet partitionSet, Snapshot parent) {
+    check(CommitFootprint.Check.Kind.NO_DATA_REMOVED, scope(partitionSet));
     CloseableIterable<ManifestEntry<DataFile>> conflictEntries =
         deletedDataFiles(base, startingSnapshotId, null, partitionSet, parent);
 
@@ -825,6 +894,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
       boolean skipDeletes,
       Expression conflictDetectionFilter,
       Snapshot parent) {
+    check(CommitFootprint.Check.Kind.NO_DATA_REMOVED, scope(conflictDetectionFilter));
     // if there is no current table state, no files have been removed
     if (parent == null) {
       return;
@@ -871,6 +941,21 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   // validates there are no concurrently added DVs for referenced data files
   protected void validateAddedDVs(TableMetadata base, Long startingSnapshotId, Snapshot parent) {
+    // A DV is in the partition of the data file it references, so a concurrent DV for a file this
+    // commit adds one for is in a partition of this commit's DVs. The conflict detection filter
+    // must not narrow this check: it bounds the rows the operation read, which need not cover the
+    // files it adds DVs for, and two DVs for one data file leave the table unreadable.
+    PartitionSet partitions = PartitionSet.create(base.specsById());
+    for (List<DeleteFile> dvs : dvsByReferencedFile.values()) {
+      for (DeleteFile dv : dvs) {
+        partitions.add(dv.specId(), dv.partition());
+      }
+    }
+
+    if (!dvsByReferencedFile.isEmpty()) {
+      check(CommitFootprint.Check.Kind.NO_DELETES_ADDED, scope(partitions));
+    }
+
     // skip if there is no current table state or this operation doesn't add new DVs
     if (parent == null || dvsByReferencedFile.isEmpty()) {
       return;
@@ -885,17 +970,6 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
             parent);
     List<ManifestFile> newDeleteManifests = history.first();
     Set<Long> newSnapshotIds = history.second();
-
-    // A DV is in the partition of the data file it references, so a concurrent DV for a file this
-    // commit adds one for is in a partition of this commit's DVs. The conflict detection filter
-    // must not narrow this check: it bounds the rows the operation read, which need not cover the
-    // files it adds DVs for, and two DVs for one data file leave the table unreadable.
-    PartitionSet partitions = PartitionSet.create(base.specsById());
-    for (List<DeleteFile> dvs : dvsByReferencedFile.values()) {
-      for (DeleteFile dv : dvs) {
-        partitions.add(dv.specId(), dv.partition());
-      }
-    }
 
     Iterable<ManifestFile> matchingManifests =
         Iterables.filter(
