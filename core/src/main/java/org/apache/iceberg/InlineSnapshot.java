@@ -71,6 +71,7 @@ public class InlineSnapshot implements Snapshot {
   private final Long addedRows;
   private final String keyId;
   private final List<ManifestFile> manifests;
+  private final CommitFootprint footprint;
 
   // lazy-computed partitions of the inline list
   private transient List<ManifestFile> dataManifestsView = null;
@@ -94,6 +95,38 @@ public class InlineSnapshot implements Snapshot {
       Long addedRows,
       String keyId,
       List<ManifestFile> manifests) {
+    this(
+        sequenceNumber,
+        snapshotId,
+        parentId,
+        timestampMillis,
+        operation,
+        summary,
+        schemaId,
+        firstRowId,
+        addedRows,
+        keyId,
+        manifests,
+        CommitFootprint.OPAQUE);
+  }
+
+  /**
+   * An inline snapshot that its producer committed with {@code footprint}: what the commit depends
+   * on beyond what it writes ({@link CommitFootprint}).
+   */
+  public InlineSnapshot(
+      long sequenceNumber,
+      long snapshotId,
+      Long parentId,
+      long timestampMillis,
+      String operation,
+      Map<String, String> summary,
+      Integer schemaId,
+      Long firstRowId,
+      Long addedRows,
+      String keyId,
+      List<ManifestFile> manifests,
+      CommitFootprint footprint) {
     this.sequenceNumber = sequenceNumber;
     this.snapshotId = snapshotId;
     this.parentId = parentId;
@@ -105,6 +138,15 @@ public class InlineSnapshot implements Snapshot {
     this.addedRows = firstRowId != null ? addedRows : null;
     this.keyId = keyId;
     this.manifests = ImmutableList.copyOf(manifests);
+    this.footprint = footprint;
+  }
+
+  /**
+   * What the producer's commit of this snapshot depends on, beyond what it writes; {@link
+   * CommitFootprint#OPAQUE} for a snapshot loaded from a catalog, whose producer is not known.
+   */
+  public CommitFootprint footprint() {
+    return footprint;
   }
 
   @Override
