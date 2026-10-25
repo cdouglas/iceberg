@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -2732,6 +2733,71 @@ public class TestRowDelta extends TestBase {
 
     return TestTables.create(
         encryptedTableDir, tableName, SCHEMA, SPEC, SortOrder.unsorted(), formatVersion, ops);
+  }
+
+  @TestTemplate
+  public void testRemovingAFileAndAnotherPartitionsDeleteRemovesTheFilesDV() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
+    commit(table, table.newFastAppend().appendFile(FILE_A).appendFile(FILE_B), branch);
+    commit(table, table.newRowDelta().addDeletes(fileADeletes()), branch);
+    commit(table, table.newRowDelta().addDeletes(fileBDeletes()), branch);
+
+    // FILE_A's deletion vector is in a manifest of another partition than the delete removed
+    commit(table, table.newRowDelta().removeRows(FILE_A).removeDeletes(fileBDeletes()), branch);
+
+    assertThat(liveDeleteFiles(latestSnapshot(table, branch))).isEmpty();
+  }
+
+  @TestTemplate
+  public void testDeleteRetriedAfterConcurrentMergeRemovesTheFilesDV() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
+    // TestTables assigns sequential snapshot ids, which collide between the two writers
+    table
+        .updateProperties()
+        .set(TableProperties.MANIFEST_MIN_MERGE_COUNT, "2")
+        .set("random-snapshot-ids", "true")
+        .commit();
+    commit(table, table.newFastAppend().appendFile(FILE_A), branch);
+    commit(table, table.newFastAppend().appendFile(FILE_B), branch);
+    commit(table, table.newRowDelta().addDeletes(fileADeletes()), branch);
+
+    // another writer adds an equality delete just before the delete's first commit, merging the
+    // deletion vector's manifest into a new one, which the retry has not filtered before
+    boolean[] raced = {false};
+    TestTables.TestTableOperations racing =
+        new TestTables.TestTableOperations("test", tableDir) {
+          @Override
+          public void commit(TableMetadata base, TableMetadata updated) {
+            if (!raced[0]) {
+              raced[0] = true;
+              TestRowDelta.this.commit(
+                  table, table.newRowDelta().addDeletes(FILE_A2_DELETES), branch);
+            }
+            super.commit(base, updated);
+          }
+        };
+    Table racingTable = new BaseTable(racing, "test");
+    commit(racingTable, racingTable.newDelete().deleteFile(FILE_A.location()), branch);
+
+    assertThat(raced[0]).isTrue();
+    table.refresh();
+    assertThat(liveDeleteFiles(latestSnapshot(table, branch)))
+        .extracting(DeleteFile::location)
+        .containsExactly(FILE_A2_DELETES.location());
+  }
+
+  private List<DeleteFile> liveDeleteFiles(Snapshot snapshot) {
+    List<DeleteFile> live = Lists.newArrayList();
+    for (ManifestFile manifest : snapshot.deleteManifests(table.io())) {
+      try (ManifestReader<DeleteFile> reader =
+          ManifestFiles.readDeleteManifest(manifest, table.io(), table.specs())) {
+        reader.forEach(live::add);
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
+
+    return live;
   }
 
   @TestTemplate
