@@ -106,22 +106,74 @@ public class TestCommitFootprint {
 
   @ParameterizedTest
   @ValueSource(ints = {2, 3})
-  public void otherProducersAreOpaque(int formatVersion) {
-    assertThat(
-            footprint(
-                formatVersion,
-                t -> t.newDelete().deleteFromRowFilter(Expressions.alwaysTrue()).commit()))
-        .isEqualTo(CommitFootprint.OPAQUE);
-    assertThat(
-            footprint(
-                formatVersion,
-                t ->
-                    t.newOverwrite()
-                        .overwriteByRowFilter(Expressions.alwaysTrue())
-                        .addFile(newFile())
-                        .commit()))
-        .isEqualTo(CommitFootprint.OPAQUE);
+  public void aRowFilterDeleteChecksWhatItsRetryDeletesAfresh(int formatVersion) {
+    CommitFootprint footprint =
+        footprint(
+            formatVersion,
+            t -> t.newDelete().deleteFromRowFilter(Expressions.alwaysTrue()).commit());
+    assertThat(footprint.kind()).isEqualTo(CommitFootprint.Kind.VALIDATED);
+    assertThat(footprint.checks())
+        .extracting(CommitFootprint.Check::kind)
+        .containsExactlyInAnyOrder(
+            CommitFootprint.Check.Kind.NO_DATA_ADDED, CommitFootprint.Check.Kind.NO_DELETES_ADDED);
+    assertThat(footprint.checks())
+        .allSatisfy(
+            check -> assertThat(check.scope().filter()).isEqualTo(Expressions.alwaysTrue()));
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {2, 3})
+  public void anOverwriteChecksWhatItValidates(int formatVersion) {
+    CommitFootprint footprint =
+        footprint(
+            formatVersion,
+            t ->
+                t.newOverwrite()
+                    .overwriteByRowFilter(Expressions.alwaysTrue())
+                    .addFile(newFile())
+                    .validateFromSnapshot(t.currentSnapshot().snapshotId())
+                    .conflictDetectionFilter(Expressions.equal("id", 1))
+                    .validateNoConflictingData()
+                    .validateNoConflictingDeletes()
+                    .commit());
+    assertThat(footprint.kind()).isEqualTo(CommitFootprint.Kind.VALIDATED);
+    // its validations, then the filter its retry deletes by afresh
+    assertThat(footprint.checks())
+        .extracting(CommitFootprint.Check::kind)
+        .containsExactly(
+            CommitFootprint.Check.Kind.NO_DATA_ADDED,
+            CommitFootprint.Check.Kind.NO_DELETES_ADDED,
+            CommitFootprint.Check.Kind.NO_DATA_REMOVED,
+            CommitFootprint.Check.Kind.NO_DATA_ADDED,
+            CommitFootprint.Check.Kind.NO_DELETES_ADDED);
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {2, 3})
+  public void aRowDeltaThatValidatesNothingChecksNothing(int formatVersion) {
     assertThat(footprint(formatVersion, t -> t.newRowDelta().addRows(newFile()).commit()))
+        .isEqualTo(CommitFootprint.validated(java.util.List.of()));
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {2, 3})
+  public void aProducerThatValidatesItsAncestryIsOpaque(int formatVersion) {
+    SnapshotAncestryValidator validator =
+        new SnapshotAncestryValidator() {
+          @Override
+          public boolean validate(Iterable<Snapshot> ancestors) {
+            return true;
+          }
+
+          @Override
+          public String errorMessage() {
+            return "never";
+          }
+        };
+    assertThat(
+            footprint(
+                formatVersion,
+                t -> t.newRowDelta().addRows(newFile()).validateWith(validator).commit()))
         .isEqualTo(CommitFootprint.OPAQUE);
   }
 }
