@@ -38,8 +38,6 @@ import org.apache.iceberg.events.CreateSnapshotEvent;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
-import org.apache.iceberg.expressions.ManifestEvaluator;
-import org.apache.iceberg.expressions.Projections;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.FileIO;
@@ -58,6 +56,7 @@ import org.apache.iceberg.util.CharSequenceSet;
 import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.util.DataFileSet;
 import org.apache.iceberg.util.DeleteFileSet;
+import org.apache.iceberg.util.ManifestFileUtil;
 import org.apache.iceberg.util.Pair;
 import org.apache.iceberg.util.PartitionSet;
 import org.apache.iceberg.util.SnapshotUtil;
@@ -866,11 +865,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   }
 
   // validates there are no concurrently added DVs for referenced data files
-  protected void validateAddedDVs(
-      TableMetadata base,
-      Long startingSnapshotId,
-      Expression conflictDetectionFilter,
-      Snapshot parent) {
+  protected void validateAddedDVs(TableMetadata base, Long startingSnapshotId, Snapshot parent) {
     // skip if there is no current table state or this operation doesn't add new DVs
     if (parent == null || dvsByReferencedFile.isEmpty()) {
       return;
@@ -886,24 +881,34 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     List<ManifestFile> newDeleteManifests = history.first();
     Set<Long> newSnapshotIds = history.second();
 
+    // A DV is in the partition of the data file it references, so a concurrent DV for a file this
+    // commit adds one for is in a partition of this commit's DVs. The conflict detection filter
+    // must not narrow this check: it bounds the rows the operation read, which need not cover the
+    // files it adds DVs for, and two DVs for one data file leave the table unreadable.
+    PartitionSet partitions = PartitionSet.create(base.specsById());
+    for (List<DeleteFile> dvs : dvsByReferencedFile.values()) {
+      for (DeleteFile dv : dvs) {
+        partitions.add(dv.specId(), dv.partition());
+      }
+    }
+
     Iterable<ManifestFile> matchingManifests =
         Iterables.filter(
-            filterManifestsByPartition(base, conflictDetectionFilter, newDeleteManifests),
-            ManifestFile::hasAddedFiles);
+            newDeleteManifests,
+            manifest ->
+                manifest.hasAddedFiles()
+                    && ManifestFileUtil.canContainAny(manifest, partitions, base.specsById()));
 
     Tasks.foreach(matchingManifests)
         .stopOnFailure()
         .throwFailureWhenFinished()
         .executeWith(workerPool())
-        .run(manifest -> validateAddedDVs(manifest, conflictDetectionFilter, newSnapshotIds));
+        .run(manifest -> validateAddedDVs(manifest, newSnapshotIds));
   }
 
-  private void validateAddedDVs(
-      ManifestFile manifest, Expression conflictDetectionFilter, Set<Long> newSnapshotIds) {
+  private void validateAddedDVs(ManifestFile manifest, Set<Long> newSnapshotIds) {
     try (CloseableIterable<ManifestEntry<DeleteFile>> entries =
         ManifestFiles.readDeleteManifest(manifest, ops().io(), ops().current().specsById())
-            .filterRows(conflictDetectionFilter)
-            .caseSensitive(caseSensitive)
             .liveEntries()) {
 
       for (ManifestEntry<DeleteFile> entry : entries) {
@@ -919,38 +924,6 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
-  }
-
-  private Iterable<ManifestFile> filterManifestsByPartition(
-      TableMetadata base, Expression conflictDetectionFilter, List<ManifestFile> manifests) {
-    if (conflictDetectionFilter == null || conflictDetectionFilter == Expressions.alwaysTrue()) {
-      return manifests;
-    }
-
-    // if any concurrent manifest was written with a different partition spec, skip pruning
-    // to avoid incorrectly excluding manifests when a spec change happened during validation
-    int defaultSpecId = base.defaultSpecId();
-    if (manifests.stream().anyMatch(m -> m.partitionSpecId() != defaultSpecId)) {
-      return manifests;
-    }
-
-    Map<Integer, PartitionSpec> specsById = base.specsById();
-    Map<Integer, ManifestEvaluator> evaluators = Maps.newHashMap();
-    return Iterables.filter(
-        manifests,
-        manifest -> {
-          ManifestEvaluator evaluator =
-              evaluators.computeIfAbsent(
-                  manifest.partitionSpecId(),
-                  specId -> {
-                    PartitionSpec spec = specsById.get(specId);
-                    Expression partitionFilter =
-                        Projections.inclusive(spec, caseSensitive).project(conflictDetectionFilter);
-                    return ManifestEvaluator.forPartitionFilter(
-                        partitionFilter, spec, caseSensitive);
-                  });
-          return evaluator.eval(manifest);
-        });
   }
 
   // returns newly added manifests and snapshot IDs between the starting and parent snapshots

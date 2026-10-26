@@ -2373,6 +2373,36 @@ public class TestRowDelta extends TestBase {
   }
 
   @TestTemplate
+  public void testConcurrentDVOutsideTheConflictDetectionFilter() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
+
+    // bucket16("u") -> 0, bucket16("a") -> 2
+    DataFile dataFileInBucket0 = newDataFile("data_bucket=0");
+    DataFile dataFileInBucket2 = newDataFile("data_bucket=2");
+    commit(
+        table, table.newRowDelta().addRows(dataFileInBucket0).addRows(dataFileInBucket2), branch);
+
+    Snapshot base = latestSnapshot(table, branch);
+
+    // DVs for files in buckets 0 and 2, with a conflict detection filter that covers bucket 0 only
+    RowDelta rowDelta =
+        table
+            .newRowDelta()
+            .addDeletes(newDeletes(dataFileInBucket0))
+            .addDeletes(newDeletes(dataFileInBucket2))
+            .validateFromSnapshot(base.snapshotId())
+            .conflictDetectionFilter(Expressions.equal("data", "u")); // bucket16("u") -> 0
+
+    // concurrently commit another DV for the data file in bucket 2
+    commit(table, table.newRowDelta().addDeletes(newDeletes(dataFileInBucket2)), branch);
+
+    // must conflict: a second DV for the data file would leave the table unreadable
+    assertThatThrownBy(() -> commit(table, rowDelta, branch))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("Found concurrently added DV for %s", dataFileInBucket2.location());
+  }
+
+  @TestTemplate
   public void testDVValidationPartitionPruningManifestCount() {
     assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
 

@@ -171,7 +171,7 @@ public class BaseRowDelta extends MergingSnapshotProducer<RowDelta> implements R
 
       validateNoConflictingFileAndPositionDeletes();
 
-      validateAddedDVs(base, startingSnapshotId, conflictDetectionFilter, parent);
+      validateAddedDVs(base, startingSnapshotId, parent);
     }
   }
 
