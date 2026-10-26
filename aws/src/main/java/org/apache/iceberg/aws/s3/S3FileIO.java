@@ -172,10 +172,14 @@ public class S3FileIO
       // S3InputFile.etag() resolves null iff the object does not currently exist; pinning a
       // non-existent snapshot must translate to ifNoneMatch=* on commit so a stale "doesn't exist"
       // writer cannot silently overwrite the winner of a create race.
-      String etag = ((S3InputFile) replace).etag();
+      S3InputFile snapshot = (S3InputFile) replace;
+      String etag = snapshot.etag();
       boolean assertAbsent = etag == null;
+      // An append writes at the snapshot's length, conditioned on its etag. etag() cached the
+      // object's metadata if it had to look the etag up, so this sends nothing more
+      Long length = etag == null ? null : snapshot.getLength();
       return S3OutputFile.fromLocation(
-          path, clientForStoragePath(path), metrics, etag, assertAbsent);
+          path, clientForStoragePath(path), metrics, etag, assertAbsent, length);
     }
     return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics);
   }
