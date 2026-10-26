@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,6 +37,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import org.apache.iceberg.io.FileIOMetricsContext;
+import org.apache.iceberg.io.SeekableInputStream;
 import org.apache.iceberg.metrics.CachingMetricsContext;
 import org.apache.iceberg.metrics.Counter;
 import org.apache.iceberg.metrics.MetricsContext;
@@ -59,7 +61,7 @@ class TestADLSInputStream {
   void before() {
     InternalDataLakeFileOpenInputStreamResult openInputStreamResult =
         new InternalDataLakeFileOpenInputStreamResult(inputStream, mock());
-    when(fileClient.openInputStream(any())).thenReturn(openInputStreamResult);
+    lenient().when(fileClient.openInputStream(any())).thenReturn(openInputStreamResult);
     adlsInputStream =
         new ADLSInputStream(
             "abfs://container@account.dfs.core.windows.net/path/to/file",
@@ -117,6 +119,127 @@ class TestADLSInputStream {
       assertThat(in.read(actual, 0, 10)).isEqualTo(EOF);
       assertThat(in.getPos()).isEqualTo(8);
     }
+  }
+
+  @Test
+  void testOpeningSendsNoRequest() throws IOException {
+    try (ADLSInputStream in =
+        new ADLSInputStream(
+            "abfs://container@account.dfs.core.windows.net/path/to/file",
+            fileClient,
+            8L,
+            mock(),
+            MetricsContext.nullMetrics())) {
+      verify(fileClient, never()).openInputStream(any());
+    }
+  }
+
+  @Test
+  void testFirstReadOpensAtItsPosition() throws IOException {
+    ArgumentCaptor<DataLakeFileInputStreamOptions> options =
+        ArgumentCaptor.forClass(DataLakeFileInputStreamOptions.class);
+    InternalDataLakeFileOpenInputStreamResult opened =
+        result(new ByteArrayInputStream(new byte[] {7, 8}), 10);
+    when(fileClient.openInputStream(options.capture())).thenReturn(opened);
+    try (ADLSInputStream in =
+        new ADLSInputStream(
+            "abfs://container@account.dfs.core.windows.net/path/to/file",
+            fileClient,
+            10L,
+            mock(),
+            MetricsContext.nullMetrics())) {
+      in.seek(8);
+      assertThat(in.read()).isEqualTo(7);
+    }
+
+    assertThat(options.getAllValues()).hasSize(1);
+    assertThat(options.getValue().getRange().getOffset()).isEqualTo(8);
+  }
+
+  @Test
+  void testLaterRequestsAskForTheVersionTheFirstFound() throws IOException {
+    ArgumentCaptor<DataLakeFileInputStreamOptions> options =
+        ArgumentCaptor.forClass(DataLakeFileInputStreamOptions.class);
+    InternalDataLakeFileOpenInputStreamResult first =
+        result(new ByteArrayInputStream(new byte[] {1, 2}), 10, "e1");
+    InternalDataLakeFileOpenInputStreamResult second =
+        result(new ByteArrayInputStream(new byte[] {3}), 10, "e1");
+    when(fileClient.openInputStream(options.capture())).thenReturn(first).thenReturn(second);
+    try (ADLSInputStream in =
+        new ADLSInputStream(
+            "abfs://container@account.dfs.core.windows.net/path/to/file",
+            fileClient,
+            null,
+            mock(),
+            MetricsContext.nullMetrics())) {
+      assertThat(in.read()).isEqualTo(1);
+      in.readFully(9, new byte[1]);
+    }
+
+    // the first request asks for no version; the second, for the one the first found
+    assertThat(options.getAllValues()).hasSize(2);
+    assertThat(options.getAllValues().get(0).getRequestConditions()).isNull();
+    assertThat(options.getAllValues().get(1).getRequestConditions().getIfMatch()).isEqualTo("e1");
+  }
+
+  @Test
+  void testAFilesFirstReadChoosesItsVersionWithoutALookup() throws IOException {
+    InternalDataLakeFileOpenInputStreamResult opened =
+        result(new ByteArrayInputStream(new byte[] {1, 2}), 2, "e1");
+    when(fileClient.openInputStream(any())).thenReturn(opened);
+    ADLSInputFile file =
+        new ADLSInputFile(
+            "abfs://container@account.dfs.core.windows.net/path/to/file",
+            fileClient,
+            mock(),
+            MetricsContext.nullMetrics());
+
+    try (SeekableInputStream in = file.newStream()) {
+      verify(fileClient, never()).openInputStream(any());
+      assertThat(in.read()).isEqualTo(1);
+    }
+
+    // a replace of the file expects the version it read, and its length is that version's
+    assertThat(file.conditions().getIfMatch()).isEqualTo("e1");
+    assertThat(file.getLength()).isEqualTo(2);
+    verify(fileClient, never()).getProperties();
+  }
+
+  @Test
+  void testAFilesLengthChoosesTheVersionItsReadsAskFor() throws IOException {
+    PathProperties properties = mock(PathProperties.class);
+    when(properties.getETag()).thenReturn("e0");
+    when(properties.getFileSize()).thenReturn(2L);
+    when(fileClient.getProperties()).thenReturn(properties);
+    ArgumentCaptor<DataLakeFileInputStreamOptions> options =
+        ArgumentCaptor.forClass(DataLakeFileInputStreamOptions.class);
+    InternalDataLakeFileOpenInputStreamResult opened =
+        result(new ByteArrayInputStream(new byte[] {1, 2}), 2, "e0");
+    when(fileClient.openInputStream(options.capture())).thenReturn(opened);
+    ADLSInputFile file =
+        new ADLSInputFile(
+            "abfs://container@account.dfs.core.windows.net/path/to/file",
+            fileClient,
+            mock(),
+            MetricsContext.nullMetrics());
+
+    // as AtomicFileLog reads: a stream, the length, then the bytes
+    try (SeekableInputStream in = file.newStream()) {
+      assertThat(file.getLength()).isEqualTo(2);
+      assertThat(in.read()).isEqualTo(1);
+    }
+
+    // the read asks for the version the length came from, so a file replaced in between fails it
+    assertThat(options.getValue().getRequestConditions().getIfMatch()).isEqualTo("e0");
+    assertThat(file.conditions().getIfMatch()).isEqualTo("e0");
+  }
+
+  private static InternalDataLakeFileOpenInputStreamResult result(
+      InputStream in, long fileSize, String eTag) {
+    PathProperties properties = mock(PathProperties.class);
+    lenient().when(properties.getFileSize()).thenReturn(fileSize);
+    lenient().when(properties.getETag()).thenReturn(eTag);
+    return new InternalDataLakeFileOpenInputStreamResult(in, properties);
   }
 
   private static InternalDataLakeFileOpenInputStreamResult result(InputStream in, long fileSize) {
@@ -234,10 +357,8 @@ class TestADLSInputStream {
   void testReadTailTracksMetrics() throws IOException {
     byte[] data = new byte[] {1, 2, 3, 4, 5, 6, 7, 8};
     InputStream byteStream = new ByteArrayInputStream(data);
-    // the constructor's openStream() reads the file size from the stream result, so report the
-    // real length; otherwise readTail computes a negative start offset
     PathProperties properties = mock(PathProperties.class);
-    when(properties.getFileSize()).thenReturn((long) data.length);
+    lenient().when(properties.getFileSize()).thenReturn((long) data.length);
     InternalDataLakeFileOpenInputStreamResult openInputStreamResult =
         new InternalDataLakeFileOpenInputStreamResult(byteStream, properties);
     when(fileClient.openInputStream(any())).thenReturn(openInputStreamResult);
@@ -266,10 +387,11 @@ class TestADLSInputStream {
   void testReadTailEmptyObjectDoesNotCountMetrics() throws IOException {
     InputStream byteStream = new ByteArrayInputStream(new byte[0]);
     PathProperties properties = mock(PathProperties.class);
-    when(properties.getFileSize()).thenReturn(0L);
+    lenient().when(properties.getFileSize()).thenReturn(0L);
     InternalDataLakeFileOpenInputStreamResult openInputStreamResult =
         new InternalDataLakeFileOpenInputStreamResult(byteStream, properties);
-    when(fileClient.openInputStream(any())).thenReturn(openInputStreamResult);
+    // a tail of an empty object needs no request
+    lenient().when(fileClient.openInputStream(any())).thenReturn(openInputStreamResult);
 
     CachingMetricsContext metrics = new CachingMetricsContext();
     Counter readBytes = metrics.counter(FileIOMetricsContext.READ_BYTES, MetricsContext.Unit.BYTES);
