@@ -51,6 +51,9 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   // max skip size, if skip is larger, then the stream will be reopened at new position
   private static final int SKIP_SIZE = 1024 * 1024;
 
+  // the SDK's input stream downloads in chunks of this size unless told otherwise, one request each
+  private static final int SDK_DEFAULT_BLOCK_SIZE = 4 * 1024 * 1024;
+
   private final StackTraceElement[] createStack;
   private final String location;
   private final DataLakeFileClient fileClient;
@@ -108,9 +111,16 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
     return pathProps;
   }
 
-  private DataLakeFileInputStreamOptions getInputOptions(FileRange range) {
+  /** Options for {@code range}, downloading at least {@code minBlockSize} bytes per request. */
+  private DataLakeFileInputStreamOptions getInputOptions(FileRange range, int minBlockSize) {
     DataLakeFileInputStreamOptions options = new DataLakeFileInputStreamOptions();
-    azureProperties.adlsReadBlockSize().ifPresent(options::setBlockSize);
+    Integer blockSize = azureProperties.adlsReadBlockSize().orElse(null);
+    if (minBlockSize > (blockSize != null ? blockSize : SDK_DEFAULT_BLOCK_SIZE)) {
+      blockSize = minBlockSize;
+    }
+    if (blockSize != null) {
+      options.setBlockSize(blockSize);
+    }
     options.setRange(range);
     if (conditions != null) {
       options.setRequestConditions(conditions);
@@ -197,15 +207,17 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   @Override
   public void readFully(long position, byte[] buffer, int offset, int length) throws IOException {
     Preconditions.checkPositionIndexes(offset, offset + length, buffer.length);
+    if (length == 0) {
+      return;
+    }
 
-    FileRange range = new FileRange(position, position + length);
+    // a FileRange is an offset and a count; one request of exactly the range
+    FileRange range = new FileRange(position, (long) length);
 
-    try (InputStream inputStream = openRange(range).getInputStream()) {
+    try (InputStream inputStream = openRange(range, length).getInputStream()) {
       IOUtil.readFully(inputStream, buffer, offset, length);
-      if (length > 0) {
-        readBytes.increment(length);
-        readOperations.increment();
-      }
+      readBytes.increment(length);
+      readOperations.increment();
     }
   }
 
@@ -217,9 +229,14 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       this.fileSize = fileClient.getProperties().getFileSize();
     }
     long readStart = Math.max(0, fileSize - length);
+    int count = (int) (fileSize - readStart);
+    if (count == 0) {
+      return 0;
+    }
 
-    try (InputStream inputStream = openRange(new FileRange(readStart)).getInputStream()) {
-      int bytesRead = IOUtil.readRemaining(inputStream, buffer, offset, length);
+    FileRange range = new FileRange(readStart, (long) count);
+    try (InputStream inputStream = openRange(range, count).getInputStream()) {
+      int bytesRead = IOUtil.readRemaining(inputStream, buffer, offset, count);
       if (bytesRead > 0) {
         readBytes.increment(bytesRead);
         readOperations.increment();
@@ -229,8 +246,12 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   }
 
   private DataLakeFileOpenInputStreamResult openRange(FileRange range) {
+    return openRange(range, 0);
+  }
+
+  private DataLakeFileOpenInputStreamResult openRange(FileRange range, int minBlockSize) {
     try {
-      return fileClient.openInputStream(getInputOptions(range));
+      return fileClient.openInputStream(getInputOptions(range, minBlockSize));
     } catch (RuntimeException e) {
       throwNotFoundIfNotPresent(e, location);
       LOG.error(
