@@ -125,7 +125,17 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
     final String path = replace.location();
     if (replace instanceof ADLSInputFile) {
       DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
-      final long objLength = replace.exists() ? replace.getLength() : -1L;
+      // The snapshot's conditions say whether it exists: If-Match pins an object that did,
+      // If-None-Match: * asserts that none did. Its length is its own (a snapshot a write returned
+      // knows it) or the metadata conditions() looked up, so neither needs another request.
+      final long objLength;
+      if (conditions.getIfMatch() != null) {
+        objLength = replace.getLength();
+      } else if ("*".equals(conditions.getIfNoneMatch())) {
+        objLength = -1L;
+      } else {
+        objLength = replace.exists() ? replace.getLength() : -1L;
+      }
       return new ADLSOutputFile(
           path,
           fileClient(path),
