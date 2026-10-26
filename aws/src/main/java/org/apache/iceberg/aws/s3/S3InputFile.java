@@ -79,6 +79,25 @@ public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryp
   }
 
   /**
+   * The ETag of the version this snapshot has seen, without a request: the one a write returned or
+   * a lookup found, or null if it has seen none.
+   */
+  String seenEtag() {
+    if (etag == null && cachedMetadata() != null) {
+      this.etag = cachedMetadata().eTag();
+    }
+    return etag;
+  }
+
+  /** The length this snapshot was given or has seen, without a request; null if neither. */
+  Long knownLength() {
+    if (length == null && cachedMetadata() != null) {
+      this.length = cachedMetadata().contentLength();
+    }
+    return length;
+  }
+
+  /**
    * Note: this may be stale if file was deleted since metadata is cached for size/existence checks.
    *
    * @return content length

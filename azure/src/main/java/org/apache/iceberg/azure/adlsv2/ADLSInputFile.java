@@ -62,24 +62,34 @@ class ADLSInputFile extends BaseADLSFile implements InputFile {
 
   /**
    * The conditions that select the version of the file this reads, and that a replace of it
-   * expects: the version its first request found (a stream's first read, or the properties its
-   * length came from), else its current one.
+   * expects, without a request: the version its first request found (a stream's first read, or the
+   * properties a lookup fetched), or null if it has seen none.
    */
   DataLakeRequestConditions conditions() {
-    if (null == invariants) {
-      try {
-        // Base::pathProperties() caches its response, should be invariant
-        pin(pathProperties());
-      } catch (DataLakeStorageException e) {
-        if (e.getStatusCode() == 404) {
-          // *should* be possible to atomically get properties and !exists, but whatever
-          invariants = new DataLakeRequestConditions().setIfNoneMatch("*");
-        } else {
-          throw e;
-        }
+    pin(cachedProperties());
+    return version();
+  }
+
+  /** The length this snapshot was given or has seen, without a request; null if neither. */
+  synchronized Long knownLength() {
+    return fileSize;
+  }
+
+  /**
+   * Whether the file exists, from its properties: a version found is one this snapshot has seen, as
+   * a lookup of its length would.
+   */
+  @Override
+  public boolean exists() {
+    try {
+      pin(pathProperties());
+      return true;
+    } catch (DataLakeStorageException e) {
+      if (e.getStatusCode() == 404) {
+        return false;
       }
+      throw e;
     }
-    return invariants;
   }
 
   @Override
