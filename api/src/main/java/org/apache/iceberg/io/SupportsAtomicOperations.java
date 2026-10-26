@@ -20,9 +20,19 @@ package org.apache.iceberg.io;
 
 public interface SupportsAtomicOperations extends FileIO {
   /**
-   * Create a new atomic output file that will replace the given input file.
+   * Create a new atomic output file that will replace the given input file: the version of the
+   * object it saw.
    *
-   * @param replace an input file to replace
+   * <p>A snapshot has seen a version if a write returned it, or if a lookup through it ({@code
+   * getLength()}, {@code exists()}) or, on a store whose reads record it, a read found one. A CAS
+   * replaces only that version. A snapshot that has seen none, such as a fresh {@link
+   * #newInputFile(String)}, assumes the object does not exist, as {@link OutputFile#create()} does
+   * for a new file: a CAS from it creates the object only if none exists, and sends no lookup to
+   * learn that. To replace an object it has not read, a caller looks it up first. An APPEND extends
+   * an existing object, so an APPEND from a snapshot that has seen no version looks the object up
+   * when it writes.
+   *
+   * @param replace a snapshot of the object to replace
    * @return a new atomic output file
    */
   AtomicOutputFile newOutputFile(InputFile replace);
