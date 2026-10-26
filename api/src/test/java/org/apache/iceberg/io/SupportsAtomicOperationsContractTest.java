@@ -132,6 +132,65 @@ public abstract class SupportsAtomicOperationsContractTest {
     }
   }
 
+  /**
+   * A snapshot that has seen no version assumes the object does not exist: a CAS from it fails if
+   * the object exists, and leaves it as it was.
+   */
+  @Test
+  void casFromASnapshotThatSawNothingFailsIfTheObjectExists() throws IOException {
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("cas-unseen");
+    try {
+      byte[] first = bytes("first");
+      createAtomically(io, loc, first);
+      AtomicOutputFile out = io.newOutputFile(io.newInputFile(loc));
+      byte[] second = bytes("second");
+      CAS tok = out.prepare(supplier(second), AtomicOutputFile.Strategy.CAS);
+      assertThatThrownBy(() -> out.writeAtomic(tok, supplier(second)))
+          .isInstanceOf(SupportsAtomicOperations.CASException.class);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(first);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /** A CAS from a snapshot that looked the object up replaces the version the lookup saw. */
+  @Test
+  void casFromASnapshotThatLookedReplacesWhatItSaw() throws IOException {
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("cas-looked");
+    try {
+      createAtomically(io, loc, bytes("first"));
+      InputFile looked = io.newInputFile(loc);
+      assertThat(looked.getLength()).isEqualTo(5);
+      byte[] second = bytes("second");
+      AtomicOutputFile out = io.newOutputFile(looked);
+      InputFile replaced =
+          out.writeAtomic(
+              out.prepare(supplier(second), AtomicOutputFile.Strategy.CAS), supplier(second));
+      assertThat(read(replaced)).isEqualTo(second);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /** An APPEND from a snapshot that has seen no version extends the object's current one. */
+  @Test
+  void appendFromASnapshotThatSawNothingExtendsTheObject() throws IOException {
+    Assumptions.assumeTrue(supportsAppend(), "APPEND not supported by this FileIO");
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("append-unseen");
+    try {
+      byte[] head = bytes("head");
+      byte[] tail = bytes("tail");
+      createAtomically(io, loc, head);
+      InputFile after = appendAtomically(io, io.newInputFile(loc), tail);
+      assertThat(read(after)).isEqualTo(concat(head, tail));
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
   @Test
   void casReplaceSucceeds() throws IOException {
     SupportsAtomicOperations io = newFileIO();
@@ -231,7 +290,10 @@ public abstract class SupportsAtomicOperationsContractTest {
           .isInstanceOf(SupportsAtomicOperations.SegmentLimitException.class);
       assertThat(read(io.newInputFile(loc))).isEqualTo(before);
 
-      AtomicOutputFile out = io.newOutputFile(io.newInputFile(loc));
+      // a CAS replaces the version its snapshot saw
+      InputFile live = io.newInputFile(loc);
+      live.getLength();
+      AtomicOutputFile out = io.newOutputFile(live);
       byte[] fresh = bytes("fresh");
       InputFile replaced =
           out.writeAtomic(
@@ -388,8 +450,11 @@ public abstract class SupportsAtomicOperationsContractTest {
     List<CAS> tokens = new ArrayList<>(writers);
 
     for (int i = 0; i < writers; i++) {
-      InputFile snap =
-          preExistingSnapshot != null ? io.newInputFile(location) : io.newInputFile(location);
+      InputFile snap = io.newInputFile(location);
+      if (preExistingSnapshot != null) {
+        // every writer sees the version they race to replace or extend
+        snap.getLength();
+      }
       byte[] payload = new byte[1024];
       random.nextBytes(payload);
       payloads.add(payload);
@@ -467,6 +532,8 @@ public abstract class SupportsAtomicOperationsContractTest {
               // buffers in the client library.
               SupportsAtomicOperations threadIo = newFileIO();
               InputFile snap = threadIo.newInputFile(location);
+              // every writer sees the baseline they race to replace or extend
+              snap.getLength();
               AtomicOutputFile out = threadIo.newOutputFile(snap);
               CAS tok = out.prepare(supplier(payload), strategy);
               startGate.await(30, TimeUnit.SECONDS);

@@ -169,17 +169,15 @@ public class S3FileIO
   public AtomicOutputFile newOutputFile(InputFile replace) {
     final String path = replace.location();
     if (replace instanceof S3InputFile) {
-      // S3InputFile.etag() resolves null iff the object does not currently exist; pinning a
-      // non-existent snapshot must translate to ifNoneMatch=* on commit so a stale "doesn't exist"
-      // writer cannot silently overwrite the winner of a create race.
+      // The version the snapshot has seen, taken without a request. One that has seen none
+      // assumes the object is absent: a CAS from it writes with ifNoneMatch=*, so a stale "doesn't
+      // exist" writer cannot silently overwrite the winner of a create race. An append writes at
+      // the snapshot's length, conditioned on its etag; from a snapshot that has seen no version,
+      // it looks the object up when it writes.
       S3InputFile snapshot = (S3InputFile) replace;
-      String etag = snapshot.etag();
-      boolean assertAbsent = etag == null;
-      // An append writes at the snapshot's length, conditioned on its etag. etag() cached the
-      // object's metadata if it had to look the etag up, so this sends nothing more
-      Long length = etag == null ? null : snapshot.getLength();
+      String etag = snapshot.seenEtag();
       return S3OutputFile.fromLocation(
-          path, clientForStoragePath(path), metrics, etag, assertAbsent, length);
+          path, clientForStoragePath(path), metrics, etag, etag == null, snapshot.knownLength());
     }
     return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics);
   }

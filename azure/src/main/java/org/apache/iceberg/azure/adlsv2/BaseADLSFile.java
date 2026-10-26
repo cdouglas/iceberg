@@ -77,6 +77,11 @@ abstract class BaseADLSFile {
     }
   }
 
+  /** The file's properties if a lookup fetched them, else null; sends no request. */
+  protected PathProperties cachedProperties() {
+    return metadata;
+  }
+
   protected PathProperties pathProperties() {
     if (null == metadata) {
       metadata = fileClient().getProperties();

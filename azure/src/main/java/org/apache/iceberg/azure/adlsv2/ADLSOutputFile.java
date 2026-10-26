@@ -31,6 +31,7 @@ import com.azure.storage.blob.specialized.SpecializedBlobClientBuilder;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.DataLakeStorageException;
+import com.azure.storage.file.datalake.models.PathProperties;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -88,6 +89,9 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
 
   private Long length;
   private final DataLakeRequestConditions conditions;
+  // The snapshot had seen no version: a CAS asserts the file's absence, and an append extends the
+  // file's current version, looked up when it writes
+  private final boolean appendLooksUp;
   // Builds the Data Lake client for another location in the same file system: CAS stages its
   // temp next to the target. Clients built through ADLSFileIO carry the SAS the rename needs.
   private final Function<String, DataLakeFileClient> clients;
@@ -109,10 +113,23 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       DataLakeRequestConditions conditions,
       MetricsContext metrics,
       Function<String, DataLakeFileClient> clients) {
+    this(location, fileClient, azureProperties, length, conditions, metrics, clients, false);
+  }
+
+  ADLSOutputFile(
+      String location,
+      DataLakeFileClient fileClient,
+      AzureProperties azureProperties,
+      long length,
+      DataLakeRequestConditions conditions,
+      MetricsContext metrics,
+      Function<String, DataLakeFileClient> clients,
+      boolean appendLooksUp) {
     super(location, fileClient, azureProperties, metrics);
     this.length = length;
     this.conditions = conditions;
     this.clients = clients;
+    this.appendLooksUp = appendLooksUp;
   }
 
   /**
@@ -172,10 +189,20 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
     }
   }
 
-  /** One {@code AppendBlock} at the snapshot's length, conditioned on the snapshot's ETag. */
+  /**
+   * One {@code AppendBlock} at the snapshot's length, conditioned on the snapshot's ETag; for a
+   * snapshot that had seen no version, the file's current ETag (and length, unless it had one).
+   */
   private ADLSInputFile appendDestObj(ADLSChecksum checksum, Supplier<InputStream> source)
       throws IOException {
-    if (conditions == null || conditions.getIfMatch() == null || length < 0) {
+    String pinned = conditions == null ? null : conditions.getIfMatch();
+    long at = length;
+    if (appendLooksUp) {
+      PathProperties current = currentFile();
+      pinned = current.getETag();
+      at = at >= 0 ? at : current.getFileSize();
+    }
+    if (pinned == null || at < 0) {
       throw new SupportsAtomicOperations.AppendException(
           "Cannot append to " + location() + ": no snapshot of an existing file", null);
     }
@@ -189,14 +216,12 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
                   // The service rejects the block (400 Md5Mismatch) if the bytes sent are not the
                   // ones prepare() checksummed.
                   checksum.contentChecksumBytes(),
-                  new AppendBlobRequestConditions()
-                      .setAppendPosition(length)
-                      .setIfMatch(conditions.getIfMatch()),
+                  new AppendBlobRequestConditions().setAppendPosition(at).setIfMatch(pinned),
                   null,
                   Context.NONE)
               .getValue()
               .getETag();
-      this.length += appendLen;
+      this.length = at + appendLen;
       return snapshot(length, etag);
     } catch (BlobStorageException e) {
       if (412 == e.getStatusCode()) {
@@ -321,6 +346,19 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
               checksum.contentLength()));
     }
     return etag;
+  }
+
+  /** The file an append to a snapshot that had seen no version extends: its current version. */
+  private PathProperties currentFile() {
+    try {
+      return fileClient().getProperties();
+    } catch (DataLakeStorageException e) {
+      if (404 == e.getStatusCode()) {
+        throw new SupportsAtomicOperations.AppendException(
+            "Cannot append to " + location() + ": no file", e);
+      }
+      throw e;
+    }
   }
 
   private ADLSInputFile snapshot(long len, String etag) {

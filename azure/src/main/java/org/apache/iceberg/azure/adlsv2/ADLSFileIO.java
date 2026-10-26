@@ -124,18 +124,25 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
   public AtomicOutputFile newOutputFile(InputFile replace) {
     final String path = replace.location();
     if (replace instanceof ADLSInputFile) {
-      DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
-      // The snapshot's conditions say whether it exists: If-Match pins an object that did,
-      // If-None-Match: * asserts that none did. Its length is its own (a snapshot a write returned
-      // knows it) or the metadata conditions() looked up, so neither needs another request.
-      final long objLength;
-      if (conditions.getIfMatch() != null) {
-        objLength = replace.getLength();
-      } else if ("*".equals(conditions.getIfNoneMatch())) {
-        objLength = -1L;
-      } else {
-        objLength = replace.exists() ? replace.getLength() : -1L;
+      ADLSInputFile snapshot = (ADLSInputFile) replace;
+      // The version the snapshot has seen, taken without a request. If-Match pins one that
+      // existed, whose length is the snapshot's own (a write's, or what a lookup or read saw). One
+      // that has seen none assumes the file is absent: a CAS from it renames onto the file with
+      // If-None-Match: *, and an append looks the file up when it writes.
+      DataLakeRequestConditions conditions = snapshot.conditions();
+      if (conditions == null) {
+        Long known = snapshot.knownLength();
+        return new ADLSOutputFile(
+            path,
+            fileClient(path),
+            azureProperties,
+            known != null ? known : -1L,
+            new DataLakeRequestConditions().setIfNoneMatch("*"),
+            metrics,
+            this::fileClient,
+            true);
       }
+      final long objLength = conditions.getIfMatch() != null ? replace.getLength() : -1L;
       return new ADLSOutputFile(
           path,
           fileClient(path),
