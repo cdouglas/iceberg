@@ -30,6 +30,8 @@ import com.azure.storage.file.datalake.options.DataLakeFileInputStreamOptions;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.FileIOMetricsContext;
@@ -59,8 +61,12 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   private final DataLakeFileClient fileClient;
   private Long fileSize;
   private final AzureProperties azureProperties;
-  private final DataLakeRequestConditions conditions;
-  private PathProperties pathProps;
+  // The version of the file this stream reads: its input file's, once that has one, else the one
+  // its first request finds, which each later request asks for by ETag, so that every read sees the
+  // version the first one did, though the file may be replaced in between
+  private final Supplier<DataLakeRequestConditions> fileVersion;
+  private final Consumer<PathProperties> observer;
+  private DataLakeRequestConditions version;
 
   private InputStream stream;
   private long pos;
@@ -76,39 +82,54 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       Long fileSize,
       AzureProperties azureProperties,
       MetricsContext metrics) {
-    this(location, fileClient, fileSize, azureProperties, null, metrics);
+    this(location, fileClient, fileSize, azureProperties, () -> null, properties -> {}, metrics);
   }
 
+  /**
+   * A stream that reads the version {@code fileVersion} gives, once it gives one, and tells {@code
+   * observer} what each of its requests found.
+   */
   ADLSInputStream(
       String location,
       DataLakeFileClient fileClient,
       Long fileSize,
       AzureProperties azureProperties,
-      DataLakeRequestConditions conditions,
+      Supplier<DataLakeRequestConditions> fileVersion,
+      Consumer<PathProperties> observer,
       MetricsContext metrics) {
     this.location = location;
     this.fileClient = fileClient;
     this.fileSize = fileSize;
     this.azureProperties = azureProperties;
-    this.conditions = conditions;
+    this.fileVersion = fileVersion;
+    this.observer = observer;
 
     this.readBytes = metrics.counter(FileIOMetricsContext.READ_BYTES, Unit.BYTES);
     this.readOperations = metrics.counter(FileIOMetricsContext.READ_OPERATIONS);
 
     this.createStack = Thread.currentThread().getStackTrace();
-
-    openStream();
   }
 
   private void openStream() {
     DataLakeFileOpenInputStreamResult result = openRange(new FileRange(pos));
-    this.pathProps = result.getProperties();
-    this.fileSize = pathProps.getFileSize();
+    if (fileSize == null) {
+      this.fileSize = result.getProperties().getFileSize();
+    }
     this.stream = result.getInputStream();
   }
 
-  PathProperties pathProperties() {
-    return pathProps;
+  /** The conditions that select the version this stream reads; null until it has one. */
+  private DataLakeRequestConditions version() {
+    DataLakeRequestConditions chosen = fileVersion.get();
+    return chosen != null ? chosen : version;
+  }
+
+  /** Takes the version {@code properties} describe, if the stream has none yet. */
+  private void observe(PathProperties properties) {
+    if (version == null && properties != null && properties.getETag() != null) {
+      this.version = new DataLakeRequestConditions().setIfMatch(properties.getETag());
+    }
+    observer.accept(properties);
   }
 
   /** Options for {@code range}, downloading at least {@code minBlockSize} bytes per request. */
@@ -122,6 +143,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       options.setBlockSize(blockSize);
     }
     options.setRange(range);
+    DataLakeRequestConditions conditions = version();
     if (conditions != null) {
       options.setRequestConditions(conditions);
     }
@@ -226,7 +248,9 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
     Preconditions.checkPositionIndexes(offset, offset + length, buffer.length);
 
     if (this.fileSize == null) {
-      this.fileSize = fileClient.getProperties().getFileSize();
+      PathProperties properties = fileClient.getProperties();
+      observe(properties);
+      this.fileSize = properties.getFileSize();
     }
     long readStart = Math.max(0, fileSize - length);
     int count = (int) (fileSize - readStart);
@@ -251,7 +275,10 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
 
   private DataLakeFileOpenInputStreamResult openRange(FileRange range, int minBlockSize) {
     try {
-      return fileClient.openInputStream(getInputOptions(range, minBlockSize));
+      DataLakeFileOpenInputStreamResult result =
+          fileClient.openInputStream(getInputOptions(range, minBlockSize));
+      observe(result.getProperties());
+      return result;
     } catch (RuntimeException e) {
       throwNotFoundIfNotPresent(e, location);
       LOG.error(
