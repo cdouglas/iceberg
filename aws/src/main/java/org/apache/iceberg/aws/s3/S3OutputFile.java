@@ -50,6 +50,9 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
   // (vanilla overwrite path), no precondition is applied.
   private final String etag;
   private final boolean assertAbsent;
+  // The pinned object's length, if known: an append extends the object the etag pins, so it
+  // writes at that length, which needs no lookup
+  private final Long length;
 
   static S3OutputFile fromLocation(
       String location, PrefixedS3Client client, MetricsContext metrics) {
@@ -67,6 +70,16 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       MetricsContext metrics,
       String etag,
       boolean assertAbsent) {
+    return fromLocation(location, client, metrics, etag, assertAbsent, null);
+  }
+
+  static S3OutputFile fromLocation(
+      String location,
+      PrefixedS3Client client,
+      MetricsContext metrics,
+      String etag,
+      boolean assertAbsent,
+      Long length) {
     return new S3OutputFile(
         client.s3(),
         client.s3FileIOProperties().isS3AnalyticsAcceleratorEnabled() ? client.s3Async() : null,
@@ -74,7 +87,8 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
         client.s3FileIOProperties(),
         metrics,
         etag,
-        assertAbsent);
+        assertAbsent,
+        length);
   }
 
   S3OutputFile(
@@ -95,9 +109,22 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       MetricsContext metrics,
       String etag,
       boolean assertAbsent) {
+    this(client, asyncClient, uri, s3FileIOProperties, metrics, etag, assertAbsent, null);
+  }
+
+  S3OutputFile(
+      S3Client client,
+      S3AsyncClient asyncClient,
+      S3URI uri,
+      S3FileIOProperties s3FileIOProperties,
+      MetricsContext metrics,
+      String etag,
+      boolean assertAbsent,
+      Long length) {
     super(client, asyncClient, uri, s3FileIOProperties, metrics);
     this.etag = etag;
     this.assertAbsent = assertAbsent;
+    this.length = length;
   }
 
   /**
@@ -209,7 +236,8 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
 
   private S3InputFile appendDestObj(S3Checksum token, Supplier<InputStream> source)
       throws IOException {
-    final long objLength = getObjectMetadata().contentLength();
+    // the etag condition below holds only if the object is the pinned one, whose length is known
+    final long objLength = length != null ? length : getObjectMetadata().contentLength();
     try (InputStream src = source.get()) {
       final S3URI location = uri();
       PutObjectRequest req =
