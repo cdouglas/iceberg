@@ -310,7 +310,10 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
                       .isEqualTo(BlobErrorCode.INVALID_BLOB_TYPE));
 
       byte[] ckpt = "ckpt|".getBytes(StandardCharsets.UTF_8);
-      AtomicOutputFile replace = io.newOutputFile(io.newInputFile(location));
+      // a CAS replaces the version its snapshot saw
+      InputFile live = io.newInputFile(location);
+      live.getLength();
+      AtomicOutputFile replace = io.newOutputFile(live);
       CAS casToken =
           replace.prepare(() -> new ByteArrayInputStream(ckpt), AtomicOutputFile.Strategy.CAS);
       InputFile replaced = replace.writeAtomic(casToken, () -> new ByteArrayInputStream(ckpt));
