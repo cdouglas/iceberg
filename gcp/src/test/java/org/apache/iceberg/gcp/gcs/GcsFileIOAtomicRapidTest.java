@@ -123,7 +123,10 @@ public class GcsFileIOAtomicRapidTest extends SupportsAtomicOperationsContractTe
     }
   }
 
-  /** A file written by a regular write can be replaced by CAS, as a catalog's first file is. */
+  /**
+   * A file written by a regular write can be replaced by CAS, as a catalog's first file is, through
+   * a snapshot that looked it up: one that has seen no version assumes no object.
+   */
   @Test
   void regularWriteThenCas() throws IOException {
     String location = randomLocation("regular-then-cas");
@@ -133,6 +136,7 @@ public class GcsFileIOAtomicRapidTest extends SupportsAtomicOperationsContractTe
         out.write("v1".getBytes(StandardCharsets.UTF_8));
       }
       InputFile v1 = io.newInputFile(location);
+      assertThat(v1.getLength()).isEqualTo(2);
       byte[] v2 = "v2".getBytes(StandardCharsets.UTF_8);
       AtomicOutputFile replace = io.newOutputFile(v1);
       CAS token =
