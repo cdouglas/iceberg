@@ -88,6 +88,11 @@ abstract class BaseS3File {
     }
   }
 
+  /** The object's metadata if a lookup fetched it, else null; sends no request. */
+  protected HeadObjectResponse cachedMetadata() {
+    return metadata;
+  }
+
   protected HeadObjectResponse getObjectMetadata() throws S3Exception {
     if (metadata == null) {
       HeadObjectRequest.Builder requestBuilder =
