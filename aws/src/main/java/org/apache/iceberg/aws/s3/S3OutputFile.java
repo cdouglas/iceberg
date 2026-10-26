@@ -36,6 +36,7 @@ import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.InvalidWriteOffsetException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
@@ -45,8 +46,9 @@ import software.amazon.awssdk.services.s3.model.TooManyPartsException;
 public class S3OutputFile extends BaseS3File implements AtomicOutputFile, NativelyEncryptedFile {
   private NativeFileCryptoParameters nativeEncryptionParameters;
   // Atomic-write precondition: when non-null, ifMatch=etag pins the live object; when null and
-  // assertAbsent=true, ifNoneMatch=* requires the destination to not exist; when both are unset
-  // (vanilla overwrite path), no precondition is applied.
+  // assertAbsent=true, a CAS sends ifNoneMatch=* (the destination must not exist) and an append
+  // looks up the object it extends; when both are unset (vanilla overwrite path), no precondition
+  // is applied.
   private final String etag;
   private final boolean assertAbsent;
   // The pinned object's length, if known: an append extends the object the etag pins, so it
@@ -235,8 +237,18 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
 
   private S3InputFile appendDestObj(S3Checksum token, Supplier<InputStream> source)
       throws IOException {
-    // the etag condition below holds only if the object is the pinned one, whose length is known
-    final long objLength = length != null ? length : getObjectMetadata().contentLength();
+    // The version to extend: the snapshot's, or, if it has seen none, the object's current one.
+    // The etag condition below holds only if the object is that version, whose length is known
+    final String pinned;
+    final long objLength;
+    if (etag != null) {
+      pinned = etag;
+      objLength = length != null ? length : getObjectMetadata().contentLength();
+    } else {
+      HeadObjectResponse current = currentObject();
+      pinned = current.eTag();
+      objLength = length != null ? length : current.contentLength();
+    }
     try (InputStream src = source.get()) {
       final S3URI location = uri();
       PutObjectRequest req =
@@ -245,7 +257,7 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
               .key(location.key())
               .checksumCRC32C(token.contentHeaderString())
               .contentLength(token.contentLength())
-              .ifMatch(etag)
+              .ifMatch(pinned)
               .writeOffsetBytes(objLength)
               .build();
       RequestBody content = RequestBody.fromInputStream(src, token.contentLength());
@@ -270,6 +282,19 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       }
       if (412 == e.statusCode() && "PreconditionFailed".equals(e.awsErrorDetails().errorCode())) {
         throw new SupportsAtomicOperations.AppendException("Target modified", e);
+      }
+      throw e;
+    }
+  }
+
+  /** The object an append to a snapshot that has seen no version extends: its current version. */
+  private HeadObjectResponse currentObject() {
+    try {
+      return getObjectMetadata();
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        throw new SupportsAtomicOperations.AppendException(
+            "Cannot append to " + location() + ": no object", e);
       }
       throw e;
     }

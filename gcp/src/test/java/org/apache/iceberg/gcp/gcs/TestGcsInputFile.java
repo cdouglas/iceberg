@@ -23,6 +23,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.cloud.gcs.analyticscore.client.GcsFileInfo;
@@ -85,6 +88,30 @@ public class TestGcsInputFile {
 
     assertThat(inputFile.blobId()).isEqualTo(BlobId.fromGsUtilUri(LOCATION));
     assertThat(inputFile.getLength()).isEqualTo(FILE_SIZE);
+  }
+
+  /**
+   * A snapshot that has seen no version pins generation 0, "object must not exist", without a
+   * lookup.
+   */
+  @Test
+  public void anUnseenSnapshotPinsGenerationZeroWithoutALookup() {
+    GCSInputFile inputFile = GCSInputFile.fromLocation(LOCATION, prefixedStorage, metricsContext);
+
+    assertThat(inputFile.pinnedBlobId()).isEqualTo(BlobId.of(TEST_BUCKET, KEY, 0L));
+    verify(storage, never()).get(any(BlobId.class));
+  }
+
+  /** A snapshot that looked pins the generation the lookup saw, with no second lookup. */
+  @Test
+  public void aSnapshotThatLookedPinsWhatItSaw() {
+    when(blob.getBlobId()).thenReturn(BlobId.of(TEST_BUCKET, KEY, 7L));
+    GCSInputFile inputFile = GCSInputFile.fromLocation(LOCATION, prefixedStorage, metricsContext);
+
+    assertThat(inputFile.exists()).isTrue();
+
+    assertThat(inputFile.pinnedBlobId()).isEqualTo(BlobId.of(TEST_BUCKET, KEY, 7L));
+    verify(storage, times(1)).get(any(BlobId.class));
   }
 
   @Test
