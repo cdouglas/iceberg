@@ -21,6 +21,7 @@ package org.apache.iceberg.azure.adlsv2;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
 import com.azure.storage.file.datalake.models.DataLakeStorageException;
+import com.azure.storage.file.datalake.models.PathProperties;
 import org.apache.iceberg.azure.AzureProperties;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.SeekableInputStream;
@@ -59,11 +60,16 @@ class ADLSInputFile extends BaseADLSFile implements InputFile {
     this.invariants = invariants;
   }
 
+  /**
+   * The conditions that select the version of the file this reads, and that a replace of it
+   * expects: the version its first request found (a stream's first read, or the properties its
+   * length came from), else its current one.
+   */
   DataLakeRequestConditions conditions() {
     if (null == invariants) {
       try {
         // Base::pathProperties() caches its response, should be invariant
-        invariants = new DataLakeRequestConditions().setIfMatch(pathProperties().getETag());
+        pin(pathProperties());
       } catch (DataLakeStorageException e) {
         if (e.getStatusCode() == 404) {
           // *should* be possible to atomically get properties and !exists, but whatever
@@ -79,21 +85,39 @@ class ADLSInputFile extends BaseADLSFile implements InputFile {
   @Override
   public long getLength() {
     if (fileSize == null) {
-      this.fileSize = pathProperties().getFileSize();
+      PathProperties properties = pathProperties();
+      pin(properties);
+      if (fileSize == null) {
+        this.fileSize = properties.getFileSize();
+      }
     }
     return fileSize;
   }
 
+  /**
+   * A stream of the version of the file this reads. It sends nothing until it reads; if the file
+   * has no version yet, its first request chooses one, with no lookup of its own.
+   */
   @Override
   public SeekableInputStream newStream() {
-    ADLSInputStream ret =
-        new ADLSInputStream(
-            location(), fileClient(), fileSize, azureProperties(), invariants, metrics());
-    if (null == invariants) {
-      // Convoluted flow trying to avoid an unnecessary metadata lookup if the InputFile is
-      // immediately resolved
-      invariants = new DataLakeRequestConditions().setIfMatch(ret.pathProperties().getETag());
+    return new ADLSInputStream(
+        location(), fileClient(), fileSize, azureProperties(), this::version, this::pin, metrics());
+  }
+
+  private synchronized DataLakeRequestConditions version() {
+    return invariants;
+  }
+
+  /**
+   * Chooses the version {@code properties} describe, and its length, if the file has no version
+   * yet: what a request first finds is what its later reads, and a replace, see.
+   */
+  private synchronized void pin(PathProperties properties) {
+    if (invariants == null && properties != null && properties.getETag() != null) {
+      invariants = new DataLakeRequestConditions().setIfMatch(properties.getETag());
+      if (fileSize == null) {
+        this.fileSize = properties.getFileSize();
+      }
     }
-    return ret;
   }
 }
