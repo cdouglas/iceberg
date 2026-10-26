@@ -80,6 +80,11 @@ abstract class BaseGCSFile {
     return getBlob() != null;
   }
 
+  /** The blob if a lookup fetched it, else null; sends no request. */
+  protected Blob cachedBlob() {
+    return metadata;
+  }
+
   protected Blob getBlob() {
     if (metadata == null) {
       metadata = storage.get(blobId);
