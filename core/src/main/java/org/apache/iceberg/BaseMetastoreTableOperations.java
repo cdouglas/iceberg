@@ -54,6 +54,10 @@ public abstract class BaseMetastoreTableOperations extends BaseMetastoreOperatio
   private TableMetadata currentMetadata = null;
   private String currentMetadataLocation = null;
   private boolean shouldRefresh = true;
+  // whether a refresh found the table these operations had loaded gone: until one finds it again,
+  // each refresh fails, though doRefresh can no longer tell, by the current metadata location, a
+  // dropped table from one not created yet
+  private boolean dropped = false;
   private int version = -1;
 
   protected BaseMetastoreTableOperations() {}
@@ -87,9 +91,17 @@ public abstract class BaseMetastoreTableOperations extends BaseMetastoreOperatio
     boolean currentMetadataWasAvailable = currentMetadata != null;
     try {
       doRefresh();
+      if (dropped && currentMetadata == null) {
+        throw new NoSuchTableException("Table does not exist: %s", tableName());
+      }
     } catch (NoSuchTableException e) {
       if (currentMetadataWasAvailable) {
         LOG.warn("Could not find the table during refresh, setting current metadata to null", e);
+        dropped = true;
+      }
+
+      if (dropped) {
+        // the next use refreshes again, and fails the same way until the table is back
         shouldRefresh = true;
       }
 
@@ -98,6 +110,7 @@ public abstract class BaseMetastoreTableOperations extends BaseMetastoreOperatio
       version = -1;
       throw e;
     }
+    dropped = false;
     return current();
   }
 

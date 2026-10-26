@@ -33,6 +33,7 @@ import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.exceptions.NoSuchViewException;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.view.BaseView;
 import org.apache.iceberg.view.ViewCatalogTests;
@@ -89,6 +90,26 @@ public class TestJdbcViewCatalog extends ViewCatalogTests<JdbcCatalog> {
   @Override
   protected boolean supportsEmptyNamespace() {
     return true;
+  }
+
+  @Test
+  public void testHandleToADroppedViewKeepsFailing() {
+    TableIdentifier identifier = TableIdentifier.of("namespace1", "view");
+    catalog
+        .buildView(identifier)
+        .withQuery("spark", "select * from tbl")
+        .withSchema(SCHEMA)
+        .withDefaultNamespace(Namespace.of("namespace1"))
+        .create();
+    BaseView view = (BaseView) catalog.loadView(identifier);
+    catalog.dropView(identifier);
+
+    // the first refresh finds the view dropped; each later use must too, not see no view at all
+    assertThatThrownBy(() -> view.operations().refresh()).isInstanceOf(NoSuchViewException.class);
+    assertThatThrownBy(() -> view.operations().refresh()).isInstanceOf(NoSuchViewException.class);
+    assertThatThrownBy(() -> view.updateProperties().set("k", "v").commit())
+        .isInstanceOf(NoSuchViewException.class);
+    assertThat(catalog.viewExists(identifier)).isFalse();
   }
 
   @Test

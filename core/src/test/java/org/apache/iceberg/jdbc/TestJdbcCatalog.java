@@ -595,6 +595,22 @@ public class TestJdbcCatalog extends CatalogTests<JdbcCatalog> {
   }
 
   @Test
+  public void testHandleToADroppedTableKeepsFailing() {
+    TableIdentifier tableIdentifier = TableIdentifier.of("db", "table");
+    catalog.createTable(tableIdentifier, SCHEMA, PartitionSpec.unpartitioned());
+    Table table = catalog.loadTable(tableIdentifier);
+    catalog.dropTable(tableIdentifier);
+
+    // the first refresh finds the table dropped; each later use must too, not see no table at all
+    assertThatThrownBy(table::refresh).isInstanceOf(NoSuchTableException.class);
+    assertThatThrownBy(table::refresh).isInstanceOf(NoSuchTableException.class);
+    assertThatThrownBy(() -> table.updateProperties().set("k", "v").commit())
+        .isInstanceOf(NoSuchTableException.class);
+    assertThatThrownBy(() -> table.newAppend().commit()).isInstanceOf(NoSuchTableException.class);
+    assertThat(catalog.tableExists(tableIdentifier)).isFalse();
+  }
+
+  @Test
   public void testCommitHistory() throws IOException {
     TableIdentifier testTable = TableIdentifier.of("db", "ns", "tbl");
     catalog.createTable(testTable, SCHEMA, PartitionSpec.unpartitioned());
