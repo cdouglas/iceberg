@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.function.Supplier;
-import org.apache.commons.io.output.NullOutputStream;
 import org.apache.iceberg.encryption.NativeFileCryptoParameters;
 import org.apache.iceberg.encryption.NativelyEncryptedFile;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -174,7 +173,7 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
     final S3Checksum checksum = new S3Checksum(howto);
     try (InputStream in = source.get();
         FileChecksumOutputStream chk =
-            new FileChecksumOutputStream(NullOutputStream.INSTANCE, checksum)) {
+            new FileChecksumOutputStream(ByteStreams.nullOutputStream(), checksum)) {
       ByteStreams.copy(in, chk);
     }
     return checksum;
