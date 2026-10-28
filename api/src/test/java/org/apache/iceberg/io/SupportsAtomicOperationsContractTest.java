@@ -425,6 +425,48 @@ public abstract class SupportsAtomicOperationsContractTest {
     }
   }
 
+  /**
+   * An APPEND pinned to a version that a CAS has since replaced fails, even when the replacement
+   * has the length the append expects: an append is conditioned on the version it extends, not only
+   * on its offset. A store that checked only the offset would extend an object the writer never
+   * saw, and a reader that trusts the bytes before an offset it already read (reading only what was
+   * appended since) could not tell that the object under them changed. Skipped on providers without
+   * APPEND.
+   */
+  @Test
+  void appendPinnedToAVersionReplacedAtTheSameLengthFails() throws IOException {
+    Assumptions.assumeTrue(supportsAppend(), "APPEND not supported by this FileIO");
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("stale-append");
+    try {
+      byte[] first = bytes("first-version");
+      InputFile v1 = createAtomically(io, loc, first);
+
+      // A writer prepares an append to the version it read
+      AtomicOutputFile stale = io.newOutputFile(v1);
+      byte[] staleTail = bytes("stale-tail");
+      CAS staleTok = stale.prepare(supplier(staleTail), AtomicOutputFile.Strategy.APPEND);
+
+      // Another replaces that version with one of the same length
+      byte[] second = padTo(bytes("replaced"), first.length);
+      AtomicOutputFile replace = io.newOutputFile(v1);
+      InputFile v2 =
+          replace.writeAtomic(
+              replace.prepare(supplier(second), AtomicOutputFile.Strategy.CAS), supplier(second));
+      assertThat(v2.getLength()).isEqualTo(v1.getLength());
+
+      assertThatThrownBy(() -> stale.writeAtomic(staleTok, supplier(staleTail)))
+          .isInstanceOf(SupportsAtomicOperations.AppendException.class);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(second);
+
+      // An append to the version that replaced it extends it
+      InputFile v3 = appendAtomically(io, v2, bytes("tail"));
+      assertThat(read(v3)).isEqualTo(concat(second, bytes("tail")));
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
   // ─── Race helper ────────────────────────────────────────────────────────────────────────────
 
   /**
