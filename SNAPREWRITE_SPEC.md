@@ -813,13 +813,14 @@ Guarded by P10, since a REPLACE that also changed data would break the assumptio
 
 Without this, deep recursion (§10.4) would have been useless rather than merely expensive.
 
-### 11.2 Chained maps cannot be composed, only applied in sequence
+### 11.2 Chained maps are applied in sequence, not composed
 
-`CompactionMaps.compose` requires the first map's target snapshot to equal the second's source, which
-holds only for back-to-back compactions. A rewrite window normally has transactions between its
-compactions, so composition rejects exactly the case the rewrite needs. `RowLocator` applies the maps
-in order instead: each either relocates a reference or passes it through, and a null result means the
-row was already dead when that compaction ran. No snapshot-id agreement required.
+`RowLocator` applies the maps of a window's compactions in order: each either relocates a reference or
+passes it through, and a null result means the row was already dead when that compaction ran. It was
+written that way because `CompactionMaps.compose` required the first map's target snapshot to equal
+the second's source. That holds only for back-to-back compactions, and a rewrite window normally has
+transactions between its compactions. The requirement was a bug and is gone (compaction maps errata 4).
+Applying in sequence never needed it, so the locator is unchanged.
 
 ### 11.3 A snapshot's compaction map has to be identified semantically
 

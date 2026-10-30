@@ -44,10 +44,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  * earlier transaction, so an entry that has gone stale is never queried again.
  *
  * <p>Several compactions in one window are handled by applying their maps in order rather than by
- * composing them. {@code CompactionMaps.compose} requires the first map's target snapshot to be the
- * second's source, which holds only for back-to-back compactions; a window normally has
- * transactions between them. Applying in sequence needs no such agreement, since each map either
- * relocates a reference or passes it through untouched.
+ * composing them. Each map either relocates a reference or passes it through untouched, so applying
+ * them in sequence needs nothing from the maps' snapshot ids, which are placeholders for maps an
+ * action writes.
  */
 public class RowLocator {
   private final List<PositionDeleteRemapper> compactionMaps;
