@@ -4,12 +4,13 @@ Companion to `COMPACT_SPEC.md`. Implements the design sketched in
 [Inverting Iceberg Snapshots with Compaction Maps](https://cdouglas.github.io/posts/2026/08/rewriting-snapshots)
 (source: `../cdouglas.github.io/_posts/2026-08-31-snaprewrite.md`).
 
-**Status:** phases 1-4 implemented and passing. Core planner/writer in
-`core/src/main/java/org/apache/iceberg/snaprewrite/`, generic IO in
+**Status:** phases 1-6, and reconstruction after reclaim (§14), implemented and passing. Core
+planner/writer in `core/src/main/java/org/apache/iceberg/snaprewrite/`, generic IO in
 `data/src/main/java/org/apache/iceberg/data/GenericSnapshotRewriteIO.java`, tests in
-`data/src/test/java/org/apache/iceberg/data/snaprewrite/` (62 cases: 12 lossless, 7 structural,
-9 refusal, 7 report, 4 layout, 5 commit/reclaim, 20 fuzz seeds). Section 11 records what the
-implementation changed about the design.
+`data/src/test/java/org/apache/iceberg/data/snaprewrite/` (141 cases in 19 suites, including the
+lossless matrix, the layouts suite and 20 fuzz seeds, each v3 case also reconstructed after reclaim).
+Section 11 records what the implementation changed about the design, and §14.8 what reconstruction
+changed.
 
 ---
 
@@ -738,7 +739,7 @@ the fuzzer is not passing by declining to work.
 | 5c | v3 recovery: resurrection files with materialized ids, P1b gated on capability | **done** |
 | 6 | Window discovery and pricing for a recurring pass (§12.3); accounting measured where data outweighs metadata | **done** -- `SnapshotRewriteSurvey`, `TestSnapshotRewriteScale` |
 | 7 | Bulk remapping in the planner; Spark `RowResurrector`; evidence from a real history | not started (§13) |
-| 8 | Reconstructing the original layout after reclaim, keyed by `_row_id` | R0 (lineage fix) **done**; R1-R4 not started (§14) |
+| 8 | Reconstructing the original layout after reclaim, keyed by `_row_id` | **done** -- `SnapshotRewriteReconstruct`, `TestSnapshotRewriteReconstruct`, and the matrix, layouts and v3 fuzz seeds reconstructed (§14) |
 
 ---
 
@@ -940,14 +941,11 @@ real history to run it against it cannot be validated for the only thing it buys
 SPI is three methods and the generic implementation is proven against all of them, so nothing about
 the interface is at risk while this waits.
 
-**Reconstructing the old layout without the old files.** Undo is implemented as pointing back at the
-original manifest lists, so it dies at reclaim. The inverse rewrite -- rebuilding the pre-compaction
-layout from the rewritten layout alone -- is not implemented. The compaction map is already the
-invertible half; what is missing is persisting the resurrection half, which the planner computes and
-throws away (`ResurrectionRequest.sources()` and `sourceFirstRowIds()`). This is the case the v3
-row-lineage decision in phase 5a was justified by, so it is an accepted requirement that has not been
-built. Errata 10 in the user doc states the limit and what it would take. §14 plans it, and its
-first step changed what the ledger should be keyed by: `_row_id`, not location.
+**Reconstructing the old layout without the old files: done on v3 (§14).** Undo by pointing back at the
+original manifest lists dies at reclaim. `SnapshotRewriteReconstruct` rebuilds the pre-rewrite layout
+from the rewritten layout and a ledger the rewrite now writes, keyed by `_row_id`. This is the case the
+v3 row-lineage decision in phase 5a was justified by. On v2 there are no row ids, so reclaim is still
+the point of no return there.
 
 **A second reader.** Everything is validated against the Java reference implementation and nothing
 else. The stamping is known to satisfy `DeleteFileIndex` and is not known to satisfy PyIceberg,
@@ -966,21 +964,25 @@ whether any of this pays.
 
 ## 14. Reconstructing the original layout after reclaim
 
-§13 records the gap: undo points back at the original manifest lists, so it stops working at reclaim.
-This section plans the inverse that does not need the old files. It rebuilds the pre-rewrite layout from
-the rewritten layout alone, on v3, keyed by `_row_id`.
+§13 recorded the gap: undo points back at the original manifest lists, so it stops working at reclaim.
+`SnapshotRewriteReconstruct` closes it on v3. It rebuilds the pre-rewrite layout from the rewritten
+layout and a ledger the rewrite writes, keyed by `_row_id`, so a committed and reclaimed rewrite can
+still be undone.
 
 ### 14.1 What is restored, and what is not
 
-**Restored:** each detached data file is rebuilt holding every row a window snapshot can read, in the
-original order, with the original `_row_id` and `_last_updated_sequence_number`. Each snapshot again
-references those files as forward deltas:
+**Restored:** each original data file holds every row a window snapshot can read, in the original
+order, with the original `_row_id` and `_last_updated_sequence_number`. Each snapshot again references
+those files as forward deltas:
 
-- a data file is `ADDED` by the commit that wrote it, and a deletion vector by the commit that deleted
-  the rows;
-- both carry the original sequence numbers, and each snapshot gets its original summary back.
+- a data file is `ADDED` by the commit that wrote it, carried as `EXISTING` after that, and `DELETED`
+  by the commit that removed it;
+- a deletion vector is owned by the commit that deleted the rows, and carried until one replaces it;
+- every entry has its original sequence numbers, each snapshot has its original summary, and each
+  compaction has its compaction map again.
 
-Files the rewrite did not detach are reused as they are.
+An original that still exists is referenced as it is. That covers a file a partial compaction kept,
+and anything reclaim withheld.
 
 **Not restored: holes.** A hole is a row that is physically present in an original file but that no
 window snapshot can read. There are two kinds:
@@ -992,19 +994,26 @@ The rewritten layout never held these rows, so a reconstruction built from it ca
 retained snapshot can see a hole, so dropping one loses no observable row, only the positions of the
 rows after it.
 
-So a file without holes comes back exact: same rows, same positions, same ids, derived where the
-original derived them. That covers every file when the floor is a compaction and no commit deletes its
-own inserts. A file with holes keeps its rows, order and ids, but its later rows shift down, so its ids
-have to be written out. Byte identity is out of scope at every level. Restoring holes is §14.7.
+So a file is rebuilt one of three ways:
+
+| file | rebuilt | result |
+|---|---|---|
+| still exists | not at all; referenced as it is | exact, holes and all, masked |
+| no holes | at its original path | same rows, positions, ids, and sequence numbers; lineage written only where the original wrote it |
+| has holes | at a new path, without them | same rows, order, and ids; later rows move up, so ids are written out |
+
+A file that is nothing but holes is left out. Byte identity is out of scope at every level. Restoring
+holes is §14.7.
 
 ### 14.2 What survives reclaim, and why `_row_id` alone is not enough
 
 After reclaim the table still holds:
 
 - every readable row with its lineage, in the compaction's files plus the recovery files;
-- every rewritten snapshot's live set, and so the interval over which each physical row is live;
+- every rewritten snapshot's live set, and so the run of snapshots over which each physical row is
+  live;
 - each snapshot's id, sequence number, `first-row-id`, `added-rows` and original summary;
-- `C_B`'s compaction map.
+- the compaction maps, which reclaim does not delete.
 
 `_row_id` recovers which physical rows are the same row, the order within a derived-id range, and the
 position within a derived-id file (`_row_id - first_row_id`). It does not recover:
@@ -1012,23 +1021,32 @@ position within a derived-id file (`_row_id - first_row_id`). It does not recove
 - where one file ends and the next begins when a commit appended several, because their ranges are
   contiguous;
 - the order of a compaction output, whose materialized ids are not monotone;
-- per-file metadata: `first_row_id`, `record_count`, lifetime and sequence numbers.
+- per-file metadata: `first_row_id`, `record_count`, partition, lifetime and sequence numbers.
 
 ### 14.3 The ledger, keyed by `_row_id`
 
-The rewrite persists one entry per detached data file. Each entry records:
+`SnapshotRewriteLedger` has one entry per data file any window snapshot referenced. That includes files
+the rewrite did not detach: a reconstructed snapshot masks their rows by id like any other file's.
+Each entry records:
 
-- the original path, spec and partition;
-- `first_row_id` and `record_count`;
-- the data and file sequence numbers;
-- the window snapshots that added and removed the file;
-- the file's `_row_id` sequence as runs: one run for a derived-id file, one per source segment for a
-  compaction output.
+- the file as its manifest described it, serialized with `ContentFileParser`, so partition, metrics and
+  `first_row_id` come back exactly;
+- its sequence numbers, as runs over the window (below);
+- the commit that added it: the manifest entry's snapshot id, which `DataFile` does not carry, read
+  through a new `SnapshotRewriteUnsafe.addedSnapshotIds`;
+- the first and last window snapshots that referenced it;
+- its `_row_id`s in position order, as runs: one run for a derived-id file, one per source segment for
+  a compaction output;
+- each position's **birth**: the window index of the first snapshot that reads it, or -1 for a hole.
 
-The ledger is written as Avro to the metadata directory, following `GenericCompactionMap`. Each
-rewritten snapshot's summary points to it, from outside the `snapshot-rewritten-from.` prefix.
+The ledger is written as JSON beside the table metadata, not as Avro. It is metadata about metadata,
+the way the table metadata file is, and `ContentFileParser` already writes a `DataFile` to JSON exactly.
+Each rewritten snapshot names it under `snapshot-rewrite-ledger`, outside the `snapshot-rewritten-from.`
+prefix. A second rewrite therefore carries the key down a level, along with the rest of the summary it
+replaced. Below v3, or with an IO that does not preserve lineage, no ledger is written and
+`SnapshotRewritePlan.ledgerUnavailable()` says why. The rewrite itself is unaffected.
 
-Errata 10 proposed the alternative: persist `ResurrectionRequest.sources()`, a reverse map keyed by
+The first version of errata 10 proposed the alternative: persist `ResurrectionRequest.sources()`, a reverse map keyed by
 location. That costs nothing at rewrite time and works on v2. But it names files that the next pass
 deletes (§12.1), so every later pass would have to compose it. And for a file whose ids are written per
 row, nothing could check that the row read back is the right one.
@@ -1037,100 +1055,138 @@ Keyed by `_row_id`, the ledger is untouched by any later relocation: after two p
 pass's ledger still reaches the original in one hop. It also checks itself, because every expected id
 must be found exactly once. That is the property `_row_id` exists for (§4.5.1).
 
-The cost is reading the `_row_id` column of every detached file whose ids are written per row.
-Derived-id files cost nothing. The report should price it.
+**Births, not holes; sequence runs, not one pair.** The first design recorded holes as "dead at the
+oldest snapshot referencing the file", and one pair of sequence numbers per file. Both assume an
+original history, where deletes only accumulate and a file has one sequence number. A ledger written by
+a second pass describes the first pass's layout, which breaks both assumptions:
+
+- that layout's early snapshots hold the whole compaction, masking every row a later snapshot inserted;
+- the compaction's files carry the shared base number in rewritten snapshots and their own afterwards
+  (errata 2).
+
+The two-pass test caught both. Read the first way, most of a compaction's rows were holes, and the
+reconstruction stamped its files at the base. So births are per position, and sequence numbers are runs
+over the window.
+
+**Cost.** Row ids come from metrics when they prove every id derives from the file's range: the
+`_row_id` column was never written, or is all null. That covers appended files. Anything else is read
+once, at materialize time, through `SnapshotRewriteIO.readRowIdRuns`, so planning stays metadata-only.
+The generic IO projects whole rows for this, and a column-only read is the obvious improvement. The
+ledger's bytes count toward the rewrite report's metadata line. The read itself is not priced.
 
 ### 14.4 The reconstruction
 
 The reconstruction is non-destructive, like the rewrite: it builds into a shadow table, which is
 verified before anything is committed.
 
-1. Load the ledger. Refuse without one, below v3, or if the schema or spec changed since the rewrite.
-2. From each rewritten snapshot's deletion vectors, compute the interval over which each physical row is
-   live. Assert that the interval is contiguous.
-3. For each ledger file `F` and each id `x` in its runs, take the physical row with id `x` that is live
-   at the snapshot that added `F`. For files that predate the window, that is the floor. No such row
-   means a hole; more than one means refuse.
-4. Write `F'` in run order with `F`'s `first_row_id`. Write ids per row only where `F` did, or where `F`
-   had holes.
-5. For each snapshot `k` and each file it references, mask the ids not live at `k`. Write a vector only
-   where it differs from `k-1`'s, which is exactly what `T_k` wrote.
-6. Write ordinary metadata:
-   - each data file at its adding snapshot's sequence number, and each vector at its own;
-   - `ADDED`/`EXISTING` statuses with the right snapshot ids;
-   - the original summary, with `first-row-id`/`added-rows` unchanged.
+1. Find, for each snapshot, the deepest ledger it names. Process ledgers oldest compaction first.
+2. Refuse below v3, or if the schema or spec changed since the rewrite. Also refuse if a window snapshot
+   no longer exists, no longer names the ledger, or the window is expressed against more than one
+   layout (part of it was rewritten again by a later pass).
+3. Restrict to entries that some snapshot being restored references. A second pass's ledger also
+   describes the first pass's recovery files, which only snapshots restored from the first ledger
+   referenced.
+4. Decide each file before reading anything: reuse it if it still exists, skip it if it is all holes,
+   otherwise rebuild it.
+5. Scan each window snapshot once, through ordinary scan planning, with `_file` and `_pos`
+   (`SnapshotRewriteIO.readLiveRows`). Each physical row's span is the run of snapshots it is live in,
+   and a gap in that run refuses. Ids are indexed only at snapshots where some position is born, and
+   two live rows with one id refuse.
+6. Assign each readable position the physical row holding its id at its birth. Ids are unique among the
+   rows one snapshot reads, so this is the right version even when an update left two.
+7. Rebuild in position order with the file's original `first_row_id` (`SnapshotRewriteIO.writeRebuilt`).
+   A row's id is written only if it differs from `first_row_id` plus its new position.
+   `_last_updated_sequence_number` is written only if it differs from the file's sequence number, and
+   that number never varies. A file where nothing needs writing is written without the lineage columns,
+   as an append would have written it.
+8. For each snapshot and file, mask the positions whose physical row is not live there, plus the holes
+   of a reused original. A run of snapshots masking the same positions shares one vector, owned by the
+   first of them.
+9. Write ordinary metadata: data entries `ADDED`, `EXISTING` or `DELETED` at the sequence numbers the
+   ledger recorded for that snapshot, and vectors at their owner's number. Each compaction's map location
+   goes back on its manifest. Each snapshot gets its original summary, plus a `snapshot-restored-from`
+   key that lets `SnapshotRewriteReconstruct.undo` point back at the rewritten form until it is
+   reclaimed. There is no shared base, so errata 2 does not apply to a reconstructed snapshot.
 
-   There is no shared base, so errata 2 does not apply to a reconstructed snapshot. A
-   `snapshot-restored-from` key makes the reconstruction itself undoable by pointing back, until its own
-   reclaim.
-7. Regenerate the compaction maps of reconstructed compactions from the ids, so the result can be
-   rewritten again. That means `C_A`, and any compaction inside the window.
+Compaction maps are re-attached, not regenerated as first planned. Reclaim never deletes them, and a
+map stays correct exactly as long as the files it names come back at their own paths. A compaction's
+output never has holes, so the only files that can move are a compaction's sources. A future rewrite
+that needs one of those now refuses (§14.6, question 1).
 
-Commit through `SnapshotRewriteUnsafe.replaceSnapshots`, then reclaim the rewritten layout. `C_B` is
-untouched. A reconstruction re-spends roughly what the rewrite saved, `|C_B| + |dead|`, and its report
-should show that, predicted against measured.
+Commit and reclaim work as they do for a rewrite. Reachability for reclaim is now shared, in `Reclaim`.
+A reconstruction re-spends roughly what the rewrite saved. `SnapshotReconstructReport` gives the bytes
+rebuilt next to the original files' sizes from the ledger, and what the rewritten layout frees.
 
 ### 14.5 Tests
 
-- **Fingerprint.** Before the rewrite, record for each snapshot and file the ordered
-  `(pos, _row_id, _last_updated_sequence_number, values)` and the file's metadata.
-- **Cycle.** Rewrite, commit, reclaim (asserting that the originals are gone), then reconstruct.
-- **Comparisons:**
-  - the existing row and identity oracles;
-  - one rebuilt file per original, equal to it minus its holes, and equal by position where it had
-    none;
-  - each snapshot's `ADDED` files, so that an incremental append scan across the window returns what it
-    originally did;
-  - the original summaries.
-- **Coverage.** The v3 lossless matrix and the fuzz seeds, plus two hole cases: matrix #7, and a floor
-  that is not a compaction and carries deletes.
-- **Round trips.** Rewriting the reconstruction reproduces the rewrite. Reconstructing after two passes
-  reaches the original from the first pass's ledger.
-- **Refusals.** No ledger, v2, or a schema change since the rewrite.
-- **The ledger on its own.** It is checked against the original layout before reclaim, so it is
-  validated directly and not only through a reconstruction.
+- **`TestSnapshotRewriteLedger`** checks every entry against the original files and against scans of
+  the original snapshots, before anything is reclaimed: span, sequence numbers, origin, ids, births and
+  holes. It also checks that only files whose ids may be written per row were read, and that no ledger
+  is written below v3 or with a lineage-blind IO.
+- **`LayoutFingerprint`** is the layout oracle. For each snapshot and file it records each position's
+  `_row_id`, `_last_updated_sequence_number` and values, the positions read, whether the snapshot added
+  the file, and the manifest entry's sequence numbers. A file at its original path must match exactly. A
+  moved file must equal the original minus its holes. Summaries must match. A scan alone cannot tell two
+  layouts apart, which is why this reads files.
+- **`TestSnapshotRewriteReconstruct`** covers: no holes, every file back at its path, incremental append
+  scans unchanged, and the floor's map back; a hole, and its file moving; compactions inside the window;
+  a partitioned table; a partial compaction's kept file reused; a replace with no map; a second rewrite
+  of a reconstruction; a moved file refusing that rewrite; two passes reconstructed in one step; undo; and
+  refusals for no ledger and for a schema change.
+- **The lossless matrix and the layouts suite** rerun on v3 with every rewrite committed, reclaimed and
+  reconstructed (`TestSnapshotRewriteLosslessReconstructed`, `TestSnapshotRewriteLayoutsReconstructed`).
+- **Every v3 fuzz seed** does the same, outside the `try` that accepts a refusal from the rewrite, so a
+  reconstruction that refuses fails the test.
 
-### 14.6 Open questions
+Not covered: the second kind of hole (a floor that is not a compaction, whose dead rows' adding snapshot
+has expired), and a layout comparison of a second rewrite against the first. The second-rewrite test
+compares rows only.
 
-1. **Paths.** Writing hole-free files back at their original paths would keep three things correct:
-   `C_B`'s map, `_file`, and anything outside Iceberg that recorded a path. Reclaim already guarantees
-   that no retained metadata references those paths.
+### 14.6 Decided, and still open
 
-   A file with holes needs a new path, because its positions changed. That exposes a gap worth closing
-   regardless. `RowLocator.locate` passes a path missing from every map through unchanged, as if the
-   compaction had left the file alone. So rewriting such a history onto `C_B` again would produce a
-   wrong result, not a refusal. A located row should be required to land in the compaction's files or
-   in a recovery file.
-
-   The cost of reusing paths is any engine cache keyed by path: the rows are the same, but the bytes
-   are not.
-2. **Keeping the ledger reachable.** Only a summary string points to the ledger, so orphan-file removal
-   would delete it. Compaction-map files are exposed the same way today: `ReachableFileUtil` does not
-   know about them either.
-3. **Expiry.** A window snapshot that expired after the rewrite is skipped. The ledger needs collecting
-   once all of its snapshots have expired.
-4. **A compaction that leaves `_last_updated_sequence_number` null.** The rewrite restamps the
+1. **Paths: decided.** Hole-free files go back to their original paths, which keeps the compaction maps,
+   `_file`, and anything outside Iceberg that recorded a path correct. Reclaim already guarantees that
+   no retained metadata references those paths. A file with holes goes to a new path. That exposed a
+   gap in the rewrite, now closed: `RowLocator.locate` passes a path missing from every map through
+   unchanged, as if the compaction had left the file alone. Rewriting such a history onto `C_B` again
+   would have masked nothing. The planner now refuses a row that locates outside the compaction's files
+   and the recovered ones (`UNLOCATABLE_ROW`). The cost of reusing paths is any engine cache keyed by
+   path: the rows are the same, but the bytes are not.
+2. **Keeping the ledger reachable: open.** Only a summary string points to the ledger, so orphan-file
+   removal would delete it. Compaction-map files are exposed the same way today: `ReachableFileUtil`
+   does not know about them either.
+3. **Expiry: refused, not skipped.** A window snapshot that expired after the rewrite makes its ledger
+   refuse (`LEDGER_MISMATCH`). Skipping it would leave rows whose births fall in the expired snapshot
+   with nothing to assign them to. Collecting a ledger once all its snapshots have expired is open.
+4. **A compaction that leaves `_last_updated_sequence_number` null: open.** The rewrite restamps the
    compaction's files, so in rewritten snapshots such a row would read as the shared base. A compliant
    compaction never leaves it null, because rule 3 requires the value to be copied. The column's
    null-value count in the compaction's file metrics would detect a non-compliant one from metadata
    alone, and a precondition like P1b could refuse it.
+5. **A compaction at a ledger boundary: open.** After two passes, the first pass's target compaction is
+   reconstructed from the second pass's ledger. The files it replaced belong to the first ledger's
+   layout, so it gets no `DELETED` entries for them. Reads and incremental append scans are unaffected;
+   that snapshot's `removedDataFiles` is incomplete.
+6. **Scale: open.** Spans and the rows being rebuilt are held in memory, every window snapshot is
+   scanned once per ledger, and births cost rows times span at planning. A distributed version would
+   join ledger runs to scanned rows by id.
 
 ### 14.7 Later: holes
 
-The ledger already locates every hole exactly: an id in a file's runs with no readable row. So exact
-positions reduce to keeping the holes' contents. Those exist only in the original files, so they would
-have to be copied out at rewrite time, before reclaim. With them, every file can return to its original
-path, and §14.6's first question goes away.
+The ledger already locates every hole exactly: a position whose birth is -1. So exact positions reduce
+to keeping the holes' contents. Those exist only in the original files, so they would have to be copied
+out at rewrite time, before reclaim. With them, every file can return to its original path, and the
+refusal in §14.6's first question goes away.
 
 ### 14.8 Milestones
 
 | | Content | Status |
 |---|---|---|
 | R0 | Preserve `_last_updated_sequence_number` on every relocation; the identity oracle checks it | **done** |
-| R1 | Write the ledger at rewrite time; validate it against the original layout before reclaim | not started |
-| R2 | Reconstruct into a shadow table (§14.4) | not started |
-| R3 | Commit, reclaim, round trips, report | not started |
-| R4 | Rewrite errata 10; settle §14.6 | not started |
+| R1 | Write the ledger at rewrite time; validate it against the original layout before reclaim | **done** |
+| R2 | Reconstruct into a shadow table (§14.4) | **done** |
+| R3 | Commit, reclaim, round trips, report; the matrix, layouts and fuzz reconstructed | **done** |
+| R4 | Rewrite errata 10; settle §14.6 | **done**, except the questions still marked open |
 
 **What R0 found.** Planning this showed that the rewrite was preserving only half of a row's lineage.
 `GenericRowLineage` wrote `_last_updated_sequence_number` as null, which the reader fills in from the
@@ -1149,3 +1205,17 @@ its `first_row_id`. `TestSnapshotRewriteV3#relocatedRowsKeepTheirLastUpdatedSequ
 row's value to the append that wrote it, not only before against after, because both sides going wrong
 the same way would otherwise pass. A reconstruction cannot restore a value the rewrite has already
 lost, which is why this came first.
+
+**What R1 to R3 found.**
+
+- **Births and sequence runs** (§14.3). A single pass passed with one pair of sequence numbers per file
+  only because the shared base happened to equal the right value. Only the two-pass test could tell, and
+  the layout oracle now compares manifest sequence numbers so that coincidence cannot hide it again.
+- **A partial compaction's deletes were dropped by the rewrite.** The planner treated every file the
+  compaction holds as wholly live. A file a partial compaction kept still carries the rows that died in
+  it, and they reappeared in every rewritten snapshot, including ones from before the file was appended.
+  The existing test deleted only from files the compaction rewrote. It surfaced when the reconstruction
+  refused a rewritten snapshot that read one row id twice. Every rewritten snapshot now starts from the
+  compaction's own deletes (`TestSnapshotRewriteLayouts#partialCompactionKeepsTheKeptFilesDeletes`).
+- **The v3 test harness wrote one deletion vector per commit**, not one per data file. Running the
+  figure's history on v3, which deletes from two files in one commit, needed the latter.
