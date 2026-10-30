@@ -241,12 +241,19 @@ Each original file comes back one of three ways:
   stay correct.
 - **Rebuilt at a new path, without its holes**, if it had rows no snapshot could read: rows inserted
   and deleted by one commit, or rows already dead at the floor. The rewritten layout never held those,
-  so nothing can rebuild them, and the rows after them move up. Rewriting that history onto the same
-  compaction again is refused, because the compaction's map names the file's old path.
+  so nothing can rebuild them, and the rows after them move up. The map of the compaction that removed
+  the file is written again with its new path and positions, so the history can still be rewritten onto
+  that compaction.
 
-Each snapshot is restored as forward deltas: files added by the commit that wrote them, deletion vectors
-owned by the commit that deleted the rows, the original sequence numbers and summary, and each
-compaction's map. Incremental scans across the window work again.
+Each snapshot is restored as forward deltas. Files are added by the commit that wrote them and removed by
+the commit that removed them. Deletion vectors are owned by the commit that deleted the rows. Each
+snapshot gets back its original sequence numbers and summary, and each compaction its map. Incremental
+scans across the window work again.
+
+The compaction each window ended at is rebuilt as well, although the rewrite never touched it. It keeps
+its files and sequence number, so readers see the same rows. What it removed is listed again against its
+parent as reconstructed, because the files and vectors it removed are now the rebuilt ones. A deletion
+vector that a snapshot outside the window still holds is referenced as it is, not written again.
 
 A table rewritten twice is reconstructed in one step. The second rewrite carries the first ledger down a
 level in each snapshot's summary, and row ids survive every rewrite, so the first ledger applies to the
@@ -609,8 +616,10 @@ through the ledger the rewrite writes. Its limits:
   irreversible once reclaimed.
 - **Holes are not restored.** A row no window snapshot could read was never in the rewritten layout, so
   a file that held one comes back without it, at a new path. Every readable row keeps its id, but rows
-  after a hole move up. Rewriting such a history onto the same compaction again is refused, because that
-  compaction's map names the old path.
+  after a hole move up. The map of the compaction that removed the file is written again to match.
+- **Removals need the parent.** A snapshot whose parent has expired lists nothing as removed. A deletion
+  vector carried into the window from an expired snapshot comes back owned by the floor, at the floor's
+  sequence number. Reads are unaffected.
 - **Table maintenance does not know about the ledger**, so orphan-file removal can delete it and
   snapshot expiry never does. See errata 14.
 - **It holds the window in memory.** See errata 15.

@@ -83,6 +83,8 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
 
     SnapshotReconstructReport report = result.report();
     assertThat(report.snapshots()).isEqualTo(rewritten.plan().window().size());
+    assertThat(report.compactions()).isOne();
+    assertThat(report.maps()).isZero();
     assertThat(report.rebuiltInPlace()).isEqualTo(3);
     assertThat(report.rebuiltMoved()).isZero();
     assertThat(report.holes()).isZero();
@@ -116,6 +118,8 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
     assertThat(shadow.moved()).isOne();
     assertThat(result.report().rebuiltMoved()).isOne();
     assertThat(result.report().holes()).isOne();
+    assertThat(result.report().compactions()).isOne();
+    assertThat(result.report().maps()).isOne();
 
     commitAndReclaim(result);
     before.assertReproducedBy(table);
@@ -247,26 +251,33 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
   }
 
   /**
-   * A file that moved is one the compaction's map no longer names, so rewriting onto that
-   * compaction again must refuse rather than mistake the file for one the compaction left alone.
-   *
-   * <p>Without the refusal the rewrite would delete the moved file's rows from a file no rewritten
-   * snapshot holds, masking nothing, and they would show up before the commit that inserted them.
+   * A file that moved is named at its new path and positions by the map of the compaction that
+   * removed it, which the reconstruction rebuilt. So rewriting onto that compaction again finds its
+   * rows, and reconstructing again gives back the same layout, this time with nothing moved: the
+   * file no longer has holes.
    */
   @Test
-  public void rewritingAgainPastAMovedFileIsRefused() throws IOException {
+  public void aMovedFileCanBeRewrittenAgain() throws IOException {
     useFormatVersion(3);
     buildHistoryWithAHole();
+    Map<Long, List<String>> rows = allSnapshotRows(table);
     commitAndReclaim(rewrite());
     commitAndReclaim(reconstruct());
+    LayoutFingerprint reconstructed = LayoutFingerprint.of(table);
 
-    assertThatThrownBy(this::rewrite)
-        .isInstanceOf(RewriteRefusedException.class)
-        .satisfies(
-            e ->
-                assertThat(((RewriteRefusedException) e).refusal())
-                    .isEqualTo(RewriteRefusal.UNLOCATABLE_ROW))
-        .hasMessageContaining("neither the compaction's nor a recovered file");
+    SnapshotRewriteResult again = rewrite();
+    assertLossless(again);
+    for (Map.Entry<Long, List<String>> entry : rows.entrySet()) {
+      assertThat(rowsAt(again.asTable(), entry.getKey())).isEqualTo(entry.getValue());
+    }
+
+    commitAndReclaim(again);
+    SnapshotReconstructResult result = reconstruct();
+    assertThat(result.report().rebuiltMoved()).isZero();
+    assertThat(result.report().maps()).isZero();
+    assertThat(reconstructed.assertReproducedBy(result.asTable()).moved()).isZero();
+    commitAndReclaim(result);
+    reconstructed.assertReproducedBy(table);
   }
 
   /**
