@@ -420,7 +420,7 @@ produces a file whose rows came from unrelated ranges, so ids have to be written
 `GenericRowLineage`. This is not specific to rewriting: without it no generic-writer *compaction* can
 preserve lineage either.
 
-Two read-path mechanics worth knowing:
+Three read-path mechanics worth knowing:
 
 - A materialized `_row_id` is honoured only when the file **also** carries a `first_row_id`.
   `ParquetValueReaders.rowIds` returns nulls without one, so the column is written and never read. Any
@@ -428,6 +428,13 @@ Two read-path mechanics worth knowing:
 - Reading `_row_id` back needs that same value supplied as a constant
   (`GenericParquetReaders.buildReader(schema, fileSchema, idToConstant)`). A plain projection discards
   the column silently.
+- `_last_updated_sequence_number` needs the file's sequence number supplied as a constant too, alongside
+  `first_row_id`. With either missing, a written value is dropped.
+
+Both lineage columns are copied, not just the id. A null `_last_updated_sequence_number` reads as the
+file's sequence number, and a relocated row lands in a file stamped at a new one, so leaving it null
+would report every row a compaction or a recovery moved as updated by that operation. The spec requires
+the value of a row moved without modification to be kept.
 
 What the rewrite guarantees is that a rewritten snapshot reports the identities *the compaction*
 reports; whether those match a row's original ids is the compaction's obligation.

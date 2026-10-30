@@ -26,7 +26,8 @@ import org.apache.iceberg.TableUtil;
 import org.apache.iceberg.types.Types;
 
 /**
- * Writing data files whose rows carry their own {@code _row_id}.
+ * Writing data files whose rows carry their own lineage: {@code _row_id} and {@code
+ * _last_updated_sequence_number}.
  *
  * <p>Under v3 a row's id is normally derived from its file's {@code first_row_id} plus its offset,
  * which only works while a file's rows are one contiguous range. Any operation that gathers rows
@@ -78,19 +79,41 @@ public class GenericRowLineage {
   }
 
   /**
-   * Copies a row into {@code writeSchema}, carrying an explicit id.
+   * The {@code _last_updated_sequence_number} of a row read out of {@code sourceFile}.
    *
-   * <p>{@code _last_updated_sequence_number} is left null so the reader falls back to the file's
-   * own sequence number, which is what an operation that relocates a row without changing it should
-   * report.
+   * <p>Mirrors the read side, as {@link #resolveRowId} does: a value written into the file wins,
+   * and otherwise the row reads as the file's sequence number. A reader only returns a written
+   * value when it was given that sequence number as a constant, so a read without one arrives here
+   * as null and is resolved the same way.
+   *
+   * @return the row's sequence number, or null if the source file has none to inherit
    */
-  public static Record withRowId(Schema writeSchema, Record source, Long rowId) {
+  public static Long resolveLastUpdated(Record source, DataFile sourceFile) {
+    Object materialized = fieldOrNull(source, MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name());
+    if (materialized != null) {
+      return (Long) materialized;
+    }
+
+    return sourceFile.fileSequenceNumber();
+  }
+
+  /**
+   * Copies a row into {@code writeSchema}, carrying its lineage explicitly.
+   *
+   * <p>Both values are written, because the spec requires both of a row that is moved without being
+   * modified. Leaving {@code _last_updated_sequence_number} null would let the reader fill in the
+   * new file's sequence number, reporting the move as an update -- a compaction would claim to have
+   * modified every row it copied, and a recovered row would claim whatever number its new file is
+   * stamped at.
+   */
+  public static Record withLineage(
+      Schema writeSchema, Record source, Long rowId, Long lastUpdatedSequenceNumber) {
     Record row = GenericRecord.create(writeSchema);
     for (Types.NestedField field : writeSchema.columns()) {
       if (field.fieldId() == MetadataColumns.ROW_ID.fieldId()) {
         row.setField(field.name(), rowId);
       } else if (field.fieldId() == MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.fieldId()) {
-        row.setField(field.name(), null);
+        row.setField(field.name(), lastUpdatedSequenceNumber);
       } else {
         row.setField(field.name(), fieldOrNull(source, field.name()));
       }

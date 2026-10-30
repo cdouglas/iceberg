@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
@@ -264,6 +265,7 @@ public class SnapshotRewritePlanner {
               base.schema(),
               sources,
               sourceFirstRowIds(sources, previousState),
+              sourceSequenceNumbers(sources, previousState),
               path));
       partitionByPath.put(path, entry.getKey());
       presentResurrections.add(path);
@@ -395,19 +397,36 @@ public class SnapshotRewritePlanner {
    * and either way the reader needs it. Empty below v3, where there is no lineage.
    */
   private Map<String, Long> sourceFirstRowIds(List<RowRef> sources, SnapshotState state) {
+    return bySourceFile(sources, state, DataFile::firstRowId);
+  }
+
+  /**
+   * The file sequence number of each file these rows come from.
+   *
+   * <p>The other half of a row's lineage: its {@code _last_updated_sequence_number} is either
+   * written into its file or read as this value, and a recovered row has to keep it, not take the
+   * number of the file it is recovered into. Empty below v3.
+   */
+  private Map<String, Long> sourceSequenceNumbers(List<RowRef> sources, SnapshotState state) {
+    return bySourceFile(sources, state, DataFile::fileSequenceNumber);
+  }
+
+  private Map<String, Long> bySourceFile(
+      List<RowRef> sources, SnapshotState state, Function<DataFile, Long> property) {
     if (base.formatVersion() < 3) {
       return ImmutableMap.of();
     }
 
-    Map<String, Long> ranges = Maps.newHashMap();
+    Map<String, Long> values = Maps.newHashMap();
     for (RowRef source : sources) {
       DataFile file = state.files.get(source.path());
-      if (file != null && file.firstRowId() != null) {
-        ranges.put(source.path(), file.firstRowId());
+      Long value = file != null ? property.apply(file) : null;
+      if (value != null) {
+        values.put(source.path(), value);
       }
     }
 
-    return ranges;
+    return values;
   }
 
   /**

@@ -53,7 +53,6 @@ import org.apache.iceberg.orc.OrcRowReader;
 import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.parquet.ParquetValueReader;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -125,7 +124,11 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
           // give it a new identity in a snapshot where it is supposed to be the same row -- the one
           // thing about a row that is meant to survive a change of layout.
           record =
-              GenericRowLineage.withRowId(readSchema, record, rowIdOf(record, source, request));
+              GenericRowLineage.withLineage(
+                  readSchema,
+                  record,
+                  rowIdOf(record, source, request),
+                  lastUpdatedOf(record, source, request));
         }
 
         appender.add(record);
@@ -168,6 +171,19 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
 
     Long first = request.sourceFirstRowIds().get(source.path());
     return first == null ? null : first + source.position();
+  }
+
+  /**
+   * When a recovered row was last updated: written into its source file, or inherited from that
+   * file's sequence number. Never this file's, which a rewrite stamps at a number of its choosing.
+   */
+  private Long lastUpdatedOf(Record record, RowRef source, ResurrectionRequest request) {
+    Object materialized = record.getField(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name());
+    if (materialized != null) {
+      return (Long) materialized;
+    }
+
+    return request.sourceSequenceNumbers().get(source.path());
   }
 
   private long anySourceRange(ResurrectionRequest request) {
@@ -272,7 +288,11 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
       loaded.put(entry.getKey(), rows);
 
       try (CloseableIterable<Record> reader =
-          open(entry.getKey(), readSchema, request.sourceFirstRowIds().get(entry.getKey()))) {
+          open(
+              entry.getKey(),
+              readSchema,
+              request.sourceFirstRowIds().get(entry.getKey()),
+              request.sourceSequenceNumbers().get(entry.getKey()))) {
         long position = 0;
         for (Record record : reader) {
           if (entry.getValue().contains(position)) {
@@ -294,12 +314,20 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
    *
    * <p>{@code firstRowId} has to be passed through as a constant for {@code _row_id} to be readable
    * at all: without it the reader returns nulls and discards the column even when the file has one.
+   * {@code _last_updated_sequence_number} needs both {@code firstRowId} and {@code sequenceNumber},
+   * and discards a written value the same way when either is missing.
    */
-  private CloseableIterable<Record> open(String path, Schema projection, Long firstRowId) {
-    Map<Integer, Object> constants =
-        firstRowId == null
-            ? ImmutableMap.of()
-            : ImmutableMap.of(MetadataColumns.ROW_ID.fieldId(), firstRowId);
+  private CloseableIterable<Record> open(
+      String path, Schema projection, Long firstRowId, Long sequenceNumber) {
+    Map<Integer, Object> constants = Maps.newHashMap();
+    if (firstRowId != null) {
+      constants.put(MetadataColumns.ROW_ID.fieldId(), firstRowId);
+    }
+
+    if (sequenceNumber != null) {
+      constants.put(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.fieldId(), sequenceNumber);
+    }
+
     InputFile input = io.newInputFile(path);
     FileFormat format = FileFormat.fromFileName(path);
     if (format == null) {

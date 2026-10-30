@@ -31,6 +31,7 @@ import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 /**
  * Reads a data file by position, ignoring any deletes that apply to it.
@@ -52,13 +53,25 @@ class RawFiles {
     return read(io, path, schema);
   }
 
-  /** Reads with the lineage columns projected, so each row's {@code _row_id} comes through. */
+  /**
+   * Reads with the lineage columns projected, so each row's {@code _row_id} and {@code
+   * _last_updated_sequence_number} come through.
+   *
+   * <p>The second needs the file's sequence number as a constant as well as its {@code
+   * first_row_id}; with either missing, the reader returns nulls and drops a written value.
+   */
   static List<Record> readAllWithLineage(FileIO io, DataFile file, Schema tableSchema) {
     Schema schema = GenericRowLineage.writeSchema(tableSchema);
-    Map<Integer, Object> constants =
-        file.firstRowId() == null
-            ? ImmutableMap.of()
-            : ImmutableMap.of(MetadataColumns.ROW_ID.fieldId(), file.firstRowId());
+    Map<Integer, Object> constants = Maps.newHashMap();
+    if (file.firstRowId() != null) {
+      constants.put(MetadataColumns.ROW_ID.fieldId(), file.firstRowId());
+    }
+
+    if (file.fileSequenceNumber() != null) {
+      constants.put(
+          MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.fieldId(), file.fileSequenceNumber());
+    }
+
     return read(io, file.location(), schema, constants);
   }
 
