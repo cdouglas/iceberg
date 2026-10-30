@@ -144,8 +144,8 @@ class CompactionMapValidator {
    * Finds all compaction maps in the snapshot history and extracts compacted file mappings.
    *
    * <p>This method traverses the snapshot history from the current snapshot back to the starting
-   * snapshot, collecting all compaction maps. It returns a map from source file paths (that were
-   * compacted) to the locations of their compaction maps.
+   * snapshot, collecting the maps of the compactions committed in between. It returns a map from
+   * source file paths (that were compacted) to the locations of their compaction maps.
    *
    * @return map from compacted file path to compaction map location
    */
@@ -183,7 +183,14 @@ class CompactionMapValidator {
   }
 
   /**
-   * Loads all compaction maps from the snapshot history.
+   * Loads the maps of the compactions committed after the starting snapshot, oldest first.
+   *
+   * <p>A manifest keeps its map location when a later commit carries, filters or merges it, so a
+   * snapshot's manifests name the map of every compaction whose manifests are still live, not only
+   * its own, and in manifest list order, which groups manifests by spec. Collecting every location
+   * would include compactions the transaction already saw, and could order chained maps against
+   * their commit order. Instead each snapshot contributes only its own map: one whose source files
+   * that snapshot removed (compaction maps errata 4).
    *
    * <p>Maps are cached after first load.
    */
@@ -193,20 +200,13 @@ class CompactionMapValidator {
     }
 
     loadedMaps = Maps.newHashMap();
-    List<CompactionMap> mapsInSnapshotOrder = Lists.newArrayList();
+    List<CompactionMap> newestFirst = Lists.newArrayList();
 
-    // Traverse snapshot history from current back to starting snapshot
-    // Collect in reverse order (newest first), then reverse
     Snapshot snapshot = currentSnapshot;
     while (snapshot != null && snapshot.snapshotId() != startingSnapshotId) {
-      // Check each manifest for compaction maps
-      for (ManifestFile manifest : snapshot.dataManifests(io)) {
-        String mapLocation = manifest.compactionMapLocation();
-        if (mapLocation != null && !loadedMaps.containsKey(mapLocation)) {
-          CompactionMap map = CompactionMaps.read(io.newInputFile(mapLocation));
-          loadedMaps.put(mapLocation, map);
-          mapsInSnapshotOrder.add(map);
-        }
+      // only a rewrite writes a map
+      if (DataOperations.REPLACE.equals(snapshot.operation())) {
+        addOwnMaps(snapshot, newestFirst);
       }
 
       // Move to parent snapshot
@@ -214,8 +214,49 @@ class CompactionMapValidator {
       snapshot = parentId != null ? base.snapshot(parentId) : null;
     }
 
-    // Reverse to get oldest-to-newest order
-    this.orderedMaps = Lists.reverse(mapsInSnapshotOrder);
+    this.orderedMaps = Lists.reverse(newestFirst);
+  }
+
+  /**
+   * Adds the maps a snapshot wrote itself. Its own map is on a manifest it wrote, so a manifest an
+   * older snapshot wrote is skipped without reading its map, but a manifest it filtered or merged
+   * carries an older location too, so the map's sources decide.
+   */
+  private void addOwnMaps(Snapshot snapshot, List<CompactionMap> newestFirst) {
+    Set<String> removed = null;
+    for (ManifestFile manifest : snapshot.dataManifests(io)) {
+      String mapLocation = manifest.compactionMapLocation();
+      Long writtenBy = manifest.snapshotId();
+      if (mapLocation == null
+          || writtenBy == null
+          || writtenBy != snapshot.snapshotId()
+          || loadedMaps.containsKey(mapLocation)) {
+        continue;
+      }
+
+      if (removed == null) {
+        removed = Sets.newHashSet();
+        for (DataFile file : snapshot.removedDataFiles(io)) {
+          removed.add(file.location());
+        }
+      }
+
+      CompactionMap map = CompactionMaps.read(io.newInputFile(mapLocation));
+      if (removesASource(map, removed)) {
+        loadedMaps.put(mapLocation, map);
+        newestFirst.add(map);
+      }
+    }
+  }
+
+  private static boolean removesASource(CompactionMap map, Set<String> removed) {
+    for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+      if (removed.contains(mapping.sourceFile())) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
