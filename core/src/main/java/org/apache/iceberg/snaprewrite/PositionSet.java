@@ -111,6 +111,22 @@ public class PositionSet {
   }
 
   @Override
+  public boolean equals(Object other) {
+    if (this == other) {
+      return true;
+    } else if (!(other instanceof PositionSet)) {
+      return false;
+    }
+
+    return bits.equals(((PositionSet) other).bits);
+  }
+
+  @Override
+  public int hashCode() {
+    return bits.hashCode();
+  }
+
+  @Override
   public String toString() {
     return bits.toString();
   }

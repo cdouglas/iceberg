@@ -37,7 +37,9 @@ public enum RewriteRefusal {
   DEAD_RATIO("too little would be reclaimed relative to the rows to be rewritten"),
   UNLOCATABLE_ROW("a row live in a rewritten snapshot could not be located"),
   NO_COMPACTION("no compaction with a compaction map was found"),
-  REPLACE_CHANGED_DATA("a replace operation in the window changed the table's contents");
+  REPLACE_CHANGED_DATA("a replace operation in the window changed the table's contents"),
+  NO_LEDGER("no rewritten snapshot names a ledger to reconstruct it from"),
+  LEDGER_MISMATCH("the table no longer matches the ledger it would be reconstructed from");
 
   private final String description;
 

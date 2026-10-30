@@ -21,6 +21,7 @@ package org.apache.iceberg.data.snaprewrite;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -104,47 +105,7 @@ public class TestSnapshotRewriteLedger extends SnapshotRewriteTestBase {
     for (SnapshotRewriteLedger.Entry entry : ledger.entries()) {
       String path = entry.file().location();
       described.add(path);
-      DataFile original = originals.get(path);
-
-      List<Integer> span = Lists.newArrayList();
-      for (int index = entry.first(); index <= entry.last(); index += 1) {
-        span.add(index);
-      }
-
-      assertThat(referencedAt.get(path)).as("span of %s", path).isEqualTo(span);
-      assertThat(entry.dataSequenceNumber()).isEqualTo(original.dataSequenceNumber());
-      assertThat(entry.fileSequenceNumber()).isEqualTo(original.fileSequenceNumber());
-      assertThat(entry.file().firstRowId()).isEqualTo(original.firstRowId());
-      assertThat(entry.file().recordCount()).isEqualTo(original.recordCount());
-      assertThat(addedPaths(table.snapshot(entry.addedSnapshotId())))
-          .as("the snapshot recorded as adding %s added it", path)
-          .contains(path);
-
-      List<Long> ids = Lists.newArrayList();
-      for (Record row : RawFiles.readAllWithLineage(table.io(), original, table.schema())) {
-        ids.add((Long) row.getField(MetadataColumns.ROW_ID.name()));
-      }
-
-      assertThat(Longs.asList(entry.rowIds())).as("row ids of %s", path).isEqualTo(ids);
-
-      // Holes are what no window snapshot reads, found by scanning every one that references it.
-      Set<Long> read = Sets.newHashSet();
-      for (int index : span) {
-        read.addAll(
-            livePositions(table, window.get(index).snapshotId()).getOrDefault(path, Set.of()));
-      }
-
-      Set<Long> expectedHoles = Sets.newHashSet();
-      for (long pos = 0; pos < original.recordCount(); pos += 1) {
-        if (!read.contains(pos)) {
-          expectedHoles.add(pos);
-        }
-      }
-
-      Set<Long> recordedHoles = Sets.newHashSet();
-      entry.holes().forEach(recordedHoles::add);
-      assertThat(recordedHoles).as("holes in %s", path).isEqualTo(expectedHoles);
-      holes += recordedHoles.size();
+      holes += assertDescribes(entry, originals.get(path), referencedAt.get(path), window);
     }
 
     assertThat(described).isEqualTo(referencedAt.keySet());
@@ -162,7 +123,7 @@ public class TestSnapshotRewriteLedger extends SnapshotRewriteTestBase {
       assertThat(read.file().partition()).isEqualTo(written.file().partition());
       assertThat(read.file().firstRowId()).isEqualTo(written.file().firstRowId());
       assertThat(read.rowIds()).isEqualTo(written.rowIds());
-      assertThat(read.holes().toString()).isEqualTo(written.holes().toString());
+      assertThat(read.births()).isEqualTo(written.births());
       assertThat(read.first()).isEqualTo(written.first());
       assertThat(read.last()).isEqualTo(written.last());
       assertThat(read.addedSnapshotId()).isEqualTo(written.addedSnapshotId());
@@ -172,6 +133,62 @@ public class TestSnapshotRewriteLedger extends SnapshotRewriteTestBase {
       assertThat(result.metadata().snapshot(id).summary())
           .containsEntry(SnapshotRewriteLedger.SUMMARY_KEY, result.ledgerLocation());
     }
+  }
+
+  /**
+   * Checks one entry against the original file and against scans of the snapshots that reference
+   * it, and returns how many holes it records.
+   */
+  private int assertDescribes(
+      SnapshotRewriteLedger.Entry entry,
+      DataFile original,
+      List<Integer> referencedAt,
+      List<Snapshot> window)
+      throws IOException {
+    String path = original.location();
+    List<Integer> span = Lists.newArrayList();
+    for (int index = entry.first(); index <= entry.last(); index += 1) {
+      span.add(index);
+    }
+
+    assertThat(referencedAt).as("span of %s", path).isEqualTo(span);
+    assertThat(entry.hasOneSequence()).as("an original history has one per file").isTrue();
+    assertThat(entry.dataSequenceNumber(entry.first())).isEqualTo(original.dataSequenceNumber());
+    assertThat(entry.fileSequenceNumber(entry.first())).isEqualTo(original.fileSequenceNumber());
+    assertThat(entry.file().firstRowId()).isEqualTo(original.firstRowId());
+    assertThat(entry.file().recordCount()).isEqualTo(original.recordCount());
+    assertThat(addedPaths(table.snapshot(entry.addedSnapshotId())))
+        .as("the snapshot recorded as adding %s added it", path)
+        .contains(path);
+
+    List<Long> ids = Lists.newArrayList();
+    for (Record row : RawFiles.readAllWithLineage(table.io(), original, table.schema())) {
+      ids.add((Long) row.getField(MetadataColumns.ROW_ID.name()));
+    }
+
+    assertThat(Longs.asList(entry.rowIds())).as("row ids of %s", path).isEqualTo(ids);
+
+    // A position is born at the first window snapshot whose scan reads it; a hole is never read.
+    int[] expectedBirths = new int[(int) original.recordCount()];
+    Arrays.fill(expectedBirths, -1);
+    for (int index : span) {
+      Set<Long> read =
+          livePositions(table, window.get(index).snapshotId()).getOrDefault(path, Set.of());
+      for (int pos = 0; pos < expectedBirths.length; pos += 1) {
+        if (expectedBirths[pos] < 0 && read.contains((long) pos)) {
+          expectedBirths[pos] = index;
+        }
+      }
+    }
+
+    assertThat(entry.births()).as("births in %s", path).isEqualTo(expectedBirths);
+    int holes = 0;
+    for (int pos = 0; pos < expectedBirths.length; pos += 1) {
+      assertThat(entry.holes().contains(pos)).isEqualTo(expectedBirths[pos] < 0);
+      holes += expectedBirths[pos] < 0 ? 1 : 0;
+    }
+
+    return holes;
   }
 
   /**

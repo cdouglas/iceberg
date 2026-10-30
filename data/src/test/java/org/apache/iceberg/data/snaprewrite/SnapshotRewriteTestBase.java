@@ -33,12 +33,14 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.Tables;
 import org.apache.iceberg.data.FileHelpers;
@@ -56,7 +58,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.snaprewrite.SnapshotReconstructResult;
 import org.apache.iceberg.snaprewrite.SnapshotRewrite;
+import org.apache.iceberg.snaprewrite.SnapshotRewriteReconstruct;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -170,7 +174,9 @@ public abstract class SnapshotRewriteTestBase {
     table
         .newRowDelta()
         .addDeletes(
-            FileHelpers.writeDeleteFile(table, newOutput("deletes"), partition, positions).first())
+            FileHelpers.writeDeleteFile(
+                    table, newOutput("deletes"), partition, positions, formatVersion)
+                .first())
         .commit();
   }
 
@@ -257,7 +263,18 @@ public abstract class SnapshotRewriteTestBase {
       }
     }
 
-    delta.addDeletes(writeDeletes(merged));
+    // One deletion vector per data file: a commit that deletes from several writes several.
+    java.util.Map<String, List<Pair<CharSequence, Long>>> byFile = Maps.newLinkedHashMap();
+    for (Pair<CharSequence, Long> position : merged) {
+      byFile
+          .computeIfAbsent(position.first().toString(), path -> Lists.newArrayList())
+          .add(position);
+    }
+
+    for (List<Pair<CharSequence, Long>> positionsInFile : byFile.values()) {
+      delta.addDeletes(writeDeletes(positionsInFile));
+    }
+
     for (DeleteFile old : superseded) {
       delta.removeDeletes(old);
     }
@@ -290,6 +307,69 @@ public abstract class SnapshotRewriteTestBase {
     SnapshotRewriteResult result = rewriter().materialize();
     result.checkStamping();
     return result;
+  }
+
+  /**
+   * Commits a rewrite and reclaims everything it detached, leaving only the rewritten layout.
+   *
+   * <p>The metadata log is trimmed to one entry first: the entry for the document before the commit
+   * still names the original layout, and reclaim withholds anything a retained entry reaches.
+   */
+  protected void commitAndReclaim(SnapshotRewriteResult result) {
+    TableOperations ops = ((HasTableOperations) table).operations();
+    result.commit(ops);
+    trimMetadataLog();
+    SnapshotRewriteResult.ReclaimResult reclaimed = result.reclaim(ops);
+    assertThat(reclaimed.withheld()).as("nothing still reaches the original layout").isEmpty();
+    for (String path : result.plan().detachedFiles().keySet()) {
+      assertThat(table.io().newInputFile(path).exists()).as("%s was reclaimed", path).isFalse();
+    }
+  }
+
+  /** Reconstructs the layout every ledger in the table describes. Commits nothing. */
+  protected SnapshotReconstructResult reconstruct() {
+    table.refresh();
+    return SnapshotRewriteReconstruct.forTable(table, new GenericSnapshotRewriteIO(table))
+        .materialize();
+  }
+
+  /** Commits a reconstruction and reclaims the rewritten layout it replaced. */
+  protected void commitAndReclaim(SnapshotReconstructResult result) {
+    TableOperations ops = ((HasTableOperations) table).operations();
+    result.commit(ops);
+    trimMetadataLog();
+    SnapshotRewriteResult.ReclaimResult reclaimed = result.reclaim(ops);
+    assertThat(reclaimed.withheld()).as("nothing still reaches the rewritten layout").isEmpty();
+    for (String path : result.replacedFiles()) {
+      assertThat(table.io().newInputFile(path).exists()).as("%s was reclaimed", path).isFalse();
+    }
+  }
+
+  /**
+   * Takes a rewrite through reclaim and reconstructs the layout {@code before} recorded.
+   *
+   * <p>Commits the rewrite, reclaims the original layout, reconstructs it from the ledger, and
+   * checks the result against {@code before} both as an uncommitted shadow and once committed. The
+   * rewritten layout is left unreclaimed, so a caller can still read the rewrite's own result.
+   */
+  void assertReconstructs(LayoutFingerprint before, SnapshotRewriteResult result) {
+    assertThat(result.ledger()).as(result.plan().ledgerUnavailable()).isNotNull();
+    commitAndReclaim(result);
+    SnapshotReconstructResult rebuilt = reconstruct();
+    before.assertReproducedBy(rebuilt.asTable());
+    rebuilt.commit(((HasTableOperations) table).operations());
+    table.refresh();
+    before.assertReproducedBy(table);
+  }
+
+  private void trimMetadataLog() {
+    table.refresh();
+    table
+        .updateProperties()
+        .set(TableProperties.METADATA_PREVIOUS_VERSIONS_MAX, "1")
+        .set("test.trim", UUID.randomUUID().toString())
+        .commit();
+    table.refresh();
   }
 
   /**
