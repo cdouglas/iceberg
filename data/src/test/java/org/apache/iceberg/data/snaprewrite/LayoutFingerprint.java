@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.ContentFile;
@@ -45,6 +46,7 @@ import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.snaprewrite.SnapshotRewriteLedger;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteReconstruct;
 import org.apache.iceberg.types.Types;
 
@@ -60,6 +62,9 @@ import org.apache.iceberg.types.Types;
  * vectors it carried, added and removed, each with its sequence numbers.
  */
 class LayoutFingerprint {
+  /** The manifest list a rewritten snapshot replaced, as {@code SnapshotRewriteRestore} keys it. */
+  private static final String REWRITTEN_FROM = "snapshot-rewritten-from";
+
   private final Map<Long, SnapshotLayout> bySnapshot;
 
   private LayoutFingerprint(Map<Long, SnapshotLayout> bySnapshot) {
@@ -110,6 +115,30 @@ class LayoutFingerprint {
    * held to one the compaction added.
    */
   Comparison assertReproducedBy(Table after) {
+    Comparison comparison = compare(after, LayoutFingerprint::withoutRestoredFrom);
+    assertForwardDeltas(after, bySnapshot.keySet());
+    assertMapsHold(after, bySnapshot.keySet());
+    return comparison;
+  }
+
+  /**
+   * Asserts that {@code after}, a second rewrite of the history this recorded the first rewrite of,
+   * has the same layout.
+   *
+   * <p>The compaction's files must match exactly, as above. Recovery files are written again at new
+   * paths, so each is matched by the rows it holds, and must hold all of them: a rewrite leaves
+   * nothing out. Their vectors are compared through that match. Summaries are compared without the
+   * locations a rewrite records, the ledger and the manifest list it replaced, which differ by
+   * construction, and without what a reconstruction in between added.
+   *
+   * <p>A rewritten snapshot is not a forward delta against its parent, and its maps describe the
+   * original layout, so neither is checked here.
+   */
+  Comparison assertRewrittenAlikeBy(Table after) {
+    return compare(after, LayoutFingerprint::withoutLocations);
+  }
+
+  private Comparison compare(Table after, UnaryOperator<Map<String, String>> summaries) {
     LayoutFingerprint reproduced = of(after, bySnapshot.keySet());
 
     // Positions read anywhere in the recorded history, by file: everything else is a hole.
@@ -122,6 +151,7 @@ class LayoutFingerprint {
 
     Set<String> exact = Sets.newHashSet();
     Map<String, String> moves = Maps.newHashMap();
+    Set<String> holed = Sets.newHashSet();
     Set<String> leftOut = Sets.newHashSet();
     for (Map.Entry<Long, SnapshotLayout> snapshot : bySnapshot.entrySet()) {
       long id = snapshot.getKey();
@@ -136,24 +166,26 @@ class LayoutFingerprint {
           continue;
         }
 
-        FileLayout match = withoutHoles(id, original, everRead.get(original.path), now, matched);
+        Set<Long> read = everRead.get(original.path);
+        FileLayout match = withoutHoles(id, original, read, now, matched);
         if (match == null) {
           leftOut.add(original.path);
         } else {
           matched.add(match.path);
           moves.put(original.path, match.path);
+          if (read.size() < original.rows.size()) {
+            holed.add(original.path);
+          }
         }
       }
 
       assertThat(now.files.keySet()).as("files of snapshot %s", id).isEqualTo(matched);
-      assertThat(withoutRestoredFrom(now.summary))
+      assertThat(summaries.apply(now.summary))
           .as("summary of snapshot %s", id)
-          .isEqualTo(withoutRestoredFrom(snapshot.getValue().summary));
+          .isEqualTo(summaries.apply(snapshot.getValue().summary));
     }
 
-    assertChangesReproduced(after, reproduced, moves, leftOut);
-    assertForwardDeltas(after, bySnapshot.keySet());
-    assertMapsHold(after, bySnapshot.keySet());
+    assertChangesReproduced(after, reproduced, moves, holed, leftOut);
     return new Comparison(exact.size(), moves.size());
   }
 
@@ -207,19 +239,29 @@ class LayoutFingerprint {
 
   /**
    * Each snapshot removes the same data files, at their new paths if they moved, and carries, adds
-   * and removes the same vectors, leaving out those of files that moved or were left out.
+   * and removes the same vectors, by the data file each applies to, at its new path if it moved.
+   * Vectors of a file that lost its holes are left out, since they masked them, and so are those of
+   * a file left out entirely.
    */
   private void assertChangesReproduced(
-      Table after, LayoutFingerprint reproduced, Map<String, String> moves, Set<String> leftOut) {
-    Set<String> vectorsBefore = Sets.union(moves.keySet(), leftOut);
-    Set<String> vectorsAfter = Sets.newHashSet(moves.values());
+      Table after,
+      LayoutFingerprint reproduced,
+      Map<String, String> moves,
+      Set<String> holed,
+      Set<String> leftOut) {
+    Set<String> vectorsBefore = Sets.union(holed, leftOut);
+    Set<String> vectorsAfter = Sets.newHashSet();
+    for (String path : holed) {
+      vectorsAfter.add(moves.get(path));
+    }
+
     for (Map.Entry<Long, SnapshotLayout> snapshot : bySnapshot.entrySet()) {
       long id = snapshot.getKey();
       SnapshotLayout original = snapshot.getValue();
       SnapshotLayout now = reproduced.bySnapshot.get(id);
-      assertThat(now.vectors(vectorsAfter))
+      assertThat(now.vectors(Map.of(), vectorsAfter))
           .as("deletion vectors of snapshot %s", id)
-          .isEqualTo(original.vectors(vectorsBefore));
+          .isEqualTo(original.vectors(moves, vectorsBefore));
 
       if (original.parentId == null || after.snapshot(original.parentId) == null) {
         continue;
@@ -233,10 +275,30 @@ class LayoutFingerprint {
       }
 
       assertThat(now.removed).as("data files snapshot %s removed", id).isEqualTo(removed);
-      assertThat(now.removedVectors(vectorsAfter))
+      assertThat(now.removedVectors(Map.of(), vectorsAfter))
           .as("deletion vectors snapshot %s removed", id)
-          .isEqualTo(original.removedVectors(vectorsBefore));
+          .isEqualTo(original.removedVectors(moves, vectorsBefore));
     }
+  }
+
+  /**
+   * A summary without the locations a rewrite records, which a second rewrite cannot share with the
+   * first, and without what a reconstruction added, at any depth.
+   */
+  private static Map<String, String> withoutLocations(Map<String, String> summary) {
+    Map<String, String> kept = Maps.newHashMap();
+    for (Map.Entry<String, String> entry : summary.entrySet()) {
+      String key = entry.getKey();
+      if (key.contains(SnapshotRewriteReconstruct.RESTORED_FROM)) {
+        continue;
+      }
+
+      boolean location =
+          key.equals(REWRITTEN_FROM) || key.equals(SnapshotRewriteLedger.SUMMARY_KEY);
+      kept.put(key, location ? "(a location)" : entry.getValue());
+    }
+
+    return kept;
   }
 
   /**
@@ -421,7 +483,11 @@ class LayoutFingerprint {
       Map<String, Set<Long>> live = livePositions(table, snapshot.snapshotId());
       Map<String, FileLayout> files = Maps.newHashMap();
       for (DataFile file : dataFiles(table, snapshot)) {
-        List<Row> rows = contents.computeIfAbsent(file.location(), path -> rowsOf(table, file));
+        // By sequence number as well as path: one file can appear at two (errata 2), and a null
+        // _last_updated_sequence_number reads as whichever this snapshot gives it.
+        List<Row> rows =
+            contents.computeIfAbsent(
+                file.location() + "@" + file.fileSequenceNumber(), key -> rowsOf(table, file));
         files.put(
             file.location(),
             new FileLayout(
@@ -451,16 +517,18 @@ class LayoutFingerprint {
     }
 
     /**
-     * The vectors carried, by the data file each applies to: its sequence number, and whether this
-     * snapshot added it. Those that apply to {@code excluded} files are left out.
+     * The vectors carried, by the data file each applies to, renamed through {@code moves}: its
+     * sequence number, and whether this snapshot added it. Those that apply to {@code excluded}
+     * files are left out.
      */
-    Map<String, String> vectors(Set<String> excluded) {
+    Map<String, String> vectors(Map<String, String> moves, Set<String> excluded) {
       Map<String, String> vectors = Maps.newHashMap();
       for (DeleteFile file : deletes) {
         String target = appliesTo(file);
         if (!excluded.contains(target)) {
           String added = addedDeletes.contains(file.location()) ? " added" : "";
-          vectors.put(target, "seq=" + file.dataSequenceNumber() + added);
+          vectors.put(
+              moves.getOrDefault(target, target), "seq=" + file.dataSequenceNumber() + added);
         }
       }
 
@@ -468,12 +536,12 @@ class LayoutFingerprint {
     }
 
     /** The vectors removed, by the data file each applied to, with its sequence number. */
-    Map<String, Long> removedVectors(Set<String> excluded) {
+    Map<String, Long> removedVectors(Map<String, String> moves, Set<String> excluded) {
       Map<String, Long> vectors = Maps.newHashMap();
       for (DeleteFile file : removedDeletes) {
         String target = appliesTo(file);
         if (!excluded.contains(target)) {
-          vectors.put(target, file.dataSequenceNumber());
+          vectors.put(moves.getOrDefault(target, target), file.dataSequenceNumber());
         }
       }
 

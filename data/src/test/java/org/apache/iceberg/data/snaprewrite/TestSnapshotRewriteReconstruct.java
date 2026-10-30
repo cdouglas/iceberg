@@ -175,15 +175,16 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
 
   /**
    * A partial compaction leaves a file the compaction still holds, so reclaim never deletes it. It
-   * is referenced again as it is, not rebuilt.
+   * is referenced again as it is, not rebuilt, and so is the deletion vector the compaction carries
+   * for it. The file kept is the floor's output: an appended one would be refused on v3.
    */
   @Test
   public void aFileThePartialCompactionKeptIsReused() throws IOException {
     useFormatVersion(3);
 
     append(records(1, 4, "base"));
-    compact();
-    DataFile untouched = append(records(10, 3, "keep"));
+    Snapshot floor = compact();
+    DataFile untouched = LayoutFingerprint.dataFiles(table, floor).get(0);
     DataFile alpha = append(records(20, 3, "alpha"));
     delete(ImmutableList.of(at(alpha, 0)));
     delete(ImmutableList.of(at(untouched, 2)));
@@ -240,6 +241,7 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
     Map<Long, List<String>> rows = allSnapshotRows(table);
 
     commitAndReclaim(rewrite());
+    LayoutFingerprint rewrittenOnce = LayoutFingerprint.of(table);
     commitAndReclaim(reconstruct());
 
     SnapshotRewriteResult again = rewrite();
@@ -248,6 +250,10 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
     for (Map.Entry<Long, List<String>> entry : rows.entrySet()) {
       assertThat(rowsAt(again.asTable(), entry.getKey())).isEqualTo(entry.getValue());
     }
+
+    // Not only the same rows: the same layout, file for file, as the first rewrite wrote.
+    LayoutFingerprint.Comparison alike = rewrittenOnce.assertRewrittenAlikeBy(again.asTable());
+    assertThat(alike.moved()).as("recovery files, written again").isPositive();
   }
 
   /**
@@ -261,7 +267,17 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
     useFormatVersion(3);
     buildHistoryWithAHole();
     Map<Long, List<String>> rows = allSnapshotRows(table);
-    commitAndReclaim(rewrite());
+    SnapshotRewriteResult first = rewrite();
+    commitAndReclaim(first);
+
+    // The rewritten snapshots only: the compaction outside them now lists the moved file as
+    // removed, where after the first rewrite it still named the original.
+    List<Long> window = Lists.newArrayList();
+    for (Snapshot snapshot : first.plan().window()) {
+      window.add(snapshot.snapshotId());
+    }
+
+    LayoutFingerprint rewrittenOnce = LayoutFingerprint.of(table, window);
     commitAndReclaim(reconstruct());
     LayoutFingerprint reconstructed = LayoutFingerprint.of(table);
 
@@ -271,6 +287,8 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
       assertThat(rowsAt(again.asTable(), entry.getKey())).isEqualTo(entry.getValue());
     }
 
+    rewrittenOnce.assertRewrittenAlikeBy(again.asTable());
+
     commitAndReclaim(again);
     SnapshotReconstructResult result = reconstruct();
     assertThat(result.report().rebuiltMoved()).isZero();
@@ -278,6 +296,52 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
     assertThat(reconstructed.assertReproducedBy(result.asTable()).moved()).isZero();
     commitAndReclaim(result);
     reconstructed.assertReproducedBy(table);
+  }
+
+  /**
+   * The other kind of hole: a row already dead at the floor, in a file whose adding snapshot has
+   * expired. The floor here is an append, not a compaction. No window snapshot reads the row, and
+   * nothing outside the window holds the file once its adding snapshot is gone, so reclaim deletes
+   * it and it comes back without the row, at a new path.
+   */
+  @Test
+  public void aRowDeadAtTheFloorIsAHole() throws IOException {
+    useFormatVersion(3);
+    DataFile alpha = append(records(1, 4, "alpha"));
+    Snapshot appended = table.currentSnapshot();
+    delete(ImmutableList.of(at(alpha, 1)));
+    Snapshot deleted = table.currentSnapshot();
+
+    append(records(10, 3, "beta"));
+    Snapshot floor = table.currentSnapshot();
+    delete(ImmutableList.of(at(alpha, 3)));
+    append(records(20, 2, "gamma"));
+    compact();
+
+    table
+        .expireSnapshots()
+        .expireSnapshotId(appended.snapshotId())
+        .expireSnapshotId(deleted.snapshotId())
+        .commit();
+    table.refresh();
+    assertThat(table.snapshot(floor.snapshotId()).parentId()).isEqualTo(deleted.snapshotId());
+    assertThat(table.snapshot(deleted.snapshotId())).isNull();
+
+    LayoutFingerprint before = LayoutFingerprint.of(table);
+    SnapshotRewriteResult rewritten = rewriter().floor(floor.snapshotId()).materialize();
+    assertLossless(rewritten);
+    assertThat(rewritten.ledger().entries())
+        .as("the ledger finds the hole without reading anything")
+        .anySatisfy(entry -> assertThat(entry.holes().size()).isOne());
+    commitAndReclaim(rewritten);
+    assertThat(table.io().newInputFile(alpha.location()).exists()).isFalse();
+
+    SnapshotReconstructResult result = reconstruct();
+    assertThat(result.report().holes()).isOne();
+    assertThat(result.report().rebuiltMoved()).isOne();
+    assertThat(before.assertReproducedBy(result.asTable()).moved()).isOne();
+    commitAndReclaim(result);
+    before.assertReproducedBy(table);
   }
 
   /**
