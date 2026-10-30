@@ -118,9 +118,29 @@ undone byte-identically until reclaim runs. On v3 it can still be undone after r
 
 Implemented: v2 and v3, partitioned and unpartitioned tables, partial and chained compactions, windows
 reaching back through older compactions, deletion vectors, materialized `_row_id`, reversibility,
-reconstruction after reclaim on v3, reclaim accounting, and window pricing. 141 test cases including 20
-fuzz seeds over both format versions; the lossless matrix, the layouts suite and the v3 fuzz seeds also
-run through reclaim and reconstruction.
+reconstruction after reclaim on v3, reclaim accounting, and window pricing. 147 test cases including 20
+fuzz seeds over both format versions (`SNAPREWRITE_FUZZ_SEEDS=N` adds seeds 1 to N; 407 pass); the
+lossless matrix, the layouts suite and the v3 fuzz seeds also run through reclaim and reconstruction.
+
+On v3 a rewrite refuses more than it used to, because each of these would change what a rewritten
+snapshot reports:
+
+- `LAST_UPDATED_NOT_PRESERVED`: a file the target compaction holds leaves
+  `_last_updated_sequence_number` to the file's own sequence number, which the rewrite changes. That
+  covers a compaction that did not copy the value, and a file a partial compaction kept that was
+  appended. On v3 a partial compaction that keeps an appended file is refused.
+- `MAP_MISMATCH`: a compaction map the rewrite follows pairs rows with different `_row_id`s. That
+  covers a wrong map, and a compaction that gave its rows new ids. On v2 maps are trusted.
+
+On either version, a row a map places outside the compaction's files and the recovered ones is refused
+(`UNLOCATABLE_ROW`) rather than passed through.
+
+Rewrites onto Spark 3.5's `RewriteDataFilesSparkAction` with compaction maps enabled are lossless on
+v2 and v3. On v3 they also survive reclaim and reconstruction (`TestSparkSnapshotRewrite`). Until a
+fix on `cmpmap`, v3 was refused: position tracking dropped row lineage, so every moved row got a new
+`_row_id` and the compaction's sequence number
+([compaction maps errata 5](docs/docs/compaction_maps_errata.md)). A rewrite still refuses v3
+compactions that Spark wrote before the fix.
 
 Not implemented: bulk remapping in the planner (it locates rows one at a time), distributed execution,
 and any measurement on a real table history. See
