@@ -30,6 +30,14 @@ public interface SupportsAtomicOperations extends FileIO {
      */
     default boolean supportsAppend() { return true; }
 
+    /**
+     * The most bytes one APPEND to the object at location may write, or 0 if the store sets no
+     * limit an append could reach. A larger append fails without landing (Azure caps an
+     * AppendBlock: 4 MiB before service version 2022-11-02, 100 MiB since); a CAS is not bound
+     * by it. Only ADLSFileIO sets one.
+     */
+    default long maxAppendBytes(String location) { return 0; }
+
     /** Base class for atomic-operation failures. */
     class AtomicOperationException extends RuntimeException { ... }
 
@@ -96,8 +104,17 @@ public interface AtomicOutputFile extends OutputFile {
 
 ### Write Strategies
 
-- **CAS (Compare-and-Swap)**: Replace the entire file atomically. Fails if the file was modified since the InputFile was read.
-- **APPEND**: Append to an existing file at a specific offset. Fails if the file size changed (useful for log-structured formats), or with `SegmentLimitException` once the object holds as many writes as its store allows.
+- **CAS (Compare-and-Swap)**: Replace the entire file atomically. Fails if the file is not the version the snapshot has seen (below).
+- **APPEND**: Append to an existing file at the snapshot's length. Fails if the file is not the version the snapshot has seen, even one of the same length that a CAS wrote since (useful for log-structured formats, whose readers read only what was appended after an offset they already read), or with `SegmentLimitException` once the object holds as many writes as its store allows.
+
+### Snapshots
+
+The `InputFile` passed to `newOutputFile(InputFile replace)` is the snapshot a write is conditioned on, and what it has seen decides the condition, without a request of its own:
+
+- A snapshot has **seen a version** if a write returned it (`writeAtomic`'s result), or if a lookup through it found one (`getLength()`, `exists()`; on ADLS, a read too). A CAS from it replaces only that version, and an APPEND extends only that version, at its length.
+- A snapshot that has **seen no version** (a fresh `newInputFile(path)`) assumes the object does not exist, as `OutputFile.create()` does: a CAS from it creates the object only if none exists (S3 `If-None-Match: *`, GCS generation 0, ADLS a rename with `If-None-Match: *`), and fails on an existing one. An APPEND from it looks the object up when it writes, since an append extends an existing object.
+
+So a caller that replaces an object it has not written looks it up first. A writer creating a file, which is how Iceberg writes files, pays no lookup; and a writer chaining writes (each write's result the snapshot for the next) sends one request per write.
 
 ## GCS Implementation
 
@@ -155,7 +172,7 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
 
 ### GCS Preconditions
 
-- **Standard buckets, CAS**: `storage.create(..., BlobTargetOption.generationMatch(g))` — fails with 412 if the generation changed; `generationMatch(0)` requires that the object not exist
+- **Standard buckets, CAS**: `storage.create(..., BlobTargetOption.generationMatch(g))` — fails with 412 if the generation changed; `generationMatch(0)`, from a snapshot that has seen no generation, requires that the object not exist
 - **Rapid/zonal buckets, CAS**: XML API PUT with `x-goog-if-generation-match: g` — 412 on a stale generation, 400 on a CRC32C mismatch (see [atomic_io_gcs_rapid.md](atomic_io_gcs_rapid.md))
 - **Throttling**: GCS limits mutations of a single object to about one per second (burst a few). Both bucket types return 429 past that; it maps to `StorageThrottleException`. A GCS catalog object therefore commits at most a few times per second whichever write path is used.
 - **APPEND**: Rejected at `prepare()` with `IllegalArgumentException`. GCS objects are immutable.
@@ -179,13 +196,15 @@ public class S3FileIO implements CredentialSupplier, DelegateFileIO,
     public AtomicOutputFile newOutputFile(InputFile replace) {
         String path = replace.location();
         if (replace instanceof S3InputFile) {
-            // A null etag means the object did not exist when pinned; that translates
-            // to ifNoneMatch=* on commit so a stale "doesn't exist" writer cannot
-            // silently overwrite the winner of a create race.
-            String etag = ((S3InputFile) replace).etag();
-            boolean assertAbsent = etag == null;
+            // The version the snapshot has seen, taken without a request. One that has seen
+            // none assumes the object is absent: a CAS from it writes with ifNoneMatch=*, so a
+            // stale "doesn't exist" writer cannot silently overwrite the winner of a create race.
+            // An append writes at the snapshot's length, conditioned on its etag.
+            S3InputFile snapshot = (S3InputFile) replace;
+            String etag = snapshot.seenEtag();
             return S3OutputFile.fromLocation(
-                path, clientForStoragePath(path), metrics, etag, assertAbsent);
+                path, clientForStoragePath(path), metrics, etag, etag == null,
+                snapshot.knownLength());
         }
         return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics);
     }
@@ -226,8 +245,8 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile {
 
 ### S3 Preconditions
 
-- **CAS**: `PutObjectRequest.ifMatch(etag)` - fails with 412 PreconditionFailed or 409 ConditionalRequestConflict
-- **APPEND**: `PutObjectRequest.writeOffsetBytes(offset)` - fails with InvalidWriteOffsetException (S3 Express One Zone only)
+- **CAS**: `PutObjectRequest.ifMatch(etag)`, or `ifNoneMatch("*")` from a snapshot that has seen no version - fails with 412 PreconditionFailed or 409 ConditionalRequestConflict
+- **APPEND**: `PutObjectRequest.ifMatch(etag)` and `writeOffsetBytes(length)`, the snapshot's ETag and length, with no HEAD first - fails with 412 or InvalidWriteOffsetException (S3 Express One Zone only)
 
 ### S3 Checksums
 
@@ -259,11 +278,19 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
     public AtomicOutputFile newOutputFile(InputFile replace) {
         String path = replace.location();
         if (replace instanceof ADLSInputFile) {
-            DataLakeRequestConditions conditions = ((ADLSInputFile) replace).conditions();
-            long objLength = replace.exists() ? replace.getLength() : -1L;
+            // The version the snapshot has seen, taken without a request: If-Match its ETag,
+            // at its length; or, if it has seen none, If-None-Match: * (an append looks the
+            // file up when it writes).
+            ADLSInputFile snapshot = (ADLSInputFile) replace;
+            DataLakeRequestConditions conditions = snapshot.conditions();
+            if (conditions == null) {
+                return new ADLSOutputFile(path, fileClient(path), azureProperties, -1L,
+                    new DataLakeRequestConditions().setIfNoneMatch("*"), metrics,
+                    this::fileClient, true);
+            }
             return new ADLSOutputFile(
-                path, fileClient(path), azureProperties, objLength, conditions, metrics,
-                this::fileClient);  // builds the CAS temp's client, with the SAS the rename needs
+                path, fileClient(path), azureProperties, replace.getLength(), conditions,
+                metrics, this::fileClient);  // builds the CAS temp's client, with the SAS the rename needs
         }
         return new ADLSOutputFile(path, fileClient(path), azureProperties, metrics, this::fileClient);
     }
@@ -305,9 +332,11 @@ The previous implementation used Data Lake writes. Both of its paths had problem
 ## Usage Example
 
 ```java
-// Read current state
+// Read current state. The lookup pins the version the CAS replaces; without it, the
+// snapshot has seen no version and the CAS would only create the object.
 SupportsAtomicOperations io = (SupportsAtomicOperations) catalog.io();
 InputFile current = io.newInputFile("gs://bucket/catalog.state");
+current.getLength();
 byte[] content = readAll(current);
 
 // Modify state
@@ -344,10 +373,10 @@ try {
 
 1. **S3 APPEND**: Only supported on S3 Express One Zone (directory) buckets; standard buckets reject `writeOffsetBytes`. `S3FileIO.supportsAppend()` returns `true` for both, so a catalog on a standard bucket must not append: set `fileio.catalog.max.append.count=0` (CAS only) for `FileIOCatalog`. The standard-bucket contract test (`S3StandardFileIOAtomicTest`) overrides the contract test's `supportsAppend()` hook to skip the APPEND cases.
 2. **GCS APPEND**: Not supported. GCS objects are immutable — every write replaces the whole object — so `GCSFileIO.supportsAppend()` returns `false` and `GCSOutputFile.prepare()` rejects `Strategy.APPEND` with `IllegalArgumentException`. Callers that mix CAS and APPEND in a commit log must fall back to CAS-only.
-3. **ADLS APPEND**: One conditional `AppendBlock` per append; at most 50,000 appends per file between CAS compactions. CAS requires a hierarchical-namespace account (it renames).
+3. **ADLS APPEND**: One conditional `AppendBlock` per append, of at most `maxAppendBytes` (4 MiB before service version 2022-11-02, 100 MiB since; a larger append fails without landing, so a caller writes it by CAS, which stages it in blocks of that size); at most 50,000 appends per file between CAS compactions. CAS requires a hierarchical-namespace account (it renames).
 4. **Writes per object**: an S3 Express object holds at most 10,000 parts and an Azure Append Blob 50,000 blocks, counting the write that creates or replaces it and each append. An append past the limit fails with `SupportsAtomicOperations.SegmentLimitException`, not an `AppendException`: nothing landed, and no append to the object can succeed, so the caller must replace it by CAS. `SupportsAtomicOperationsContractTest.appendPastTheSegmentLimitFails` checks this against the real store when run with `ATOMIC_SEGMENT_LIMIT_TEST=true`. It makes that many requests and would fail only if the store changed its behavior, so it is a canary to run on such a change, not part of a regular run.
 5. **Large Files**: Atomic operations work best for small files (metadata, catalog state); large writes may exceed provider request timeouts.
 
 ## Testing
 
-`SupportsAtomicOperationsContractTest` states this contract as tests, and a subclass per store runs it against real storage: `S3StandardFileIOAtomicTest`, `S3ExpressFileIOAtomicTest`, `GcsFileIOAtomicTest`, `GcsFileIOAtomicRapidTest` and `AdlsFileIOAtomicTest`. The fork's [README](../../README.md#testing-on-real-cloud-storage) lists the environment each needs.
+`SupportsAtomicOperationsContractTest` states this contract as tests: racing creates, replaces and appends have exactly one winner, whose bytes are stored; a CAS that fails mid-write leaves its target intact; a CAS from a snapshot that has seen no version fails on an existing object, and one from a snapshot that looked replaces what it saw; an APPEND from an unseen snapshot extends the object; an APPEND to a version that a CAS replaced with an object of the same length fails; and an append past the store's limit on writes per object fails with `SegmentLimitException`. Mock tests per store check that a create sends no lookup and that a lookup's version is the one written over (`TestS3UnseenSnapshot`, `TestS3OutputFileAppend`, `TestADLSInputFile`, `TestGcsInputFile`). A subclass per store runs the contract against real storage: `S3StandardFileIOAtomicTest`, `S3ExpressFileIOAtomicTest`, `GcsFileIOAtomicTest`, `GcsFileIOAtomicRapidTest` and `AdlsFileIOAtomicTest`. The fork's [README](../../README.md#testing-on-real-cloud-storage) lists the environment each needs.

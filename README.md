@@ -35,7 +35,8 @@ separate repository: <https://github.com/cdouglas/catalog>.
   compare-and-swap (CAS) and offset-pinned append (APPEND) writes, with
   structured exceptions distinguishing precondition failures from transient
   backpressure, and from an object that holds as many appends as its store
-  allows (`SegmentLimitException`).
+  allows (`SegmentLimitException`); `maxAppendBytes(location)` tells a caller
+  the most one append may write.
 - **Cloud-provider implementations** of that interface for AWS S3 (standard +
   Express One Zone), GCS (standard + Rapid Storage zonal buckets), and Azure
   ADLS Gen2.
@@ -51,6 +52,16 @@ separate repository: <https://github.com/cdouglas/catalog>.
   of writing an Avro manifest list, and `InlineSnapshot`, a snapshot that
   holds its list in memory (`manifestListLocation()` is `null`).
   `RewriteTablePathUtil` rejects such snapshots.
+- **Commit footprints** — `CommitFootprint`: what each snapshot producer's
+  commit depends on (BLIND, VALIDATED with the checks its retry would make, or
+  OPAQUE), attached to the commit's `InlineSnapshot`, so a catalog can merge a
+  commit onto a table that changed after it was read where Iceberg's retry
+  would commit the same.
+- **`SerializableTable` for tables without a metadata file** — a table whose
+  metadata location is not a `metadata.json` (an inline table's) is shipped
+  with its metadata as JSON and its inline snapshots' manifests, so that a
+  Spark or Flink worker that deserializes it, by Java serialization or Kryo,
+  reads the table's snapshots, history and metadata tables.
 - **`TableMetadata.Builder` additions** — `setLastUpdatedMillis`, so a catalog
   replaying a commit keeps the writer's `last-updated-ms`, and
   `replaceSnapshots`, which swaps snapshot implementations (e.g. for
@@ -59,9 +70,12 @@ separate repository: <https://github.com/cdouglas/catalog>.
   tests) published as a `tests` classifier JAR for downstream consumers.
 
 `atomicio` sits on branch `core-fixes`: one upstream-style commit for each of
-the Iceberg core bugs C2–C24, with its tests. The companion catalog's fuzzers
-found C2–C14 and C24, and a review of Iceberg's commit retry paths that their
-finds prompted found C15–C23. The bugs are documented in that repository's
+the Iceberg core bugs C2–C27, with its tests. The companion catalog's fuzzers
+found C2–C14, C24, C26 and C27; a review of Iceberg's commit retry paths that
+their finds prompted found C15–C23, and a review of the catalog's
+conflict-encoding plan C25. C23, C24 and C25 follow open upstream pull
+requests, C26 one the stale bot closed, and C27 completes an earlier fix. The
+bugs are documented in that repository's
 [`docs/ICEBERG_ISSUES.md`](https://github.com/cdouglas/catalog/blob/main/docs/ICEBERG_ISSUES.md),
 with a document per issue for upstream reports in
 [`docs/iceberg-issues/`](https://github.com/cdouglas/catalog/tree/main/docs/iceberg-issues).
@@ -104,8 +118,12 @@ version.
 `SupportsAtomicOperationsContractTest` (in `iceberg-api`'s test jar) is the
 contract every `SupportsAtomicOperations` implementation must meet: racing
 creates, replaces and appends have exactly one winner, whose bytes are stored;
-a CAS that fails mid-write leaves its target intact; and an append past the
-store's limit on writes per object fails with `SegmentLimitException`. A
+a CAS that fails mid-write leaves its target intact; a write is conditioned on
+the version its snapshot has seen, and a snapshot that has seen none assumes no
+object (a CAS from it only creates); an append to a version that a CAS replaced
+with an object of the same length fails; and an append past the store's limit
+on writes per object fails with `SegmentLimitException`
+([`docs/docs/atomic_io.md`](docs/docs/atomic_io.md) "Snapshots"). A
 subclass per store runs it against real storage, and each case skips when its
 store's environment is not set:
 
