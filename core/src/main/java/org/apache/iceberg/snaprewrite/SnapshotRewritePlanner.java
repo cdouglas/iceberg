@@ -36,6 +36,7 @@ import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.ManifestFiles;
 import org.apache.iceberg.ManifestReader;
+import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PositionDeleteRemapper;
 import org.apache.iceberg.Snapshot;
@@ -184,6 +185,8 @@ public class SnapshotRewritePlanner {
 
     checkDeadRatio(resurrectedRows, targetRows);
 
+    LedgerPlan ledger = planLedger(compaction, window, states, lookup);
+
     return new SnapshotRewritePlan(
         base,
         compaction,
@@ -193,7 +196,9 @@ public class SnapshotRewritePlanner {
         resurrections,
         detachedFiles(window),
         resurrectedRows,
-        targetRows);
+        targetRows,
+        ledger.ledger,
+        ledger.unavailable);
   }
 
   /**
@@ -278,6 +283,143 @@ public class SnapshotRewritePlanner {
     }
 
     return count;
+  }
+
+  // ---------------------------------------------------------------- the ledger
+
+  /**
+   * Plans the ledger a reconstruction after reclaim would need (SNAPREWRITE_SPEC.md 14.3).
+   *
+   * <p>Everything but the row ids comes from metadata the planner has already read, and so do the
+   * row ids of a file whose ids all derive from its {@code first_row_id}. Any other file is left
+   * pending, to be read when the rewrite is materialized.
+   *
+   * <p>A window that cannot have a ledger still rewrites. It just cannot be reconstructed once
+   * reclaimed, and the plan says why.
+   */
+  private LedgerPlan planLedger(
+      Snapshot compaction,
+      List<Snapshot> window,
+      Map<Long, SnapshotState> states,
+      CompactionMapLookup lookup) {
+    if (base.formatVersion() < 3) {
+      return LedgerPlan.unavailable("below v3 rows carry no id to key a ledger by");
+    }
+
+    if (!rewriteIO.preservesRowLineage()) {
+      return LedgerPlan.unavailable("the SnapshotRewriteIO does not preserve row lineage");
+    }
+
+    Map<String, Integer> first = Maps.newLinkedHashMap();
+    Map<String, Integer> last = Maps.newHashMap();
+    Map<String, DataFile> files = Maps.newHashMap();
+    List<SnapshotRewriteLedger.WindowSnapshot> snapshots = Lists.newArrayList();
+    for (int index = 0; index < window.size(); index += 1) {
+      Snapshot snapshot = window.get(index);
+      snapshots.add(
+          new SnapshotRewriteLedger.WindowSnapshot(
+              snapshot.snapshotId(), lookup.locationFor(snapshot)));
+      for (DataFile file : states.get(snapshot.snapshotId()).files.values()) {
+        String path = file.location();
+        Integer previous = last.get(path);
+        if (previous != null && previous != index - 1) {
+          // Entries describe a file by one contiguous span of the window. A history that drops a
+          // file and adds it back is legal, but rare enough to decline rather than model.
+          return LedgerPlan.unavailable(path + " leaves the window and comes back");
+        }
+
+        first.putIfAbsent(path, index);
+        last.put(path, index);
+        files.putIfAbsent(path, file);
+      }
+    }
+
+    Map<Long, Map<String, Long>> addedBy = Maps.newHashMap();
+    List<SnapshotRewriteLedger.Entry> entries = Lists.newArrayList();
+    for (Map.Entry<String, Integer> span : first.entrySet()) {
+      String path = span.getKey();
+      DataFile file = files.get(path);
+      Snapshot oldest = window.get(span.getValue());
+      Long addedSnapshotId =
+          addedBy
+              .computeIfAbsent(
+                  oldest.snapshotId(),
+                  id -> SnapshotRewriteUnsafe.addedSnapshotIds(oldest, io, base.specsById()))
+              .get(path);
+      if (file.firstRowId() == null
+          || file.dataSequenceNumber() == null
+          || file.fileSequenceNumber() == null
+          || addedSnapshotId == null) {
+        return LedgerPlan.unavailable(path + " has no first_row_id, sequence numbers, or origin");
+      }
+
+      // Positions dead at the oldest snapshot referencing the file are dead at every later one too:
+      // deletes never come back. So these are exactly the rows no window snapshot can read.
+      PositionSet holes = states.get(oldest.snapshotId()).deleted.get(path);
+      entries.add(
+          new SnapshotRewriteLedger.Entry(
+              file,
+              file.dataSequenceNumber(),
+              file.fileSequenceNumber(),
+              addedSnapshotId,
+              span.getValue(),
+              last.get(path),
+              derivesRowIds(file) ? SnapshotRewriteLedger.derivedRuns(file) : null,
+              SnapshotRewriteLedger.runsOf(holes)));
+    }
+
+    Integer schemaId = compaction.schemaId();
+    return LedgerPlan.of(
+        new SnapshotRewriteLedger(
+            compaction.snapshotId(),
+            schemaId != null ? schemaId : base.currentSchemaId(),
+            base.spec().specId(),
+            snapshots,
+            entries));
+  }
+
+  /**
+   * Whether a file's metrics prove every row id in it derives from its {@code first_row_id}.
+   *
+   * <p>True when the file has metrics but none for {@code _row_id}, so the column was never
+   * written, or when every value written to it is null. Anything else -- including a file with no
+   * metrics at all -- is read, which costs a scan of the column but cannot be wrong. One way this
+   * could be wrong is a table whose metrics config omits {@code _row_id} while the column is
+   * written, for instance past the inferred-column limit; a ledger built that way fails at
+   * reconstruction rather than silently, because the ids it records would not be found.
+   */
+  private static boolean derivesRowIds(DataFile file) {
+    int rowId = MetadataColumns.ROW_ID.fieldId();
+    Map<Integer, Long> values = file.valueCounts();
+    if (values == null || values.isEmpty()) {
+      return false;
+    }
+
+    if (!values.containsKey(rowId)) {
+      return true;
+    }
+
+    Map<Integer, Long> nulls = file.nullValueCounts();
+    return nulls != null && values.get(rowId).equals(nulls.get(rowId));
+  }
+
+  /** A planned ledger, or the reason there cannot be one. */
+  private static class LedgerPlan {
+    private final SnapshotRewriteLedger ledger;
+    private final String unavailable;
+
+    private LedgerPlan(SnapshotRewriteLedger ledger, String unavailable) {
+      this.ledger = ledger;
+      this.unavailable = unavailable;
+    }
+
+    static LedgerPlan of(SnapshotRewriteLedger ledger) {
+      return new LedgerPlan(ledger, null);
+    }
+
+    static LedgerPlan unavailable(String reason) {
+      return new LedgerPlan(null, reason);
+    }
   }
 
   // ---------------------------------------------------------------- window and preconditions

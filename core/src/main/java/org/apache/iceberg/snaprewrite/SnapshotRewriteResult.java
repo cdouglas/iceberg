@@ -61,6 +61,8 @@ public class SnapshotRewriteResult {
   private final Map<String, DataFile> resurrected;
   private final Map<String, DeleteFile> deleteFiles;
   private final List<String> metadataPaths;
+  private final SnapshotRewriteLedger ledger;
+  private final String ledgerLocation;
 
   SnapshotRewriteResult(
       String name,
@@ -70,7 +72,9 @@ public class SnapshotRewriteResult {
       SnapshotRewritePlan plan,
       Map<String, DataFile> resurrected,
       Map<String, DeleteFile> deleteFiles,
-      List<String> metadataPaths) {
+      List<String> metadataPaths,
+      SnapshotRewriteLedger ledger,
+      String ledgerLocation) {
     this.name = name;
     this.base = base;
     this.rewritten = rewritten;
@@ -79,6 +83,8 @@ public class SnapshotRewriteResult {
     this.resurrected = ImmutableMap.copyOf(resurrected);
     this.deleteFiles = ImmutableMap.copyOf(deleteFiles);
     this.metadataPaths = ImmutableList.copyOf(metadataPaths);
+    this.ledger = ledger;
+    this.ledgerLocation = ledgerLocation;
   }
 
   /**
@@ -90,6 +96,19 @@ public class SnapshotRewriteResult {
 
   public SnapshotRewritePlan plan() {
     return plan;
+  }
+
+  /**
+   * The ledger that can reconstruct this window after reclaim, or null if none could be written --
+   * {@link SnapshotRewritePlan#ledgerUnavailable()} says why.
+   */
+  public SnapshotRewriteLedger ledger() {
+    return ledger;
+  }
+
+  /** Where the ledger was written, or null. */
+  public String ledgerLocation() {
+    return ledgerLocation;
   }
 
   /**

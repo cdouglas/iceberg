@@ -51,6 +51,12 @@ class CompactionMapLookup {
 
   /** Returns the compaction map this snapshot wrote, or null if it wrote none. */
   CompactionMap forSnapshot(Snapshot snapshot) {
+    String location = locationFor(snapshot);
+    return location == null ? null : cache.get(location);
+  }
+
+  /** Returns where the compaction map this snapshot wrote is stored, or null if it wrote none. */
+  String locationFor(Snapshot snapshot) {
     Set<String> added = Sets.newHashSet();
     for (DataFile file : snapshot.addedDataFiles(io)) {
       added.add(file.location());
@@ -69,7 +75,7 @@ class CompactionMapLookup {
       CompactionMap map =
           cache.computeIfAbsent(location, path -> CompactionMaps.read(io.newInputFile(path)));
       if (targetsAnyOf(map, added)) {
-        return map;
+        return location;
       }
     }
 
