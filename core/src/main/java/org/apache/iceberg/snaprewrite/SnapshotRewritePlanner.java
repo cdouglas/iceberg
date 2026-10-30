@@ -113,6 +113,7 @@ public class SnapshotRewritePlanner {
 
     SnapshotState targetState = buildState(compaction);
     List<DataFile> targetFiles = ImmutableList.copyOf(targetState.files.values());
+    checkLastUpdatedPreserved(targetFiles, window);
 
     List<String> presentResurrections = Lists.newArrayList();
     List<ResurrectionRequest> resurrections = Lists.newArrayList();
@@ -666,6 +667,48 @@ public class SnapshotRewritePlanner {
    * v2, where there is no lineage to lose. Either way v3 is supported exactly as far as it is
    * lossless and refused past that, rather than allowed through with silently renumbered rows.
    */
+  /**
+   * Under v3, every file the compaction holds reads the same {@code _last_updated_sequence_number}
+   * once it is restamped at the shared base.
+   *
+   * <p>A null value reads as the file's sequence number, and a rewritten snapshot references every
+   * one of these files at the shared base instead. So a file passes if its metrics show the column
+   * written for every row, or if its own sequence number is the base already. The compaction's own
+   * output passes when the compaction copied the value, as the spec requires of a row moved without
+   * modification. A file a partial compaction kept usually fails: an appended file never writes the
+   * column. A file whose metrics do not say fails too.
+   */
+  private void checkLastUpdatedPreserved(List<DataFile> targetFiles, List<Snapshot> window) {
+    if (base.formatVersion() < 3) {
+      return;
+    }
+
+    long baseSequenceNumber = SnapshotRewriteWriter.baseSequenceNumber(window);
+    int fieldId = MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.fieldId();
+    for (DataFile file : targetFiles) {
+      if (file.recordCount() == 0
+          || Long.valueOf(baseSequenceNumber).equals(file.fileSequenceNumber())) {
+        continue;
+      }
+
+      Long values = file.valueCounts() != null ? file.valueCounts().get(fieldId) : null;
+      Long nulls = file.nullValueCounts() != null ? file.nullValueCounts().get(fieldId) : null;
+      if (values == null || nulls == null || nulls > 0) {
+        throw new RewriteRefusedException(
+            RewriteRefusal.LAST_UPDATED_NOT_PRESERVED,
+            String.format(
+                Locale.ROOT,
+                "%s leaves _last_updated_sequence_number %s; its rows would read %s, not %s",
+                file.location(),
+                values == null || nulls == null
+                    ? "out of its metrics, unwritten or unmeasured"
+                    : String.format(Locale.ROOT, "null in %s of %s rows", nulls, values),
+                baseSequenceNumber,
+                file.fileSequenceNumber()));
+      }
+    }
+  }
+
   private void checkRowLineage(List<ResurrectionRequest> requests) {
     if (base.formatVersion() >= 3 && !requests.isEmpty() && !rewriteIO.preservesRowLineage()) {
       long rows = 0;

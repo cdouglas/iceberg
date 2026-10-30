@@ -294,6 +294,7 @@ time-travel read returns.
 |---|---|
 | `FORMAT_VERSION` | Not format 2 or 3 |
 | `ROW_LINEAGE` | v3, the window would recover rows, and the `SnapshotRewriteIO` does not preserve row ids |
+| `LAST_UPDATED_NOT_PRESERVED` | v3, and a file the compaction holds leaves `_last_updated_sequence_number` to its own sequence number, which the rewrite changes |
 | `EQUALITY_DELETES` | Equality deletes anywhere in the window |
 | `SCHEMA_CHANGED` | `schema-id` differs across the window |
 | `SPEC_CHANGED` | More than one partition spec across the window |
@@ -449,8 +450,8 @@ compare-and-set on base metadata the `TableOperations` implementation performs: 
 `current` makes the commit fail outright, with no retry and no revalidation, because the plan was
 computed against one specific base.
 
-What replaces all of it is a refusal set rather than a proof — the twelve reasons in `RewriteRefusal`,
-checked before any file is written (`SnapshotRewritePlanner.checkStaticPreconditions`). Two carry most
+What replaces all of it is a refusal set rather than a proof — the thirteen reasons a rewrite can give
+in `RewriteRefusal`, checked before any file is written (`SnapshotRewritePlanner.checkStaticPreconditions`). Two carry most
 of the weight: `UNLOCATABLE_ROW`, which requires every row live in the window to be findable, and
 `REPLACE_CHANGED_DATA`, which guards the assumption that an interstitial compaction is a logical no-op.
 
@@ -486,6 +487,15 @@ the value of a row moved without modification to be kept.
 
 What the rewrite guarantees is that a rewritten snapshot reports the identities *the compaction*
 reports; whether those match a row's original ids is the compaction's obligation.
+
+For `_last_updated_sequence_number` the rewrite checks this, because it changes the number a null reads
+as. Every file the compaction holds is stamped at the shared base in rewritten snapshots. So each must
+carry the value for every row, by its metrics, unless its own sequence number already is that base.
+Otherwise the rewrite is refused (`LAST_UPDATED_NOT_PRESERVED`). That catches a compaction that did not
+copy the value. It also catches a file a *partial* compaction kept: an appended file never writes the
+column, so on v3 a partial compaction that keeps one is refused. A kept file that an earlier compaction
+wrote carries the column and passes. Lifting the refusal for appended files would mean referencing them
+at their own sequence numbers, outside the shared manifest, from the snapshot that appended them on.
 
 ### Statistics
 

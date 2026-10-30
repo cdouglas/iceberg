@@ -28,6 +28,8 @@ package org.apache.iceberg.snaprewrite;
 public enum RewriteRefusal {
   FORMAT_VERSION("table format version is not supported"),
   ROW_LINEAGE("recovering rows would change their row ids under v3 row lineage"),
+  LAST_UPDATED_NOT_PRESERVED(
+      "a file the rewrite restamps leaves _last_updated_sequence_number to its sequence number"),
   EQUALITY_DELETES("window contains equality deletes"),
   SCHEMA_CHANGED("schema changed across the window"),
   SPEC_CHANGED("partition spec changed across the window"),

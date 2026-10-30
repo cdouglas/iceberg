@@ -136,7 +136,7 @@ class SnapshotRewriteWriter {
     this.deleteFiles = deleteFiles;
     this.stamping = stamping;
     this.detachedPartitionStats = detachedPartitionStats(base, plan);
-    this.baseSequenceNumber = baseSequenceNumber(plan);
+    this.baseSequenceNumber = baseSequenceNumber(plan.window());
     this.ledger = ledger;
   }
 
@@ -147,9 +147,9 @@ class SnapshotRewriteWriter {
    * stamped at that snapshot's own number -- satisfy the delete rule strictly. It also reads as the
    * truth about these rows: they were all present before the window began.
    */
-  private static long baseSequenceNumber(SnapshotRewritePlan plan) {
+  static long baseSequenceNumber(List<Snapshot> window) {
     long oldest = Long.MAX_VALUE;
-    for (Snapshot snapshot : plan.window()) {
+    for (Snapshot snapshot : window) {
       oldest = Math.min(oldest, snapshot.sequenceNumber());
     }
 

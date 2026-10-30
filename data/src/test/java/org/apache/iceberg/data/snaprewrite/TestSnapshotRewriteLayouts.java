@@ -89,17 +89,21 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
    *
    * <p>The compaction map says nothing about an untouched file because nothing moved, so the
    * locator has to treat those rows as already in place rather than as missing.
+   *
+   * <p>The file kept is the earlier compaction's output, as a real partial compaction would keep a
+   * file already large enough. On v3 it carries every row's lineage, so restamping it at the shared
+   * base changes nothing; an appended file would be refused there ({@code
+   * TestSnapshotRewriteV3#aKeptAppendedFileIsRefused}).
    */
   @Test
   public void partialCompaction() throws IOException {
     append(records(1, 4, "base"));
     compact();
-    DataFile compacted = onlyDataFile(table.currentSnapshot());
+    DataFile untouched = onlyDataFile(table.currentSnapshot());
 
-    DataFile untouched = append(records(10, 3, "keep"));
+    append(records(10, 3, "beta"));
     DataFile alpha = append(records(20, 3, "alpha"));
     delete(ImmutableList.of(at(alpha, 0)));
-    delete(ImmutableList.of(at(compacted, 1)));
 
     // Compact everything except one file, which stays in the layout unchanged.
     LocalCompactor.compact(table, true, file -> !file.location().equals(untouched.location()));
@@ -117,15 +121,15 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
    *
    * <p>The rewrite used to treat every file the compaction holds as wholly live. A compaction's own
    * output is, but a file it kept still carries the rows that died in it, so they reappeared in
-   * every rewritten snapshot -- including ones from before the file was even appended, alongside
-   * the copy the rewrite recovered for the snapshots that should see it.
+   * every rewritten snapshot -- including ones from before they died, alongside the copy the
+   * rewrite recovered for the snapshots that should see it.
    */
   @Test
   public void partialCompactionKeepsTheKeptFilesDeletes() throws IOException {
     append(records(1, 4, "base"));
     compact();
 
-    DataFile untouched = append(records(10, 3, "keep"));
+    DataFile untouched = onlyDataFile(table.currentSnapshot());
     DataFile alpha = append(records(20, 3, "alpha"));
     delete(ImmutableList.of(at(alpha, 0)));
     delete(ImmutableList.of(at(untouched, 2)));
