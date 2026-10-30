@@ -43,9 +43,9 @@ import org.mockito.Mockito;
 /**
  * M4 — Code-Path Verification (per {@code COMPACT_SPEC.md} §M4).
  *
- * <p>Guards against silent path swaps (e.g., a stub that pre-computes the result in untimed
- * setup). Runs {@link TreatmentTimedRegion} against a small fixture and verifies execution
- * actually flows through:
+ * <p>Guards against silent path swaps (e.g., a stub that pre-computes the result in untimed setup).
+ * Runs {@link TreatmentTimedRegion} against a small fixture and verifies execution actually flows
+ * through:
  *
  * <ul>
  *   <li>{@link org.apache.iceberg.spark.actions.SparkCompactionConflictResolver#resolve}
@@ -54,9 +54,9 @@ import org.mockito.Mockito;
  *
  * <p>Implementation: Mockito's {@link MockedConstruction} intercepts every {@code new
  * PositionDeleteRemapper(...)} call inside the JVM during the timed region, replacing the
- * constructed instance with a mock that delegates to a hand-instantiated real remapper. After
- * the timed region we verify both that the constructor fired and that {@code remapDVBulk} was
- * actually invoked on the resulting mock.
+ * constructed instance with a mock that delegates to a hand-instantiated real remapper. After the
+ * timed region we verify both that the constructor fired and that {@code remapDVBulk} was actually
+ * invoked on the resulting mock.
  */
 class TestCodePathVerification {
 
@@ -77,8 +77,7 @@ class TestCodePathVerification {
             .config("spark.sql.catalog.default_iceberg", "org.apache.iceberg.spark.SparkCatalog")
             .config("spark.sql.catalog.default_iceberg.type", "hadoop")
             .config(
-                "spark.sql.catalog.default_iceberg.warehouse",
-                "/tmp/compaction-baseline-tests-m4")
+                "spark.sql.catalog.default_iceberg.warehouse", "/tmp/compaction-baseline-tests-m4")
             .config(
                 "spark.sql.catalog.default_cache_iceberg", "org.apache.iceberg.spark.SparkCatalog")
             .config("spark.sql.catalog.default_cache_iceberg.type", "hadoop")
@@ -142,8 +141,7 @@ class TestCodePathVerification {
                   real = new PositionDeleteRemapper((org.apache.iceberg.CompactionMap) firstArg);
                 } else {
                   real =
-                      new PositionDeleteRemapper(
-                          (org.apache.iceberg.CompactionMapChain) firstArg);
+                      new PositionDeleteRemapper((org.apache.iceberg.CompactionMapChain) firstArg);
                 }
                 Mockito.doAnswer(
                         invocation -> {
@@ -175,8 +173,7 @@ class TestCodePathVerification {
             .isGreaterThan(0);
         // 4. Mockito-side cross-check: every constructed mock had remapDVBulk verified.
         for (PositionDeleteRemapper mock : mocked.constructed()) {
-          Mockito.verify(mock, Mockito.atLeastOnce())
-              .remapDVBulk(Mockito.any(), Mockito.any());
+          Mockito.verify(mock, Mockito.atLeastOnce()).remapDVBulk(Mockito.any(), Mockito.any());
         }
       }
     } finally {

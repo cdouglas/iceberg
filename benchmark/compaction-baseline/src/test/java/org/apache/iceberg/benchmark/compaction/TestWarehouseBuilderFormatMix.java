@@ -36,10 +36,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Verifies that {@link WarehouseBuilder} honors {@link BuildConfig#formatVersion()} and
- * {@link BuildConfig#upgradeAfterChain()}. Bypasses Spark and the full {@code buildBaseline} flow
- * to keep this a fast unit-style check; we only need to assert that the chain commits succeed
- * and that the resulting on-disk metadata says what we expect.
+ * Verifies that {@link WarehouseBuilder} honors {@link BuildConfig#formatVersion()} and {@link
+ * BuildConfig#upgradeAfterChain()}. Bypasses Spark and the full {@code buildBaseline} flow to keep
+ * this a fast unit-style check; we only need to assert that the chain commits succeed and that the
+ * resulting on-disk metadata says what we expect.
  */
 class TestWarehouseBuilderFormatMix {
 
@@ -106,8 +106,7 @@ class TestWarehouseBuilderFormatMix {
             .upgradeAfterChain(true)
             .build();
 
-    HadoopCatalog catalog =
-        new HadoopCatalog(new Configuration(), warehouseDir.toURI().toString());
+    HadoopCatalog catalog = new HadoopCatalog(new Configuration(), warehouseDir.toURI().toString());
     TableIdentifier ident = TableIdentifier.of("db", "upgrade");
     WarehouseBuilder builder = new WarehouseBuilder(catalog, ident, cfg);
     Table table = builder.createTable(false /* compactionMapEnabled */);
@@ -134,17 +133,12 @@ class TestWarehouseBuilderFormatMix {
   @Test
   void upgradeFlagOnlyValidForV2() {
     org.assertj.core.api.Assertions.assertThatThrownBy(
-            () ->
-                BuildConfig.builder()
-                    .formatVersion(3)
-                    .upgradeAfterChain(true)
-                    .build())
+            () -> BuildConfig.builder().formatVersion(3).upgradeAfterChain(true).build())
         .isInstanceOf(IllegalArgumentException.class);
   }
 
   private Table buildChain(BuildConfig cfg, String name) throws IOException {
-    HadoopCatalog catalog =
-        new HadoopCatalog(new Configuration(), warehouseDir.toURI().toString());
+    HadoopCatalog catalog = new HadoopCatalog(new Configuration(), warehouseDir.toURI().toString());
     TableIdentifier ident = TableIdentifier.of("db", name);
     WarehouseBuilder builder = new WarehouseBuilder(catalog, ident, cfg);
     Table table = builder.createTable(false /* compactionMapEnabled */);

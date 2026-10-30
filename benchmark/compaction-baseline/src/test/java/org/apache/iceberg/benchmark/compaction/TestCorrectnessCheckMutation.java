@@ -18,7 +18,6 @@
  */
 package org.apache.iceberg.benchmark.compaction;
 
-import org.apache.iceberg.data.WorkloadGenerator;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
@@ -44,16 +43,15 @@ import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
-import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.data.BaseDeleteLoader;
 import org.apache.iceberg.data.DeleteLoader;
+import org.apache.iceberg.data.WorkloadGenerator;
 import org.apache.iceberg.hadoop.HadoopCatalog;
 import org.apache.iceberg.io.DeleteWriteResult;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
-import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.actions.SparkCompactionConflictResolver;
 import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.AfterAll;
@@ -69,14 +67,14 @@ import org.junit.jupiter.api.io.TempDir;
  * different hash.
  *
  * <ul>
- *   <li>{@link #corruptedCompactionMapProducesDifferentHash} — shift a single Run's source
- *       position by 1 in a captured map and feed the corrupted map through the resolver. The
- *       resolver remaps the wrong source rows, the committed DVs delete different target rows,
- *       and the resulting table hashes to a value distinct from the uncorrupted baseline.
+ *   <li>{@link #corruptedCompactionMapProducesDifferentHash} — shift a single Run's source position
+ *       by 1 in a captured map and feed the corrupted map through the resolver. The resolver remaps
+ *       the wrong source rows, the committed DVs delete different target rows, and the resulting
+ *       table hashes to a value distinct from the uncorrupted baseline.
  *   <li>{@link #mutatedRowProducesDifferentHash} — flip a byte deep in a Parquet data file (past
- *       the page headers and magic bytes) on a freshly written copy, re-read with Spark, and
- *       assert the row hash changed. Falls back to row insertion if the corrupted file is
- *       unreadable, which is itself proof that the hash check would have flagged the divergence.
+ *       the page headers and magic bytes) on a freshly written copy, re-read with Spark, and assert
+ *       the row hash changed. Falls back to row insertion if the corrupted file is unreadable,
+ *       which is itself proof that the hash check would have flagged the divergence.
  * </ul>
  */
 class TestCorrectnessCheckMutation {
@@ -98,8 +96,7 @@ class TestCorrectnessCheckMutation {
             .config("spark.sql.catalog.default_iceberg", "org.apache.iceberg.spark.SparkCatalog")
             .config("spark.sql.catalog.default_iceberg.type", "hadoop")
             .config(
-                "spark.sql.catalog.default_iceberg.warehouse",
-                "/tmp/compaction-baseline-tests-m5")
+                "spark.sql.catalog.default_iceberg.warehouse", "/tmp/compaction-baseline-tests-m5")
             .config(
                 "spark.sql.catalog.default_cache_iceberg", "org.apache.iceberg.spark.SparkCatalog")
             .config("spark.sql.catalog.default_cache_iceberg.type", "hadoop")
@@ -254,7 +251,8 @@ class TestCorrectnessCheckMutation {
 
     Map<String, DeleteFile> liveDvByPath = builder.currentDvByDataFile();
     int total = builder.preCompactionDataFiles().size();
-    commitDvOnlySnapshot(table, builder.preCompactionDataFiles(), 0, total, seed + 100L, liveDvByPath);
+    commitDvOnlySnapshot(
+        table, builder.preCompactionDataFiles(), 0, total, seed + 100L, liveDvByPath);
 
     CompactionMap map = CompactionMaps.read(table.io().newInputFile(mapPath));
     if (corruptMap) {
@@ -279,8 +277,7 @@ class TestCorrectnessCheckMutation {
     assertThat(newDeletes).isNotEmpty();
     List<DeleteFile> commitable = mergePerTargetFile(table, newDeletes);
 
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     commitable.forEach(delta::addDeletes);
     delta.commit();
 
@@ -288,11 +285,10 @@ class TestCorrectnessCheckMutation {
   }
 
   /**
-   * Build a new {@link CompactionMap} identical to the input except that the FIRST run of the
-   * FIRST file mapping has its {@code sourcePosition} shifted by +1. This is the smallest
-   * possible map mutation that still leaves the file structure and snapshot IDs intact, so any
-   * hash change is provably caused by the resolver consuming the bad mapping (not by a structural
-   * read error).
+   * Build a new {@link CompactionMap} identical to the input except that the FIRST run of the FIRST
+   * file mapping has its {@code sourcePosition} shifted by +1. This is the smallest possible map
+   * mutation that still leaves the file structure and snapshot IDs intact, so any hash change is
+   * provably caused by the resolver consuming the bad mapping (not by a structural read error).
    */
   private static CompactionMap shiftFirstRunByOne(CompactionMap original) {
     CompactionMapBuilder builder =
@@ -321,8 +317,8 @@ class TestCorrectnessCheckMutation {
 
   /**
    * Commit a delete-only snapshot containing a small DV against the subset of {@code sourceFiles}
-   * starting at {@code fileOffset} and spanning {@code fileWidth} files. Identical to the helper
-   * in {@link TestMultiTransactionRace}.
+   * starting at {@code fileOffset} and spanning {@code fileWidth} files. Identical to the helper in
+   * {@link TestMultiTransactionRace}.
    */
   private void commitDvOnlySnapshot(
       Table table,
@@ -365,8 +361,7 @@ class TestCorrectnessCheckMutation {
               return loader.loadPositionDeletes(Lists.newArrayList(existing), path);
             });
 
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     result.deleteFiles().forEach(delta::addDeletes);
     result.rewrittenDeleteFiles().forEach(delta::removeDeletes);
     delta.commit();

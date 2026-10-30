@@ -18,7 +18,6 @@
  */
 package org.apache.iceberg.benchmark.compaction;
 
-import org.apache.iceberg.data.WorkloadGenerator;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -33,6 +32,7 @@ import org.apache.iceberg.RewriteFiles;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.data.WorkloadGenerator;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.hadoop.HadoopCatalog;
 import org.apache.iceberg.io.OutputFileFactory;
@@ -48,12 +48,12 @@ import org.junit.jupiter.api.io.TempDir;
  * cleanly: the first wins, the second fails with {@link ValidationException}. Compactions on
  * disjoint file sets both succeed and compose.
  *
- * <p>The contract is enforced by {@link RewriteFiles#validateFromSnapshot(long)} in core:
- * checking the "validation history" between {@code startingSnapshotId} and the parent at commit
- * time rejects any rewrite that overlaps with files removed (or added) by an intervening
- * commit. This test exercises that path directly via the core {@code Table.newRewrite()} API
- * (the Spark {@code rewriteDataFiles} action wraps the same machinery; see
- * {@link org.apache.iceberg.spark.actions.SparkRewriteDataFilesCommitManager}).
+ * <p>The contract is enforced by {@link RewriteFiles#validateFromSnapshot(long)} in core: checking
+ * the "validation history" between {@code startingSnapshotId} and the parent at commit time rejects
+ * any rewrite that overlaps with files removed (or added) by an intervening commit. This test
+ * exercises that path directly via the core {@code Table.newRewrite()} API (the Spark {@code
+ * rewriteDataFiles} action wraps the same machinery; see {@link
+ * org.apache.iceberg.spark.actions.SparkRewriteDataFilesCommitManager}).
  *
  * <p>Compaction maps do NOT auto-repair against other compactions per {@code
  * compaction_maps_errata.md}: only late position-delete transactions are auto-repaired.

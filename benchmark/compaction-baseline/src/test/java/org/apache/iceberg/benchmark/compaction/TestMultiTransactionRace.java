@@ -18,7 +18,6 @@
  */
 package org.apache.iceberg.benchmark.compaction;
 
-import org.apache.iceberg.data.WorkloadGenerator;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
@@ -45,12 +44,12 @@ import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.data.BaseDeleteLoader;
 import org.apache.iceberg.data.DeleteLoader;
+import org.apache.iceberg.data.WorkloadGenerator;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.hadoop.HadoopCatalog;
 import org.apache.iceberg.io.DeleteWriteResult;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.actions.SparkCompactionConflictResolver;
@@ -69,8 +68,8 @@ import org.junit.jupiter.api.io.TempDir;
  * naturally); the treatment state commits both AFTER compaction (so they become orphan refs that
  * the resolver must remap). Row-multiset hashes must match.
  *
- * <p>Bonus: the resolver call is also exercised with the two delete files passed in opposite
- * order; both orderings must produce the same row hash (confluence under permutation).
+ * <p>Bonus: the resolver call is also exercised with the two delete files passed in opposite order;
+ * both orderings must produce the same row hash (confluence under permutation).
  */
 class TestMultiTransactionRace {
 
@@ -91,8 +90,7 @@ class TestMultiTransactionRace {
             .config("spark.sql.catalog.default_iceberg", "org.apache.iceberg.spark.SparkCatalog")
             .config("spark.sql.catalog.default_iceberg.type", "hadoop")
             .config(
-                "spark.sql.catalog.default_iceberg.warehouse",
-                "/tmp/compaction-baseline-tests-m2")
+                "spark.sql.catalog.default_iceberg.warehouse", "/tmp/compaction-baseline-tests-m2")
             .config(
                 "spark.sql.catalog.default_cache_iceberg", "org.apache.iceberg.spark.SparkCatalog")
             .config("spark.sql.catalog.default_cache_iceberg.type", "hadoop")
@@ -176,7 +174,8 @@ class TestMultiTransactionRace {
     refBuilder.buildSnapshotChain(refTable);
     Map<String, DeleteFile> refLive = refBuilder.currentDvByDataFile();
     int total = refBuilder.preCompactionDataFiles().size();
-    commitDvOnlySnapshot(refTable, refBuilder.preCompactionDataFiles(), 0, total, seed + 100, refLive);
+    commitDvOnlySnapshot(
+        refTable, refBuilder.preCompactionDataFiles(), 0, total, seed + 100, refLive);
     SparkActions.get(spark)
         .rewriteDataFiles(refTable)
         .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "1")
@@ -191,7 +190,8 @@ class TestMultiTransactionRace {
     trtBuilder.buildSnapshotChain(trtTable);
     String mapPath = trtBuilder.runCompactionAndCaptureMap(spark, trtTable);
     Map<String, DeleteFile> trtLive = trtBuilder.currentDvByDataFile();
-    commitDvOnlySnapshot(trtTable, trtBuilder.preCompactionDataFiles(), 0, total, seed + 100, trtLive);
+    commitDvOnlySnapshot(
+        trtTable, trtBuilder.preCompactionDataFiles(), 0, total, seed + 100, trtLive);
 
     CompactionMap map = CompactionMaps.read(trtTable.io().newInputFile(mapPath));
     long compactSnapshotId = findReplaceSnapshotId(trtTable);
@@ -255,10 +255,8 @@ class TestMultiTransactionRace {
     delta.commit();
     long treatmentHash = CorrectnessCheck.hash(spark, trtTable.location());
 
-    long referenceCount =
-        spark.read().format("iceberg").load(refTable.location()).count();
-    long treatmentCount =
-        spark.read().format("iceberg").load(trtTable.location()).count();
+    long referenceCount = spark.read().format("iceberg").load(refTable.location()).count();
+    long treatmentCount = spark.read().format("iceberg").load(trtTable.location()).count();
     org.slf4j.LoggerFactory.getLogger(TestMultiTransactionRace.class)
         .info(
             "single-tx control: refRows={} trtRows={} refHash={} trtHash={}",
@@ -288,11 +286,7 @@ class TestMultiTransactionRace {
     long reversedHash = buildTreatmentHash(seed, "treatment_rev", true /* reverseOrder */);
 
     org.slf4j.LoggerFactory.getLogger(TestMultiTransactionRace.class)
-        .info(
-            "multi-tx hashes: ref={} trt={} rev={}",
-            referenceHash,
-            treatmentHash,
-            reversedHash);
+        .info("multi-tx hashes: ref={} trt={} rev={}", referenceHash, treatmentHash, reversedHash);
     // Spec assertion: resolver-remap path produces the same row multiset as the
     // compact-absorbs path.
     assertThat(treatmentHash).isEqualTo(referenceHash);
@@ -348,8 +342,7 @@ class TestMultiTransactionRace {
    * seed+100, slice [width, total) with seed+200) in the opposite commit order — exercising
    * confluence under permutation without changing which rows get deleted.
    */
-  private long buildTreatmentHash(long seed, String name, boolean reverseOrder)
-      throws IOException {
+  private long buildTreatmentHash(long seed, String name, boolean reverseOrder) throws IOException {
     HadoopCatalog catalog = newCatalog(name);
     WarehouseBuilder builder =
         new WarehouseBuilder(catalog, TableIdentifier.of("db", name), microConfig(seed));
@@ -425,8 +418,7 @@ class TestMultiTransactionRace {
     // property.
     List<DeleteFile> commitable = mergePerTargetFile(table, newDeletes);
 
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     commitable.forEach(delta::addDeletes);
     delta.commit();
 
@@ -439,10 +431,10 @@ class TestMultiTransactionRace {
    * deterministically derived from {@code seed}. {@code liveDvByPath} is updated in place so a
    * subsequent call can merge with the DVs this call wrote.
    *
-   * <p>Limiting each late tx to a disjoint slice of source files avoids the resolver's
-   * "multiple remapped DVs targeting the same compacted file" gap: each source DV maps to a
-   * different target DV, so the {@link RowDelta} commit doesn't trip the "one DV per file"
-   * validator. Real GDPR-style batch deletes typically have this disjoint shape.
+   * <p>Limiting each late tx to a disjoint slice of source files avoids the resolver's "multiple
+   * remapped DVs targeting the same compacted file" gap: each source DV maps to a different target
+   * DV, so the {@link RowDelta} commit doesn't trip the "one DV per file" validator. Real
+   * GDPR-style batch deletes typically have this disjoint shape.
    */
   private void commitDvOnlySnapshot(
       Table table,
@@ -485,16 +477,14 @@ class TestMultiTransactionRace {
               return loader.loadPositionDeletes(Lists.newArrayList(existing), path);
             });
 
-    RowDelta delta =
-        table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
+    RowDelta delta = table.newRowDelta().validateFromSnapshot(table.currentSnapshot().snapshotId());
     result.deleteFiles().forEach(delta::addDeletes);
     result.rewrittenDeleteFiles().forEach(delta::removeDeletes);
     delta.commit();
     table.refresh();
 
     // Update the per-path index so the next late-tx commit knows what to merge with.
-    result.rewrittenDeleteFiles()
-        .forEach(df -> liveDvByPath.remove(df.referencedDataFile()));
+    result.rewrittenDeleteFiles().forEach(df -> liveDvByPath.remove(df.referencedDataFile()));
     for (DeleteFile newDv : result.deleteFiles()) {
       liveDvByPath.put(newDv.referencedDataFile(), newDv);
     }
@@ -524,7 +514,8 @@ class TestMultiTransactionRace {
       // read each source DV separately and union the positions ourselves.
       java.util.SortedSet<Long> unioned = new java.util.TreeSet<>();
       for (DeleteFile dv : entry.getValue()) {
-        PositionDeleteIndex idx = loader.loadPositionDeletes(Lists.newArrayList(dv), entry.getKey());
+        PositionDeleteIndex idx =
+            loader.loadPositionDeletes(Lists.newArrayList(dv), entry.getKey());
         java.util.SortedSet<Long> thisOne = new java.util.TreeSet<>();
         idx.forEach((java.util.function.LongConsumer) thisOne::add);
         org.slf4j.LoggerFactory.getLogger(TestMultiTransactionRace.class)
@@ -547,8 +538,7 @@ class TestMultiTransactionRace {
       Map<String, long[]> positions = new LinkedHashMap<>();
       positions.put(entry.getKey(), positionArray);
       DeleteWriteResult result =
-          WorkloadCommitter.writeDeletionVectors(
-              table, dvFactory, positions, path -> null);
+          WorkloadCommitter.writeDeletionVectors(table, dvFactory, positions, path -> null);
       merged.addAll(result.deleteFiles());
     }
     return merged;

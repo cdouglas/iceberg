@@ -23,8 +23,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * Append op — writes {@code rows} new rows in one or more data files and commits them via {@code
- * AppendFiles}. The slice fractions are carried for shape uniformity but are ignored by the
- * append writer; appended files live outside any pre-compaction slice.
+ * AppendFiles}. The slice fractions are carried for shape uniformity but are ignored by the append
+ * writer; appended files live outside any pre-compaction slice.
  */
 public final class AppendOp extends LateTxOp {
   private final long rows;

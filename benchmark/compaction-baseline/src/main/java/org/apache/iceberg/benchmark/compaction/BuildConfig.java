@@ -104,10 +104,10 @@ public final class BuildConfig {
   }
 
   /**
-   * Iceberg format version the table is created with (2 or 3). Production builds default to 3.
-   * Fuzz scenarios may select 2 to exercise position-delete-file write paths, or set this to 2
-   * together with {@link #upgradeAfterChain()} to construct a table whose chain history was
-   * written as v2 but whose late transactions land after an upgrade to v3.
+   * Iceberg format version the table is created with (2 or 3). Production builds default to 3. Fuzz
+   * scenarios may select 2 to exercise position-delete-file write paths, or set this to 2 together
+   * with {@link #upgradeAfterChain()} to construct a table whose chain history was written as v2
+   * but whose late transactions land after an upgrade to v3.
    */
   public int formatVersion() {
     return formatVersion;

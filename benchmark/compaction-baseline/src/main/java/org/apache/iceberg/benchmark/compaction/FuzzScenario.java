@@ -145,8 +145,7 @@ public final class FuzzScenario {
     List<double[]> intervals = Lists.newArrayList();
     double cursor = rng.nextDouble() * 0.1;
     for (int i = 0; i < numLateTxOps; i++) {
-      boolean overlap =
-          !intervals.isEmpty() && rng.nextDouble() < cfg.overlapProbability();
+      boolean overlap = !intervals.isEmpty() && rng.nextDouble() < cfg.overlapProbability();
       double offset;
       double width;
       if (overlap) {
@@ -201,9 +200,7 @@ public final class FuzzScenario {
 
   /** Operation count (chain commits + late txs) — used in the JSON output for triage. */
   public int opsCount() {
-    return 1 /* S_0 */
-        + buildConfig.snapshotChainLength()
-        + lateTxOps.size();
+    return 1 /* S_0 */ + buildConfig.snapshotChainLength() + lateTxOps.size();
   }
 
   /** Human-readable summary for logs / failure dumps. */

@@ -48,8 +48,8 @@ import org.apache.iceberg.io.DeleteWriteResult;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.spark.actions.SparkActions;
+import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -101,9 +101,8 @@ public final class WarehouseBuilder {
 
   /**
    * Live DV index keyed by data-file path. Updated by {@link #buildSnapshotChain(Table)} and
-   * cleared by {@link #runCompactionAndCaptureMap(SparkSession, Table)}. Exposed for hand-
-   * crafted tests that compose multiple late transactions and need to merge with already-
-   * committed DVs.
+   * cleared by {@link #runCompactionAndCaptureMap(SparkSession, Table)}. Exposed for hand-crafted
+   * tests that compose multiple late transactions and need to merge with already-committed DVs.
    */
   Map<String, DeleteFile> currentDvByDataFile() {
     return currentDvByDataFile;
@@ -240,9 +239,9 @@ public final class WarehouseBuilder {
 
   /**
    * V3 chain commit: writes a Puffin DV for the snapshot's deletes (merging into any pre-existing
-   * DV on the same data file) and commits via {@code RowDelta.addRows + addDeletes + removeDeletes}.
-   * The {@code removeDeletes} step retires any DV the writer absorbed, since V3 only allows one
-   * DV per data file.
+   * DV on the same data file) and commits via {@code RowDelta.addRows + addDeletes +
+   * removeDeletes}. The {@code removeDeletes} step retires any DV the writer absorbed, since V3
+   * only allows one DV per data file.
    */
   private void commitChainSnapshotV3(
       Table table, int i, List<DataFile> dataFiles, Map<String, long[]> deletePositions)
@@ -410,9 +409,9 @@ public final class WarehouseBuilder {
 
   /**
    * Reset {@link #currentDvByDataFile} to mirror the table's current snapshot. Used after
-   * compaction, which may absorb some chain DVs (the common case) but leaves others alone when
-   * the planner decides the underlying data file is already at target size. Walking the live
-   * delete manifests is the only reliable way to know which DVs actually survived.
+   * compaction, which may absorb some chain DVs (the common case) but leaves others alone when the
+   * planner decides the underlying data file is already at target size. Walking the live delete
+   * manifests is the only reliable way to know which DVs actually survived.
    */
   private void refreshDvCacheFromSnapshot(Table table) {
     currentDvByDataFile.clear();
@@ -432,8 +431,7 @@ public final class WarehouseBuilder {
           }
         }
       } catch (IOException e) {
-        throw new RuntimeException(
-            "Failed to read delete manifest " + manifest.path(), e);
+        throw new RuntimeException("Failed to read delete manifest " + manifest.path(), e);
       }
     }
   }

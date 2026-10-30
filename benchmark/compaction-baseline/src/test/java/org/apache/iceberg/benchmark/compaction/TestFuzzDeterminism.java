@@ -31,13 +31,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Determinism guard for the M1 fuzz harness, per {@code COMPACT_SPEC.md} §M1:
- * "Given a seed, two consecutive runs MUST produce identical operation sequences and identical
- * hashes."
+ * Determinism guard for the M1 fuzz harness, per {@code COMPACT_SPEC.md} §M1: "Given a seed, two
+ * consecutive runs MUST produce identical operation sequences and identical hashes."
  *
  * <p>The test runs the SAME seed twice through both {@link FuzzScenario#forSeed} (operation
- * sequence) and {@link FuzzRunner#run} (resulting hashes). Byte-identical equality of both is
- * the test bar — any deviation indicates an unseeded source of nondeterminism (clocks, hash-map
+ * sequence) and {@link FuzzRunner#run} (resulting hashes). Byte-identical equality of both is the
+ * test bar — any deviation indicates an unseeded source of nondeterminism (clocks, hash-map
  * iteration order, thread scheduling).
  */
 class TestFuzzDeterminism {
