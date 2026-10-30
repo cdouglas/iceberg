@@ -85,6 +85,14 @@ reclaimable  18.39 MiB      added  0.58 MiB      saved  17.81 MiB
 predicted    18.02 MiB   ->  the saving is 98.8% of one copy of the table
 ```
 
+![Stacked bar chart showing before/after storage usage for a synthetic workload varying the share of delete operations from 0% to 90%. The rewrite representation requires roughly the same storage as the original layout excluding the new compaction, i.e., the rewrite recovers the redundant copy.](benchmark/snaprewrite-space/results/plots/mix_before_after.png)
+
+*Rewriting a v3 table: 500k rows, 500k operations across 8 transactions before compacting and
+rewriting, with deletes ranging from 0% to 90% of operations. As the share of deletes increases the
+savings diminish, since the rewrite trades deletion vectors for materialized row data. Reclaiming
+`C_A` is less effective when it is reproduced in the intermediate commits. How to read it:
+[EXPERIMENTS.md](benchmark/snaprewrite-space/EXPERIMENTS.md#mix_before_after).*
+
 It does not always pay. Every rewritten snapshot deletes every row inserted after it, and a delete
 position costs about a byte whatever the row's width — so on a 2-column table that term was **57%** of
 the saving, against 0.7% above. Small tables lose outright, because a manifest and manifest list per
