@@ -25,6 +25,10 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import org.apache.iceberg.CompactionMap;
+import org.apache.iceberg.CompactionMapBuilder;
+import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.HasTableOperations;
@@ -44,6 +48,7 @@ import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.snaprewrite.PositionDeleteRequest;
 import org.apache.iceberg.snaprewrite.ResurrectionRequest;
 import org.apache.iceberg.snaprewrite.RewriteRefusal;
@@ -368,6 +373,119 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
     append(records(20, 3, "alpha"));
     LocalCompactor.compact(table, true, file -> !file.location().equals(kept.location()));
     return kept;
+  }
+
+  /**
+   * A map that is wrong but stays inside the compaction's files passes every guard the planner has:
+   * each row it places lands in a file the compaction wrote. Under v3 it is refused, because the
+   * run it shifts joins rows with different ids. Nothing is written.
+   */
+  @Test
+  public void aWrongMapIsRefused() throws IOException {
+    useFormatVersion(3);
+    historyWithAShiftedMap();
+    List<String> before = filesUnderTable();
+
+    assertThatThrownBy(this::rewrite)
+        .isInstanceOf(RewriteRefusedException.class)
+        .satisfies(
+            e ->
+                assertThat(((RewriteRefusedException) e).refusal())
+                    .isEqualTo(RewriteRefusal.MAP_MISMATCH))
+        .hasMessageContaining("(row id ");
+    assertThat(filesUnderTable()).as("a refused rewrite writes nothing").isEqualTo(before);
+  }
+
+  /**
+   * On v2 there are no ids to check a map against, so the same map is followed and the rewrite
+   * reads the wrong rows. This pins the limit rather than endorsing it: a v2 rewrite is only as
+   * right as the maps it follows.
+   */
+  @Test
+  public void aWrongMapGoesUnnoticedOnV2() throws IOException {
+    useFormatVersion(2);
+    historyWithAShiftedMap();
+    Map<Long, List<String>> before = allSnapshotRows(table);
+
+    Table shadow = rewrite().asTable();
+    long wrong =
+        before.entrySet().stream()
+            .filter(entry -> !rowsAt(shadow, entry.getKey()).equals(entry.getValue()))
+            .count();
+    assertThat(wrong).as("snapshots the shifted map makes read the wrong rows").isPositive();
+  }
+
+  /**
+   * A history whose final compaction's map sends the run at the tail of its output one row early,
+   * onto a row of another file. Every row it places still lands inside the output.
+   *
+   * <p>The tail, because that run belongs to a file appended inside the window. The rewrite asks a
+   * map only where a row inserted inside the window went, to hide it from the snapshots before its
+   * insert; a row live throughout is whatever the compaction holds that nothing hides. So a wrong
+   * run for the floor's rows would change nothing on v2. The v3 check refuses it all the same.
+   */
+  private void historyWithAShiftedMap() throws IOException {
+    append(records(1, 6, "base"));
+    compact();
+    DataFile alpha = append(records(10, 3, "alpha"));
+    delete(ImmutableList.of(at(alpha, 1)));
+    append(records(20, 3, "beta"));
+    Snapshot compaction = compact();
+
+    // Its own map, found by what it targets: a manifest the compaction rewrote carries the floor's
+    // map location too, stamped with the compaction's id.
+    Set<String> added = Sets.newHashSet();
+    for (DataFile file : compaction.addedDataFiles(table.io())) {
+      added.add(file.location());
+    }
+
+    String location = null;
+    CompactionMap map = null;
+    for (ManifestFile manifest : compaction.dataManifests(table.io())) {
+      String candidate = manifest.compactionMapLocation();
+      if (candidate != null) {
+        CompactionMap read = CompactionMaps.read(table.io().newInputFile(candidate));
+        if (added.contains(read.fileMappings().get(0).targetFile())) {
+          location = candidate;
+          map = read;
+        }
+      }
+    }
+
+    assertThat(map).as("the compaction wrote a map").isNotNull();
+    long tail = 0;
+    for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+      for (CompactionMap.Run run : mapping.runs()) {
+        tail = Math.max(tail, run.targetPosition());
+      }
+    }
+
+    CompactionMapBuilder shifted =
+        new CompactionMapBuilder(map.sourceSnapshotId(), map.targetSnapshotId());
+    for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+      CompactionMapBuilder.FileMappingBuilder files =
+          shifted.addFileMapping(mapping.sourceFile(), mapping.targetFile());
+      for (CompactionMap.Run run : mapping.runs()) {
+        long target = run.targetPosition() == tail ? tail - 1 : run.targetPosition();
+        files.addRun(run.sourcePosition(), target, run.length(), run.targetFile());
+      }
+    }
+
+    table.io().deleteFile(location);
+    CompactionMaps.write(shifted.build(), table.io().newOutputFile(location));
+  }
+
+  /** Every file under the table's location, data and metadata alike. */
+  private List<String> filesUnderTable() throws IOException {
+    try (java.util.stream.Stream<java.nio.file.Path> paths =
+        java.nio.file.Files.walk(
+            java.nio.file.Paths.get(table.location().replaceFirst("^file:", "")))) {
+      return paths
+          .filter(java.nio.file.Files::isRegularFile)
+          .map(java.nio.file.Path::toString)
+          .sorted()
+          .collect(java.util.stream.Collectors.toList());
+    }
   }
 
   /** A recovered row's id is written into the file, not derived from it. */

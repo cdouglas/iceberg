@@ -196,7 +196,8 @@ public class TestSnapshotRewriteLedger extends SnapshotRewriteTestBase {
    *
    * <p>An appended file's ids all derive from its range, and its metrics say so, so the ledger
    * describes it with one run and no read. A compaction's output writes its ids out, because they
-   * came from unrelated ranges, so it has to be read.
+   * came from unrelated ranges, so it has to be read: the floor's for the ledger, and the target's
+   * to check its map against (CompactionMapCheck). Each is read once.
    */
   @Test
   public void onlyFilesThatWriteTheirIdsAreRead() throws IOException {
@@ -206,7 +207,7 @@ public class TestSnapshotRewriteLedger extends SnapshotRewriteTestBase {
     Snapshot floor = compact();
     append(records(10, 3, "alpha"));
     append(records(20, 3, "beta"));
-    compact();
+    Snapshot target = compact();
 
     CountingIO io = new CountingIO(new GenericSnapshotRewriteIO(table));
     SnapshotRewriteResult result =
@@ -215,7 +216,9 @@ public class TestSnapshotRewriteLedger extends SnapshotRewriteTestBase {
             .maxDeadRatio(Double.MAX_VALUE)
             .materialize();
 
-    assertThat(io.read).as("only the floor compaction's output").isEqualTo(addedPaths(floor));
+    assertThat(io.read)
+        .as("only the compactions' output")
+        .containsExactlyInAnyOrderElementsOf(Sets.union(addedPaths(floor), addedPaths(target)));
     for (SnapshotRewriteLedger.Entry entry : result.ledger().entries()) {
       if (!io.read.contains(entry.file().location())) {
         assertThat(entry.rowIdRunCount()).as("an appended file is one run").isOne();
@@ -336,7 +339,8 @@ public class TestSnapshotRewriteLedger extends SnapshotRewriteTestBase {
   /** Forwards everything, and records which files had their row ids read. */
   private static class CountingIO implements SnapshotRewriteIO {
     private final SnapshotRewriteIO delegate;
-    private final Set<String> read = Sets.newHashSet();
+    // A list, not a set, so that a file read twice shows up twice.
+    private final List<String> read = Lists.newArrayList();
 
     CountingIO(SnapshotRewriteIO delegate) {
       this.delegate = delegate;

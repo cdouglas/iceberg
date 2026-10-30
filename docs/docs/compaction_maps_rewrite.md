@@ -304,6 +304,7 @@ time-travel read returns.
 | `DEAD_RATIO` | Rows to recover exceed `maxDeadRatio` of the rows that survived |
 | `REPLACE_CHANGED_DATA` | A replace operation in the window altered the table's contents |
 | `UNLOCATABLE_ROW` | A row live in a rewritten snapshot could not be placed (a bug, not an input) |
+| `MAP_MISMATCH` | v3: a compaction map the rewrite follows pairs rows with different `_row_id`s (errata 16) |
 | `NO_COMPACTION` | No snapshot in the table carries a compaction map |
 
 A *map-less* replace **inside** the window is not refused. It is diffed like any other transaction,
@@ -450,7 +451,7 @@ compare-and-set on base metadata the `TableOperations` implementation performs: 
 `current` makes the commit fail outright, with no retry and no revalidation, because the plan was
 computed against one specific base.
 
-What replaces all of it is a refusal set rather than a proof — the thirteen reasons a rewrite can give
+What replaces all of it is a refusal set rather than a proof — the fourteen reasons a rewrite can give
 in `RewriteRefusal`, checked before any file is written (`SnapshotRewritePlanner.checkStaticPreconditions`). Two carry most
 of the weight: `UNLOCATABLE_ROW`, which requires every row live in the window to be findable, and
 `REPLACE_CHANGED_DATA`, which guards the assumption that an interstitial compaction is a logical no-op.
@@ -714,9 +715,41 @@ in memory:
 - the values of every row it is about to write.
 
 The planner also computes each position's birth file by file, at a cost of rows times the window
-snapshots that reference the file. And the generic IO reads whole rows to get the row ids for the
-ledger, where one column would do.
+snapshots that reference the file.
 
 Like errata 6 and 8, this is the prototype's shape, not a limit of the method. A distributed version
 would join the ledger's runs to the scanned rows by row id, and write each rebuilt file from one
 partition of that join.
+
+### 16. Compaction maps are checked on v3, and trusted on v2
+
+The rewrite places rows through compaction maps. It refuses a row a map cannot place, and a row placed
+outside the compaction's files and the recovery files (`UNLOCATABLE_ROW`). A map that is wrong but
+stays inside those files passes both checks. Examples are a run off by one, two sources sent to one
+row, or a run for a row the compaction dropped.
+
+The rewrite consults a map only for rows inserted inside the window, to hide them from the snapshots
+before their insert. A row live throughout the window is simply whatever the compaction holds that
+nothing hides. So a wrong run hides the wrong row from some snapshots and shows the right one where it
+should be hidden. The result reads plausibly and is wrong.
+
+- **v3: checked.** A compaction keeps each row's `_row_id`, so a map is right exactly when every run
+  joins equal ids. Before anything is written, the rewrite checks every run of every map it follows
+  whose source a window snapshot holds (`CompactionMapCheck`), and refuses at the first mismatch
+  (`MAP_MISMATCH`). That includes runs the rewrite would not consult, so it refuses a broken map even
+  where the rewrite would have come out right. It also refuses a compaction that gave its rows new
+  ids. The check needs a `SnapshotRewriteIO` that preserves lineage, the same condition as the
+  ledger. Rows written before the table moved to v3 have no ids and are passed over. The cost is
+  reading the `_row_id` column of every file a followed map names that the ledger has not already
+  read. On a first pass that is mostly the target compaction's output, which the rewrite otherwise
+  never reads. `TestSnapshotRewriteV3#aWrongMapIsRefused` pins this.
+- **v2: trusted.** There are no ids. The only independent check would be comparing values, which
+  costs reading every file twice, and duplicate rows defeat it. A v2 rewrite is only as right as the
+  maps it follows. `TestSnapshotRewriteV3#aWrongMapGoesUnnoticedOnV2` pins the limit: the same shifted
+  map that v3 refuses gives v2 snapshots the wrong rows.
+
+The maps the harness writes are correct by construction (`LocalCompactor`), so the suites exercise the
+remapping, not the map writers. The check matters most for maps from writers the suites never run.
+That covers Spark's `RewriteDataFilesSparkAction`, and the fallback in `BaseRewriteFiles` for
+direct-API rewrites, which assumes concatenation in iteration order and checks only that row counts
+add up.
