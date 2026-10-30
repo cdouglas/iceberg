@@ -19,7 +19,6 @@
 package org.apache.iceberg;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.apache.iceberg.CompactionMap.FileMapping;
 import org.apache.iceberg.CompactionMap.Run;
@@ -214,21 +213,30 @@ public class TestCompactionMapComposition {
     assertThat(g1Mapping.targetFile()).isEqualTo("G2");
   }
 
+  /**
+   * Another commit may land between two compactions, and an action records a placeholder target
+   * snapshot, so M1's target snapshot rarely equals M2's source snapshot. Composition follows files
+   * and does not depend on them (compaction maps errata 4).
+   */
   @Test
-  public void testCompositionSnapshotIdMismatchThrows() {
+  public void testCompositionAcrossNonContiguousSnapshots() {
     CompactionMapBuilder m1Builder = new CompactionMapBuilder(1L, 2L);
     m1Builder.addFileMapping("F1", "F2").addRun(0, 0, 100);
     CompactionMap m1 = m1Builder.build();
 
     // M2's source snapshot doesn't match M1's target
     CompactionMapBuilder m2Builder = new CompactionMapBuilder(5L, 6L);
-    m2Builder.addFileMapping("F2", "F3").addRun(0, 0, 100);
+    m2Builder.addFileMapping("F2", "F3").addRun(0, 10, 100);
     CompactionMap m2 = m2Builder.build();
 
-    assertThatThrownBy(() -> CompactionMaps.compose(m1, m2))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("m1.targetSnapshotId")
-        .hasMessageContaining("m2.sourceSnapshotId");
+    CompactionMap composed = CompactionMaps.compose(m1, m2);
+
+    assertThat(composed.sourceSnapshotId()).isEqualTo(1L);
+    assertThat(composed.targetSnapshotId()).isEqualTo(6L);
+    FileMapping mapping = composed.mappingForFile("F1");
+    assertThat(mapping.targetFile()).isEqualTo("F3");
+    Run run = mapping.runs().get(0);
+    assertThat(run.mapPosition(5)).isEqualTo(15);
   }
 
   @Test

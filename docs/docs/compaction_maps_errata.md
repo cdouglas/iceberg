@@ -169,6 +169,64 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 ---
 
+## 4. The Validator Collected Carried-Forward Maps, Out of Order ✅ FIXED
+
+### Issue
+
+`CompactionMapValidator` decides whether a row delta's position deletes reference files that a
+compaction removed after the transaction started. It walked from the current snapshot back to the
+starting one and collected the map location of every data manifest it saw. But a manifest keeps its
+location when a later commit carries, filters (`ManifestFilterManager`) or merges
+(`ManifestMergeManager`) it, so each snapshot names the map of every compaction whose manifests are
+still live. Three bugs followed. Each is reproduced in `TestCompactionMapValidatorHistory`.
+
+- **Scope.** The validator collected the maps of compactions from before the starting snapshot
+  whenever any commit landed after the transaction started. A position delete file that covers several
+  data files (no `referencedDataFile`, as the default partition delete granularity writes) conflicts
+  with every compacted file the validator knows. Such a delete failed with a
+  `CompactionConflictException` naming files that were compacted before the transaction began.
+  Remapping does nothing for those files, so a retry from the same starting snapshot failed the same
+  way.
+- **Order.** Maps were ordered by where their locations first appear in manifest lists. Manifest lists
+  group manifests by spec id, highest first. Suppose a later compaction writes into a spec with a lower
+  id than an earlier compaction's output, for example after rolling a partition spec back. Then the
+  chain came out newest first. `CompactionMapChain` composes a file only through the maps after the one
+  that compacted it. So a delete on F1, compacted to F2 and then to F3, was remapped to F2, which the
+  table no longer holds.
+- **Composition.** `CompactionMaps.compose` required the first map's target snapshot to equal the
+  second map's source snapshot. A map's source snapshot is the snapshot its compaction planned
+  against, so any commit between two chained compactions broke the equality. A map that
+  `RewriteDataFilesCommitManager` writes (core or Spark) records `startingSnapshotId + 1` as a
+  placeholder target, so its chains never satisfied it. Remapping a chained conflict threw
+  `IllegalArgumentException`.
+
+### Resolution
+
+- The validator attributes each map to the snapshot that wrote it. A REPLACE snapshot's own map is on
+  a manifest that the snapshot wrote, and lists source files that the snapshot removed. Only the maps
+  of snapshots after the starting one are collected, in commit order.
+- `compose` follows files only. The snapshot id check, which never affected the result, is removed.
+  `TestCompactionMapComposition` now composes across snapshot ids that do not match, instead of
+  expecting an exception.
+
+### Still Open
+
+- SERIALIZABLE validation (`MergingSnapshotProducer.validateCompactionAwareConflicts`) treats a replace
+  as layout-only if any of its data manifests names a map. Carried locations make every replace after a
+  mapped compaction look mapped. That falls back to upstream's behavior, which never validates a
+  replace's added files, rather than to anything less safe. Whether to keep the exemption at all is
+  undecided.
+- An action-built map's `targetSnapshotId` is a placeholder. Nothing should rely on it.
+
+### Code Location
+
+- `core/src/main/java/org/apache/iceberg/CompactionMapValidator.java` -- `loadCompactionMaps`,
+  `addOwnMaps`
+- `core/src/main/java/org/apache/iceberg/CompactionMaps.java` -- `compose`
+- `core/src/test/java/org/apache/iceberg/TestCompactionMapValidatorHistory.java`
+
+---
+
 ## 5. Position-Tracked Compactions Dropped Row Lineage on v3 ✅ FIXED
 
 ### Issue
@@ -236,6 +294,7 @@ both versions kept lineage. The bug was found by a snapshot-rewrite test onto a 
 |---|-------|--------|--------|----------|
 | 1 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
 | 2 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
+| 4 | Validator collected carried-forward maps, out of order | Spurious conflicts for multi-file deletes; chained remaps stopped early or threw | Fixed | - |
 | 5 | Position-tracked compactions dropped v3 row lineage | Moved rows got new `_row_id`s; files written before the fix keep them | Fixed | - |
 
 **Fixed Issues (Removed from Active List):**

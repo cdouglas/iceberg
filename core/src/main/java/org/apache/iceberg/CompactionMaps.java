@@ -161,10 +161,14 @@ public class CompactionMaps {
   /**
    * Composes two compaction maps into a single map representing the combined transformation.
    *
-   * <p>Given map M1 (sourceSnapshot1 → targetSnapshot1) and map M2 (sourceSnapshot2 →
-   * targetSnapshot2), where M1's target snapshot equals M2's source snapshot, this method produces
-   * a composed map M' (sourceSnapshot1 → targetSnapshot2) that directly maps source positions in M1
-   * to target positions in M2.
+   * <p>Given map M1 and a later map M2 that compacted some of M1's target files, this method
+   * produces a composed map M' (M1's source snapshot → M2's target snapshot) that directly maps
+   * source positions in M1 to target positions in M2.
+   *
+   * <p>Composition follows files: M1's targets that are M2's sources. It does not require M1's
+   * target snapshot to equal M2's source snapshot. Other commits may land between two compactions,
+   * and a compaction planned by an action records a placeholder target snapshot, so the two rarely
+   * match (compaction maps errata 4).
    *
    * <p>For example, if M1 maps F1→F2 and M2 maps F2→F3, the composed map will map F1→F3 directly.
    *
@@ -185,15 +189,8 @@ public class CompactionMaps {
    * @param m1 the first compaction map (applied first in the chain)
    * @param m2 the second compaction map (applied second in the chain)
    * @return a composed compaction map representing the combined transformation
-   * @throws IllegalArgumentException if m1's target snapshot doesn't match m2's source snapshot
    */
   public static CompactionMap compose(CompactionMap m1, CompactionMap m2) {
-    Preconditions.checkArgument(
-        m1.targetSnapshotId() == m2.sourceSnapshotId(),
-        "Cannot compose maps: m1.targetSnapshotId (%s) != m2.sourceSnapshotId (%s)",
-        m1.targetSnapshotId(),
-        m2.sourceSnapshotId());
-
     // Build index from source file to mapping in m2
     Map<String, CompactionMap.FileMapping> m2SourceIndex = Maps.newHashMap();
     for (CompactionMap.FileMapping mapping : m2.fileMappings()) {

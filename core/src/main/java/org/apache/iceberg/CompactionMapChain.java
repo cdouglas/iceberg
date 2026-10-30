@@ -72,13 +72,13 @@ public class CompactionMapChain {
   /**
    * Builds a compaction map chain from an ordered list of compaction maps.
    *
-   * <p>The maps should be ordered from oldest to newest (i.e., in the order they were applied). The
-   * chain will validate that maps are contiguous (each map's source snapshot matches the previous
-   * map's target snapshot).
+   * <p>The maps must be ordered from oldest to newest (i.e., in the order they were committed): a
+   * file's mapping composes only through the maps after the one that compacted it. Composition
+   * follows files, so the maps' snapshot ids need not be contiguous.
    *
    * @param orderedMaps the compaction maps in application order (oldest first)
    * @return a new CompactionMapChain
-   * @throws IllegalArgumentException if the list is empty or maps are not contiguous
+   * @throws IllegalArgumentException if the list is empty
    */
   public static CompactionMapChain build(List<CompactionMap> orderedMaps) {
     Preconditions.checkArgument(
