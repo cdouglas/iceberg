@@ -29,16 +29,16 @@ import java.util.Map;
 import java.util.Random;
 
 /**
- * Tunable knobs that shape a fuzz run. Loaded from JSON via {@link #load(Path)} or constructed
- * via {@link #defaults()}; together with the master seed it forms the determinism key for {@link
+ * Tunable knobs that shape a fuzz run. Loaded from JSON via {@link #load(Path)} or constructed via
+ * {@link #defaults()}; together with the master seed it forms the determinism key for {@link
  * FuzzScenario#forSeed}.
  *
- * <p>Weights are normalized at load time so callers can use either probabilities (summing to 1)
- * or arbitrary positive numbers (e.g. {@code 1.0, 1.0, 1.0} for uniform). Ranges are inclusive
- * integer pairs; min must be {@code <=} max.
+ * <p>Weights are normalized at load time so callers can use either probabilities (summing to 1) or
+ * arbitrary positive numbers (e.g. {@code 1.0, 1.0, 1.0} for uniform). Ranges are inclusive integer
+ * pairs; min must be {@code <=} max.
  *
- * <p>Defaults exist for every field, so a partial JSON config that overrides only one or two
- * knobs is well-defined.
+ * <p>Defaults exist for every field, so a partial JSON config that overrides only one or two knobs
+ * is well-defined.
  */
 public final class FuzzConfig {
 
@@ -256,8 +256,7 @@ public final class FuzzConfig {
       double overlap =
           overlapProbability == null ? defaults.overlapProbability : overlapProbability;
       if (overlap < 0.0 || overlap > 1.0) {
-        throw new IllegalArgumentException(
-            "overlapProbability must be in [0, 1], got " + overlap);
+        throw new IllegalArgumentException("overlapProbability must be in [0, 1], got " + overlap);
       }
       return new FuzzConfig(
           fmt,
