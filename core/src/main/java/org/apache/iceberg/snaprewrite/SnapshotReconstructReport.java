@@ -32,6 +32,8 @@ public class SnapshotReconstructReport {
   private static final double MIB = 1024.0 * 1024.0;
 
   private final int snapshots;
+  private final int compactions;
+  private final int maps;
   private final int reused;
   private final int rebuiltInPlace;
   private final int rebuiltMoved;
@@ -47,6 +49,8 @@ public class SnapshotReconstructReport {
 
   SnapshotReconstructReport(
       int snapshots,
+      int compactions,
+      int maps,
       int reused,
       int rebuiltInPlace,
       int rebuiltMoved,
@@ -60,6 +64,8 @@ public class SnapshotReconstructReport {
       long metadataBytes,
       long reclaimableBytes) {
     this.snapshots = snapshots;
+    this.compactions = compactions;
+    this.maps = maps;
     this.reused = reused;
     this.rebuiltInPlace = rebuiltInPlace;
     this.rebuiltMoved = rebuiltMoved;
@@ -74,9 +80,23 @@ public class SnapshotReconstructReport {
     this.reclaimableBytes = reclaimableBytes;
   }
 
-  /** Snapshots reconstructed. */
+  /** Snapshots reconstructed from a ledger. */
   public int snapshots() {
     return snapshots;
+  }
+
+  /**
+   * Snapshots outside every window rebuilt because their parent was reconstructed: the compaction
+   * each window ended at. Their files are unchanged; what they removed is listed again against the
+   * parent as it now is.
+   */
+  public int compactions() {
+    return compactions;
+  }
+
+  /** Compaction maps written again because a file they name moved. */
+  public int maps() {
+    return maps;
   }
 
   /** Original files that still existed, and are referenced again as they are. */
@@ -145,7 +165,13 @@ public class SnapshotReconstructReport {
   @Override
   public String toString() {
     StringBuilder text = new StringBuilder();
-    text.append(String.format(Locale.ROOT, "reconstructed %d snapshots%n", snapshots));
+    text.append(
+        String.format(
+            Locale.ROOT,
+            "reconstructed %d snapshots, rebuilt %d compactions and %d maps%n",
+            snapshots,
+            compactions,
+            maps));
     text.append(
         String.format(
             Locale.ROOT,

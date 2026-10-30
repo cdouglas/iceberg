@@ -976,13 +976,18 @@ order, with the original `_row_id` and `_last_updated_sequence_number`. Each sna
 those files as forward deltas:
 
 - a data file is `ADDED` by the commit that wrote it, carried as `EXISTING` after that, and `DELETED`
-  by the commit that removed it;
+  by the commit that removed it, which is whatever the parent held that the snapshot does not;
 - a deletion vector is owned by the commit that deleted the rows, and carried until one replaces it;
 - every entry has its original sequence numbers, each snapshot has its original summary, and each
   compaction has its compaction map again.
 
 An original that still exists is referenced as it is. That covers a file a partial compaction kept,
-and anything reclaim withheld.
+and anything reclaim withheld. So does a vector that a snapshot just outside the window still holds,
+whether carried in across the floor or out into the compaction.
+
+The compaction each window ended at is rebuilt too, though the rewrite never touched it. Its files and
+sequence number stay the same. But the files it removed are now the rebuilt files and vectors of its
+parent, and its map may name a source that moved.
 
 **Not restored: holes.** A hole is a row that is physically present in an original file but that no
 window snapshot can read. There are two kinds:
@@ -1000,7 +1005,7 @@ So a file is rebuilt one of three ways:
 |---|---|---|
 | still exists | not at all; referenced as it is | exact, holes and all, masked |
 | no holes | at its original path | same rows, positions, ids, and sequence numbers; lineage written only where the original wrote it |
-| has holes | at a new path, without them | same rows, order, and ids; later rows move up, so ids are written out |
+| has holes | at a new path, without them | same rows, order, and ids; later rows move up, so ids are written out, and the map of the compaction that removed it is written again |
 
 A file that is nothing but holes is left out. Byte identity is out of scope at every level. Restoring
 holes is §14.7.
@@ -1101,17 +1106,27 @@ verified before anything is committed.
    as an append would have written it.
 8. For each snapshot and file, mask the positions whose physical row is not live there, plus the holes
    of a reused original. A run of snapshots masking the same positions shares one vector, owned by the
-   first of them.
-9. Write ordinary metadata: data entries `ADDED`, `EXISTING` or `DELETED` at the sequence numbers the
-   ledger recorded for that snapshot, and vectors at their owner's number. Each compaction's map location
-   goes back on its manifest. Each snapshot gets its original summary, plus a `snapshot-restored-from`
-   key that lets `SnapshotRewriteReconstruct.undo` point back at the rewritten form until it is
-   reclaimed. There is no shared base, so errata 2 does not apply to a reconstructed snapshot.
+   first of them. A snapshot next to the window may still hold a vector for a reused file that masks
+   the same positions and already applies. If so, that vector is used rather than a new one.
+9. Once every ledger is read, write ordinary metadata. A snapshot lists the files it holds: `ADDED` if
+   it wrote them, `EXISTING` otherwise, at the sequence numbers the ledger recorded for it, and vectors
+   at their owner's number. It lists as `DELETED` whatever its parent held that it does not. The parent
+   is taken as reconstructed (possibly from another ledger), or as it stands if the reconstruction
+   leaves it alone, or as empty if it has expired. Each compaction's map location goes back on its
+   manifest. Each snapshot gets its original summary, plus a `snapshot-restored-from` key that lets
+   `SnapshotRewriteReconstruct.undo` point back at the rewritten form until it is reclaimed. There is no
+   shared base, so errata 2 does not apply to a reconstructed snapshot.
+10. Rebuild each snapshot outside the windows whose parent was reconstructed: the compaction a window
+    ended at. It keeps its files, sequence number and summary, and gets the same
+    `snapshot-restored-from` key. Without this, it would list as removed the original vectors, which
+    reclaim deleted and step 8 wrote again elsewhere, and a moved source at its old path.
 
 Compaction maps are re-attached, not regenerated as first planned. Reclaim never deletes them, and a
 map stays correct exactly as long as the files it names come back at their own paths. A compaction's
-output never has holes, so the only files that can move are a compaction's sources. A future rewrite
-that needs one of those now refuses (§14.6, question 1).
+output never has holes, so the only files that can move are a compaction's sources. A moved file loses
+only rows that no compaction mapped. A mapped row was live in the compaction's parent, so some window
+snapshot read it. Such a map is written again with the file's new path, each run shifted back by the
+holes before it. Every run stays contiguous, and the reconstruction checks that it does.
 
 Commit and reclaim work as they do for a rewrite. Reachability for reclaim is now shared, in `Reclaim`.
 A reconstruction re-spends roughly what the rewrite saved. `SnapshotReconstructReport` gives the bytes
@@ -1126,13 +1141,16 @@ rebuilt next to the original files' sizes from the ledger, and what the rewritte
 - **`LayoutFingerprint`** is the layout oracle. For each snapshot and file it records each position's
   `_row_id`, `_last_updated_sequence_number` and values, the positions read, whether the snapshot added
   the file, and the manifest entry's sequence numbers. A file at its original path must match exactly. A
-  moved file must equal the original minus its holes. Summaries must match. A scan alone cannot tell two
-  layouts apart, which is why this reads files.
+  moved file must equal the original minus its holes. Summaries must match. Each snapshot must remove
+  the same data files, and carry, add and remove the same vectors, by the data file each applies to
+  and its sequence number. Two things are checked of the result alone: every snapshot is its parent
+  less what it removed plus what it added, by path, and every compaction map pairs rows with the same
+  `_row_id`. A scan alone cannot tell two layouts apart, which is why this reads files.
 - **`TestSnapshotRewriteReconstruct`** covers: no holes, every file back at its path, incremental append
   scans unchanged, and the floor's map back; a hole, and its file moving; compactions inside the window;
   a partitioned table; a partial compaction's kept file reused; a replace with no map; a second rewrite
-  of a reconstruction; a moved file refusing that rewrite; two passes reconstructed in one step; undo; and
-  refusals for no ledger and for a schema change.
+  of a reconstruction; a moved file rewritten again, then reconstructed to the same layout with nothing
+  moved; two passes reconstructed in one step; undo; and refusals for no ledger and for a schema change.
 - **The lossless matrix and the layouts suite** rerun on v3 with every rewrite committed, reclaimed and
   reconstructed (`TestSnapshotRewriteLosslessReconstructed`, `TestSnapshotRewriteLayoutsReconstructed`).
 - **Every v3 fuzz seed** does the same, outside the `try` that accepts a refusal from the rewrite, so a
@@ -1150,8 +1168,10 @@ compares rows only.
    gap in the rewrite, now closed: `RowLocator.locate` passes a path missing from every map through
    unchanged, as if the compaction had left the file alone. Rewriting such a history onto `C_B` again
    would have masked nothing. The planner now refuses a row that locates outside the compaction's files
-   and the recovered ones (`UNLOCATABLE_ROW`). The cost of reusing paths is any engine cache keyed by
-   path: the rows are the same, but the bytes are not.
+   and the recovered ones (`UNLOCATABLE_ROW`). The reconstruction now also writes the map again for any
+   compaction whose source moved (§14.4), so such a history can be rewritten again. The refusal stays,
+   for a map that does not name a file. The cost of reusing paths is any engine cache keyed by path:
+   the rows are the same, but the bytes are not.
 2. **Keeping the ledger reachable: open** (user doc errata 14; compaction maps errata 3). Only a summary
    string points to the ledger, so orphan-file removal would delete it. Compaction-map files are exposed the same way today: `ReachableFileUtil`
    does not know about them either.
@@ -1164,10 +1184,14 @@ compares rows only.
    compaction never leaves it null, because rule 3 requires the value to be copied. The column's
    null-value count in the compaction's file metrics would detect a non-compliant one from metadata
    alone, and a precondition like P1b could refuse it.
-5. **A compaction at a ledger boundary: open.** After two passes, the first pass's target compaction is
-   reconstructed from the second pass's ledger. The files it replaced belong to the first ledger's
-   layout, so it gets no `DELETED` entries for them. Reads and incremental append scans are unaffected;
-   that snapshot's `removedDataFiles` is incomplete.
+5. **Removals: decided.** A snapshot lists as removed what its parent held that it does not (§14.4,
+   steps 9 and 10). The first design compared a snapshot only with the previous snapshot in its own
+   ledger. That left the floor with no removals at all, not only a compaction at a ledger boundary. The
+   layout oracle did not compare removals, so nothing noticed. Two limits remain, and reads are
+   unaffected by both:
+   - a snapshot whose parent has expired lists nothing as removed;
+   - a vector carried into the window from an expired snapshot comes back owned by the floor, at the
+     floor's sequence number.
 6. **Scale: open** (errata 15). Spans and the rows being rebuilt are held in memory, every window snapshot is
    scanned once per ledger, and births cost rows times span at planning. A distributed version would
    join ledger runs to scanned rows by id.
@@ -1176,8 +1200,8 @@ compares rows only.
 
 The ledger already locates every hole exactly: a position whose birth is -1. So exact positions reduce
 to keeping the holes' contents. Those exist only in the original files, so they would have to be copied
-out at rewrite time, before reclaim. With them, every file can return to its original path, and the
-refusal in §14.6's first question goes away.
+out at rewrite time, before reclaim. With them, every file can return to its original path, and no map
+needs writing again.
 
 ### 14.8 Milestones
 
@@ -1188,6 +1212,7 @@ refusal in §14.6's first question goes away.
 | R2 | Reconstruct into a shadow table (§14.4) | **done** |
 | R3 | Commit, reclaim, round trips, report; the matrix, layouts and fuzz reconstructed | **done** |
 | R4 | Rewrite errata 10; settle §14.6 | **done**, except the questions still marked open |
+| R5 | Removals against the parent; rebuild the compaction each window ended at, and maps naming moved files | **done** |
 
 **What R0 found.** Planning this showed that the rewrite was preserving only half of a row's lineage.
 `GenericRowLineage` wrote `_last_updated_sequence_number` as null, which the reader fills in from the
@@ -1220,3 +1245,12 @@ lost, which is why this came first.
   compaction's own deletes (`TestSnapshotRewriteLayouts#partialCompactionKeepsTheKeptFilesDeletes`).
 - **The v3 test harness wrote one deletion vector per commit**, not one per data file. Running the
   figure's history on v3, which deletes from two files in one commit, needed the latter.
+
+**What R5 found.** Once the layout oracle compared removals, seven of the twelve reconstruction tests
+failed, all on the floor: its sources were missing from its removals. The fix lists each snapshot's
+removals against its parent, and that showed the compaction a window ended at was wrong as well. The
+rewrite leaves it alone, so it still listed the original vectors as removed after reclaim and step 8 had
+replaced them. Once the compaction is rebuilt, a vector it carries for a file a partial compaction kept
+must be the one its parent holds, which is why step 8 reuses retained vectors. With the compaction's map
+rewritten for a moved source, the second rewrite that §14.6's first question refused now succeeds and
+reconstructs to the same layout.
