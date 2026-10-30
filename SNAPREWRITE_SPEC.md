@@ -198,6 +198,7 @@ refusals, not warnings.
 | P8 | `dead-bytes / reclaimable-bytes` below threshold | Cost guard, not correctness |
 | P9 | No branch/tag ref points *into* the window in a way the caller excluded | Refs are preserved by id, so this is informational; asserted for clarity |
 | P10 | Every REPLACE in the window leaves the live row count unchanged | §11.1 skips diffing over a compaction on the assumption it is a logical no-op; a replace that also changed data would break that silently |
+| P11 | Under v3, with an IO that preserves lineage, every run of every compaction map followed joins rows with equal `_row_id` (`MAP_MISMATCH`) | The planner refuses a row a map cannot place or places outside the compaction's files, but a wrong map that stays inside them would hide the wrong rows. Checked at materialize, before anything is written, from the ids the ledger reads plus the compaction's own output. On v2 maps are trusted (user doc errata 16) |
 
 P3 deserves a note: field-id based reads make *additive* schema change harmless, but a
 dropped column is not. The prototype takes the conservative rule (identical `schema-id`)

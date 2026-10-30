@@ -20,6 +20,7 @@ package org.apache.iceberg.snaprewrite;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.HasTableOperations;
@@ -211,6 +212,18 @@ public class SnapshotRewrite {
   SnapshotRewriteResult materialize(SnapshotRewriteWriter.Stamping stamping) {
     SnapshotRewritePlan materialized = plan();
 
+    // Only now are the ids of files that write them per row read: planning stays metadata-only.
+    // Before anything is written, since the maps are checked against the same ids.
+    SnapshotRewriteLedger ledger =
+        materialized.ledger() == null
+            ? null
+            : materialized.ledger().withRowIds(rewriteIO::readRowIdRuns);
+
+    if (base.formatVersion() >= 3 && rewriteIO.preservesRowLineage()) {
+      CompactionMapCheck.verify(
+          materialized.followedMaps(), materialized.layoutFiles(), rowIds(ledger));
+    }
+
     Map<String, DataFile> resurrected = Maps.newHashMap();
     for (ResurrectionRequest request : materialized.resurrections()) {
       resurrected.put(request.outputPath(), rewriteIO.resurrect(request));
@@ -222,12 +235,6 @@ public class SnapshotRewrite {
         deleteFiles.put(request.outputPath(), rewriteIO.writePositionDeletes(request));
       }
     }
-
-    // Only now are the ids of files that write them per row read: planning stays metadata-only.
-    SnapshotRewriteLedger ledger =
-        materialized.ledger() == null
-            ? null
-            : materialized.ledger().withRowIds(rewriteIO::readRowIdRuns);
 
     SnapshotRewriteWriter writer =
         new SnapshotRewriteWriter(
@@ -245,6 +252,36 @@ public class SnapshotRewrite {
         writer.writtenPaths(),
         ledger,
         writer.ledgerLocation());
+  }
+
+  /**
+   * Each file's {@code _row_id} by position: from the ledger where it already read them, from
+   * metrics where every id derives from the file's range, and otherwise read once.
+   */
+  private Function<DataFile, long[]> rowIds(SnapshotRewriteLedger ledger) {
+    Map<String, SnapshotRewriteLedger.Entry> entries = Maps.newHashMap();
+    if (ledger != null) {
+      for (SnapshotRewriteLedger.Entry entry : ledger.entries()) {
+        entries.put(entry.file().location(), entry);
+      }
+    }
+
+    Map<String, long[]> ids = Maps.newHashMap();
+    return file ->
+        ids.computeIfAbsent(
+            file.location(),
+            path -> {
+              SnapshotRewriteLedger.Entry entry = entries.get(path);
+              if (entry != null) {
+                return entry.rowIds();
+              }
+
+              long[] runs =
+                  SnapshotRewritePlanner.derivesRowIds(file)
+                      ? SnapshotRewriteLedger.derivedRuns(file)
+                      : rewriteIO.readRowIdRuns(file);
+              return SnapshotRewriteLedger.expand(runs, file.recordCount());
+            });
   }
 
   private List<Snapshot> reverseAncestry() {
