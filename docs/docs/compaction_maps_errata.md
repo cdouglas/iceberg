@@ -169,6 +169,53 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 ---
 
+## 3. Compaction Map Files Are Invisible to Table Maintenance
+
+### Issue
+
+A compaction map is a file in the table's metadata directory
+(`CompactionMaps.newCompactionMapFile`), and the only thing that names it is a manifest's
+`compaction_map_location` (field 521). Neither maintenance operation reads that field:
+
+- **Orphan-file removal deletes maps that are still in use.** `DeleteOrphanFilesSparkAction` treats
+  only content files, manifests, manifest lists, metadata JSON files, the version hint, and statistics
+  files as reachable (`BaseSparkAction.otherMetadataFileDS`, Spark 3.5 and 4.0). Every compaction map
+  older than the action's cutoff (three days by default) is deleted, including maps that a live
+  manifest still names.
+- **Snapshot expiry never deletes maps.** `IncrementalFileCleanup` and `ReachableFileCleanup` delete
+  unreachable manifests, manifest lists, and content files, but never look at field 521. A map
+  outlives the last snapshot that names it, indefinitely.
+
+### Impact
+
+- **Conflict resolution:** low risk. A concurrent commit needs the map only until it retries, which is
+  normally well inside the orphan cutoff.
+- **Snapshot rewriting:** high risk. A rewrite needs the target compaction's map, and the map of every
+  compaction inside its window, for as long as that history is kept. A reconstruction after reclaim
+  re-attaches maps by location. Once orphan removal has deleted a map, rewriting onto that compaction
+  fails when it tries to read the map. The failure is loud, but the capability is gone for that part
+  of the history.
+- **Storage:** expiry leaks one small Avro file per compaction.
+
+The snapshot-rewrite ledger has the same exposure ([rewrite errata 14](compaction_maps_rewrite.md#14-ledgers-are-invisible-to-table-maintenance)).
+
+### What Would Fix It
+
+`ReachableFileUtil`, and the metadata file set of the Spark action, would include the
+`compaction_map_location` of every reachable manifest. Snapshot expiry would delete a map once no
+retained manifest names it. Both are reachability changes to maintenance code outside the
+compaction-map packages, which is why neither is done here.
+
+### Code Location
+
+- `spark/v{3.5,4.0}/spark/src/main/java/org/apache/iceberg/spark/actions/BaseSparkAction.java` --
+  `otherMetadataFileDS`
+- `core/src/main/java/org/apache/iceberg/ReachableFileUtil.java`
+- `core/src/main/java/org/apache/iceberg/IncrementalFileCleanup.java`,
+  `ReachableFileCleanup.java`
+
+---
+
 ## 4. The Validator Collected Carried-Forward Maps, Out of Order ✅ FIXED
 
 ### Issue
@@ -300,6 +347,7 @@ both versions kept lineage. The bug was found by a snapshot-rewrite test onto a 
 |---|-------|--------|--------|----------|
 | 1 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
 | 2 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
+| 3 | Compaction map files invisible to maintenance | Orphan removal deletes maps in use; expiry never deletes them | Open | Medium |
 | 4 | Validator collected carried-forward maps, out of order | Spurious conflicts for multi-file deletes; chained remaps stopped early or threw | Fixed | - |
 | 5 | Position-tracked compactions dropped v3 row lineage | Moved rows got new `_row_id`s; files written before the fix keep them | Fixed | - |
 

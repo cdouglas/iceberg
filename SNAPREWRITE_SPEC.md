@@ -1152,12 +1152,13 @@ compares rows only.
    would have masked nothing. The planner now refuses a row that locates outside the compaction's files
    and the recovered ones (`UNLOCATABLE_ROW`). The cost of reusing paths is any engine cache keyed by
    path: the rows are the same, but the bytes are not.
-2. **Keeping the ledger reachable: open.** Only a summary string points to the ledger, so orphan-file
-   removal would delete it. Compaction-map files are exposed the same way today: `ReachableFileUtil`
+2. **Keeping the ledger reachable: open** (user doc errata 14; compaction maps errata 3). Only a summary
+   string points to the ledger, so orphan-file removal would delete it. Compaction-map files are exposed the same way today: `ReachableFileUtil`
    does not know about them either.
 3. **Expiry: refused, not skipped.** A window snapshot that expired after the rewrite makes its ledger
    refuse (`LEDGER_MISMATCH`). Skipping it would leave rows whose births fall in the expired snapshot
-   with nothing to assign them to. Collecting a ledger once all its snapshots have expired is open.
+   with nothing to assign them to. Collecting a ledger once all its snapshots have expired is open
+   (errata 14).
 4. **A compaction that leaves `_last_updated_sequence_number` null: open.** The rewrite restamps the
    compaction's files, so in rewritten snapshots such a row would read as the shared base. A compliant
    compaction never leaves it null, because rule 3 requires the value to be copied. The column's
@@ -1167,7 +1168,7 @@ compares rows only.
    reconstructed from the second pass's ledger. The files it replaced belong to the first ledger's
    layout, so it gets no `DELETED` entries for them. Reads and incremental append scans are unaffected;
    that snapshot's `removedDataFiles` is incomplete.
-6. **Scale: open.** Spans and the rows being rebuilt are held in memory, every window snapshot is
+6. **Scale: open** (errata 15). Spans and the rows being rebuilt are held in memory, every window snapshot is
    scanned once per ledger, and births cost rows times span at planning. A distributed version would
    join ledger runs to scanned rows by id.
 

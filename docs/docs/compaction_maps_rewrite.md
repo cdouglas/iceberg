@@ -611,9 +611,9 @@ through the ledger the rewrite writes. Its limits:
   a file that held one comes back without it, at a new path. Every readable row keeps its id, but rows
   after a hole move up. Rewriting such a history onto the same compaction again is refused, because that
   compaction's map names the old path.
-- **The ledger is reachable only through snapshot summaries**, so orphan-file removal would delete it,
-  as it would a compaction map. A window snapshot that expires after the rewrite makes its ledger refuse
-  to reconstruct.
+- **Table maintenance does not know about the ledger**, so orphan-file removal can delete it and
+  snapshot expiry never does. See errata 14.
+- **It holds the window in memory.** See errata 15.
 - **Not byte-identical.** Files are rewritten by whatever writer the `SnapshotRewriteIO` uses, and
   manifests and manifest lists are new files.
 
@@ -664,3 +664,40 @@ The delete manifests cannot be shared — their entries genuinely differ per sna
 point of the rewrite. The manifest lists cannot be shared at all; a snapshot is a manifest list.
 Reducing this further would mean fewer, larger rewritten snapshots, which is the coalescing an
 `ARCHIVE` layout would permit and this prototype does not attempt.
+
+### 14. Ledgers are invisible to table maintenance
+
+A rewrite's ledger is a JSON file in the metadata directory, and the only thing that names it is the
+`snapshot-rewrite-ledger` key in each rewritten snapshot's summary. Table maintenance reads neither, so
+the ledger is treated the way compaction maps are
+([compaction maps errata 3](compaction_maps_errata.md#3-compaction-map-files-are-invisible-to-table-maintenance)):
+
+- **Orphan-file removal deletes it** once it is older than the action's cutoff, three days by default.
+  The rewritten snapshots still read correctly, but the window can no longer be reconstructed:
+  reconstruction fails when it tries to read the ledger. Reclaim becomes the point of no return, as it
+  is on v2.
+- **Snapshot expiry never deletes it.** Once a snapshot the ledger describes expires, reconstruction
+  refuses (`LEDGER_MISMATCH`), because rows first read in that snapshot have nowhere to go. From then on
+  the file is dead weight.
+
+The same fix applies to both kinds of file: maintenance would treat what reachable snapshots name as
+reachable, and delete it once nothing does. For a ledger that means the summary key. Until then, run
+orphan-file removal with a cutoff longer than the history you intend to keep reversible, or not at all
+on a rewritten table.
+
+### 15. Reconstruction holds the window in memory
+
+For each ledger, `SnapshotRewriteReconstruct` scans every window snapshot once and keeps three things
+in memory:
+
+- the span of snapshots each physical row is live in;
+- an index from row id to physical row at each snapshot where some row is first read;
+- the values of every row it is about to write.
+
+The planner also computes each position's birth file by file, at a cost of rows times the window
+snapshots that reference the file. And the generic IO reads whole rows to get the row ids for the
+ledger, where one column would do.
+
+Like errata 6 and 8, this is the prototype's shape, not a limit of the method. A distributed version
+would join the ledger's runs to the scanned rows by row id, and write each rebuilt file from one
+partition of that join.
