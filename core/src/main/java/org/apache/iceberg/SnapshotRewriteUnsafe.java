@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
@@ -296,6 +297,44 @@ public class SnapshotRewriteUnsafe {
     }
 
     return ids;
+  }
+
+  /**
+   * Visits each live entry of a snapshot, data and delete, with the snapshot that added it.
+   *
+   * <p>Like {@link #addedSnapshotIds}, but whole: a reconstruction that rebuilds a snapshot outside
+   * the window lists its files again exactly as they were, and compares its parent's files with its
+   * own to say what it removed.
+   *
+   * <p><b>Suspends: nothing.</b> Visibility only: {@code ManifestEntry} and {@code
+   * ManifestReader.liveEntries} are package-private.
+   */
+  public static void liveEntries(
+      Snapshot snapshot,
+      FileIO io,
+      Map<Integer, PartitionSpec> specsById,
+      BiConsumer<DataFile, Long> data,
+      BiConsumer<DeleteFile, Long> deletes) {
+    for (ManifestFile manifest : snapshot.dataManifests(io)) {
+      try (ManifestReader<DataFile> reader = ManifestFiles.read(manifest, io, specsById)) {
+        for (ManifestEntry<DataFile> entry : reader.liveEntries()) {
+          data.accept(entry.file().copy(), entry.snapshotId());
+        }
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
+
+    for (ManifestFile manifest : snapshot.deleteManifests(io)) {
+      try (ManifestReader<DeleteFile> reader =
+          ManifestFiles.readDeleteManifest(manifest, io, specsById)) {
+        for (ManifestEntry<DeleteFile> entry : reader.liveEntries()) {
+          deletes.accept(entry.file().copy(), entry.snapshotId());
+        }
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
   }
 
   /** The subset of {@link DeleteFileIndex} that snapshot rewriting needs. */

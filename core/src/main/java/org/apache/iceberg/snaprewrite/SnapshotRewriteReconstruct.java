@@ -26,7 +26,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.BiFunction;
 import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.CompactionMap;
+import org.apache.iceberg.CompactionMapBuilder;
+import org.apache.iceberg.CompactionMaps;
+import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
@@ -47,8 +52,8 @@ import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.LocationProvider;
+import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
@@ -72,8 +77,14 @@ import org.apache.iceberg.types.Types;
  *   <li>A file without holes is rebuilt at its original path. It holds the same rows at the same
  *       positions with the same ids, so the compaction maps that name it stay correct.
  *   <li>A file with holes -- rows no window snapshot could read, which the rewritten layout never
- *       held -- is rebuilt without them at a new path, since its later rows moved up.
+ *       held -- is rebuilt without them at a new path, since its later rows moved up. The map of
+ *       the compaction that removed it is written again to name the new path and positions.
  * </ul>
+ *
+ * <p>Each snapshot lists as removed whatever its parent held that it does not, with the parent as
+ * it will be once this is committed. That includes the compaction each window ended at, which the
+ * rewrite never touched: it keeps its files, but what it removed is now its parent's rebuilt files
+ * and vectors, so it is rebuilt too.
  *
  * <p>Nothing here commits. {@link #materialize()} writes files and builds metadata, like a rewrite.
  */
@@ -146,12 +157,18 @@ public class SnapshotRewriteReconstruct {
 
     ledgers.sort(Comparator.comparingLong(entry -> compactionOrder(entry.getValue())));
 
-    Build build = new Build();
+    Set<Long> restored = Sets.newHashSet();
+    for (List<Long> snapshotIds : grouped.values()) {
+      restored.addAll(snapshotIds);
+    }
+
+    Build build = new Build(restored);
     for (Map.Entry<String, SnapshotRewriteLedger> ledger : ledgers) {
       build.reconstruct(
           ledger.getKey(), ledger.getValue(), Sets.newHashSet(grouped.get(ledger.getKey())));
     }
 
+    build.writeSnapshots();
     return build.result();
   }
 
@@ -298,15 +315,28 @@ public class SnapshotRewriteReconstruct {
     SKIPPED
   }
 
-  /** A deletion vector, and the window index of the snapshot that first carried it. */
-  private static class Vector {
-    private final DeleteFile file;
-    private final int owner;
+  /**
+   * A file as a snapshot lists it: the snapshot that added it, and its sequence numbers there. For
+   * a deletion vector, the snapshot that added it is the one that deleted the rows it masks.
+   */
+  private static class Listed<F extends ContentFile<F>> {
+    private final F file;
+    private final long snapshotId;
+    private final long dataSequenceNumber;
+    private final long fileSequenceNumber;
 
-    Vector(DeleteFile file, int owner) {
+    Listed(F file, long snapshotId, long dataSequenceNumber, long fileSequenceNumber) {
       this.file = file;
-      this.owner = owner;
+      this.snapshotId = snapshotId;
+      this.dataSequenceNumber = dataSequenceNumber;
+      this.fileSequenceNumber = fileSequenceNumber;
     }
+  }
+
+  /** The files one snapshot holds, by path. */
+  private static class Holding {
+    private final Map<String, Listed<DataFile>> data = Maps.newLinkedHashMap();
+    private final Map<String, Listed<DeleteFile>> deletes = Maps.newLinkedHashMap();
   }
 
   /** What a ledger's scan has to gather: where rows are born, and which rows rebuilt files need. */
@@ -403,8 +433,15 @@ public class SnapshotRewriteReconstruct {
   private class Build {
     private final Table view =
         new BaseTable(new ShadowTableOperations(base, io), name + "#rewritten");
+    private final Set<Long> restored;
+    private final Set<Long> parentsOfRestored = Sets.newHashSet();
     private final Map<String, Physical> physical = Maps.newHashMap();
     private final Map<String, DeleteFile> vectorFiles = Maps.newHashMap();
+    private final Map<Long, Holding> holdings = Maps.newLinkedHashMap();
+    private final Map<Long, String> mapLocations = Maps.newHashMap();
+    private final Map<Long, Holding> outside = Maps.newHashMap();
+    private final Map<String, PositionSet> retainedPositions = Maps.newHashMap();
+    private Map<String, List<Listed<DeleteFile>>> retained = null;
     private final Map<Long, Snapshot> replacements = Maps.newHashMap();
     private final List<String> written = Lists.newArrayList();
     private final List<String> metadataPaths = Lists.newArrayList();
@@ -412,6 +449,18 @@ public class SnapshotRewriteReconstruct {
     private long rebuiltRows = 0;
     private long rebuiltBytes = 0;
     private long predictedBytes = 0;
+    private int compactions = 0;
+    private int maps = 0;
+
+    Build(Set<Long> restored) {
+      this.restored = restored;
+      for (long snapshotId : restored) {
+        Long parentId = base.snapshot(snapshotId).parentId();
+        if (parentId != null) {
+          parentsOfRestored.add(parentId);
+        }
+      }
+    }
 
     void reconstruct(String location, SnapshotRewriteLedger ledger, Set<Long> restore) {
       validate(location, ledger);
@@ -434,9 +483,31 @@ public class SnapshotRewriteReconstruct {
       for (int index = 0; index < window.size(); index += 1) {
         long snapshotId = window.get(index).snapshotId();
         if (restore.contains(snapshotId)) {
-          replacements.put(snapshotId, reconstructSnapshot(ledger, index, vectors));
+          holdings.put(snapshotId, holdingAt(ledger, index, vectors));
+          mapLocations.put(snapshotId, window.get(index).compactionMapLocation());
         }
       }
+    }
+
+    /** The files a reconstructed snapshot holds: those the ledger lists, and their vectors. */
+    private Holding holdingAt(SnapshotRewriteLedger ledger, int index, Vectors vectors) {
+      Holding holding = new Holding();
+      for (SnapshotRewriteLedger.Entry entry : referencedAt(ledger, index)) {
+        DataFile file = physical.get(entry.file().location()).file;
+        holding.data.put(
+            file.location(),
+            new Listed<>(
+                file,
+                entry.addedSnapshotId(),
+                entry.dataSequenceNumber(index),
+                entry.fileSequenceNumber(index)));
+        Listed<DeleteFile> vector = vectors.at(entry, index);
+        if (vector != null) {
+          holding.deletes.put(vector.file.location(), vector);
+        }
+      }
+
+      return holding;
     }
 
     /**
@@ -658,27 +729,70 @@ public class SnapshotRewriteReconstruct {
     }
 
     /**
-     * One reconstructed snapshot: the files it referenced, as forward deltas against its parent.
+     * Writes every reconstructed snapshot, then every snapshot outside the windows whose parent is
+     * one of them: the compaction a window ended at.
+     *
+     * <p>Last, once every ledger has been read, because each snapshot lists as removed whatever its
+     * parent held that it does not, and the parent may have been reconstructed from another ledger.
+     * The compaction keeps its files; it is rebuilt because what it removed is now the parent's
+     * rebuilt files and vectors, and its map may name a file that moved.
      */
-    private Snapshot reconstructSnapshot(SnapshotRewriteLedger ledger, int index, Vectors vectors) {
-      Snapshot rewritten = base.snapshot(ledger.window().get(index).snapshotId());
-      long snapshotId = rewritten.snapshotId();
-      long sequenceNumber = rewritten.sequenceNumber();
+    void writeSnapshots() {
+      for (Map.Entry<Long, Holding> entry : holdings.entrySet()) {
+        Snapshot rewritten = base.snapshot(entry.getKey());
+        replacements.put(
+            entry.getKey(),
+            write(
+                rewritten,
+                entry.getValue(),
+                mapFor(rewritten, mapLocations.get(entry.getKey())),
+                summary(rewritten)));
+      }
 
-      List<SnapshotRewriteLedger.Entry> present = referencedAt(ledger, index);
-      List<SnapshotRewriteLedger.Entry> before =
-          index > 0 ? referencedAt(ledger, index - 1) : ImmutableList.of();
+      CompactionMapLookup lookup = new CompactionMapLookup(io);
+      for (Snapshot snapshot : base.snapshots()) {
+        Long parentId = snapshot.parentId();
+        if (!restored.contains(snapshot.snapshotId())
+            && parentId != null
+            && restored.contains(parentId)) {
+          replacements.put(
+              snapshot.snapshotId(),
+              write(
+                  snapshot,
+                  held(snapshot),
+                  mapFor(snapshot, lookup.locationFor(snapshot)),
+                  keptSummary(snapshot)));
+          compactions += 1;
+        }
+      }
+    }
 
+    /**
+     * One snapshot as forward deltas against its parent: the files it holds, added or carried, and
+     * the files its parent held that it does not, removed.
+     */
+    private Snapshot write(
+        Snapshot current, Holding holding, String mapLocation, Map<String, String> summary) {
+      long snapshotId = current.snapshotId();
+      Holding parent = parentOf(current);
       List<ManifestFile> manifests = Lists.newArrayList();
-      ManifestFile data = writeDataManifest(ledger, index, present, before);
-      if (data != null) {
-        manifests.add(data);
-      }
-
-      ManifestFile deletes = writeDeleteManifest(ledger, index, present, before, vectors);
-      if (deletes != null) {
-        manifests.add(deletes);
-      }
+      manifests.addAll(
+          writeManifests(
+              snapshotId,
+              holding.data,
+              parent.data,
+              "reconstruct-data-",
+              mapLocation,
+              (spec, file) -> ManifestFiles.write(base.formatVersion(), spec, file, snapshotId)));
+      manifests.addAll(
+          writeManifests(
+              snapshotId,
+              holding.deletes,
+              parent.deletes,
+              "reconstruct-deletes-",
+              null,
+              (spec, file) ->
+                  ManifestFiles.writeDeleteManifest(base.formatVersion(), spec, file, snapshotId)));
 
       String listPath = newMetadataPath("reconstruct-list-" + snapshotId, "avro");
       try {
@@ -686,9 +800,9 @@ public class SnapshotRewriteReconstruct {
             base.formatVersion(),
             io.newOutputFile(listPath),
             snapshotId,
-            rewritten.parentId(),
-            sequenceNumber,
-            rewritten.firstRowId(),
+            current.parentId(),
+            current.sequenceNumber(),
+            current.firstRowId(),
             manifests);
       } catch (IOException e) {
         throw new UncheckedIOException(e);
@@ -697,16 +811,220 @@ public class SnapshotRewriteReconstruct {
       metadataPaths.add(listPath);
 
       return SnapshotRewriteUnsafe.newSnapshot(
-          sequenceNumber,
+          current.sequenceNumber(),
           snapshotId,
-          rewritten.parentId(),
-          rewritten.timestampMillis(),
-          rewritten.operation(),
-          summary(rewritten),
-          rewritten.schemaId(),
+          current.parentId(),
+          current.timestampMillis(),
+          current.operation(),
+          summary,
+          current.schemaId(),
           listPath,
-          rewritten.firstRowId(),
-          rewritten.addedRows());
+          current.firstRowId(),
+          current.addedRows());
+    }
+
+    /**
+     * What a snapshot's parent holds once this is committed: as reconstructed, or, if the
+     * reconstruction leaves it alone, as it is. Nothing if it has expired, so a snapshot whose
+     * parent has expired lists nothing as removed.
+     */
+    private Holding parentOf(Snapshot snapshot) {
+      Long parentId = snapshot.parentId();
+      if (parentId == null) {
+        return new Holding();
+      }
+
+      Holding reconstructed = holdings.get(parentId);
+      if (reconstructed != null) {
+        return reconstructed;
+      }
+
+      Snapshot parent = base.snapshot(parentId);
+      return parent != null ? held(parent) : new Holding();
+    }
+
+    /** The files a snapshot the reconstruction does not restore holds, read from its manifests. */
+    private Holding held(Snapshot snapshot) {
+      return outside.computeIfAbsent(
+          snapshot.snapshotId(),
+          snapshotId -> {
+            Holding holding = new Holding();
+            SnapshotRewriteUnsafe.liveEntries(
+                snapshot,
+                io,
+                base.specsById(),
+                (file, addedBy) ->
+                    holding.data.put(
+                        file.location(),
+                        new Listed<>(
+                            file, addedBy, file.dataSequenceNumber(), file.fileSequenceNumber())),
+                (file, addedBy) ->
+                    holding.deletes.put(
+                        file.location(),
+                        new Listed<>(
+                            file, addedBy, file.dataSequenceNumber(), file.fileSequenceNumber())));
+            return holding;
+          });
+    }
+
+    /**
+     * A vector a snapshot next to a window still holds, for a file reused as it is, that masks
+     * exactly these positions and already applied at this sequence number. Null if there is none.
+     *
+     * <p>Such a vector was carried into the window from before its floor, or out of it into the
+     * compaction it ended at, so it is the one the original snapshots carried. Writing an equal one
+     * instead would give the floor a vector it never added, and leave the compaction carrying a
+     * vector its parent never held.
+     */
+    private Listed<DeleteFile> retainedVector(
+        Physical file, PositionSet mask, long sequenceNumber) {
+      if (file.kind != Kind.REUSED) {
+        return null;
+      }
+
+      Listed<DeleteFile> found = null;
+      for (Listed<DeleteFile> vector :
+          retainedVectors().getOrDefault(file.file.location(), List.of())) {
+        if (vector.dataSequenceNumber <= sequenceNumber
+            && (found == null || vector.dataSequenceNumber > found.dataSequenceNumber)
+            && positionsOf(vector.file, file.file).equals(mask)) {
+          found = vector;
+        }
+      }
+
+      return found;
+    }
+
+    /** Vectors held by the snapshots just outside the windows, by the data file each applies to. */
+    private Map<String, List<Listed<DeleteFile>>> retainedVectors() {
+      if (retained == null) {
+        retained = Maps.newHashMap();
+        Set<String> seen = Sets.newHashSet();
+        for (Snapshot snapshot : base.snapshots()) {
+          if (!bordersAWindow(snapshot)) {
+            continue;
+          }
+
+          for (Listed<DeleteFile> vector : held(snapshot).deletes.values()) {
+            String dataFile = vector.file.referencedDataFile();
+            if (dataFile != null && seen.add(vector.file.location())) {
+              retained.computeIfAbsent(dataFile, path -> Lists.newArrayList()).add(vector);
+            }
+          }
+        }
+      }
+
+      return retained;
+    }
+
+    /** Whether a snapshot outside every window is the parent or a child of one inside one. */
+    private boolean bordersAWindow(Snapshot snapshot) {
+      if (restored.contains(snapshot.snapshotId())) {
+        return false;
+      }
+
+      Long parentId = snapshot.parentId();
+      return (parentId != null && restored.contains(parentId))
+          || parentsOfRestored.contains(snapshot.snapshotId());
+    }
+
+    private PositionSet positionsOf(DeleteFile vector, DataFile dataFile) {
+      return retainedPositions.computeIfAbsent(
+          vector.location(),
+          path ->
+              PositionSet.deleted(
+                  dataFile.recordCount(),
+                  rewriteIO.loadPositionDeletes(List.of(vector), dataFile.location())));
+    }
+
+    /**
+     * The compaction map a snapshot should carry: the one it had, or, if a file it names as a
+     * source moved, that map with the file's new path and positions.
+     *
+     * <p>A moved file lost only its holes, and no compaction maps a hole: a row the compaction
+     * copied was live in its parent, so some window snapshot read it. Each run therefore still
+     * covers consecutive positions of the moved file, and only its start changes. A compaction's
+     * own output never has holes, so a target never moves.
+     */
+    private String mapFor(Snapshot snapshot, String location) {
+      if (location == null) {
+        return null;
+      }
+
+      CompactionMap map = CompactionMaps.read(io.newInputFile(location));
+      CompactionMapBuilder builder =
+          new CompactionMapBuilder(map.sourceSnapshotId(), map.targetSnapshotId());
+      boolean changed = false;
+      for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+        Preconditions.checkState(
+            !moved(mapping.targetFile()), "A compaction's output moved: %s", mapping.targetFile());
+        Physical source = physical.get(mapping.sourceFile());
+        boolean sourceMoved = moved(mapping.sourceFile());
+        CompactionMapBuilder.FileMappingBuilder files =
+            builder.addFileMapping(
+                sourceMoved ? source.file.location() : mapping.sourceFile(), mapping.targetFile());
+        for (CompactionMap.Run run : mapping.runs()) {
+          Preconditions.checkState(
+              run.targetFile() == null || !moved(run.targetFile()),
+              "A compaction's output moved: %s",
+              run.targetFile());
+          long start = run.sourcePosition();
+          if (sourceMoved) {
+            start = source.position((int) run.sourcePosition());
+            long end = source.position((int) (run.sourcePosition() + run.length() - 1));
+            Preconditions.checkState(
+                start >= 0 && end == start + run.length() - 1,
+                "Snapshot %s maps a hole of %s",
+                snapshot.snapshotId(),
+                mapping.sourceFile());
+          }
+
+          files.addRun(start, run.targetPosition(), run.length(), run.targetFile());
+        }
+
+        changed |= sourceMoved;
+      }
+
+      if (!changed) {
+        return location;
+      }
+
+      String path = newMetadataPath("compaction-map-" + snapshot.snapshotId(), "avro");
+      try {
+        CompactionMaps.write(builder.build(), io.newOutputFile(path));
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+
+      metadataPaths.add(path);
+      maps += 1;
+      return path;
+    }
+
+    private boolean moved(String path) {
+      Physical file = physical.get(path);
+      return file != null && file.kind == Kind.REBUILT_MOVED;
+    }
+
+    /**
+     * The summary of a snapshot rebuilt outside the windows: its own, plus what is needed to point
+     * back at the form it replaced.
+     */
+    private Map<String, String> keptSummary(Snapshot snapshot) {
+      Map<String, String> original = snapshot.summary() != null ? snapshot.summary() : Map.of();
+      Map<String, String> summary = Maps.newHashMap();
+      for (Map.Entry<String, String> entry : original.entrySet()) {
+        if (!entry.getKey().startsWith(RESTORED_FROM)) {
+          summary.put(entry.getKey(), entry.getValue());
+        }
+      }
+
+      summary.put(RESTORED_FROM, snapshot.manifestListLocation());
+      for (Map.Entry<String, String> entry : original.entrySet()) {
+        summary.put(RESTORED_PREFIX + entry.getKey(), entry.getValue());
+      }
+
+      return summary;
     }
 
     /**
@@ -789,7 +1107,9 @@ public class SnapshotRewriteReconstruct {
 
       SnapshotReconstructReport report =
           new SnapshotReconstructReport(
-              replacements.size(),
+              holdings.size(),
+              compactions,
+              maps,
               reused,
               inPlace,
               moved,
@@ -898,7 +1218,7 @@ public class SnapshotRewriteReconstruct {
         this.assigned = assigned;
       }
 
-      Vector at(SnapshotRewriteLedger.Entry entry, int index) {
+      Listed<DeleteFile> at(SnapshotRewriteLedger.Entry entry, int index) {
         PositionSet[] entryMasks = masks.computeIfAbsent(entry, this::masksOf);
         PositionSet mask = entryMasks[index - entry.first()];
         if (mask.isEmpty()) {
@@ -911,6 +1231,12 @@ public class SnapshotRewriteReconstruct {
         }
 
         Physical file = physical.get(entry.file().location());
+        long sequenceNumber = base.snapshot(window.get(index).snapshotId()).sequenceNumber();
+        Listed<DeleteFile> kept = retainedVector(file, mask, sequenceNumber);
+        if (kept != null) {
+          return kept;
+        }
+
         long ownerId = window.get(owner).snapshotId();
         long ownerSequence = base.snapshot(ownerId).sequenceNumber();
         Preconditions.checkState(
@@ -932,7 +1258,7 @@ public class SnapshotRewriteReconstruct {
                             file.file.partition(),
                             Map.of(file.file.location(), mask),
                             newMetadataPath("unused-" + ownerIndex, "puffin"))));
-        return new Vector(vector, owner);
+        return new Listed<>(vector, ownerId, ownerSequence, ownerSequence);
       }
 
       /** The positions of the physical file masked at each snapshot the entry spans. */
@@ -989,118 +1315,66 @@ public class SnapshotRewriteReconstruct {
     }
 
     /**
-     * The snapshot's data manifest: files it added, files it carried, and files it removed, each at
-     * the sequence numbers it gave them. Null if there is nothing to list.
+     * A snapshot's manifests of one content: the files it holds, added if it is the snapshot that
+     * added them and carried otherwise, then the files its parent held that it does not, removed.
+     * Each at the sequence numbers it was listed with, one manifest per partition spec.
      */
-    private ManifestFile writeDataManifest(
-        SnapshotRewriteLedger ledger,
-        int index,
-        List<SnapshotRewriteLedger.Entry> present,
-        List<SnapshotRewriteLedger.Entry> before) {
-      long snapshotId = ledger.window().get(index).snapshotId();
-      String path = newMetadataPath("reconstruct-data-" + snapshotId, "avro");
-      ManifestWriter<DataFile> writer =
-          ManifestFiles.write(
-              base.formatVersion(),
-              base.specsById().get(ledger.specId()),
-              io.newOutputFile(path),
-              snapshotId);
-      String mapLocation = ledger.window().get(index).compactionMapLocation();
-      if (mapLocation != null) {
-        writer.setCompactionMapLocation(mapLocation);
+    private <F extends ContentFile<F>> List<ManifestFile> writeManifests(
+        long snapshotId,
+        Map<String, Listed<F>> held,
+        Map<String, Listed<F>> before,
+        String prefix,
+        String mapLocation,
+        BiFunction<PartitionSpec, OutputFile, ManifestWriter<F>> newWriter) {
+      Map<Integer, List<Listed<F>>> kept = Maps.newTreeMap();
+      for (Listed<F> file : held.values()) {
+        kept.computeIfAbsent(file.file.specId(), id -> Lists.newArrayList()).add(file);
       }
 
-      int entries = 0;
-      try {
-        for (SnapshotRewriteLedger.Entry entry : present) {
-          DataFile file = physical.get(entry.file().location()).file;
-          if (entry.addedSnapshotId() == snapshotId) {
-            writer.add(file, entry.dataSequenceNumber(index));
-          } else {
-            writer.existing(
-                file,
-                entry.addedSnapshotId(),
-                entry.dataSequenceNumber(index),
-                entry.fileSequenceNumber(index));
-          }
-
-          entries += 1;
+      Map<Integer, List<Listed<F>>> removed = Maps.newTreeMap();
+      for (Listed<F> file : before.values()) {
+        if (!held.containsKey(file.file.location())) {
+          removed.computeIfAbsent(file.file.specId(), id -> Lists.newArrayList()).add(file);
         }
-
-        for (SnapshotRewriteLedger.Entry entry : before) {
-          if (entry.last() == index - 1) {
-            DataFile file = physical.get(entry.file().location()).file;
-            writer.delete(
-                file, entry.dataSequenceNumber(index - 1), entry.fileSequenceNumber(index - 1));
-            entries += 1;
-          }
-        }
-      } finally {
-        close(writer);
       }
 
-      return keepIfAny(writer, path, entries);
-    }
+      List<ManifestFile> manifests = Lists.newArrayList();
+      for (int specId : Sets.union(kept.keySet(), removed.keySet())) {
+        String path = newMetadataPath(prefix + snapshotId, "avro");
+        ManifestWriter<F> writer =
+            newWriter.apply(base.specsById().get(specId), io.newOutputFile(path));
+        if (mapLocation != null) {
+          writer.setCompactionMapLocation(mapLocation);
+        }
 
-    /**
-     * The snapshot's delete manifest: the deletion vector each of its files carries, added if this
-     * snapshot wrote it, and those of the previous snapshot it replaced or dropped. Null if there
-     * is nothing to list.
-     */
-    private ManifestFile writeDeleteManifest(
-        SnapshotRewriteLedger ledger,
-        int index,
-        List<SnapshotRewriteLedger.Entry> present,
-        List<SnapshotRewriteLedger.Entry> before,
-        Vectors vectors) {
-      long snapshotId = ledger.window().get(index).snapshotId();
-      String path = newMetadataPath("reconstruct-deletes-" + snapshotId, "avro");
-      ManifestWriter<DeleteFile> writer =
-          ManifestFiles.writeDeleteManifest(
-              base.formatVersion(),
-              base.specsById().get(ledger.specId()),
-              io.newOutputFile(path),
-              snapshotId);
-      int entries = 0;
-      try {
-        for (SnapshotRewriteLedger.Entry entry : present) {
-          Vector vector = vectors.at(entry, index);
-          if (vector != null) {
-            long ownerSequence = ownerSequence(ledger, vector);
-            if (vector.owner == index) {
-              writer.add(vector.file, ownerSequence);
+        int entries = 0;
+        try {
+          for (Listed<F> file : kept.getOrDefault(specId, List.of())) {
+            if (file.snapshotId == snapshotId) {
+              writer.add(file.file, file.dataSequenceNumber);
             } else {
-              writer.existing(vector.file, ownerId(ledger, vector), ownerSequence, ownerSequence);
+              writer.existing(
+                  file.file, file.snapshotId, file.dataSequenceNumber, file.fileSequenceNumber);
             }
 
             entries += 1;
           }
-        }
 
-        // A vector the previous snapshot carried and this one does not: replaced, or its data file
-        // was removed. Recorded as deleted, as the commit that replaced it would have.
-        for (SnapshotRewriteLedger.Entry entry : before) {
-          Vector previous = vectors.at(entry, index - 1);
-          Vector current = entry.last() >= index ? vectors.at(entry, index) : null;
-          if (previous != null && (current == null || current.owner != previous.owner)) {
-            long ownerSequence = ownerSequence(ledger, previous);
-            writer.delete(previous.file, ownerSequence, ownerSequence);
+          for (Listed<F> file : removed.getOrDefault(specId, List.of())) {
+            writer.delete(file.file, file.dataSequenceNumber, file.fileSequenceNumber);
             entries += 1;
           }
+        } finally {
+          close(writer);
         }
-      } finally {
-        close(writer);
+
+        ManifestFile manifest = keepIfAny(writer, path, entries);
+        if (manifest != null) {
+          manifests.add(manifest);
+        }
       }
 
-      return keepIfAny(writer, path, entries);
-    }
-
-    private long ownerId(SnapshotRewriteLedger ledger, Vector vector) {
-      return ledger.window().get(vector.owner).snapshotId();
-    }
-
-    private long ownerSequence(SnapshotRewriteLedger ledger, Vector vector) {
-      return base.snapshot(ownerId(ledger, vector)).sequenceNumber();
+      return manifests;
     }
 
     private ManifestFile keepIfAny(ManifestWriter<?> writer, String path, int entries) {
