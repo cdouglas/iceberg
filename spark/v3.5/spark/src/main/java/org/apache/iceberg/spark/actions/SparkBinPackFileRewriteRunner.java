@@ -19,7 +19,9 @@
 package org.apache.iceberg.spark.actions;
 
 import org.apache.iceberg.DistributionMode;
+import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableUtil;
 import org.apache.iceberg.actions.RewriteFileGroup;
 import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.SparkWriteOptions;
@@ -57,14 +59,18 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
       // Staged scans support metadata columns when explicitly selected, avoiding the ~10-20%
       // overhead of normal scans (which re-scan manifests).
       //
-      // Build column list: data columns + metadata columns
-      // We explicitly list data columns to avoid including row lineage columns (_row_id, etc)
+      // Build column list: data columns, then row lineage on v3, since moved rows keep it, then
+      // the source file and position the writer records
       java.util.List<String> dataColumns =
           table().schema().columns().stream()
               .map(field -> field.name())
               .collect(java.util.stream.Collectors.toList());
 
       java.util.List<String> selectColumns = new java.util.ArrayList<>(dataColumns);
+      if (TableUtil.supportsRowLineage(table())) {
+        selectColumns.add(MetadataColumns.ROW_ID.name());
+        selectColumns.add(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name());
+      }
       selectColumns.add("_file");
       selectColumns.add("_pos");
 

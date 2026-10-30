@@ -206,9 +206,13 @@ public class SparkTable
 
   private Schema addLineageIfRequired(Schema schema) {
     Schema result = schema;
+    if (TableUtil.supportsRowLineage(icebergTable) && isTableRewrite) {
+      result = MetadataColumns.schemaWithRowLineage(result);
+    }
 
-    // For position-tracked rewrites, use position tracking columns instead of row lineage
-    // because normal scans don't populate row lineage columns
+    // A position-tracked rewrite moves rows with their lineage, and also reads each row's source
+    // file and position. Those come last: the writer records them for the compaction map and
+    // writes only the columns before them.
     if (isTableRewrite && isCompactionMapEnabled()) {
       result =
           org.apache.iceberg.types.TypeUtil.join(
@@ -216,9 +220,6 @@ public class SparkTable
               new org.apache.iceberg.Schema(
                   org.apache.iceberg.MetadataColumns.FILE_PATH,
                   org.apache.iceberg.MetadataColumns.ROW_POSITION));
-    } else if (TableUtil.supportsRowLineage(icebergTable) && isTableRewrite) {
-      // For normal rewrites (staged scans), use row lineage columns
-      result = MetadataColumns.schemaWithRowLineage(result);
     }
 
     return result;

@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.spark.PositionMappingCoordinator;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.write.DataWriter;
@@ -96,6 +97,13 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
     // Find ordinals of metadata columns _file and _pos
     this.fileOrdinal = dsSchema.fieldIndex("_file");
     this.posOrdinal = dsSchema.fieldIndex("_pos");
+
+    // The delegate writes the leading columns of each row by ordinal, so _file and _pos must come
+    // last; otherwise it would write them as the columns they displace, such as row lineage
+    Preconditions.checkArgument(
+        fileOrdinal == dsSchema.size() - 2 && posOrdinal == dsSchema.size() - 1,
+        "Cannot track source positions: _file and _pos must be the last columns of %s",
+        dsSchema.simpleString());
 
     // Calculate number of data columns (excluding metadata)
     this.numDataColumns = dsSchema.size() - 2; // exclude _file and _pos
