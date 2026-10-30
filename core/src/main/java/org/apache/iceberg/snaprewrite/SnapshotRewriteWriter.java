@@ -118,6 +118,8 @@ class SnapshotRewriteWriter {
   private final long baseSequenceNumber;
   private ManifestFile sharedTargetManifest;
   private final List<String> writtenPaths = Lists.newArrayList();
+  private final SnapshotRewriteLedger ledger;
+  private String ledgerLocation = null;
 
   SnapshotRewriteWriter(
       TableMetadata base,
@@ -125,6 +127,7 @@ class SnapshotRewriteWriter {
       SnapshotRewritePlan plan,
       Map<String, DataFile> resurrected,
       Map<String, DeleteFile> deleteFiles,
+      SnapshotRewriteLedger ledger,
       Stamping stamping) {
     this.base = base;
     this.io = io;
@@ -134,6 +137,7 @@ class SnapshotRewriteWriter {
     this.stamping = stamping;
     this.detachedPartitionStats = detachedPartitionStats(base, plan);
     this.baseSequenceNumber = baseSequenceNumber(plan);
+    this.ledger = ledger;
   }
 
   /**
@@ -196,6 +200,14 @@ class SnapshotRewriteWriter {
    * committed.
    */
   TableMetadata rewriteMetadata() {
+    if (ledger != null) {
+      // Written first so every rewritten snapshot can name it.
+      this.ledgerLocation =
+          newMetadataPath("snaprewrite-ledger-" + plan.compaction().snapshotId(), "json");
+      ledger.write(io.newOutputFile(ledgerLocation), base.specsById());
+      writtenPaths.add(ledgerLocation);
+    }
+
     Map<Long, Snapshot> replacements = Maps.newHashMap();
     for (Snapshot original : plan.window()) {
       replacements.put(original.snapshotId(), rewriteSnapshot(original));
@@ -216,6 +228,11 @@ class SnapshotRewriteWriter {
 
     return SnapshotRewriteUnsafe.replaceSnapshots(
         base, snapshots, base.statisticsFiles(), partitionStats);
+  }
+
+  /** Where the ledger was written, or null if this rewrite has none. */
+  String ledgerLocation() {
+    return ledgerLocation;
   }
 
   /** Metadata files this writer created, for reclaim accounting and for cleanup on failure. */
@@ -424,6 +441,13 @@ class SnapshotRewriteWriter {
       summary.put(
           SnapshotRewriteRestore.DETACHED_PARTITION_STATS_SIZE,
           String.valueOf(detached.fileSizeInBytes()));
+    }
+
+    // Outside the prefix, like the partition statistics keys: it describes this rewrite, not the
+    // snapshot it replaced. A later rewrite of this snapshot carries it down a level, which is how
+    // a reconstruction finds the ledger that reaches furthest back.
+    if (ledgerLocation != null) {
+      summary.put(SnapshotRewriteLedger.SUMMARY_KEY, ledgerLocation);
     }
 
     if (original.summary() != null) {

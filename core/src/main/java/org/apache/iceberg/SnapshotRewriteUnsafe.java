@@ -19,11 +19,13 @@
 package org.apache.iceberg;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 /**
  * The single escape hatch used by snapshot rewriting to reach package-private Iceberg state.
@@ -268,6 +270,32 @@ public class SnapshotRewriteUnsafe {
     DeleteFileIndex index =
         DeleteFileIndex.builderFor(io, deleteManifests).specsById(specsById).build();
     return index::forDataFile;
+  }
+
+  /**
+   * The snapshot that added each data file a snapshot references, by path.
+   *
+   * <p>That is the manifest entry's snapshot id, which {@code DataFile} does not carry. Recording
+   * it lets a reconstruction say which commit added each file again, which is what incremental
+   * scans read.
+   *
+   * <p><b>Suspends: nothing.</b> Visibility only: {@code ManifestEntry} and {@code
+   * ManifestReader.liveEntries} are package-private.
+   */
+  public static Map<String, Long> addedSnapshotIds(
+      Snapshot snapshot, FileIO io, Map<Integer, PartitionSpec> specsById) {
+    Map<String, Long> ids = Maps.newHashMap();
+    for (ManifestFile manifest : snapshot.dataManifests(io)) {
+      try (ManifestReader<DataFile> reader = ManifestFiles.read(manifest, io, specsById)) {
+        for (ManifestEntry<DataFile> entry : reader.liveEntries()) {
+          ids.put(entry.file().location(), entry.snapshotId());
+        }
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
+
+    return ids;
   }
 
   /** The subset of {@link DeleteFileIndex} that snapshot rewriting needs. */

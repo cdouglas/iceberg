@@ -46,6 +46,22 @@ public interface SnapshotRewriteIO {
   }
 
   /**
+   * Reads the {@code _row_id} of every row in a data file, in position order, as runs.
+   *
+   * <p>Runs are (first id, length) pairs, flattened. Ids are read the way a scan resolves them: a
+   * value written into the file wins, and otherwise the id derives from the file's {@code
+   * first_row_id} and the row's position. Deletes are not applied; every position is reported.
+   *
+   * <p>Needed only when the table tracks row lineage, and only for files whose metrics cannot show
+   * that every id derives from the file's range. A rewrite calls it to write the ledger that lets
+   * the original layout be reconstructed after reclaim.
+   */
+  default long[] readRowIdRuns(DataFile file) {
+    throw new UnsupportedOperationException(
+        getClass().getSimpleName() + " cannot read row ids, so cannot write a ledger");
+  }
+
+  /**
    * Loads the positions deleted in a data file by the given delete files.
    *
    * @param deleteFiles delete files that apply to the data file

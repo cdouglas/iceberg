@@ -43,6 +43,8 @@ public class SnapshotRewritePlan {
   private final Map<String, Long> detachedFiles;
   private final long resurrectedRows;
   private final long targetRows;
+  private final SnapshotRewriteLedger ledger;
+  private final String ledgerUnavailable;
 
   SnapshotRewritePlan(
       TableMetadata base,
@@ -53,7 +55,9 @@ public class SnapshotRewritePlan {
       List<ResurrectionRequest> resurrections,
       Map<String, Long> detachedFiles,
       long resurrectedRows,
-      long targetRows) {
+      long targetRows,
+      SnapshotRewriteLedger ledger,
+      String ledgerUnavailable) {
     this.base = base;
     this.compaction = compaction;
     this.window = ImmutableList.copyOf(window);
@@ -63,6 +67,8 @@ public class SnapshotRewritePlan {
     this.detachedFiles = ImmutableMap.copyOf(detachedFiles);
     this.resurrectedRows = resurrectedRows;
     this.targetRows = targetRows;
+    this.ledger = ledger;
+    this.ledgerUnavailable = ledgerUnavailable;
   }
 
   public TableMetadata base() {
@@ -115,6 +121,21 @@ public class SnapshotRewritePlan {
   /** Rows in the compaction's output. */
   public long targetRows() {
     return targetRows;
+  }
+
+  /**
+   * What reconstructing the window after reclaim needs, or null if no ledger can be written.
+   *
+   * <p>Planned from metadata alone. Files that may write row ids per row are left pending until the
+   * rewrite is materialized, since knowing their ids takes a read.
+   */
+  public SnapshotRewriteLedger ledger() {
+    return ledger;
+  }
+
+  /** Why no ledger can be written for this window, or null if one can. */
+  public String ledgerUnavailable() {
+    return ledgerUnavailable;
   }
 
   /** One rewritten snapshot: which resurrection files it sees, and what it deletes. */
