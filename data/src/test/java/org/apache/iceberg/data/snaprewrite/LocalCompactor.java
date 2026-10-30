@@ -26,9 +26,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Predicate;
 import org.apache.iceberg.BaseRewriteFiles;
-import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMapBuilder;
-import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
@@ -130,8 +128,8 @@ class LocalCompactor {
     List<FileScanTask> tasks = planFiles(table);
     tasks.sort(Comparator.comparing(task -> task.file().location()));
 
-    CompactionMapBuilder mapBuilder =
-        new CompactionMapBuilder(startingSnapshot.snapshotId(), startingSnapshot.snapshotId() + 1);
+    // The rewrite records its own snapshot as the target when it writes the map
+    CompactionMapBuilder mapBuilder = new CompactionMapBuilder(startingSnapshot.snapshotId(), -1L);
 
     Set<DataFile> replacedData = Sets.newHashSet();
     Set<DataFile> targets = Sets.newHashSet();
@@ -330,68 +328,18 @@ class LocalCompactor {
       }
     }
 
-    String mapPath =
-        table.location() + "/metadata/" + FileFormat.AVRO.addExtension("cmap-" + UUID.randomUUID());
-    if (attachMap) {
-      writeMap(
-          table,
-          mapBuilder,
-          startingSnapshot.snapshotId(),
-          startingSnapshot.snapshotId() + 1,
-          mapPath);
-    }
-
     BaseRewriteFiles rewrite =
         (BaseRewriteFiles) table.newRewrite().validateFromSnapshot(startingSnapshot.snapshotId());
     rewrite.rewriteFiles(replacedData, replacedDeletes, targets, Sets.newHashSet());
     if (attachMap) {
-      rewrite.setCompactionMapLocation(mapPath);
+      rewrite.setCompactionMap(mapBuilder.build());
     } else {
       rewrite.disableAutoCompactionMap();
     }
 
     rewrite.commit();
     table.refresh();
-    Snapshot committed = table.currentSnapshot();
-
-    if (attachMap) {
-      // Rewrite the map with its real target snapshot id. Applying two maps in sequence does not
-      // need the ids to agree, but the recorded ids should still describe what happened, and the id
-      // a compaction will be assigned is not known until it commits.
-      table.io().deleteFile(mapPath);
-      writeMap(table, mapBuilder, startingSnapshot.snapshotId(), committed.snapshotId(), mapPath);
-    }
-
-    return committed;
-  }
-
-  /**
-   * Rebuilds a map with corrected snapshot ids, preserving per-run target files.
-   *
-   * <p>Dropping the per-run target would leave every run inheriting the mapping's single default,
-   * and a position remapped against one target file would be applied to a row in another.
-   */
-  private static void writeMap(
-      Table table,
-      CompactionMapBuilder source,
-      long sourceSnapshotId,
-      long targetSnapshotId,
-      String path) {
-    CompactionMap built = source.build();
-    CompactionMapBuilder rebuilt = new CompactionMapBuilder(sourceSnapshotId, targetSnapshotId);
-    for (CompactionMap.FileMapping mapping : built.fileMappings()) {
-      CompactionMapBuilder.FileMappingBuilder target =
-          rebuilt.addFileMapping(mapping.sourceFile(), mapping.targetFile());
-      for (CompactionMap.Run run : mapping.runs()) {
-        target.addRun(run.sourcePosition(), run.targetPosition(), run.length(), run.targetFile());
-      }
-    }
-
-    try {
-      CompactionMaps.write(rebuilt.build(), table.io().newOutputFile(path));
-    } catch (IOException e) {
-      throw new RuntimeException(e);
-    }
+    return table.currentSnapshot();
   }
 
   private static PositionDeleteIndex positionDeletes(Table table, FileScanTask task) {
