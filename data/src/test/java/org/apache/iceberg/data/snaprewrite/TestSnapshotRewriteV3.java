@@ -310,6 +310,66 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
     }
   }
 
+  /**
+   * A compaction that leaves {@code _last_updated_sequence_number} null is refused. Its rows read
+   * the compaction's own sequence number, which is already wrong, and every rewritten snapshot
+   * would read them at the shared base instead, changing what those snapshots report.
+   */
+  @Test
+  public void aCompactionThatDropsLastUpdatedIsRefused() throws IOException {
+    useFormatVersion(3);
+    append(records(1, 6, "base"));
+    compact();
+    append(records(10, 3, "alpha"));
+    LocalCompactor.compactDroppingLastUpdated(table);
+
+    assertThatThrownBy(this::rewrite)
+        .isInstanceOf(RewriteRefusedException.class)
+        .satisfies(
+            e ->
+                assertThat(((RewriteRefusedException) e).refusal())
+                    .isEqualTo(RewriteRefusal.LAST_UPDATED_NOT_PRESERVED))
+        .hasMessageContaining("null in 9 of 9 rows");
+  }
+
+  /**
+   * A file a partial compaction kept is restamped at the shared base with the compaction's own
+   * output. An appended file never writes {@code _last_updated_sequence_number}, so its rows read
+   * the file's sequence number, and in every rewritten snapshot they would read the base. On v3
+   * that compaction is refused; {@link #aKeptAppendedFileRewritesOnV2} rewrites the same history.
+   */
+  @Test
+  public void aKeptAppendedFileIsRefused() throws IOException {
+    useFormatVersion(3);
+    DataFile kept = partialCompactionKeepingAnAppendedFile();
+
+    assertThatThrownBy(this::rewrite)
+        .isInstanceOf(RewriteRefusedException.class)
+        .satisfies(
+            e ->
+                assertThat(((RewriteRefusedException) e).refusal())
+                    .isEqualTo(RewriteRefusal.LAST_UPDATED_NOT_PRESERVED))
+        .hasMessageContaining(kept.location())
+        .hasMessageContaining("out of its metrics");
+  }
+
+  /** Without row lineage there is nothing to lose, so the history above rewrites on v2. */
+  @Test
+  public void aKeptAppendedFileRewritesOnV2() throws IOException {
+    useFormatVersion(2);
+    partialCompactionKeepingAnAppendedFile();
+    assertLossless(rewrite());
+  }
+
+  private DataFile partialCompactionKeepingAnAppendedFile() throws IOException {
+    append(records(1, 6, "base"));
+    compact();
+    DataFile kept = append(records(10, 3, "keep"));
+    append(records(20, 3, "alpha"));
+    LocalCompactor.compact(table, true, file -> !file.location().equals(kept.location()));
+    return kept;
+  }
+
   /** A recovered row's id is written into the file, not derived from it. */
   @Test
   public void recoveredRowsCarryMaterializedIds() throws IOException {

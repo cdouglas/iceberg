@@ -188,6 +188,7 @@ refusals, not warnings.
 |---|---|---|
 | P1 | Format version 2 or 3 | v4 unsupported |
 | P1b | Under v3, either the plan requires no resurrection, or the `SnapshotRewriteIO` reports `preservesRowLineage()` | Recovering a row writes it into a new file, so its identity survives only if the id is written out per row. Gated on the capability, not the format: a v2-only implementation stays usable on v2 (§4.5) |
+| P1c | Under v3, every file `C_B` holds either reports `_last_updated_sequence_number` for every row in its metrics, or has the shared base as its own sequence number | A rewritten snapshot reads `C_B`'s files at the shared base, and a null reads as the file's number. A compaction that did not copy the value fails, and so does a file a partial compaction kept that was appended: an append never writes the column (§14.6, question 4) |
 | P2 | No equality deletes anywhere in the window | `D_k` is not positionally computable |
 | P3 | `schema-id` identical across the window and `C_B` | A column dropped after `S_k` would read as null from `C_B`'s files |
 | P4 | `spec-id` identical across the window and `C_B` | Resurrection files must be partition-aligned to the snapshot's spec |
@@ -1147,18 +1148,18 @@ rebuilt next to the original files' sizes from the ledger, and what the rewritte
   less what it removed plus what it added, by path, and every compaction map pairs rows with the same
   `_row_id`. A scan alone cannot tell two layouts apart, which is why this reads files.
 - **`TestSnapshotRewriteReconstruct`** covers: no holes, every file back at its path, incremental append
-  scans unchanged, and the floor's map back; a hole, and its file moving; compactions inside the window;
+  scans unchanged, and the floor's map back; a hole, and its file moving; a row already dead at a floor
+  that is an append, whose adding snapshot expired; compactions inside the window;
   a partitioned table; a partial compaction's kept file reused; a replace with no map; a second rewrite
   of a reconstruction; a moved file rewritten again, then reconstructed to the same layout with nothing
   moved; two passes reconstructed in one step; undo; and refusals for no ledger and for a schema change.
+  Both rewrites of a reconstruction are also compared with the first rewrite, file for file
+  (`LayoutFingerprint.assertRewrittenAlikeBy`). That matches each recovery file by the rows it holds,
+  since it is written again at a new path, and masks the locations a summary records.
 - **The lossless matrix and the layouts suite** rerun on v3 with every rewrite committed, reclaimed and
   reconstructed (`TestSnapshotRewriteLosslessReconstructed`, `TestSnapshotRewriteLayoutsReconstructed`).
 - **Every v3 fuzz seed** does the same, outside the `try` that accepts a refusal from the rewrite, so a
   reconstruction that refuses fails the test.
-
-Not covered: the second kind of hole (a floor that is not a compaction, whose dead rows' adding snapshot
-has expired), and a layout comparison of a second rewrite against the first. The second-rewrite test
-compares rows only.
 
 ### 14.6 Decided, and still open
 
@@ -1179,11 +1180,17 @@ compares rows only.
    refuse (`LEDGER_MISMATCH`). Skipping it would leave rows whose births fall in the expired snapshot
    with nothing to assign them to. Collecting a ledger once all its snapshots have expired is open
    (errata 14).
-4. **A compaction that leaves `_last_updated_sequence_number` null: open.** The rewrite restamps the
-   compaction's files, so in rewritten snapshots such a row would read as the shared base. A compliant
-   compaction never leaves it null, because rule 3 requires the value to be copied. The column's
-   null-value count in the compaction's file metrics would detect a non-compliant one from metadata
-   alone, and a precondition like P1b could refuse it.
+4. **A null `_last_updated_sequence_number`: refused** (P1c, `LAST_UPDATED_NOT_PRESERVED`). The rewrite
+   stamps every file `C_B` holds at the shared base, and a null reads as the file's number, so each
+   such file must carry the value for every row by its metrics, unless its own number is the base. The
+   question was posed about a compaction that does not copy the value, which rule 3 requires it to. But
+   building the test showed a wider case: a file a partial compaction kept is stamped at the base too,
+   and an appended one never writes the column. So on v3, a partial compaction that keeps an appended
+   file is refused, while a kept file an earlier compaction wrote passes. The tests that kept an
+   appended file now keep the floor's output instead. Lifting the refusal would mean referencing kept
+   appended files at their own numbers, outside the shared manifest, from the snapshot that appended
+   them on. If an engine's compaction does not record metrics for the column, every v3 rewrite onto it
+   is refused, and the fallback is to read the column, as `readRowIdRuns` reads `_row_id`.
 5. **Removals: decided.** A snapshot lists as removed what its parent held that it does not (§14.4,
    steps 9 and 10). The first design compared a snapshot only with the previous snapshot in its own
    ledger. That left the floor with no removals at all, not only a compaction at a ledger boundary. The
@@ -1213,6 +1220,7 @@ needs writing again.
 | R3 | Commit, reclaim, round trips, report; the matrix, layouts and fuzz reconstructed | **done** |
 | R4 | Rewrite errata 10; settle §14.6 | **done**, except the questions still marked open |
 | R5 | Removals against the parent; rebuild the compaction each window ended at, and maps naming moved files | **done** |
+| R6 | P1c; the second kind of hole; a second rewrite compared with the first, file for file | **done** |
 
 **What R0 found.** Planning this showed that the rewrite was preserving only half of a row's lineage.
 `GenericRowLineage` wrote `_last_updated_sequence_number` as null, which the reader fills in from the
@@ -1254,3 +1262,10 @@ replaced them. Once the compaction is rebuilt, a vector it carries for a file a 
 must be the one its parent holds, which is why step 8 reuses retained vectors. With the compaction's map
 rewritten for a moved source, the second rewrite that §14.6's first question refused now succeeds and
 reconstructs to the same layout.
+
+**What R6 found.** The rewrite was losing `_last_updated_sequence_number` for rows in a file a partial
+compaction kept. It stamps every file `C_B` holds at the shared base, and an appended file's rows read
+their number from the file. The tests compared values, not lineage, so the loss went unseen. P1c refuses
+it, along with the non-compliant compaction it was written for. The rewrite comparison needed one
+allowance: after a reconstruction moves a file, the compaction lists the new path as removed, so for a
+history with a hole only the rewritten snapshots are compared.

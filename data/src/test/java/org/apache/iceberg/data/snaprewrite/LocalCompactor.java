@@ -107,6 +107,25 @@ class LocalCompactor {
    */
   static Snapshot compact(
       Table table, boolean attachMap, Predicate<DataFile> include, long maxRowsPerTarget) {
+    return compact(table, attachMap, include, maxRowsPerTarget, true);
+  }
+
+  /**
+   * Compacts every live data file the way R0 found this harness doing it: each row keeps its {@code
+   * _row_id}, but its {@code _last_updated_sequence_number} is left null, so it reads as the
+   * compaction's own sequence number. The spec forbids this for a row moved without modification;
+   * it stands in for a compaction that does not comply.
+   */
+  static Snapshot compactDroppingLastUpdated(Table table) {
+    return compact(table, true, file -> true, UNLIMITED, false);
+  }
+
+  private static Snapshot compact(
+      Table table,
+      boolean attachMap,
+      Predicate<DataFile> include,
+      long maxRowsPerTarget,
+      boolean keepLastUpdated) {
     Snapshot startingSnapshot = table.currentSnapshot();
     List<FileScanTask> tasks = planFiles(table);
     tasks.sort(Comparator.comparing(task -> task.file().location()));
@@ -138,7 +157,8 @@ class LocalCompactor {
               mapBuilder,
               replacedData,
               deletesByPath,
-              maxRowsPerTarget));
+              maxRowsPerTarget,
+              keepLastUpdated));
     }
 
     return commit(
@@ -160,7 +180,8 @@ class LocalCompactor {
       CompactionMapBuilder mapBuilder,
       Set<DataFile> replacedData,
       Map<String, DeleteFile> deletesByPath,
-      long maxRowsPerTarget) {
+      long maxRowsPerTarget,
+      boolean keepLastUpdated) {
     List<DataFile> written = Lists.newArrayList();
     boolean lineage = GenericRowLineage.tracked(table);
     Schema writeSchema = lineage ? GenericRowLineage.writeSchema(table.schema()) : table.schema();
@@ -214,15 +235,7 @@ class LocalCompactor {
           run.open(position, targetPosition, targetPath);
           Record row = rows.get((int) position);
           if (lineage) {
-            // The row keeps the id it already had; a derived id would renumber it, because this
-            // file's rows come from ranges that have nothing to do with each other. It keeps its
-            // last-updated sequence number too: a compaction moves rows, it does not modify them.
-            row =
-                GenericRowLineage.withLineage(
-                    writeSchema,
-                    row,
-                    GenericRowLineage.resolveRowId(row, file, position),
-                    GenericRowLineage.resolveLastUpdated(row, file));
+            row = withLineage(writeSchema, row, file, position, keepLastUpdated);
           }
 
           appender.add(row);
@@ -240,6 +253,21 @@ class LocalCompactor {
   }
 
   /** A contiguous stretch of surviving rows landing contiguously in one target file. */
+  /**
+   * The row keeps the id it already had; a derived id would renumber it, because a compaction's
+   * output holds rows from ranges that have nothing to do with each other. It keeps its
+   * last-updated sequence number too, unless told not to: a compaction moves rows, it does not
+   * modify them.
+   */
+  private static Record withLineage(
+      Schema writeSchema, Record row, DataFile file, long position, boolean keepLastUpdated) {
+    return GenericRowLineage.withLineage(
+        writeSchema,
+        row,
+        GenericRowLineage.resolveRowId(row, file, position),
+        keepLastUpdated ? GenericRowLineage.resolveLastUpdated(row, file) : null);
+  }
+
   private static class Run {
     private long sourceStart = -1;
     private long targetStart = -1;
