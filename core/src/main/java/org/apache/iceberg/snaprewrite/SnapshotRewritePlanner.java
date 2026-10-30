@@ -167,7 +167,7 @@ public class SnapshotRewritePlanner {
 
       RowDelta delta = diff(previousState, currentState);
 
-      invertInserts(delta.inserted, current, locator, deletes);
+      invertInserts(delta.inserted, current, locator, deletes, partitionByPath.keySet());
       resurrectedRows +=
           invertDeletes(
               delta.deleted,
@@ -224,7 +224,8 @@ public class SnapshotRewritePlanner {
       List<RowRef> inserted,
       Snapshot current,
       RowLocator locator,
-      Map<String, PositionSet> deletes) {
+      Map<String, PositionSet> deletes,
+      Set<String> rewrittenFiles) {
     for (RowRef row : inserted) {
       RowRef location = locator.locate(row.path(), row.position());
       if (location == null) {
@@ -233,6 +234,19 @@ public class SnapshotRewritePlanner {
             String.format(
                 "row %s inserted by snapshot %s is not in the compaction map",
                 row, current.snapshotId()));
+      }
+
+      // A map passes through any file it does not name, as if the compaction had left it alone.
+      // That is right only for a file the compaction still holds; anything else is a file the map
+      // should have named and did not -- one rebuilt at a new path, say -- and a delete against it
+      // would mask nothing, leaving the row visible in a snapshot it was not yet inserted in.
+      if (!rewrittenFiles.contains(location.path())) {
+        throw new RewriteRefusedException(
+            RewriteRefusal.UNLOCATABLE_ROW,
+            String.format(
+                "row %s inserted by snapshot %s locates to %s, which is neither the compaction's"
+                    + " nor a recovered file",
+                row, current.snapshotId(), location));
       }
 
       deletes
@@ -322,9 +336,7 @@ public class SnapshotRewritePlanner {
       return LedgerPlan.unavailable("the SnapshotRewriteIO does not preserve row lineage");
     }
 
-    Map<String, Integer> first = Maps.newLinkedHashMap();
-    Map<String, Integer> last = Maps.newHashMap();
-    Map<String, DataFile> files = Maps.newHashMap();
+    Spans spans = new Spans();
     List<SnapshotRewriteLedger.WindowSnapshot> snapshots = Lists.newArrayList();
     for (int index = 0; index < window.size(); index += 1) {
       Snapshot snapshot = window.get(index);
@@ -332,25 +344,18 @@ public class SnapshotRewritePlanner {
           new SnapshotRewriteLedger.WindowSnapshot(
               snapshot.snapshotId(), lookup.locationFor(snapshot)));
       for (DataFile file : states.get(snapshot.snapshotId()).files.values()) {
-        String path = file.location();
-        Integer previous = last.get(path);
-        if (previous != null && previous != index - 1) {
-          // Entries describe a file by one contiguous span of the window. A history that drops a
-          // file and adds it back is legal, but rare enough to decline rather than model.
-          return LedgerPlan.unavailable(path + " leaves the window and comes back");
+        String refused = spans.add(file, index);
+        if (refused != null) {
+          return LedgerPlan.unavailable(refused);
         }
-
-        first.putIfAbsent(path, index);
-        last.put(path, index);
-        files.putIfAbsent(path, file);
       }
     }
 
     Map<Long, Map<String, Long>> addedBy = Maps.newHashMap();
     List<SnapshotRewriteLedger.Entry> entries = Lists.newArrayList();
-    for (Map.Entry<String, Integer> span : first.entrySet()) {
+    for (Map.Entry<String, Integer> span : spans.first.entrySet()) {
       String path = span.getKey();
-      DataFile file = files.get(path);
+      DataFile file = spans.files.get(path);
       Snapshot oldest = window.get(span.getValue());
       Long addedSnapshotId =
           addedBy
@@ -358,26 +363,21 @@ public class SnapshotRewritePlanner {
                   oldest.snapshotId(),
                   id -> SnapshotRewriteUnsafe.addedSnapshotIds(oldest, io, base.specsById()))
               .get(path);
-      if (file.firstRowId() == null
-          || file.dataSequenceNumber() == null
-          || file.fileSequenceNumber() == null
-          || addedSnapshotId == null) {
-        return LedgerPlan.unavailable(path + " has no first_row_id, sequence numbers, or origin");
+      if (file.firstRowId() == null || addedSnapshotId == null) {
+        return LedgerPlan.unavailable(path + " has no first_row_id or origin");
       }
 
-      // Positions dead at the oldest snapshot referencing the file are dead at every later one too:
-      // deletes never come back. So these are exactly the rows no window snapshot can read.
-      PositionSet holes = states.get(oldest.snapshotId()).deleted.get(path);
+      int last = spans.last.get(path);
       entries.add(
           new SnapshotRewriteLedger.Entry(
               file,
-              file.dataSequenceNumber(),
-              file.fileSequenceNumber(),
+              spans.sequences.get(path).stream().mapToLong(Long::longValue).toArray(),
               addedSnapshotId,
               span.getValue(),
-              last.get(path),
+              last,
               derivesRowIds(file) ? SnapshotRewriteLedger.derivedRuns(file) : null,
-              SnapshotRewriteLedger.runsOf(holes)));
+              SnapshotRewriteLedger.birthRunsOf(
+                  births(file, span.getValue(), last, window, states))));
     }
 
     Integer schemaId = compaction.schemaId();
@@ -388,6 +388,76 @@ public class SnapshotRewritePlanner {
             base.spec().specId(),
             snapshots,
             entries));
+  }
+
+  /**
+   * Where each position of a file is first read, or -1 if no window snapshot reads it.
+   *
+   * <p>Not simply where the file begins: a window that was rewritten before holds the compaction
+   * from its oldest snapshot on, masking every row a later snapshot inserted, so in such a layout a
+   * row is born wherever the original inserted it.
+   */
+  private static int[] births(
+      DataFile file, int first, int last, List<Snapshot> window, Map<Long, SnapshotState> states) {
+    int[] births = new int[(int) file.recordCount()];
+    Arrays.fill(births, -1);
+    for (int index = first; index <= last; index += 1) {
+      PositionSet deleted = states.get(window.get(index).snapshotId()).deleted.get(file.location());
+      for (int pos = 0; pos < births.length; pos += 1) {
+        if (births[pos] < 0 && !deleted.contains(pos)) {
+          births[pos] = index;
+        }
+      }
+    }
+
+    return births;
+  }
+
+  /** When each data file of a window is referenced, and at which sequence numbers. */
+  private static class Spans {
+    private final Map<String, Integer> first = Maps.newLinkedHashMap();
+    private final Map<String, Integer> last = Maps.newHashMap();
+    private final Map<String, DataFile> files = Maps.newHashMap();
+    private final Map<String, List<Long>> sequences = Maps.newHashMap();
+
+    /**
+     * Records that the window snapshot at {@code index} references a file; a reason if it can't.
+     */
+    String add(DataFile file, int index) {
+      String path = file.location();
+      Integer previous = last.get(path);
+      if (previous != null && previous != index - 1) {
+        // Entries describe a file by one contiguous span of the window. A history that drops a
+        // file and adds it back is legal, but rare enough to decline rather than model.
+        return path + " leaves the window and comes back";
+      }
+
+      if (file.dataSequenceNumber() == null || file.fileSequenceNumber() == null) {
+        return path + " has no sequence numbers";
+      }
+
+      first.putIfAbsent(path, index);
+      last.put(path, index);
+      files.putIfAbsent(path, file);
+
+      // One file can carry different sequence numbers in different snapshots of a layout that was
+      // rewritten before, so they are recorded as runs over the window, not once per file.
+      List<Long> runs = sequences.computeIfAbsent(path, ignored -> Lists.newArrayList());
+      int size = runs.size();
+      if (size > 0
+          && runs.get(size - 3) == index - 1
+          && runs.get(size - 2).equals(file.dataSequenceNumber())
+          && runs.get(size - 1).equals(file.fileSequenceNumber())) {
+        runs.set(size - 3, (long) index);
+      } else {
+        runs.add((long) index);
+        runs.add((long) index);
+        runs.add(file.dataSequenceNumber());
+        runs.add(file.fileSequenceNumber());
+      }
+
+      return null;
+    }
   }
 
   /**
