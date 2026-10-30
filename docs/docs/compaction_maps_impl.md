@@ -927,7 +927,7 @@ Composed run:
 
 1. **Lazy composition**: Chains are composed on-demand when a mapping is requested, with results cached
 2. **Per-file caching**: Each source file's composed mapping is cached separately
-3. **Validation**: Chain continuity verified via `m1.targetSnapshotId == m2.sourceSnapshotId`
+3. **Continuity follows files**: A map continues a chain when its source files are an earlier map's targets. Snapshot ids are not compared, since a commit between two compactions separates them (errata 4)
 4. **Gap handling**: Positions in gaps (deleted during compaction) correctly return null
 
 **Test Coverage:**

@@ -26,11 +26,16 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.iceberg.CompactionMap;
+import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.Parameter;
 import org.apache.iceberg.ParameterizedTestExtension;
@@ -38,6 +43,7 @@ import org.apache.iceberg.Parameters;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
@@ -152,6 +158,8 @@ public class TestBinPackWithPositionTracking extends TestBase {
     table.refresh();
     assertThat(TestHelpers.dataFiles(table)).hasSize(4);
 
+    long start = table.currentSnapshot().snapshotId();
+
     // Run bin-pack rewrite
     RewriteDataFiles.Result result =
         actions()
@@ -161,6 +169,25 @@ public class TestBinPackWithPositionTracking extends TestBase {
 
     assertThat(result.rewrittenDataFilesCount()).isEqualTo(4);
     assertThat(result.addedDataFilesCount()).isGreaterThanOrEqualTo(1);
+    assertMapNamesCompaction(table, start);
+  }
+
+  /** The compaction's map names the snapshot it read and the snapshot it committed. */
+  private static void assertMapNamesCompaction(Table table, long startingSnapshotId) {
+    table.refresh();
+    Snapshot compaction = table.currentSnapshot();
+    List<String> locations =
+        compaction.dataManifests(table.io()).stream()
+            .filter(manifest -> manifest.snapshotId() == compaction.snapshotId())
+            .map(ManifestFile::compactionMapLocation)
+            .filter(Objects::nonNull)
+            .distinct()
+            .collect(Collectors.toList());
+    assertThat(locations).as("the compaction wrote one map").hasSize(1);
+
+    CompactionMap map = CompactionMaps.read(table.io().newInputFile(locations.get(0)));
+    assertThat(map.sourceSnapshotId()).isEqualTo(startingSnapshotId);
+    assertThat(map.targetSnapshotId()).isEqualTo(compaction.snapshotId());
   }
 
   @TestTemplate
