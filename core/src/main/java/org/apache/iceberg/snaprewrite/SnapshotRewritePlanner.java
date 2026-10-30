@@ -114,21 +114,33 @@ public class SnapshotRewritePlanner {
     SnapshotState targetState = buildState(compaction);
     List<DataFile> targetFiles = ImmutableList.copyOf(targetState.files.values());
 
-    // The newest snapshot in the window has the same state as the compaction, so its rewritten form
-    // is the compaction's files with nothing deleted and nothing resurrected.
-    Map<Long, SnapshotRewritePlan.RewrittenSnapshot> rewritten = Maps.newHashMap();
-    Snapshot newest = window.get(window.size() - 1);
-    rewritten.put(
-        newest.snapshotId(),
-        new SnapshotRewritePlan.RewrittenSnapshot(newest, ImmutableList.of(), ImmutableList.of()));
-
-    Map<String, PositionSet> deletes = Maps.newHashMap();
     List<String> presentResurrections = Lists.newArrayList();
     List<ResurrectionRequest> resurrections = Lists.newArrayList();
     Map<String, StructLike> partitionByPath = Maps.newHashMap();
     for (DataFile file : targetFiles) {
       partitionByPath.put(file.location(), file.partition());
     }
+
+    // Every rewritten snapshot masks what the compaction itself masks. A compaction's own output
+    // has nothing dead in it, but a partial compaction keeps the files it did not rewrite together
+    // with their deletes, and those rows stay dead in every snapshot expressed against its layout:
+    // a row that died inside the window comes back through a resurrection file, not through the
+    // file the compaction kept.
+    Map<String, PositionSet> deletes = Maps.newHashMap();
+    for (Map.Entry<String, PositionSet> dead : targetState.deleted.entrySet()) {
+      if (!dead.getValue().isEmpty()) {
+        deletes.put(dead.getKey(), dead.getValue().copy());
+      }
+    }
+
+    // The newest snapshot in the window has the same state as the compaction, so its rewritten form
+    // is the compaction's files with nothing resurrected and only the compaction's own deletes.
+    Map<Long, SnapshotRewritePlan.RewrittenSnapshot> rewritten = Maps.newHashMap();
+    Snapshot newest = window.get(window.size() - 1);
+    rewritten.put(
+        newest.snapshotId(),
+        new SnapshotRewritePlan.RewrittenSnapshot(
+            newest, ImmutableList.of(), deleteRequests(newest, spec, deletes, partitionByPath)));
 
     long resurrectedRows = 0;
     for (int k = window.size() - 1; k >= 1; k -= 1) {
