@@ -200,6 +200,10 @@ public class TestFallbackMapGenerationRemoved {
     // Verify map content
     CompactionMap map =
         CompactionMaps.read(table.io().newInputFile(addedManifest.compactionMapLocation()));
+    assertThat(map.sourceSnapshotId()).isEqualTo(startingSnapshotId);
+    assertThat(map.targetSnapshotId())
+        .as("the map names the snapshot the compaction committed")
+        .isEqualTo(snapshot.snapshotId());
     assertThat(map.fileMappings()).hasSize(1);
     assertThat(map.fileMappings().get(0).sourceFile()).isEqualTo(source.path().toString());
     assertThat(map.fileMappings().get(0).targetFile()).isEqualTo(targetFile.path().toString());

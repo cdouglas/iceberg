@@ -330,4 +330,63 @@ public class TestCompactionMapCommitFlow {
         .as("Each rewrite should generate a unique compaction map")
         .isNotEqualTo(mapLocation1);
   }
+
+  /**
+   * A caller cannot know a compaction's snapshot id before it commits, so a map handed to the
+   * rewrite is written when the rewrite is applied, naming the rewrite's own snapshot as its
+   * target. A retry onto a newer table keeps that snapshot id and the map already written.
+   */
+  @Test
+  public void testRewriteRecordsItsOwnSnapshotAsTheMapTarget() throws IOException {
+    Table table =
+        catalog.createTable(
+            TableIdentifier.of("db", "map_target"),
+            SCHEMA,
+            PartitionSpec.unpartitioned(),
+            java.util.Map.of(TableProperties.COMPACTION_MAP_ENABLED, "true"));
+
+    DataFile source = dataFile("source", 100);
+    table.newAppend().appendFile(source).commit();
+    long start = table.currentSnapshot().snapshotId();
+
+    DataFile target = dataFile("target", 100);
+    CompactionMapBuilder builder = new CompactionMapBuilder(start, -1L);
+    builder.addFileMapping(source.location(), target.location()).addRun(0, 0, 100);
+
+    BaseRewriteFiles rewrite =
+        ((BaseRewriteFiles) table.newRewrite().validateFromSnapshot(start))
+            .setCompactionMap(builder.build());
+    rewrite.deleteFile(source).addFile(target);
+
+    rewrite.apply();
+    String written = rewrite.compactionMapLocation();
+    assertThat(written).as("applying the rewrite writes the map").isNotNull();
+
+    table.newAppend().appendFile(dataFile("concurrent", 10)).commit();
+    rewrite.commit();
+
+    Snapshot committed = table.currentSnapshot();
+    assertThat(committed.operation()).isEqualTo(DataOperations.REPLACE);
+    ManifestFile added =
+        committed.dataManifests(table.io()).stream()
+            .filter(m -> m.snapshotId() == committed.snapshotId())
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("No manifest written by the rewrite"));
+    assertThat(added.compactionMapLocation())
+        .as("the retry reuses the map written by the first attempt")
+        .isEqualTo(written);
+
+    CompactionMap map = CompactionMaps.read(table.io().newInputFile(written));
+    assertThat(map.sourceSnapshotId()).isEqualTo(start);
+    assertThat(map.targetSnapshotId()).isEqualTo(committed.snapshotId());
+    assertThat(written).contains("compaction-map-" + committed.snapshotId() + "-");
+  }
+
+  private static DataFile dataFile(String name, long records) {
+    return DataFiles.builder(PartitionSpec.unpartitioned())
+        .withPath("/path/to/" + name + ".parquet")
+        .withFileSizeInBytes(1024)
+        .withRecordCount(records)
+        .build();
+  }
 }

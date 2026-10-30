@@ -256,8 +256,9 @@ public class TestRewriteDataFilesActionWithCompactionMaps extends TestBase {
     assertThat(map.sourceSnapshotId())
         .as("Map should reference starting snapshot")
         .isEqualTo(startingSnapshot);
-    // Note: target snapshot ID may differ from actual snapshot ID due to commit timing
-    assertThat(map.targetSnapshotId()).as("Map should have a target snapshot ID").isNotNull();
+    assertThat(map.targetSnapshotId())
+        .as("Map should reference the compaction's snapshot")
+        .isEqualTo(snapshot.snapshotId());
     assertThat(map.fileMappings())
         .as("Map should have 5 file mappings (one per source file)")
         .hasSize(5);

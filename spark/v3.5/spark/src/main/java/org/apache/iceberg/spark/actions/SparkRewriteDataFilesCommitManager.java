@@ -18,8 +18,6 @@
  */
 package org.apache.iceberg.spark.actions;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,7 +25,6 @@ import org.apache.iceberg.BaseRewriteFiles;
 import org.apache.iceberg.CompactionConflictDetector;
 import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMapBuilder;
-import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteConflictInfo;
 import org.apache.iceberg.DeleteFile;
@@ -42,7 +39,6 @@ import org.apache.iceberg.actions.RewriteFileGroup;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.ValidationException;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.DataFileSet;
@@ -112,13 +108,10 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
       danglingDVs.addAll(group.danglingDVs());
     }
 
-    // Build compaction map if enabled
+    // Build compaction map if enabled; the rewrite writes it when it commits
     CompactionMap compactionMap = null;
-    String compactionMapLocation = null;
-
     if (shouldGenerateCompactionMap()) {
       compactionMap = buildCompactionMap(fileGroups);
-      compactionMapLocation = writeCompactionMap(compactionMap);
     }
 
     // Check for conflicts and potentially resolve them
@@ -139,9 +132,8 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
       ((BaseRewriteFiles) rewrite).disableAutoCompactionMap();
     }
 
-    // Attach compaction map location if available
-    if (compactionMapLocation != null && rewrite instanceof BaseRewriteFiles) {
-      ((BaseRewriteFiles) rewrite).setCompactionMapLocation(compactionMapLocation);
+    if (compactionMap != null && rewrite instanceof BaseRewriteFiles) {
+      ((BaseRewriteFiles) rewrite).setCompactionMap(compactionMap);
     }
 
     rewrittenDataFiles.forEach(rewrite::deleteFile);
@@ -282,44 +274,14 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
   }
 
   /**
-   * Write a compaction map to the metadata location.
-   *
-   * @param map the compaction map to write
-   * @return the location of the written compaction map, or null if the map is empty
-   */
-  private String writeCompactionMap(CompactionMap map) {
-    // Don't write empty maps
-    if (map.fileMappings().isEmpty()) {
-      return null;
-    }
-
-    try {
-      // Generate unique snapshot ID for target (will be assigned during commit)
-      long targetSnapshotId = startingSnapshotId + 1;
-      OutputFile mapFile = CompactionMaps.newCompactionMapFile(table, targetSnapshotId);
-
-      CompactionMaps.write(map, mapFile);
-
-      LOG.info(
-          "Wrote compaction map with {} file mappings to {}",
-          map.fileMappings().size(),
-          mapFile.location());
-
-      return mapFile.location();
-    } catch (IOException e) {
-      throw new UncheckedIOException("Failed to write compaction map", e);
-    }
-  }
-
-  /**
    * Build a compaction map from file groups.
    *
    * @param fileGroups the file groups being rewritten
    * @return the compaction map
    */
   private CompactionMap buildCompactionMap(Set<RewriteFileGroup> fileGroups) {
-    CompactionMapBuilder builder =
-        new CompactionMapBuilder(startingSnapshotId, startingSnapshotId + 1);
+    // The rewrite records its own snapshot as the target when it writes the map
+    CompactionMapBuilder builder = new CompactionMapBuilder(startingSnapshotId, -1L);
 
     for (RewriteFileGroup group : fileGroups) {
       Set<DataFile> sourceFiles = group.rewrittenFiles();

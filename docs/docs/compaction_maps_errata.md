@@ -196,7 +196,7 @@ still live. Three bugs followed. Each is reproduced in `TestCompactionMapValidat
 - **Composition.** `CompactionMaps.compose` required the first map's target snapshot to equal the
   second map's source snapshot. A map's source snapshot is the snapshot its compaction planned
   against, so any commit between two chained compactions broke the equality. A map that
-  `RewriteDataFilesCommitManager` writes (core or Spark) records `startingSnapshotId + 1` as a
+  `RewriteDataFilesCommitManager` wrote (core or Spark) recorded `startingSnapshotId + 1` as a
   placeholder target, so its chains never satisfied it. Remapping a chained conflict threw
   `IllegalArgumentException`.
 
@@ -208,6 +208,10 @@ still live. Three bugs followed. Each is reproduced in `TestCompactionMapValidat
 - `compose` follows files only. The snapshot id check, which never affected the result, is removed.
   `TestCompactionMapComposition` now composes across snapshot ids that do not match, instead of
   expecting an exception.
+- Action-built maps record the snapshot their compaction committed as their target. The commit
+  managers hand the map to `BaseRewriteFiles.setCompactionMap`, which writes it when the rewrite is
+  applied, under the rewrite's own snapshot id. That id is kept across retries, so a retry reuses
+  the map already written.
 
 ### Still Open
 
@@ -216,14 +220,16 @@ still live. Three bugs followed. Each is reproduced in `TestCompactionMapValidat
   mapped compaction look mapped. That falls back to upstream's behavior, which never validates a
   replace's added files, rather than to anything less safe. Whether to keep the exemption at all is
   undecided.
-- An action-built map's `targetSnapshotId` is a placeholder. Nothing should rely on it.
 
 ### Code Location
 
 - `core/src/main/java/org/apache/iceberg/CompactionMapValidator.java` -- `loadCompactionMaps`,
   `addOwnMaps`
 - `core/src/main/java/org/apache/iceberg/CompactionMaps.java` -- `compose`
+- `core/src/main/java/org/apache/iceberg/BaseRewriteFiles.java` -- `setCompactionMap`
 - `core/src/test/java/org/apache/iceberg/TestCompactionMapValidatorHistory.java`
+- `core/src/test/java/org/apache/iceberg/TestCompactionMapCommitFlow.java` --
+  `testRewriteRecordsItsOwnSnapshotAsTheMapTarget`
 
 ---
 

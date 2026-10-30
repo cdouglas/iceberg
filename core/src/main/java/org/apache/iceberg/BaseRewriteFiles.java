@@ -28,6 +28,7 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
   private final DataFileSet replacedDataFiles = DataFileSet.create();
   private final DataFileSet addedDataFiles = DataFileSet.create();
   private Long startingSnapshotId = null;
+  private CompactionMap compactionMap = null;
   private String compactionMapLocation = null;
   private boolean autoCompactionMapDisabled = false;
 
@@ -156,6 +157,23 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
   }
 
   /**
+   * Sets the compaction map to record with this rewrite.
+   *
+   * <p>The map is written when the rewrite is applied, and its location attached to the manifests
+   * holding the added data files. Its target snapshot id is replaced with this rewrite's snapshot
+   * id, which a caller cannot know before the rewrite commits; its source snapshot id is kept. An
+   * empty map is not written. A location set with {@link #setCompactionMapLocation} takes
+   * precedence.
+   *
+   * @param map the compaction map describing how this rewrite moved rows
+   * @return this for method chaining
+   */
+  public BaseRewriteFiles setCompactionMap(CompactionMap map) {
+    this.compactionMap = map;
+    return this;
+  }
+
+  /**
    * Returns the compaction map location for this rewrite operation, or null if not set.
    *
    * @return the compaction map location
@@ -194,8 +212,14 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
 
   @Override
   public java.util.List<ManifestFile> apply(TableMetadata base, Snapshot snapshot) {
-    // Generate compaction map if enabled and not already set or suppressed
-    if (compactionMapLocation == null
+    // Write the caller's map, or generate one if enabled and not already set or suppressed
+    if (compactionMapLocation == null && compactionMap != null) {
+      if (!compactionMap.fileMappings().isEmpty()) {
+        writeCompactionMap(
+            new GenericCompactionMap(
+                compactionMap.sourceSnapshotId(), snapshotId(), compactionMap.fileMappings()));
+      }
+    } else if (compactionMapLocation == null
         && !autoCompactionMapDisabled
         && shouldGenerateCompactionMap(base)) {
       generateAndWriteCompactionMap(base, snapshot);
@@ -290,12 +314,16 @@ public class BaseRewriteFiles extends MergingSnapshotProducer<RewriteFiles>
       return;
     }
 
+    writeCompactionMap(map);
+  }
+
+  private void writeCompactionMap(CompactionMap map) {
     try {
       String fileName =
           String.format(
               java.util.Locale.ROOT,
               "compaction-map-%d-%s%s",
-              targetSnapshotId,
+              map.targetSnapshotId(),
               java.util.UUID.randomUUID(),
               org.apache.iceberg.FileFormat.AVRO.addExtension(""));
 
