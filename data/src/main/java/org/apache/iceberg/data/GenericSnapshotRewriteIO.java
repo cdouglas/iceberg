@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
@@ -56,12 +57,15 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.snaprewrite.LiveRow;
 import org.apache.iceberg.snaprewrite.PositionDeleteRequest;
 import org.apache.iceberg.snaprewrite.PositionSet;
+import org.apache.iceberg.snaprewrite.RebuildRequest;
 import org.apache.iceberg.snaprewrite.ResurrectionRequest;
 import org.apache.iceberg.snaprewrite.RowRef;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteIO;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteLedger;
+import org.apache.iceberg.types.Types;
 import org.apache.orc.TypeDescription;
 import org.apache.parquet.schema.MessageType;
 
@@ -122,6 +126,63 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
         file.location(),
         ids.length);
     return SnapshotRewriteLedger.runsOf(ids);
+  }
+
+  @Override
+  public void readLiveRows(
+      Table view, long snapshotId, boolean withValues, Consumer<LiveRow> visitor) {
+    // Values or not, the whole row is projected: the reader is the scan path every other client
+    // uses, and asking it for metadata columns alone is a case nothing else exercises.
+    List<Types.NestedField> columns =
+        Lists.newArrayList(MetadataColumns.schemaWithRowLineage(view.schema()).columns());
+    columns.add(MetadataColumns.FILE_PATH);
+    columns.add(MetadataColumns.ROW_POSITION);
+    Schema projection = new Schema(columns);
+
+    try (CloseableIterable<Record> records =
+        IcebergGenerics.read(view).useSnapshot(snapshotId).project(projection).build()) {
+      for (Record record : records) {
+        visitor.accept(
+            new LiveRow(
+                record.getField(MetadataColumns.FILE_PATH.name()).toString(),
+                (Long) record.getField(MetadataColumns.ROW_POSITION.name()),
+                (Long) record.getField(MetadataColumns.ROW_ID.name()),
+                (Long) record.getField(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name()),
+                withValues ? record.copy() : null));
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  @Override
+  public DataFile writeRebuilt(RebuildRequest request) {
+    FileFormat format = FileFormat.fromFileName(request.outputPath());
+    GenericAppenderFactory factory =
+        new GenericAppenderFactory(request.schema(), request.spec()).setAll(table.properties());
+    FileAppender<Record> appender =
+        factory.newAppender(io.newOutputFile(request.outputPath()), format);
+    try {
+      for (Record row : request.rows()) {
+        appender.add(row);
+      }
+    } finally {
+      close(appender);
+    }
+
+    DataFiles.Builder builder =
+        DataFiles.builder(request.spec())
+            .withPath(request.outputPath())
+            .withFormat(format)
+            .withFileSizeInBytes(appender.length())
+            .withMetrics(appender.metrics())
+            .withRecordCount(request.rows().size())
+            .withFirstRowId(request.firstRowId());
+    if (request.spec().isPartitioned()) {
+      builder.withPartition(request.partition());
+    }
+
+    return builder.build();
   }
 
   @Override

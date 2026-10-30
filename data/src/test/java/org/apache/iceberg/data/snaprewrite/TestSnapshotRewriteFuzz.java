@@ -32,6 +32,7 @@ import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.snaprewrite.RewriteRefusedException;
+import org.apache.iceberg.snaprewrite.SnapshotReconstructResult;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.apache.iceberg.util.Pair;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -113,18 +114,33 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
 
     compactMaybeRolling(random);
 
+    LayoutFingerprint before = version >= 3 ? LayoutFingerprint.of(table) : null;
+    SnapshotRewriteResult result;
     try {
-      SnapshotRewriteResult result = rewrite();
-      assertLossless(result);
-      assertIdentityPreserved(result);
-
-      // Each row that died in the window is recovered exactly once, so recovered rows can never
-      // exceed the rows that ever existed.
-      assertThat(result.plan().resurrectedRows()).isLessThanOrEqualTo(totalRowsEverWritten());
+      result = rewrite();
     } catch (RewriteRefusedException e) {
       // A refusal is a valid outcome for a generated history; it must never be a silent wrong
       // answer.
       assertThat(e.refusal()).isNotNull();
+      return;
+    }
+
+    assertLossless(result);
+    assertIdentityPreserved(result);
+
+    // Each row that died in the window is recovered exactly once, so recovered rows can never
+    // exceed the rows that ever existed.
+    assertThat(result.plan().resurrectedRows()).isLessThanOrEqualTo(totalRowsEverWritten());
+
+    // On v3 the rewrite is taken through reclaim and the original layout rebuilt from its ledger.
+    // Outside the try: a reconstruction that refuses is a failure, not an acceptable outcome.
+    if (before != null) {
+      assertThat(result.ledger()).as(result.plan().ledgerUnavailable()).isNotNull();
+      commitAndReclaim(result);
+      SnapshotReconstructResult rebuilt = reconstruct();
+      before.assertReproducedBy(rebuilt.asTable());
+      commitAndReclaim(rebuilt);
+      before.assertReproducedBy(table);
     }
   }
 

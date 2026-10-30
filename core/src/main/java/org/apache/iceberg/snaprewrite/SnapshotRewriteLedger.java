@@ -68,13 +68,12 @@ public class SnapshotRewriteLedger {
   private static final String COMPACTION_MAP = "compaction-map";
   private static final String FILES = "files";
   private static final String DATA_FILE = "data-file";
-  private static final String DATA_SEQUENCE_NUMBER = "data-sequence-number";
-  private static final String FILE_SEQUENCE_NUMBER = "file-sequence-number";
+  private static final String SEQUENCE_NUMBERS = "sequence-numbers";
   private static final String ADDED_SNAPSHOT_ID = "added-snapshot-id";
   private static final String FIRST = "first";
   private static final String LAST = "last";
   private static final String ROW_IDS = "row-ids";
-  private static final String HOLES = "holes";
+  private static final String BIRTHS = "births";
 
   private final long compactionSnapshotId;
   private final int schemaId;
@@ -177,23 +176,21 @@ public class SnapshotRewriteLedger {
   /** One original data file. */
   public static class Entry {
     private final DataFile file;
-    private final long dataSequenceNumber;
-    private final long fileSequenceNumber;
+    private final long[] sequenceRuns;
     private final long addedSnapshotId;
     private final int first;
     private final int last;
     private final long[] rowIdRuns;
-    private final long[] holeRuns;
+    private final long[] birthRuns;
 
     Entry(
         DataFile file,
-        long dataSequenceNumber,
-        long fileSequenceNumber,
+        long[] sequenceRuns,
         long addedSnapshotId,
         int first,
         int last,
         long[] rowIdRuns,
-        long[] holeRuns) {
+        long[] birthRuns) {
       Preconditions.checkArgument(
           first <= last, "Entry for %s is referenced from %s to %s", file.location(), first, last);
       Preconditions.checkArgument(
@@ -203,13 +200,12 @@ public class SnapshotRewriteLedger {
           rowIdRuns == null ? 0 : runLength(rowIdRuns),
           file.recordCount());
       this.file = file;
-      this.dataSequenceNumber = dataSequenceNumber;
-      this.fileSequenceNumber = fileSequenceNumber;
+      this.sequenceRuns = sequenceRuns;
       this.addedSnapshotId = addedSnapshotId;
       this.first = first;
       this.last = last;
       this.rowIdRuns = rowIdRuns;
-      this.holeRuns = holeRuns;
+      this.birthRuns = birthRuns;
     }
 
     /** The file as its manifest described it, including its partition and {@code first_row_id}. */
@@ -217,12 +213,38 @@ public class SnapshotRewriteLedger {
       return file;
     }
 
-    public long dataSequenceNumber() {
-      return dataSequenceNumber;
+    /** The data sequence number the file carried in the window snapshot at {@code index}. */
+    public long dataSequenceNumber(int index) {
+      return sequenceRun(index)[2];
     }
 
-    public long fileSequenceNumber() {
-      return fileSequenceNumber;
+    /** The file sequence number the file carried in the window snapshot at {@code index}. */
+    public long fileSequenceNumber(int index) {
+      return sequenceRun(index)[3];
+    }
+
+    /**
+     * Whether the file carried one pair of sequence numbers throughout.
+     *
+     * <p>Always, in an original history. Not necessarily in a rewritten one: a compaction's file
+     * carries the window's shared base number in every rewritten snapshot and its own after them
+     * (errata 2), so a ledger written over a rewritten layout records both.
+     */
+    public boolean hasOneSequence() {
+      return sequenceRuns.length == 4;
+    }
+
+    private long[] sequenceRun(int index) {
+      for (int i = 0; i < sequenceRuns.length; i += 4) {
+        if (sequenceRuns[i] <= index && index <= sequenceRuns[i + 1]) {
+          return new long[] {
+            sequenceRuns[i], sequenceRuns[i + 1], sequenceRuns[i + 2], sequenceRuns[i + 3]
+          };
+        }
+      }
+
+      throw new IllegalArgumentException(
+          String.format("%s is not referenced at window index %s", file.location(), index));
     }
 
     /** The commit that added this file, which may predate the window. */
@@ -251,6 +273,26 @@ public class SnapshotRewriteLedger {
     }
 
     /**
+     * For every position, the window index of the first snapshot that reads it, or -1 if none does.
+     *
+     * <p>A reconstruction finds each row where it is first read: row ids are unique among the rows
+     * one snapshot reads, so the row with this position's id read at its birth is this position's
+     * row, even if another version of it is read elsewhere later. Births vary within a file only
+     * when the layout recorded is itself a rewritten one, whose early snapshots mask rows that
+     * later ones read; in an original history every readable row is born where its file begins.
+     */
+    public int[] births() {
+      int[] births = new int[(int) file.recordCount()];
+      for (int i = 0; i < birthRuns.length; i += 3) {
+        for (long pos = birthRuns[i]; pos < birthRuns[i] + birthRuns[i + 1]; pos += 1) {
+          births[(int) pos] = (int) birthRuns[i + 2];
+        }
+      }
+
+      return births;
+    }
+
+    /**
      * Positions no window snapshot can read: inserted and deleted by one commit, or already dead at
      * the oldest snapshot that references the file.
      *
@@ -258,8 +300,9 @@ public class SnapshotRewriteLedger {
      */
     public PositionSet holes() {
       PositionSet holes = new PositionSet();
-      for (int i = 0; i < holeRuns.length; i += 2) {
-        for (long pos = holeRuns[i]; pos < holeRuns[i] + holeRuns[i + 1]; pos += 1) {
+      int[] births = births();
+      for (int pos = 0; pos < births.length; pos += 1) {
+        if (births[pos] < 0) {
           holes.add(pos);
         }
       }
@@ -273,15 +316,7 @@ public class SnapshotRewriteLedger {
     }
 
     Entry withRowIdRuns(long[] runs) {
-      return new Entry(
-          file,
-          dataSequenceNumber,
-          fileSequenceNumber,
-          addedSnapshotId,
-          first,
-          last,
-          runs,
-          holeRuns);
+      return new Entry(file, sequenceRuns, addedSnapshotId, first, last, runs, birthRuns);
     }
   }
 
@@ -306,10 +341,23 @@ public class SnapshotRewriteLedger {
     return runs.stream().mapToLong(Long::longValue).toArray();
   }
 
-  static long[] runsOf(PositionSet positions) {
-    List<Long> values = Lists.newArrayList();
-    positions.forEach(values::add);
-    return runsOf(values.stream().mapToLong(Long::longValue).toArray());
+  /** Compresses per-position births into (first position, length, birth) triples. */
+  static long[] birthRunsOf(int[] births) {
+    List<Long> runs = Lists.newArrayList();
+    int index = 0;
+    while (index < births.length) {
+      int end = index + 1;
+      while (end < births.length && births[end] == births[index]) {
+        end += 1;
+      }
+
+      runs.add((long) index);
+      runs.add((long) (end - index));
+      runs.add((long) births[index]);
+      index = end;
+    }
+
+    return runs.stream().mapToLong(Long::longValue).toArray();
   }
 
   /** The single run a file whose ids derive from its {@code first_row_id} occupies. */
@@ -385,13 +433,12 @@ public class SnapshotRewriteLedger {
       generator.writeStartObject();
       generator.writeFieldName(DATA_FILE);
       ContentFileParser.toJson(entry.file(), specsById.get(entry.file().specId()), generator);
-      generator.writeNumberField(DATA_SEQUENCE_NUMBER, entry.dataSequenceNumber());
-      generator.writeNumberField(FILE_SEQUENCE_NUMBER, entry.fileSequenceNumber());
+      writeLongs(SEQUENCE_NUMBERS, entry.sequenceRuns, generator);
       generator.writeNumberField(ADDED_SNAPSHOT_ID, entry.addedSnapshotId());
       generator.writeNumberField(FIRST, entry.first());
       generator.writeNumberField(LAST, entry.last());
       writeLongs(ROW_IDS, entry.rowIdRuns, generator);
-      writeLongs(HOLES, entry.holeRuns, generator);
+      writeLongs(BIRTHS, entry.birthRuns, generator);
       generator.writeEndObject();
     }
     generator.writeEndArray();
@@ -418,13 +465,12 @@ public class SnapshotRewriteLedger {
       entries.add(
           new Entry(
               (DataFile) ContentFileParser.fromJson(entry.get(DATA_FILE), specsById),
-              JsonUtil.getLong(DATA_SEQUENCE_NUMBER, entry),
-              JsonUtil.getLong(FILE_SEQUENCE_NUMBER, entry),
+              readLongs(SEQUENCE_NUMBERS, entry),
               JsonUtil.getLong(ADDED_SNAPSHOT_ID, entry),
               JsonUtil.getInt(FIRST, entry),
               JsonUtil.getInt(LAST, entry),
               readLongs(ROW_IDS, entry),
-              readLongs(HOLES, entry)));
+              readLongs(BIRTHS, entry)));
     }
 
     return new SnapshotRewriteLedger(

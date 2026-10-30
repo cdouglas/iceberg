@@ -18,8 +18,10 @@
  */
 package org.apache.iceberg.snaprewrite;
 
+import java.util.function.Consumer;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 
 /**
@@ -59,6 +61,32 @@ public interface SnapshotRewriteIO {
   default long[] readRowIdRuns(DataFile file) {
     throw new UnsupportedOperationException(
         getClass().getSimpleName() + " cannot read row ids, so cannot write a ledger");
+  }
+
+  /**
+   * Visits every row live at a snapshot, as a scan returns it: with deletes applied, each row's
+   * location and lineage, and its values if asked for.
+   *
+   * <p>A reconstruction reads the rewritten layout through this, once per rewritten snapshot, to
+   * learn when each physical row is live and to recover the rows it has to write again.
+   *
+   * @param table the table to read, typically a read-only view of the metadata being reconstructed
+   * @param snapshotId the snapshot to read
+   * @param withValues whether to include each row's values; location and lineage always are
+   */
+  default void readLiveRows(
+      Table table, long snapshotId, boolean withValues, Consumer<LiveRow> visitor) {
+    throw new UnsupportedOperationException(
+        getClass().getSimpleName() + " cannot read live rows, so cannot reconstruct a layout");
+  }
+
+  /**
+   * Writes one data file of a reconstructed layout: exactly {@link RebuildRequest#rows()}, in that
+   * order, to {@link RebuildRequest#outputPath()}, carrying {@link RebuildRequest#firstRowId()}.
+   */
+  default DataFile writeRebuilt(RebuildRequest request) {
+    throw new UnsupportedOperationException(
+        getClass().getSimpleName() + " cannot write rebuilt files, so cannot reconstruct a layout");
   }
 
   /**
