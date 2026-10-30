@@ -61,6 +61,7 @@ import org.apache.iceberg.snaprewrite.PositionSet;
 import org.apache.iceberg.snaprewrite.ResurrectionRequest;
 import org.apache.iceberg.snaprewrite.RowRef;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteIO;
+import org.apache.iceberg.snaprewrite.SnapshotRewriteLedger;
 import org.apache.orc.TypeDescription;
 import org.apache.parquet.schema.MessageType;
 
@@ -95,6 +96,32 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
   public PositionDeleteIndex loadPositionDeletes(
       Iterable<DeleteFile> deleteFiles, CharSequence dataFilePath) {
     return deleteLoader.loadPositionDeletes(deleteFiles, dataFilePath);
+  }
+
+  @Override
+  public long[] readRowIdRuns(DataFile file) {
+    Schema projection = GenericRowLineage.writeSchema(table.schema());
+    long[] ids = new long[(int) file.recordCount()];
+    int count = 0;
+    try (CloseableIterable<Record> reader =
+        open(file.location(), projection, file.firstRowId(), file.fileSequenceNumber())) {
+      for (Record record : reader) {
+        Object id = record.getField(MetadataColumns.ROW_ID.name());
+        Preconditions.checkState(id != null, "Row %s of %s has no row id", count, file.location());
+        ids[count] = (Long) id;
+        count += 1;
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+
+    Preconditions.checkState(
+        count == ids.length,
+        "Read %s rows from %s, but its manifest says %s",
+        count,
+        file.location(),
+        ids.length);
+    return SnapshotRewriteLedger.runsOf(ids);
   }
 
   @Override

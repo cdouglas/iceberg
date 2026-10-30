@@ -223,8 +223,15 @@ public class SnapshotRewrite {
       }
     }
 
+    // Only now are the ids of files that write them per row read: planning stays metadata-only.
+    SnapshotRewriteLedger ledger =
+        materialized.ledger() == null
+            ? null
+            : materialized.ledger().withRowIds(rewriteIO::readRowIdRuns);
+
     SnapshotRewriteWriter writer =
-        new SnapshotRewriteWriter(base, io, materialized, resurrected, deleteFiles, stamping);
+        new SnapshotRewriteWriter(
+            base, io, materialized, resurrected, deleteFiles, ledger, stamping);
     TableMetadata rewritten = writer.rewriteMetadata();
 
     return new SnapshotRewriteResult(
@@ -235,7 +242,9 @@ public class SnapshotRewrite {
         materialized,
         resurrected,
         deleteFiles,
-        writer.writtenPaths());
+        writer.writtenPaths(),
+        ledger,
+        writer.ledgerLocation());
   }
 
   private List<Snapshot> reverseAncestry() {
