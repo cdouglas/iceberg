@@ -104,7 +104,8 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
 
   @Override
   public long[] readRowIdRuns(DataFile file) {
-    Schema projection = GenericRowLineage.writeSchema(table.schema());
+    // The id column alone: a rewrite reads the compaction's whole output through this.
+    Schema projection = new Schema(MetadataColumns.ROW_ID);
     long[] ids = new long[(int) file.recordCount()];
     int count = 0;
     try (CloseableIterable<Record> reader =

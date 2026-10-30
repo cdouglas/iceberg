@@ -20,6 +20,7 @@ package org.apache.iceberg.snaprewrite;
 
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.TableMetadata;
@@ -45,6 +46,8 @@ public class SnapshotRewritePlan {
   private final long targetRows;
   private final SnapshotRewriteLedger ledger;
   private final String ledgerUnavailable;
+  private final Map<Long, CompactionMap> followedMaps;
+  private final Map<String, DataFile> layoutFiles;
 
   SnapshotRewritePlan(
       TableMetadata base,
@@ -57,7 +60,9 @@ public class SnapshotRewritePlan {
       long resurrectedRows,
       long targetRows,
       SnapshotRewriteLedger ledger,
-      String ledgerUnavailable) {
+      String ledgerUnavailable,
+      Map<Long, CompactionMap> followedMaps,
+      Map<String, DataFile> layoutFiles) {
     this.base = base;
     this.compaction = compaction;
     this.window = ImmutableList.copyOf(window);
@@ -69,6 +74,8 @@ public class SnapshotRewritePlan {
     this.targetRows = targetRows;
     this.ledger = ledger;
     this.ledgerUnavailable = ledgerUnavailable;
+    this.followedMaps = followedMaps;
+    this.layoutFiles = layoutFiles;
   }
 
   public TableMetadata base() {
@@ -136,6 +143,16 @@ public class SnapshotRewritePlan {
   /** Why no ledger can be written for this window, or null if one can. */
   public String ledgerUnavailable() {
     return ledgerUnavailable;
+  }
+
+  /** The compaction maps rows were placed through, in the order applied, by snapshot. */
+  Map<Long, CompactionMap> followedMaps() {
+    return followedMaps;
+  }
+
+  /** Every data file the window and the compaction hold, by path. */
+  Map<String, DataFile> layoutFiles() {
+    return layoutFiles;
   }
 
   /** One rewritten snapshot: which resurrection files it sees, and what it deletes. */

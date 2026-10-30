@@ -103,7 +103,13 @@ public class SnapshotRewritePlanner {
     List<Snapshot> window = resolveWindow(compaction, floorSnapshotId, lookup);
     checkStaticPreconditions(compaction, window);
 
-    RowLocator locator = new RowLocator(loadRemappers(compaction, window, lookup));
+    Map<Long, CompactionMap> followedMaps = followedMaps(compaction, window, lookup);
+    List<PositionDeleteRemapper> remappers = Lists.newArrayList();
+    for (CompactionMap map : followedMaps.values()) {
+      remappers.add(new PositionDeleteRemapper(map));
+    }
+
+    RowLocator locator = new RowLocator(remappers);
 
     PartitionSpec spec = base.spec();
     Map<Long, SnapshotState> states = Maps.newHashMap();
@@ -114,6 +120,13 @@ public class SnapshotRewritePlanner {
     SnapshotState targetState = buildState(compaction);
     List<DataFile> targetFiles = ImmutableList.copyOf(targetState.files.values());
     checkLastUpdatedPreserved(targetFiles, window);
+
+    Map<String, DataFile> layoutFiles = Maps.newHashMap();
+    for (SnapshotState state : states.values()) {
+      layoutFiles.putAll(state.files);
+    }
+
+    layoutFiles.putAll(targetState.files);
 
     List<String> presentResurrections = Lists.newArrayList();
     List<ResurrectionRequest> resurrections = Lists.newArrayList();
@@ -211,7 +224,9 @@ public class SnapshotRewritePlanner {
         resurrectedRows,
         targetRows,
         ledger.ledger,
-        ledger.unavailable);
+        ledger.unavailable,
+        followedMaps,
+        layoutFiles);
   }
 
   /**
@@ -471,7 +486,7 @@ public class SnapshotRewritePlanner {
    * written, for instance past the inferred-column limit; a ledger built that way fails at
    * reconstruction rather than silently, because the ids it records would not be found.
    */
-  private static boolean derivesRowIds(DataFile file) {
+  static boolean derivesRowIds(DataFile file) {
     int rowId = MetadataColumns.ROW_ID.fieldId();
     Map<Integer, Long> values = file.valueCounts();
     if (values == null || values.isEmpty()) {
@@ -759,9 +774,10 @@ public class SnapshotRewritePlanner {
 
   // ---------------------------------------------------------------- compaction maps
 
-  private List<PositionDeleteRemapper> loadRemappers(
+  /** The maps rows are placed through, by the snapshot that wrote each, in the order applied. */
+  private Map<Long, CompactionMap> followedMaps(
       Snapshot compaction, List<Snapshot> window, CompactionMapLookup lookup) {
-    List<CompactionMap> maps = Lists.newArrayList();
+    Map<Long, CompactionMap> maps = Maps.newLinkedHashMap();
 
     // Compactions inside the window relocated rows before the final compaction did, so their maps
     // apply first. The window's oldest snapshot is the previous compaction; its own map describes a
@@ -774,18 +790,12 @@ public class SnapshotRewritePlanner {
     for (int i = 1; i < window.size(); i += 1) {
       CompactionMap map = lookup.forSnapshot(window.get(i));
       if (map != null) {
-        maps.add(map);
+        maps.put(window.get(i).snapshotId(), map);
       }
     }
 
-    maps.add(requireMap(compaction, lookup));
-
-    List<PositionDeleteRemapper> remappers = Lists.newArrayList();
-    for (CompactionMap map : maps) {
-      remappers.add(new PositionDeleteRemapper(map));
-    }
-
-    return remappers;
+    maps.put(compaction.snapshotId(), requireMap(compaction, lookup));
+    return maps;
   }
 
   private CompactionMap requireMap(Snapshot snapshot, CompactionMapLookup lookup) {

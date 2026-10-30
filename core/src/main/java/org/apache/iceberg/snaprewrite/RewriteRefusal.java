@@ -38,6 +38,7 @@ public enum RewriteRefusal {
   TOO_RECENT("the compaction is newer than the configured minimum age"),
   DEAD_RATIO("too little would be reclaimed relative to the rows to be rewritten"),
   UNLOCATABLE_ROW("a row live in a rewritten snapshot could not be located"),
+  MAP_MISMATCH("a compaction map pairs rows with different _row_ids"),
   NO_COMPACTION("no compaction with a compaction map was found"),
   REPLACE_CHANGED_DATA("a replace operation in the window changed the table's contents"),
   NO_LEDGER("no rewritten snapshot names a ledger to reconstruct it from"),

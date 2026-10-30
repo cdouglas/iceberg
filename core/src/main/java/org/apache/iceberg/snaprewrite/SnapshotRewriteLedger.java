@@ -376,7 +376,7 @@ public class SnapshotRewriteLedger {
     return length;
   }
 
-  private static long[] expand(long[] runs, long count) {
+  static long[] expand(long[] runs, long count) {
     Preconditions.checkArgument(count <= Integer.MAX_VALUE, "Too many rows to expand: %s", count);
     long[] values = new long[(int) count];
     int index = 0;
