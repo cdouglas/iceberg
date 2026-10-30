@@ -23,6 +23,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
+import java.util.stream.LongStream;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.PartitionSpec;
@@ -30,13 +32,17 @@ import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.WorkloadGenerator;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.snaprewrite.RewriteRefusedException;
 import org.apache.iceberg.snaprewrite.SnapshotReconstructResult;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.apache.iceberg.util.Pair;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Random histories checked by the full oracle.
@@ -55,12 +61,29 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
 
+  private static final Logger LOG = LoggerFactory.getLogger(TestSnapshotRewriteFuzz.class);
+
+  /** Set to N to add seeds 1 through N to the fixed ones: a longer run, without changing CI's. */
+  private static final String EXTRA_SEEDS = "SNAPREWRITE_FUZZ_SEEDS";
+
+  static LongStream seeds() {
+    Set<Long> seeds =
+        Sets.newLinkedHashSet(
+            ImmutableList.of(
+                1L, 2L, 3L, 5L, 8L, 13L, 21L, 34L, 55L, 89L, 144L, 233L, 377L, 610L, 987L, 1597L,
+                2584L, 4181L, 6765L, 10946L));
+    String extra = System.getenv(EXTRA_SEEDS);
+    if (extra != null) {
+      for (long seed = 1; seed <= Long.parseLong(extra.trim()); seed += 1) {
+        seeds.add(seed);
+      }
+    }
+
+    return seeds.stream().mapToLong(Long::longValue);
+  }
+
   @ParameterizedTest
-  @ValueSource(
-      longs = {
-        1L, 2L, 3L, 5L, 8L, 13L, 21L, 34L, 55L, 89L, 144L, 233L, 377L, 610L, 987L, 1597L, 2584L,
-        4181L, 6765L, 10946L
-      })
+  @MethodSource("seeds")
   public void randomHistory(long seed) throws IOException {
     // Alternate format versions by seed: v2 writes position delete files, v3 deletion vectors, and
     // v3 additionally has to carry every row's identity through both the compaction and the
@@ -120,8 +143,9 @@ public class TestSnapshotRewriteFuzz extends SnapshotRewriteTestBase {
       result = rewrite();
     } catch (RewriteRefusedException e) {
       // A refusal is a valid outcome for a generated history; it must never be a silent wrong
-      // answer.
+      // answer. Logged, so that a long run shows how much it refused and why.
       assertThat(e.refusal()).isNotNull();
+      LOG.warn("Seed {} (v{}) refused: {}: {}", seed, version, e.refusal(), e.getMessage());
       return;
     }
 
