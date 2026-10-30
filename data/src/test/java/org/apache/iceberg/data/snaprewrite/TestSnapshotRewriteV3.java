@@ -206,7 +206,15 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
     }
   }
 
-  /** Every row's {@code _row_id} paired with its values, sorted. */
+  /**
+   * Every row's lineage -- {@code _row_id} and {@code _last_updated_sequence_number} -- paired with
+   * its values, sorted.
+   *
+   * <p>Both columns, because relocating a row must preserve both. A null {@code
+   * _last_updated_sequence_number} is filled in from the file's sequence number on read, and every
+   * operation here moves rows into files with new sequence numbers, so a writer that drops the
+   * value changes what the row reports even though the row itself is untouched.
+   */
   private List<String> identitiesAt(Table target, long snapshotId) throws IOException {
     Schema withLineage = MetadataColumns.schemaWithRowLineage(target.schema());
     List<String> rows = Lists.newArrayList();
@@ -215,6 +223,8 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
       for (Record record : records) {
         rows.add(
             record.getField(MetadataColumns.ROW_ID.name())
+                + " seq="
+                + record.getField(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name())
                 + " => id="
                 + record.getField("id")
                 + " data="
@@ -331,6 +341,59 @@ public class TestSnapshotRewriteV3 extends SnapshotRewriteTestBase {
     }
 
     assertThat(ids).containsExactly("0", "1", "2", "3", "4");
+  }
+
+  /**
+   * Moving a row is not updating it.
+   *
+   * <p>The compaction and the rewrite both put rows into files with sequence numbers of their own,
+   * and a null {@code _last_updated_sequence_number} reads as the file's number. Unless the value
+   * is written out, a compaction reports every row it copied as updated by itself, and a rewritten
+   * snapshot reports whatever number the rewrite stamped. Pinned against the appends' own numbers,
+   * not only compared before and after, so both sides going wrong the same way cannot pass.
+   */
+  @Test
+  public void relocatedRowsKeepTheirLastUpdatedSequenceNumber() throws IOException {
+    useFormatVersion(3);
+
+    Map<String, Long> writtenAt = Maps.newHashMap();
+    append(records(1, 3, "base"));
+    writtenAt.put("base", table.currentSnapshot().sequenceNumber());
+    compact();
+
+    DataFile alpha = append(records(10, 3, "alpha"));
+    writtenAt.put("alpha", table.currentSnapshot().sequenceNumber());
+    // Deleting one makes the rewrite recover it, so the resurrection path is covered too.
+    delete(ImmutableList.of(at(alpha, 1)));
+    append(records(20, 2, "beta"));
+    writtenAt.put("beta", table.currentSnapshot().sequenceNumber());
+    Snapshot compaction = compact();
+
+    assertLastUpdatedByAppend(table, compaction.snapshotId(), writtenAt);
+
+    SnapshotRewriteResult result = rewrite();
+    assertThat(result.plan().resurrectedRows()).isEqualTo(1);
+    for (Snapshot original : result.plan().window()) {
+      assertLastUpdatedByAppend(result.asTable(), original.snapshotId(), writtenAt);
+    }
+  }
+
+  private void assertLastUpdatedByAppend(Table target, long snapshotId, Map<String, Long> writtenAt)
+      throws IOException {
+    Schema withLineage = MetadataColumns.schemaWithRowLineage(target.schema());
+    int rows = 0;
+    try (CloseableIterable<Record> records =
+        IcebergGenerics.read(target).useSnapshot(snapshotId).project(withLineage).build()) {
+      for (Record record : records) {
+        String data = (String) record.getField("data");
+        assertThat(record.getField(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name()))
+            .as("%s in snapshot %s was last updated by the append that wrote it", data, snapshotId)
+            .isEqualTo(writtenAt.get(data.substring(0, data.indexOf('-'))));
+        rows += 1;
+      }
+    }
+
+    assertThat(rows).as("snapshot %s returns rows", snapshotId).isPositive();
   }
 
   /**

@@ -44,6 +44,7 @@ public class ResurrectionRequest {
   private final Schema schema;
   private final List<RowRef> sources;
   private final Map<String, Long> sourceFirstRowIds;
+  private final Map<String, Long> sourceSequenceNumbers;
   private final String outputPath;
 
   ResurrectionRequest(
@@ -53,6 +54,7 @@ public class ResurrectionRequest {
       Schema schema,
       List<RowRef> sources,
       Map<String, Long> sourceFirstRowIds,
+      Map<String, Long> sourceSequenceNumbers,
       String outputPath) {
     this.snapshotId = snapshotId;
     this.spec = spec;
@@ -60,6 +62,7 @@ public class ResurrectionRequest {
     this.schema = schema;
     this.sources = ImmutableList.copyOf(sources);
     this.sourceFirstRowIds = ImmutableMap.copyOf(sourceFirstRowIds);
+    this.sourceSequenceNumbers = ImmutableMap.copyOf(sourceSequenceNumbers);
     this.outputPath = outputPath;
   }
 
@@ -100,6 +103,18 @@ public class ResurrectionRequest {
    */
   public Map<String, Long> sourceFirstRowIds() {
     return sourceFirstRowIds;
+  }
+
+  /**
+   * The file sequence number of each source file, by path, where the table tracks row lineage.
+   *
+   * <p>What a source row's {@code _last_updated_sequence_number} reads as when its file does not
+   * carry one, which is every row an append wrote. The reader needs it supplied as a constant even
+   * when the file does carry the column: without it a written value is discarded too. Empty when
+   * the table does not track row lineage.
+   */
+  public Map<String, Long> sourceSequenceNumbers() {
+    return sourceSequenceNumbers;
   }
 
   public String outputPath() {

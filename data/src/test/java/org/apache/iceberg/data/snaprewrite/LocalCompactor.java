@@ -215,10 +215,14 @@ class LocalCompactor {
           Record row = rows.get((int) position);
           if (lineage) {
             // The row keeps the id it already had; a derived id would renumber it, because this
-            // file's rows come from ranges that have nothing to do with each other.
+            // file's rows come from ranges that have nothing to do with each other. It keeps its
+            // last-updated sequence number too: a compaction moves rows, it does not modify them.
             row =
-                GenericRowLineage.withRowId(
-                    writeSchema, row, GenericRowLineage.resolveRowId(row, file, position));
+                GenericRowLineage.withLineage(
+                    writeSchema,
+                    row,
+                    GenericRowLineage.resolveRowId(row, file, position),
+                    GenericRowLineage.resolveLastUpdated(row, file));
           }
 
           appender.add(row);
