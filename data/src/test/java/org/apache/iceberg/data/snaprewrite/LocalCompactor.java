@@ -248,11 +248,21 @@ class LocalCompactor {
       close(appender);
     }
 
-    written.add(finish(table, partition, targetPath, appender, firstRowId));
+    addUnlessEmpty(written, finish(table, partition, targetPath, appender, firstRowId));
     return written;
   }
 
   /** A contiguous stretch of surviving rows landing contiguously in one target file. */
+  /**
+   * A partition whose rows are all deleted leaves its target empty, and Parquet writes no file for
+   * no rows. Committing it would reference a file that does not exist.
+   */
+  private static void addUnlessEmpty(List<DataFile> written, DataFile target) {
+    if (target.recordCount() > 0) {
+      written.add(target);
+    }
+  }
+
   /**
    * The row keeps the id it already had; a derived id would renumber it, because a compaction's
    * output holds rows from ranges that have nothing to do with each other. It keeps its
