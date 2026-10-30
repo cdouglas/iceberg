@@ -200,8 +200,8 @@ if (SnapshotRewriteRestore.rewrittenCount(current) > 0) {
 }
 ```
 
-That window closes at reclaim, which deletes the layout a restore would point back at. Reclaim is the
-point of no return.
+That window closes at reclaim, which deletes the layout a restore would point back at. On v2, reclaim
+is the point of no return. On v3 a reconstruction still works after it (below).
 
 ### Reclaiming
 
@@ -214,6 +214,47 @@ immediately after a commit it will typically withhold everything and delete noth
 SnapshotRewriteResult.ReclaimResult reclaimed =
     result.reclaim(((HasTableOperations) table).operations());
 ```
+
+### Reconstructing after reclaim
+
+On v3, a rewrite also writes a ledger: for each data file its window snapshots referenced, the file's
+metadata, its sequence numbers, its row ids in order, and where each row is first read. With it, the
+original layout can be rebuilt from the rewritten one alone, after the original files are gone.
+
+```java
+SnapshotReconstructResult rebuilt =
+    SnapshotRewriteReconstruct.forTable(table, new GenericSnapshotRewriteIO(table)).materialize();
+
+System.out.print(rebuilt.report());
+Table shadow = rebuilt.asTable();   // verify before deciding
+
+rebuilt.commit(((HasTableOperations) table).operations());
+rebuilt.reclaim(((HasTableOperations) table).operations());   // the rewritten layout, once unreachable
+```
+
+Each original file comes back one of three ways:
+
+- **Referenced as it is**, if it still exists: a file a partial compaction kept, or anything reclaim
+  withheld.
+- **Rebuilt at its own path**, if every row in it was readable by some snapshot. It holds the same rows
+  at the same positions with the same row ids and sequence numbers, so the compaction maps that name it
+  stay correct.
+- **Rebuilt at a new path, without its holes**, if it had rows no snapshot could read: rows inserted
+  and deleted by one commit, or rows already dead at the floor. The rewritten layout never held those,
+  so nothing can rebuild them, and the rows after them move up. Rewriting that history onto the same
+  compaction again is refused, because the compaction's map names the file's old path.
+
+Each snapshot is restored as forward deltas: files added by the commit that wrote them, deletion vectors
+owned by the commit that deleted the rows, the original sequence numbers and summary, and each
+compaction's map. Incremental scans across the window work again.
+
+A table rewritten twice is reconstructed in one step. The second rewrite carries the first ledger down a
+level in each snapshot's summary, and row ids survive every rewrite, so the first ledger applies to the
+second layout directly. `SnapshotRewriteReconstruct.undo` points a reconstruction back at the rewritten
+form, until that is reclaimed.
+
+A reconstruction re-spends roughly what the rewrite saved: one copy of the original files it has to
+rebuild. Its report gives that next to what was written.
 
 ## Running it as a recurring pass
 
@@ -554,30 +595,27 @@ Every figure in this document comes from generated tables, the largest 80k rows 
 here exercises object-store latency, a window hundreds of commits deep, or a production layout. The
 dry run exists so that the measurement can be taken on a real table; it has not been.
 
-### 10. Undo points back; it does not reconstruct
+### 10. Reconstruction needs v3, and leaves holes out
 
 `SnapshotRewriteRestore` reverses a rewrite by pointing each snapshot at the manifest list it used to
-carry. That is exact and free, and it is also entirely dependent on the old layout still existing:
-after `reclaim()` there is nothing to point at, which
-`TestSnapshotRewriteRoundTrip#reclaimEndsReversibility` asserts.
+carry. That is exact and free, and it depends entirely on the old layout still existing: after
+`reclaim()` there is nothing to point at, which `TestSnapshotRewriteRoundTrip#reclaimEndsReversibility`
+asserts.
 
-The stronger property -- reconstructing the pre-compaction layout *from the rewritten layout alone* --
-is not implemented, and no test exercises it. It appears feasible, because a compaction map is
-invertible: for every row in the compaction it names the pre-compaction file and offset the row came
-from, which recovers each original file's surviving rows and their order, and so its boundaries. Two
-pieces are missing:
+`SnapshotRewriteReconstruct` rebuilds the layout from the rewritten one instead, keyed by `_row_id`
+through the ledger the rewrite writes. Its limits:
 
-- Rows that died inside the window are absent from the compaction and live in recovery files. Their
-  original file and offset is known at rewrite time (`ResurrectionRequest.sources()`, in output order)
-  and is never persisted.
-- Under v3, a row id that was derived rather than materialized needs its original file's
-  `first_row_id` to reproduce. That is also computed at rewrite time
-  (`ResurrectionRequest.sourceFirstRowIds()`) and also not persisted.
-
-Persisting both -- a reverse map written alongside the rewrite -- would make the inverse computable
-without the old files. Even then it could only be lossless up to file identity: reconstruction writes
-new files at new paths, so the result would match the original in rows, per-file grouping, row order,
-and row ids, but not in bytes or in manifest-list location.
+- **v3 only.** On v2 there are no row ids to key a ledger by, and no ledger is written. A v2 rewrite is
+  irreversible once reclaimed.
+- **Holes are not restored.** A row no window snapshot could read was never in the rewritten layout, so
+  a file that held one comes back without it, at a new path. Every readable row keeps its id, but rows
+  after a hole move up. Rewriting such a history onto the same compaction again is refused, because that
+  compaction's map names the old path.
+- **The ledger is reachable only through snapshot summaries**, so orphan-file removal would delete it,
+  as it would a compaction map. A window snapshot that expires after the rewrite makes its ledger refuse
+  to reconstruct.
+- **Not byte-identical.** Files are rewritten by whatever writer the `SnapshotRewriteIO` uses, and
+  manifests and manifest lists are new files.
 
 ### 11. Partition statistics are dropped, not recomputed
 

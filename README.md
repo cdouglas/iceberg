@@ -120,12 +120,16 @@ read the output.
 Non-destructive by default. `materialize()` writes data files, delete files, manifests, and a complete
 `TableMetadata`, and commits none of it — the result is exposed as a read-only table so it can be
 verified first. `commit()` and `reclaim()` are separate, explicit steps, and a committed rewrite can be
-undone byte-identically until reclaim runs.
+undone byte-identically until reclaim runs. On v3 it can still be undone after reclaim:
+`SnapshotRewriteReconstruct` rebuilds the original layout from the rewritten one and a ledger keyed by
+`_row_id`, apart from rows no snapshot could ever read
+([§14](SNAPREWRITE_SPEC.md#14-reconstructing-the-original-layout-after-reclaim)).
 
 Implemented: v2 and v3, partitioned and unpartitioned tables, partial and chained compactions, windows
 reaching back through older compactions, deletion vectors, materialized `_row_id`, reversibility,
-reclaim accounting, and window pricing. 71 test methods including 20 fuzz seeds over both format
-versions.
+reconstruction after reclaim on v3, reclaim accounting, and window pricing. 141 test cases including 20
+fuzz seeds over both format versions; the lossless matrix, the layouts suite and the v3 fuzz seeds also
+run through reclaim and reconstruction.
 
 Not implemented: bulk remapping in the planner (it locates rows one at a time), distributed execution,
 and any measurement on a real table history. See
