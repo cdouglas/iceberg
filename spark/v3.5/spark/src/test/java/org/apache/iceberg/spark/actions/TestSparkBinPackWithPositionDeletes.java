@@ -299,11 +299,14 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
         .as("Compaction map should have 10 file mappings (one per source file)")
         .hasSize(10);
 
-    // Verify each source file maps to exactly one target file
+    // Collect target files; a source file's runs may span several when an output rolls over, so
+    // each run's own target, if set, overrides its mapping's
     java.util.Set<String> targetFiles = new java.util.HashSet<>();
     for (CompactionMap.FileMapping mapping : map.fileMappings()) {
-      String targetPath = mapping.targetFile();
-      targetFiles.add(targetPath);
+      targetFiles.add(mapping.targetFile());
+      for (CompactionMap.Run run : mapping.runs()) {
+        targetFiles.add(targetOf(mapping, run));
+      }
 
       // Verify runs are valid (non-empty, sequential)
       long lastEnd = -1;
@@ -317,56 +320,32 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
     // Verify target files created (1 or more)
     assertThat(targetFiles).as("Should have at least one target file").isNotEmpty();
 
-    // Group mappings by target file and verify no overlapping position ranges
-    java.util.Map<String, java.util.List<CompactionMap.FileMapping>> byTarget =
-        new java.util.HashMap<>();
-    for (CompactionMap.FileMapping mapping : map.fileMappings()) {
-      byTarget.computeIfAbsent(mapping.targetFile(), k -> new java.util.ArrayList<>()).add(mapping);
-    }
+    assertNoOverlappingTargetRanges(map);
 
-    // For each target file, verify target positions don't overlap
-    for (java.util.Map.Entry<String, java.util.List<CompactionMap.FileMapping>> entry :
-        byTarget.entrySet()) {
-      java.util.List<CompactionMap.FileMapping> mappings = entry.getValue();
-
-      // Collect all target position ranges for this file
-      java.util.List<long[]> ranges = new java.util.ArrayList<>();
-      for (CompactionMap.FileMapping mapping : mappings) {
-        for (CompactionMap.Run run : mapping.runs()) {
-          long start = run.targetPosition();
-          long end = start + run.length() - 1;
-          ranges.add(new long[] {start, end});
-        }
-      }
-
-      // Sort ranges by start position
-      ranges.sort((a, b) -> Long.compare(a[0], b[0]));
-
-      // Verify no overlaps
-      for (int i = 1; i < ranges.size(); i++) {
-        long prevEnd = ranges.get(i - 1)[1];
-        long currStart = ranges.get(i)[0];
-        assertThat(currStart)
-            .as("Target position ranges should not overlap")
-            .isGreaterThan(prevEnd);
-      }
-    }
-
-    // Verify files with deletes have multiple runs (gaps)
+    // Verify files with deletes have gaps in their source positions. A run also ends where an
+    // output rolls over, without a gap, so count gaps rather than runs.
     int filesWithGaps = 0;
     int filesWithoutGaps = 0;
     for (CompactionMap.FileMapping mapping : map.fileMappings()) {
-      if (mapping.runs().size() > 1) {
+      int gaps = 0;
+      long mapped = 0;
+      long nextSource = 0;
+      for (CompactionMap.Run run : mapping.runs()) {
+        if (run.sourcePosition() > nextSource) {
+          gaps++;
+        }
+        mapped += run.length();
+        nextSource = run.sourcePosition() + run.length();
+      }
+
+      if (gaps > 0) {
         filesWithGaps++;
-        // Files with 3 deletes should have 4 runs (gaps at 250, 500, 750)
-        assertThat(mapping.runs().size())
-            .as("File with deletes should have 4 runs (gaps at 250, 500, 750)")
-            .isEqualTo(4);
+        assertThat(gaps).as("File with deletes should have gaps at 250, 500, 750").isEqualTo(3);
+        assertThat(mapped).as("and map its other 997 positions").isEqualTo(997L);
       } else {
         filesWithoutGaps++;
-        // Files without deletes should have single run covering all 1000 positions
-        assertThat(mapping.runs().get(0).length())
-            .as("File without deletes should have single run of 1000 positions")
+        assertThat(mapped)
+            .as("File without deletes should map all 1000 positions")
             .isEqualTo(1000L);
       }
     }
@@ -977,5 +956,31 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
     }
 
     return Lists.newArrayList(posDeleteWriter.toDeleteFile());
+  }
+
+  /** Verifies that no two runs write the same position of the same target file. */
+  private static void assertNoOverlappingTargetRanges(CompactionMap map) {
+    java.util.Map<String, java.util.List<long[]>> rangesByTarget = new java.util.HashMap<>();
+    for (CompactionMap.FileMapping mapping : map.fileMappings()) {
+      for (CompactionMap.Run run : mapping.runs()) {
+        long start = run.targetPosition();
+        rangesByTarget
+            .computeIfAbsent(targetOf(mapping, run), k -> new java.util.ArrayList<>())
+            .add(new long[] {start, start + run.length() - 1});
+      }
+    }
+
+    for (java.util.List<long[]> ranges : rangesByTarget.values()) {
+      ranges.sort((a, b) -> Long.compare(a[0], b[0]));
+      for (int i = 1; i < ranges.size(); i++) {
+        assertThat(ranges.get(i)[0])
+            .as("Target position ranges should not overlap")
+            .isGreaterThan(ranges.get(i - 1)[1]);
+      }
+    }
+  }
+
+  private static String targetOf(CompactionMap.FileMapping mapping, CompactionMap.Run run) {
+    return run.targetFile() != null ? run.targetFile() : mapping.targetFile();
   }
 }

@@ -33,6 +33,7 @@ import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.Parameter;
 import org.apache.iceberg.ParameterizedTestExtension;
 import org.apache.iceberg.Parameters;
@@ -47,6 +48,7 @@ import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.ActionsProvider;
 import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
 import org.apache.iceberg.actions.RewriteDataFiles;
+import org.apache.iceberg.data.FileHelpers;
 import org.apache.iceberg.data.GenericAppenderFactory;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.PositionDelete;
@@ -57,11 +59,15 @@ import org.apache.iceberg.encryption.EncryptionKeyMetadata;
 import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.spark.data.TestHelpers;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.util.Pair;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SaveMode;
@@ -374,6 +380,82 @@ public class TestBinPackWithPositionTracking extends TestBase {
     List<ManifestFile> manifests = table.currentSnapshot().dataManifests(table.io());
     boolean hasCompactionMap = manifests.stream().anyMatch(m -> m.compactionMapLocation() != null);
     assertThat(hasCompactionMap).isFalse();
+  }
+
+  /**
+   * A position-tracked rewrite moves rows without changing them, so on v3 each row keeps its {@code
+   * _row_id} and {@code _last_updated_sequence_number}, rows after a deleted one included, and the
+   * outputs record both columns in their metrics (compaction maps errata 5).
+   */
+  @TestTemplate
+  public void testBinPackKeepsRowLineage() throws IOException {
+    assumeTrue(formatVersion >= 3, "Row lineage requires V3");
+    // ORC readers give every row its file's first_row_id, so there is no lineage to keep
+    assumeTrue(fileFormat == FileFormat.PARQUET, "ORC does not read row lineage");
+    spark.conf().set("spark.sql.adaptive.enabled", "false");
+
+    Table table = createTable();
+    for (int i = 0; i < 3; i++) {
+      writeRecords(table, i * 10, 10);
+    }
+
+    table.refresh();
+    DataFile last = Iterables.getOnlyElement(table.currentSnapshot().addedDataFiles(table.io()));
+    DeleteFile dv =
+        FileHelpers.writeDeleteFile(
+                table,
+                table
+                    .io()
+                    .newOutputFile(tableLocation + "/data/dv-" + UUID.randomUUID() + ".puffin"),
+                ImmutableList.of(Pair.of(last.location(), 2L)),
+                formatVersion)
+            .first();
+    table.newRowDelta().addDeletes(dv).commit();
+    table.refresh();
+
+    Map<Integer, List<Long>> before = lineageById();
+    assertThat(before).hasSize(29);
+
+    RewriteDataFiles.Result result =
+        actions()
+            .rewriteDataFiles(table)
+            .option(BinPackRewriteFilePlanner.MIN_INPUT_FILES, "1")
+            .option(RewriteDataFiles.TARGET_FILE_SIZE_BYTES, Long.toString(Long.MAX_VALUE - 1))
+            .execute();
+    assertThat(result.rewrittenDataFilesCount()).isEqualTo(3);
+
+    table.refresh();
+    assertThat(table.currentSnapshot().dataManifests(table.io()))
+        .anyMatch(manifest -> manifest.compactionMapLocation() != null);
+    assertThat(lineageById()).as("every row keeps its lineage").isEqualTo(before);
+
+    int rowId = MetadataColumns.ROW_ID.fieldId();
+    int lastUpdated = MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.fieldId();
+    for (DataFile file : table.currentSnapshot().addedDataFiles(table.io())) {
+      assertThat(file.nullValueCounts())
+          .as("%s records both lineage columns, never null", file.location())
+          .containsEntry(rowId, 0L)
+          .containsEntry(lastUpdated, 0L);
+    }
+  }
+
+  private Map<Integer, List<Long>> lineageById() {
+    Map<Integer, List<Long>> lineage = Maps.newHashMap();
+    List<Row> rows =
+        spark
+            .read()
+            .format("iceberg")
+            .load(tableLocation)
+            .select(
+                "id",
+                MetadataColumns.ROW_ID.name(),
+                MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name())
+            .collectAsList();
+    for (Row row : rows) {
+      lineage.put(row.getInt(0), ImmutableList.of(row.getLong(1), row.getLong(2)));
+    }
+
+    return lineage;
   }
 
   @TestTemplate

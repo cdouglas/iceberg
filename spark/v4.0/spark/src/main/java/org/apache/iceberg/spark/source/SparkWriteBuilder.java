@@ -128,6 +128,10 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
             && (overwriteFiles || writeConf.rewrittenFileSetId() != null);
     boolean writeAlreadyIncludesLineage =
         dsSchema.exists(field -> field.name().equals(MetadataColumns.ROW_ID.name()));
+    boolean writeIncludesPositionTracking =
+        writeConf.trackSourcePositions() && writeConf.rewrittenFileSetId() != null;
+    checkLineageRead(
+        writeIncludesPositionTracking && writeRequiresRowLineage, writeAlreadyIncludesLineage);
 
     // Build sparkWriteSchema (may include row lineage columns)
     // Note: When position tracking is enabled, dsSchema includes _file and _pos metadata columns.
@@ -140,11 +144,6 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
           sparkWriteSchema.add(
               MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name(), LongType$.MODULE$);
     }
-
-    // Pass position tracking flag to validateOrMergeWriteSchema so it can filter metadata columns
-    // when creating writeSchema
-    boolean writeIncludesPositionTracking =
-        writeConf.trackSourcePositions() && writeConf.rewrittenFileSetId() != null;
 
     Schema writeSchema =
         validateOrMergeWriteSchema(
@@ -238,12 +237,6 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       // This ensures _file and _pos are not added to the table schema
       StructType filteredDsSchema =
           writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
-      // If row lineage is required but not in filteredDsSchema (e.g., position tracking filtered
-      // it),
-      // add row lineage columns so SparkSchemaUtil.convert produces a schema with row lineage
-      if (writeIncludesRowLineage) {
-        filteredDsSchema = addRowLineageColumnsIfMissing(filteredDsSchema);
-      }
       writeSchema = SparkSchemaUtil.convert(mergedSchema, filteredDsSchema, caseSensitive);
 
       TypeUtil.validateWriteSchema(
@@ -263,12 +256,6 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       // Filter out position tracking columns from dsSchema when creating writeSchema
       StructType filteredDsSchema =
           writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
-      // If row lineage is required but not in filteredDsSchema (e.g., position tracking filtered
-      // it),
-      // add row lineage columns so SparkSchemaUtil.convert produces a schema with row lineage
-      if (writeIncludesRowLineage) {
-        filteredDsSchema = addRowLineageColumnsIfMissing(filteredDsSchema);
-      }
       writeSchema = SparkSchemaUtil.convert(schema, filteredDsSchema, caseSensitive);
       TypeUtil.validateWriteSchema(
           table.schema(), writeSchema, writeConf.checkNullability(), writeConf.checkOrdering());
@@ -278,33 +265,16 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
   }
 
   /**
-   * Adds row lineage columns (_row_id, _last_updated_sequence_number) to a Spark schema if they are
-   * not already present.
-   *
-   * <p>This is needed when position tracking is enabled (which filters dsSchema) but row lineage is
-   * also required (V3 format). The filtered schema needs row lineage columns added so that
-   * SparkSchemaUtil.convert produces a writeSchema that includes them.
+   * A position-tracked compaction moves rows, which keep their {@code _row_id} and {@code
+   * _last_updated_sequence_number}, so it must read both with the rows. Without them, its outputs
+   * give every moved row new lineage (compaction maps errata 5).
    */
-  private static StructType addRowLineageColumnsIfMissing(StructType schema) {
-    boolean hasRowId = false;
-    boolean hasSeqNum = false;
-    for (org.apache.spark.sql.types.StructField field : schema.fields()) {
-      if (field.name().equals(MetadataColumns.ROW_ID.name())) {
-        hasRowId = true;
-      }
-      if (field.name().equals(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name())) {
-        hasSeqNum = true;
-      }
-    }
-
-    StructType result = schema;
-    if (!hasRowId) {
-      result = result.add(MetadataColumns.ROW_ID.name(), LongType$.MODULE$);
-    }
-    if (!hasSeqNum) {
-      result = result.add(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name(), LongType$.MODULE$);
-    }
-    return result;
+  private static void checkLineageRead(boolean required, boolean read) {
+    Preconditions.checkArgument(
+        !required || read,
+        "Cannot track source positions without reading %s and %s",
+        MetadataColumns.ROW_ID.name(),
+        MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name());
   }
 
   /**

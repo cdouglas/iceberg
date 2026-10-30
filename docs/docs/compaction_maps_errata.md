@@ -169,12 +169,74 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 ---
 
+## 5. Position-Tracked Compactions Dropped Row Lineage on v3 ✅ FIXED
+
+### Issue
+
+The v3 spec requires that a row a compaction moves keeps its `_row_id` and
+`_last_updated_sequence_number`. Spark's bin-pack compaction tracks source positions whenever
+`write.compaction-map.enabled` is true, and with tracking on it kept neither:
+
+- **Spark 3.5 wrote no lineage.** For a position-tracked rewrite, `SparkTable` read `_file` and `_pos`
+  *instead of* the lineage columns, and `SparkWriteBuilder` left lineage out of the write schema
+  (6a14ae978). Readers then gave every output row a new `_row_id` from the output file's
+  `first_row_id`, and took the compaction's sequence number as its `_last_updated_sequence_number`.
+  The outputs had no lineage metrics either.
+- **Spark 4.0 wrote garbage.** Its write schema added the lineage columns (65dedde35), but the rows did
+  not carry them, and the writer reads columns by ordinal. It wrote `_file` and `_pos` in their place.
+  Every row's `_row_id` was the internal offset word of the `_file` string, the same value for every
+  row in a task, and its `_last_updated_sequence_number` was its source position.
+
+Both earlier fixes made a v3 write succeed by changing the write schema, rather than by reading
+lineage with the rows. The v3 tests checked maps, not lineage, so they passed. With maps disabled,
+both versions kept lineage. The bug was found by a snapshot-rewrite test onto a Spark compaction
+(`remap` branch), which refuses such compactions.
+
+### Impact
+
+- Lineage is wrong for every row that a position-tracked compaction moved in a v3 table. Change
+  tracking by `_row_id` sees each moved row as deleted and re-inserted. `_last_updated_sequence_number`
+  claims the row changed at the compaction (3.5), or holds a file position (4.0, where ids also
+  collide).
+- Files written before the fix keep the wrong values, and the fix does not repair them. The original
+  ids exist only in the source files' `first_row_id`, which older snapshots' manifests record, and in
+  the compaction map that leads back to them.
+- ORC never had lineage to keep. Iceberg's ORC readers do not read row lineage at all: every row reads
+  its file's `first_row_id`. That gap is upstream and unrelated to compaction maps, so the test below
+  covers Parquet only.
+
+### Resolution
+
+- A position-tracked rewrite reads `_row_id` and `_last_updated_sequence_number` with the rows, ahead
+  of `_file` and `_pos` (`SparkTable.addLineageIfRequired`, `SparkBinPackFileRewriteRunner`), and
+  writes them like any other v3 compaction (`SparkWriteBuilder`).
+- `SparkWriteBuilder.checkLineageRead` refuses a position-tracked v3 rewrite whose input lacks
+  lineage. `PositionTrackingDataWriter` refuses input where `_file` and `_pos` are not the last
+  columns, so the delegate can never write them as other columns.
+- Spark 4.0's `addRowLineageColumnsIfMissing`, which produced the misaligned write, is removed.
+- `TestBinPackWithPositionTracking.testBinPackKeepsRowLineage` (3.5 and 4.0, Parquet) deletes a row,
+  compacts, and checks two things. Every surviving row keeps both values, and the outputs record both
+  columns in their metrics, with no nulls.
+
+### Code Location
+
+- `spark/v{3.5,4.0}/spark/src/main/java/org/apache/iceberg/spark/source/SparkTable.java` --
+  `addLineageIfRequired`
+- `spark/v{3.5,4.0}/spark/src/main/java/org/apache/iceberg/spark/source/SparkWriteBuilder.java` --
+  `build`, `checkLineageRead`
+- `spark/v{3.5,4.0}/spark/src/main/java/org/apache/iceberg/spark/source/PositionTrackingDataWriter.java`
+- `spark/v{3.5,4.0}/spark/src/main/java/org/apache/iceberg/spark/actions/SparkBinPackFileRewriteRunner.java`
+  -- `doRewrite`
+
+---
+
 ## Summary
 
 | # | Issue | Impact | Status | Priority |
 |---|-------|--------|--------|----------|
 | 1 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
 | 2 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
+| 5 | Position-tracked compactions dropped v3 row lineage | Moved rows got new `_row_id`s; files written before the fix keep them | Fixed | - |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)
@@ -184,9 +246,9 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 - ~~Spark 4.0 Conflict Resolution Parity~~ - ✅ FIXED in commit 539432b51
 - ~~Compaction map location not in manifests~~ - ✅ FIXED in commit 41324b697
 - ~~Target-pending placeholder bug~~ - ✅ FIXED in commit e8287a752
-- ~~Spark 3.5 format v3 + position tracking~~ - ✅ FIXED in commit e8287a752
+- ~~Spark 3.5 format v3 + position tracking~~ - ✅ FIXED in commits e8287a752 and 6a14ae978, the latter by dropping row lineage (see 5)
 - ~~Spark 3.5/4.0 partitioned table position tracking~~ - ✅ FIXED in commit 8b811d951
-- ~~Spark 4.0 format v3 + position tracking~~ - ✅ FIXED in commit 65dedde35
+- ~~Spark 4.0 format v3 + position tracking~~ - ✅ FIXED in commit 65dedde35, but by writing `_file` and `_pos` as row lineage (see 5)
 
 ## How to Contribute
 
