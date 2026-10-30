@@ -32,31 +32,22 @@ over history.
 > comment) is vibe-coded from the [blog
 > post](https://cdouglas.github.io/posts/2026/08/rewriting-snapshots) to learn
 > what it would break in the format if snapshots were inverted as described.
-> Bluntly: the implementation evades safety invariants by corrupting metadata
-> in the rewritten table. To be fair, some safety checks protected the
-> committed state whose layout we are (unsafely) rewriting, but it highlights
-> how the rewrite is liberally interpreting "undefined behavior" as "satisfies
-> the default client".
+> The result can save space, but the rewrite is liberally interpreting
+> "undefined behavior" as "satisfies the default client". Rewritten snapshots
+> are readable by Apache Iceberg's Java implementation, but since it breaks the
+> spec (rewritten manifest entries MUST keep their original sequence numbers),
+> utilities and other implementations may object.
 >
-> The current prototype doesn't retain enough information to losslessly restore
-> the old layout from the inverted layout. It would need to build a reverse map
-> for `_row_id` in the inverted layout (retained only for this purpose), among
-> other things discarded during the rewrite. It should be feasible, but it is
-> not implemented. Table statistics don't change, but more granular stats are
-> dropped and not recomputed as part of the rewrite.
+> Inverting should save space and improve read latency by applying deletion
+> vectors to the compacted layout, rather than merging chains of delta commits.
+> Particularly if most data survive between compactions. However, it would add
+> a lot of complexity to areas where the specification is actively building on
+> the invariants this explicitly breaks.
 >
-> The tradeoff is unclear and depends on the workload. Inverting should save
-> space and improve read latency by applying deletion vectors to the compacted
-> layout, rather than merging chains of delta commits. Particularly if most
-> data survive between compactions. However, it would add a lot of complexity
-> to areas where the specification is actively building on the invariants this
-> explicitly breaks.
->
-> Not to be too morose, but this is a qualified win in the best case, insofar
-> as the space savings need to be more important than stamping a region of the
-> table as "degraded". Instead of corrupting the table to make it look legit,
-> explicitly marking the region as "archived" so readers expect only a subset
-> of statistics, features, etc. would be more defensible.
+> Not to be too morose, but this is a qualified win. Instead of corrupting the
+> table to make it look legit, explicitly marking the region as "archived" so
+> readers expect only a subset of statistics, features, etc. would be more
+> defensible.
 
 ## Prerequisite: compaction maps
 
