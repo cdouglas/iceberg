@@ -69,8 +69,7 @@ class TestFuzzConfig {
 
   @Test
   void partialConfigOverridesOnlyNamedFields() throws IOException {
-    String json =
-        "{\"overlapProbability\": 0.9, \"lateTxCount\": {\"min\": 2, \"max\": 4}}";
+    String json = "{\"overlapProbability\": 0.9, \"lateTxCount\": {\"min\": 2, \"max\": 4}}";
     File f = new File(tempDir, "partial.json");
     Files.writeString(f.toPath(), json);
     FuzzConfig cfg = FuzzConfig.load(f.toPath());
@@ -83,8 +82,7 @@ class TestFuzzConfig {
 
   @Test
   void formatWeightsAreNormalized() throws IOException {
-    String json =
-        "{\"formatWeights\": {\"v2\": 2.0, \"v3\": 1.0, \"v2ThenUpgradeToV3\": 1.0}}";
+    String json = "{\"formatWeights\": {\"v2\": 2.0, \"v3\": 1.0, \"v2ThenUpgradeToV3\": 1.0}}";
     File f = new File(tempDir, "weighted.json");
     Files.writeString(f.toPath(), json);
     FuzzConfig cfg = FuzzConfig.load(f.toPath());

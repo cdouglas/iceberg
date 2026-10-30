@@ -61,16 +61,12 @@ class TestFuzzMainArgs {
   @Test
   void seedsAndSeedStartTogetherAreRejected() {
     assertThatThrownBy(
-            () ->
-                FuzzMain.Args.parse(
-                    new String[] {"--seeds", "1", "--seed-start", "42"}))
+            () -> FuzzMain.Args.parse(new String[] {"--seeds", "1", "--seed-start", "42"}))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("mutually exclusive");
 
     assertThatThrownBy(
-            () ->
-                FuzzMain.Args.parse(
-                    new String[] {"--seed-start", "42", "--seeds", "1"}))
+            () -> FuzzMain.Args.parse(new String[] {"--seed-start", "42", "--seeds", "1"}))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("mutually exclusive");
   }

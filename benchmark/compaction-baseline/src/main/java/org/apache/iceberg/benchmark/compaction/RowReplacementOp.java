@@ -25,8 +25,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * Row-replacement op — commits a {@code RowDelta} that both adds new rows and writes position
  * deletes against a pre-compaction slice. The data-file portion is not validated by {@code
  * CompactionConflictDetector} (which only inspects delete files), so this op stresses the delete-
- * portion remap path but not the data-file conflict path. The harness asserts the row-multiset
- * hash matches; the bypassed validation is documented in this Javadoc rather than papered over.
+ * portion remap path but not the data-file conflict path. The harness asserts the row-multiset hash
+ * matches; the bypassed validation is documented in this Javadoc rather than papered over.
  */
 public final class RowReplacementOp extends LateTxOp {
   private final int deletesPerOp;

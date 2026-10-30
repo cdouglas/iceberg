@@ -32,8 +32,8 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
  * delete file against a v2 table). {@link FuzzRunner#applyLateTx} performs that dispatch.
  *
  * <p>Jackson polymorphism is enabled so scenarios are JSON-serializable end-to-end; this is not
- * strictly required by the current failure-record format but is cheap insurance for future
- * triage workflows that may want to dump scenario plans.
+ * strictly required by the current failure-record format but is cheap insurance for future triage
+ * workflows that may want to dump scenario plans.
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "kind")
 @JsonSubTypes({

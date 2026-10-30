@@ -50,9 +50,9 @@ public final class CorrectnessCheck {
   private CorrectnessCheck() {}
 
   /**
-   * Compute the row-multiset hash of every live row in the table located at the given Iceberg
-   * URI (e.g., {@code file:///tmp/warehouse/db.baseline} or {@code s3a://...}). Live rows are
-   * those visible at the table's current snapshot, with all delete files applied.
+   * Compute the row-multiset hash of every live row in the table located at the given Iceberg URI
+   * (e.g., {@code file:///tmp/warehouse/db.baseline} or {@code s3a://...}). Live rows are those
+   * visible at the table's current snapshot, with all delete files applied.
    */
   public static long hash(SparkSession spark, String tableUri) {
     Row aggregated =
@@ -71,8 +71,8 @@ public final class CorrectnessCheck {
   }
 
   /**
-   * Same as {@link #hash(SparkSession, String)} but asserts the two hashes are equal and throws
-   * a {@link CorrectnessCheckFailedException} otherwise. Returns the (common) hash on success.
+   * Same as {@link #hash(SparkSession, String)} but asserts the two hashes are equal and throws a
+   * {@link CorrectnessCheckFailedException} otherwise. Returns the (common) hash on success.
    */
   public static long assertEqual(SparkSession spark, String tableA, String tableB) {
     long hashA = hash(spark, tableA);
