@@ -112,6 +112,33 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
   }
 
   /**
+   * A partial compaction keeps a file together with its deletes, and every rewritten snapshot has
+   * to keep masking them.
+   *
+   * <p>The rewrite used to treat every file the compaction holds as wholly live. A compaction's own
+   * output is, but a file it kept still carries the rows that died in it, so they reappeared in
+   * every rewritten snapshot -- including ones from before the file was even appended, alongside
+   * the copy the rewrite recovered for the snapshots that should see it.
+   */
+  @Test
+  public void partialCompactionKeepsTheKeptFilesDeletes() throws IOException {
+    append(records(1, 4, "base"));
+    compact();
+
+    DataFile untouched = append(records(10, 3, "keep"));
+    DataFile alpha = append(records(20, 3, "alpha"));
+    delete(ImmutableList.of(at(alpha, 0)));
+    delete(ImmutableList.of(at(untouched, 2)));
+    LocalCompactor.compact(table, true, file -> !file.location().equals(untouched.location()));
+
+    SnapshotRewriteResult result = rewrite();
+    assertLossless(result);
+    assertThat(result.plan().resurrectedRows())
+        .as("the row that died in the kept file is recovered once, like any other")
+        .isEqualTo(2);
+  }
+
+  /**
    * Two compactions inside one window: the maps have to compose.
    *
    * <p>Reachable only with an explicit floor, since a window otherwise stops at the first
