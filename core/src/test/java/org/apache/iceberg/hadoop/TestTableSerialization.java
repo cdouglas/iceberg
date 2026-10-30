@@ -31,19 +31,25 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.UncheckedIOException;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.InlineSnapshot;
+import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.MetadataTableType;
 import org.apache.iceberg.MetadataTableUtils;
 import org.apache.iceberg.PositionDeletesScanTask;
 import org.apache.iceberg.PositionDeletesTable;
 import org.apache.iceberg.ScanTask;
 import org.apache.iceberg.SerializableTable;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StaticTableOperations;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.TableUtil;
 import org.apache.iceberg.TestHelpers;
@@ -102,6 +108,76 @@ public class TestTableSerialization extends HadoopTableTestBase {
     Table serializableTable = SerializableTable.copyOf(table);
     TestHelpers.assertSerializedAndLoadedMetadata(
         serializableTable, TestHelpers.KryoHelpers.roundTripSerialize(serializableTable));
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {2, 3})
+  public void testSerializableTableWithoutMetadataFile(int formatVersion)
+      throws IOException, ClassNotFoundException {
+    table
+        .updateProperties()
+        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
+        .commit();
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    // A catalog that keeps a table's metadata itself names no file it can be read from, and may
+    // keep a snapshot's manifest list too
+    TableMetadata current = ((HasTableOperations) table).operations().current();
+    Snapshot head = current.currentSnapshot();
+    Snapshot inline =
+        new InlineSnapshot(
+            head.sequenceNumber(),
+            head.snapshotId(),
+            head.parentId(),
+            head.timestampMillis(),
+            head.operation(),
+            head.summary(),
+            head.schemaId(),
+            head.firstRowId(),
+            head.addedRows(),
+            head.keyId(),
+            head.allManifests(table.io()));
+    TableMetadata kept =
+        TableMetadata.buildFrom(current)
+            .replaceSnapshots(Map.of(head.snapshotId(), inline))
+            .withMetadataLocation("kept://t#3")
+            .discardChanges()
+            .build();
+    assertThat(kept.previousFiles()).isNotEmpty();
+    Table keptTable = new BaseTable(new StaticTableOperations(kept, table.io()), table.name());
+    Table entries =
+        MetadataTableUtils.createMetadataTableInstance(keptTable, MetadataTableType.ENTRIES);
+
+    Table javaCopy = TestHelpers.roundTripSerialize(SerializableTable.copyOf(keptTable));
+    Table kryoCopy =
+        TestHelpers.KryoHelpers.roundTripSerialize(SerializableTable.copyOf(keptTable));
+    for (Table copy : List.of(javaCopy, kryoCopy)) {
+      TestHelpers.assertSerializedAndLoadedMetadata(keptTable, copy);
+      TableMetadata loaded = ((HasTableOperations) copy).operations().current();
+      assertThat(loaded.previousFiles()).isEqualTo(kept.previousFiles());
+      assertThat(loaded.currentSnapshot()).isInstanceOf(InlineSnapshot.class);
+      assertThat(loaded.currentSnapshot().firstRowId()).isEqualTo(head.firstRowId());
+      assertThat(loaded.currentSnapshot().addedRows()).isEqualTo(head.addedRows());
+      assertThat(paths(loaded.currentSnapshot().allManifests(copy.io())))
+          .isEqualTo(paths(head.allManifests(table.io())));
+      assertThat(dataFiles(copy)).isEqualTo(dataFiles(keptTable));
+    }
+    TestHelpers.assertSerializedAndLoadedMetadata(
+        entries, TestHelpers.roundTripSerialize(SerializableTable.copyOf(entries)));
+    TestHelpers.assertSerializedAndLoadedMetadata(
+        entries, TestHelpers.KryoHelpers.roundTripSerialize(SerializableTable.copyOf(entries)));
+  }
+
+  private static List<String> paths(List<ManifestFile> manifests) {
+    return manifests.stream().map(ManifestFile::path).collect(Collectors.toList());
+  }
+
+  private static Set<String> dataFiles(Table table) throws IOException {
+    Set<String> files = Sets.newHashSet();
+    try (CloseableIterable<FileScanTask> tasks = table.newScan().planFiles()) {
+      tasks.forEach(task -> files.add(task.file().location()));
+    }
+    return files;
   }
 
   @Test

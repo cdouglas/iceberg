@@ -26,6 +26,7 @@ import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.LocationProvider;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.SerializableMap;
 
@@ -53,6 +54,11 @@ public class SerializableTable implements Table, HasTableOperations, Serializabl
   private final String name;
   private final String location;
   private final String metadataFileLocation;
+  // A table whose metadata location is not a metadata file (a catalog that keeps the metadata
+  // itself) sends its metadata as JSON, with the manifests of the snapshots that keep their
+  // manifest lists inline: forms that Java serialization and Kryo both copy
+  private final String metadataJson;
+  private final Map<Long, List<ManifestFile>> inlineManifests;
   private final Map<String, String> properties;
   private final String schemaAsJson;
   private final int defaultSpecId;
@@ -76,7 +82,12 @@ public class SerializableTable implements Table, HasTableOperations, Serializabl
   protected SerializableTable(Table table) {
     this.name = table.name();
     this.location = table.location();
-    this.metadataFileLocation = metadataFileLocation(table);
+    TableMetadata current = currentMetadata(table);
+    this.metadataFileLocation = current != null ? current.metadataFileLocation() : null;
+    boolean noFile =
+        metadataFileLocation != null && !metadataFileLocation.contains(".metadata.json");
+    this.metadataJson = noFile ? TableMetadataParser.toJson(namingLists(current)) : null;
+    this.inlineManifests = noFile ? inlineManifests(current, table.io()) : null;
     this.properties = SerializableMap.copyOf(table.properties());
     this.schemaAsJson = SchemaParser.toJson(table.schema());
     this.defaultSpecId = table.spec().specId();
@@ -119,12 +130,94 @@ public class SerializableTable implements Table, HasTableOperations, Serializabl
     return metadataFileLocation;
   }
 
-  private String metadataFileLocation(Table table) {
+  private static Map<Long, List<ManifestFile>> inlineManifests(TableMetadata metadata, FileIO io) {
+    Map<Long, List<ManifestFile>> manifests = Maps.newHashMap();
+    for (Snapshot snapshot : metadata.snapshots()) {
+      if (snapshot instanceof InlineSnapshot) {
+        List<ManifestFile> copies = Lists.newArrayList();
+        for (ManifestFile manifest : snapshot.allManifests(io)) {
+          copies.add(GenericManifestFile.copyOf(manifest).build());
+        }
+        manifests.put(snapshot.snapshotId(), copies);
+      }
+    }
+    return manifests;
+  }
+
+  /**
+   * {@code metadata} with each inline snapshot named as a snapshot with a manifest list, so that
+   * its JSON keeps all of the snapshot's fields: a snapshot without a manifest list is written with
+   * its manifests' paths, as format v1 embedded them, which the parser reads back without v3's row
+   * lineage and key id.
+   */
+  private static TableMetadata namingLists(TableMetadata metadata) {
+    Map<Long, Snapshot> named = Maps.newHashMap();
+    for (Snapshot snapshot : metadata.snapshots()) {
+      if (snapshot instanceof InlineSnapshot) {
+        named.put(
+            snapshot.snapshotId(),
+            new BaseSnapshot(
+                snapshot.sequenceNumber(),
+                snapshot.snapshotId(),
+                snapshot.parentId(),
+                snapshot.timestampMillis(),
+                snapshot.operation(),
+                snapshot.summary(),
+                snapshot.schemaId(),
+                "inline://" + snapshot.snapshotId(),
+                snapshot.firstRowId(),
+                snapshot.addedRows(),
+                snapshot.keyId()));
+      }
+    }
+    if (named.isEmpty()) {
+      return metadata;
+    }
+    return TableMetadata.buildFrom(metadata)
+        .replaceSnapshots(named)
+        .withMetadataLocation(metadata.metadataFileLocation())
+        .discardChanges()
+        .build();
+  }
+
+  /** The table's metadata, from its JSON, its inline snapshots holding their manifests again. */
+  private TableMetadata metadataFromJson() {
+    TableMetadata parsed = TableMetadataParser.fromJson(metadataFileLocation, metadataJson);
+    if (inlineManifests.isEmpty()) {
+      return parsed;
+    }
+    Map<Long, Snapshot> inline = Maps.newHashMap();
+    inlineManifests.forEach(
+        (id, manifests) -> {
+          Snapshot snapshot = parsed.snapshot(id);
+          // A copy is read-only, so it has no use for a commit's footprint, which JSON lacks
+          inline.put(
+              id,
+              new InlineSnapshot(
+                  snapshot.sequenceNumber(),
+                  id,
+                  snapshot.parentId(),
+                  snapshot.timestampMillis(),
+                  snapshot.operation(),
+                  snapshot.summary(),
+                  snapshot.schemaId(),
+                  snapshot.firstRowId(),
+                  snapshot.addedRows(),
+                  snapshot.keyId(),
+                  manifests));
+        });
+    return TableMetadata.buildFrom(parsed)
+        .replaceSnapshots(inline)
+        .withMetadataLocation(metadataFileLocation)
+        .discardChanges()
+        .build();
+  }
+
+  private static TableMetadata currentMetadata(Table table) {
     if (table instanceof HasTableOperations) {
-      TableOperations ops = ((HasTableOperations) table).operations();
-      return ops.current().metadataFileLocation();
+      return ((HasTableOperations) table).operations().current();
     } else if (table instanceof BaseMetadataTable) {
-      return ((BaseMetadataTable) table).table().operations().current().metadataFileLocation();
+      return ((BaseMetadataTable) table).table().operations().current();
     } else {
       return null;
     }
@@ -140,7 +233,9 @@ public class SerializableTable implements Table, HasTableOperations, Serializabl
           }
 
           TableOperations ops =
-              new StaticTableOperations(metadataFileLocation, io, locationProvider());
+              metadataJson != null
+                  ? new StaticTableOperations(metadataFromJson(), io, locationProvider())
+                  : new StaticTableOperations(metadataFileLocation, io, locationProvider());
           this.lazyTable = newTable(ops, name);
         }
       }
