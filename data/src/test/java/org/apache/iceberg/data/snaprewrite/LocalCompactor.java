@@ -333,8 +333,6 @@ class LocalCompactor {
     rewrite.rewriteFiles(replacedData, replacedDeletes, targets, Sets.newHashSet());
     if (attachMap) {
       rewrite.setCompactionMap(mapBuilder.build());
-    } else {
-      rewrite.disableAutoCompactionMap();
     }
 
     rewrite.commit();
