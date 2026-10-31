@@ -21,6 +21,7 @@ package org.apache.iceberg;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.catalog.Namespace;
@@ -214,7 +215,8 @@ public class TestCompactionMapValidatorHistory {
       rewrite.deleteFile(input);
     }
 
-    rewrite.addFile(output).commit();
+    rewrite.addFile(output);
+    ConcatenationMaps.concatenate(table, rewrite, Arrays.asList(inputs), output).commit();
     List<ManifestFile> manifests = table.currentSnapshot().dataManifests(table.io());
     assertThat(manifests)
         .as("the rewrite wrote a compaction map")

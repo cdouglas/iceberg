@@ -47,8 +47,8 @@ import org.junit.jupiter.api.io.TempDir;
  * verified without explicit position tracking. A sort or z-order rewrite preserving record count
  * would produce an incorrect positional map.
  *
- * <p>Contrast with {@link BaseRewriteFiles} which retains a low-level fallback with a record-count
- * precondition for direct API callers doing bin-pack operations.
+ * <p>A direct {@link BaseRewriteFiles} rewrite records no map either, because only the writer of
+ * the new files knows their layout. A direct caller that knows it passes the map explicitly.
  */
 public class TestFallbackMapGenerationRemoved {
 
@@ -210,13 +210,14 @@ public class TestFallbackMapGenerationRemoved {
   }
 
   /**
-   * BaseRewriteFiles (low-level API) auto-generates compaction maps for direct API callers doing
-   * bin-pack concatenation. This is sound because compaction maps are scoped to order-preserving
-   * operations only — sort/z-order rewrites never enable this feature.
+   * A direct {@code table.newRewrite()} records no compaction map, even on a map-enabled table and
+   * for a rewrite shaped like a bin-pack: one target holding exactly the source rows. Only the
+   * writer of the new files knows the layout, so a caller that wants a map passes one with {@code
+   * setCompactionMap} or {@code setCompactionMapLocation}.
    */
   @Test
-  public void testBaseRewriteFilesFallbackStillWorks() throws IOException {
-    TableIdentifier tableIdent = TableIdentifier.of("db", "base_fallback");
+  public void testDirectRewriteRecordsNoMap() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "direct_rewrite");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
     table
@@ -247,7 +248,7 @@ public class TestFallbackMapGenerationRemoved {
     rewrite.addFile(targetFile);
     rewrite.commit();
 
-    // BaseRewriteFiles fallback should auto-generate a map for single-target bin-pack
+    // The rewrite was given no map, so it records none
     ManifestFile addedManifest =
         table.currentSnapshot().dataManifests(table.io()).stream()
             .filter(ManifestFile::hasAddedFiles)
@@ -256,8 +257,8 @@ public class TestFallbackMapGenerationRemoved {
 
     assertThat(addedManifest).isNotNull();
     assertThat(addedManifest.compactionMapLocation())
-        .as("BaseRewriteFiles should auto-generate maps for bin-pack rewrites")
-        .isNotNull();
+        .as("a direct rewrite given no map should record none")
+        .isNull();
   }
 
   /**

@@ -148,6 +148,7 @@ public class TestCompactionConflictResolution {
             .build();
 
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, sourceFiles, targetFile);
     rewrite.commit();
 
     // 5. Try to commit and catch conflict
@@ -232,6 +233,7 @@ public class TestCompactionConflictResolution {
             .withRecordCount(100)
             .build();
     rewrite1.addFile(target1);
+    ConcatenationMaps.concatenate(table, rewrite1, List.of(file1), target1);
     rewrite1.commit();
 
     // Add another file
@@ -288,6 +290,7 @@ public class TestCompactionConflictResolution {
             .withRecordCount(100)
             .build();
     rewrite2.addFile(target2);
+    ConcatenationMaps.concatenate(table, rewrite2, List.of(file2), target2);
     rewrite2.commit();
 
     // Try to commit - should detect conflicts with both compactions
@@ -389,6 +392,7 @@ public class TestCompactionConflictResolution {
             .withRecordCount(100)
             .build();
     rewrite.addFile(target);
+    ConcatenationMaps.concatenate(table, rewrite, List.of(file1), target);
     rewrite.commit();
 
     // Try to commit - should only conflict on file1
@@ -472,6 +476,7 @@ public class TestCompactionConflictResolution {
             .withRecordCount(200)
             .build();
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, List.of(file1, file2), targetFile);
     rewrite.commit();
 
     // Catch the conflict

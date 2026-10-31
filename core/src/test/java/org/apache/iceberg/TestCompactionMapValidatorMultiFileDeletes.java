@@ -122,6 +122,7 @@ public class TestCompactionMapValidatorMultiFileDeletes {
             .build();
 
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, sourceFiles, targetFile);
     rewrite.commit();
 
     // Validator should detect the conflict
@@ -204,6 +205,7 @@ public class TestCompactionMapValidatorMultiFileDeletes {
             .build();
 
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, sourceFiles, targetFile);
     rewrite.commit();
 
     // Multi-file position deletes are conservatively treated as conflicts because

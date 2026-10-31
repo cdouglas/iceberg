@@ -328,6 +328,44 @@ on a file that a compaction removed still fails. `CompactionMapValidator` throws
 
 ---
 
+## 7. Direct Rewrites Recorded a Map That Assumed Their Layout ✅ FIXED
+
+### Issue
+
+`BaseRewriteFiles` wrote a fallback compaction map for a direct `table.newRewrite()` that was given
+none. It did so on any table with `write.compaction-map.enabled`, when the rewrite added one data
+file. The map assumed the target held the replaced files concatenated in the order `deleteFile()` was
+called. The only check was that record counts added up. Its justification was that sort and Z-order
+rewrites never enable compaction maps, but maps are enabled per table, not per rewrite. The commit
+managers turned the fallback off, so it reached only direct callers: other engines, maintenance tools,
+and applications.
+
+### Impact
+
+- **Silent:** a sort rewrite into one file passed the check and got a wrong map, and so did a
+  concatenation in a different order. A delete remapped through it lands on the wrong row. That covers
+  an application retrying after a `CompactionConflictException`, chained maps, and a v2 snapshot
+  rewrite, which trusts maps. In the reproduction, deleting id 10 after a sort rewrite removed id 0.
+- **Loud:** a direct rewrite that applied deletes wrote fewer rows than its sources, so the check threw
+  `IllegalStateException` and the compaction could not commit on a map-enabled table.
+
+### Resolution
+
+The fallback is removed, with `disableAutoCompactionMap`. A rewrite records a map only when its caller
+passes one with `setCompactionMap` or `setCompactionMapLocation`, which the commit managers do from
+explicit position tracking. A delete on a file a mapless rewrite removed fails
+`validateDataFilesExist`, and the transaction retries from the new layout. Core tests that relied on
+the fallback state their layout through a test helper, `ConcatenationMaps`.
+
+### Code Location
+
+- `core/src/main/java/org/apache/iceberg/BaseRewriteFiles.java` -- `apply`
+- `data/src/test/java/org/apache/iceberg/data/TestDirectRewriteCompactionMap.java`
+- `core/src/test/java/org/apache/iceberg/TestFallbackMapGenerationRemoved.java` --
+  `testDirectRewriteRecordsNoMap`
+
+---
+
 ## Summary
 
 | # | Issue | Impact | Status | Priority |
@@ -337,6 +375,7 @@ on a file that a compaction removed still fails. `CompactionMapValidator` throws
 | 4 | Validator collected carried-forward maps, out of order | Spurious conflicts for multi-file deletes; chained remaps stopped early or threw | Fixed | - |
 | 5 | Position-tracked compactions dropped v3 row lineage | Moved rows got new `_row_id`s; files written before the fix keep them | Fixed | - |
 | 6 | SERIALIZABLE row deltas conflicted with compactions without maps | Spurious conflicts, including on tables without maps | Fixed | - |
+| 7 | Direct rewrites recorded a map that assumed their layout | Remapped deletes hit the wrong rows after a sort rewrite; rewrites that applied deletes could not commit | Fixed | - |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)
