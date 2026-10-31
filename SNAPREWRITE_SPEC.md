@@ -560,7 +560,7 @@ such constraint and works against any catalog.
 **Phase A — plan (metadata only; this is all `--dry-run` executes):**
 
 1. Locate `C_B`: newest snapshot whose manifests carry a `compactionMapLocation`
-   (`ManifestFile.compactionMapLocation()`, field 521). Load via `CompactionMaps.read`.
+   (`ManifestFile.compactionMapLocation()`, field 550). Load via `CompactionMaps.read`.
 2. Locate `C_A`: the previous compaction, or the caller-supplied window floor.
 3. Check P1–P9. Abort the window on any failure, reporting which.
 4. Build `loc_n` from the map, composing through `CompactionMapChain` /
