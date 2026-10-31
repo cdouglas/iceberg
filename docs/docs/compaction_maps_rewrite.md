@@ -758,6 +758,5 @@ should be hidden. The result reads plausibly and is wrong.
 
 The maps the harness writes are correct by construction (`LocalCompactor`), so the suites exercise the
 remapping, not the map writers. The check matters most for maps from writers the suites never run.
-That covers Spark's `RewriteDataFilesSparkAction`, and the fallback in `BaseRewriteFiles` for
-direct-API rewrites, which assumes concatenation in iteration order and checks only that row counts
-add up.
+That covers Spark's `RewriteDataFilesSparkAction`, and any direct-API caller that passes its own map.
+A direct rewrite given no map records none ([compaction maps errata 7](compaction_maps_errata.md)).
