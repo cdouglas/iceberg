@@ -80,10 +80,13 @@ public class ListMetadataFiles extends ProcessFunction<Trigger, String> {
                 // Version hint file for Hadoop catalogs
                 collector.collect(ReachableFileUtil.versionHintLocation(table));
 
-                // Emit the manifest file locations
-                snapshot.allManifests(table.io()).stream()
-                    .map(ManifestFile::path)
-                    .forEach(collector::collect);
+                // Emit the manifest file locations, and the compaction maps they name
+                for (ManifestFile manifest : snapshot.allManifests(table.io())) {
+                  collector.collect(manifest.path());
+                  if (manifest.compactionMapLocation() != null) {
+                    collector.collect(manifest.compactionMapLocation());
+                  }
+                }
               });
     } catch (Exception e) {
       LOG.error("Exception listing metadata files for {} at {}", table, ctx.timestamp(), e);

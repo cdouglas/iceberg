@@ -169,6 +169,59 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 
 ---
 
+## 3. Compaction Map Files Were Invisible to Table Maintenance ✅ FIXED
+
+### Issue
+
+A compaction map is a file in the table's metadata directory (`CompactionMaps.newCompactionMapFile`),
+and the only thing that names it is a manifest's `compaction_map_location` (field 521). No maintenance
+operation read that field:
+
+- **Orphan-file removal deleted maps that were still in use.** `DeleteOrphanFilesSparkAction` (Spark
+  3.5 and 4.0) and Flink's `DeleteOrphanFiles` treated only content files, manifests, manifest lists,
+  metadata JSON files, the version hint, and statistics files as reachable. Every map older than the
+  cutoff (three days by default in Spark) was deleted, including maps a live manifest still named.
+- **Snapshot expiry never deleted maps.** `IncrementalFileCleanup`, `ReachableFileCleanup` and
+  `ExpireSnapshotsSparkAction` deleted unreachable manifests, manifest lists and content files, but
+  never looked at field 521. A map outlived the last snapshot that named it, indefinitely.
+
+### Impact
+
+- Remapping through a map that orphan removal had deleted fails when it reads the map. A concurrent
+  commit needs a map only until it retries, normally well inside the cutoff. Anything that reads maps
+  later was exposed for every map older than the cutoff.
+- Expiry leaked one small Avro file per compaction.
+
+### Resolution
+
+A map is reachable while a manifest of a reachable snapshot names it. That includes a filtered or
+merged copy, which keeps the location (`ManifestFilterManager`, `ManifestMergeManager`).
+
+- `ReachableFileUtil.compactionMapLocations` lists the maps that data manifests name.
+- Orphan removal treats those maps as reachable, in Spark's `BaseSparkAction.otherMetadataFileDS` and
+  Flink's `ListMetadataFiles` (1.19, 1.20 and 2.0). `DeleteReachableFilesSparkAction` now deletes them
+  with the rest of a table.
+- Expiry deletes a map that a manifest of an expired snapshot names and no retained manifest does.
+  Both core cleanup strategies read the location from the manifest list, which is now in their
+  projection, and `ExpireSnapshotsSparkAction` compares maps along with the other files.
+
+Listing maps reads every snapshot's manifest list on the driver. Spark reads manifest lists
+distributed elsewhere, through the `all_manifests` metadata table, but that table has no compaction
+map column.
+
+### Code Location
+
+- `core/src/main/java/org/apache/iceberg/ReachableFileUtil.java` -- `compactionMapLocations`
+- `core/src/main/java/org/apache/iceberg/FileCleanupStrategy.java`, `IncrementalFileCleanup.java`,
+  `ReachableFileCleanup.java`
+- `spark/v{3.5,4.0}/spark/src/main/java/org/apache/iceberg/spark/actions/BaseSparkAction.java` --
+  `otherMetadataFileDS`, `compactionMapDS`; `ExpireSnapshotsSparkAction.java` -- `fileDS`
+- `flink/v{1.19,1.20,2.0}/flink/src/main/java/org/apache/iceberg/flink/maintenance/operator/ListMetadataFiles.java`
+- `core/src/test/java/org/apache/iceberg/TestCompactionMapCleanup.java`
+- `spark/v{3.5,4.0}/spark/src/test/java/org/apache/iceberg/spark/actions/TestCompactionMapMaintenance.java`
+
+---
+
 ## 4. The Validator Collected Carried-Forward Maps, Out of Order ✅ FIXED
 
 ### Issue
@@ -372,6 +425,7 @@ the fallback state their layout through a test helper, `ConcatenationMaps`.
 |---|-------|--------|--------|----------|
 | 1 | Order-preserving compactions only | Order-changing ops (sort, Z-order) out of scope | By design | - |
 | 2 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
+| 3 | Compaction map files were invisible to maintenance | Orphan removal deleted maps in use; expiry never deleted them | Fixed | - |
 | 4 | Validator collected carried-forward maps, out of order | Spurious conflicts for multi-file deletes; chained remaps stopped early or threw | Fixed | - |
 | 5 | Position-tracked compactions dropped v3 row lineage | Moved rows got new `_row_id`s; files written before the fix keep them | Fixed | - |
 | 6 | SERIALIZABLE row deltas conflicted with compactions without maps | Spurious conflicts, including on tables without maps | Fixed | - |

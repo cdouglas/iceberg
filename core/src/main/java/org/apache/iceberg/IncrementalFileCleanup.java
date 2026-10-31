@@ -111,6 +111,7 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
     // find manifests to clean up that are still referenced by a valid snapshot, but written by an
     // expired snapshot
     Set<String> validManifests = ConcurrentHashMap.newKeySet();
+    Set<String> validCompactionMaps = ConcurrentHashMap.newKeySet();
     Set<ManifestFile> manifestsToScan = ConcurrentHashMap.newKeySet();
 
     // Reads and deletes are done using Tasks.foreach(...).suppressFailureWhenFinished to complete
@@ -131,6 +132,7 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
               try (CloseableIterable<ManifestFile> manifests = readManifests(snapshot)) {
                 for (ManifestFile manifest : manifests) {
                   validManifests.add(manifest.path());
+                  addCompactionMap(validCompactionMaps, manifest);
 
                   long snapshotId = manifest.snapshotId();
                   // whether the manifest was created by a valid snapshot (true) or an expired
@@ -162,6 +164,7 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
     // find manifests to clean up that were only referenced by snapshots that have expired
     Set<String> manifestListsToDelete = ConcurrentHashMap.newKeySet();
     Set<String> manifestsToDelete = ConcurrentHashMap.newKeySet();
+    Set<String> compactionMapsToDelete = ConcurrentHashMap.newKeySet();
     Set<ManifestFile> manifestsToRevert = ConcurrentHashMap.newKeySet();
     Tasks.foreach(beforeExpiration.snapshots())
         .retry(3)
@@ -216,6 +219,7 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
                   for (ManifestFile manifest : manifests) {
                     if (!validManifests.contains(manifest.path())) {
                       manifestsToDelete.add(manifest.path());
+                      addCompactionMap(compactionMapsToDelete, manifest);
 
                       boolean isFromAncestor = ancestorIds.contains(manifest.snapshotId());
                       boolean isFromExpiringSnapshot = expiredIds.contains(manifest.snapshotId());
@@ -270,6 +274,12 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
     deleteFiles(manifestsToDelete, "manifest");
     LOG.debug("Deleting {} manifest-list files", manifestListsToDelete.size());
     deleteFiles(manifestListsToDelete, "manifest list");
+
+    // a map is in use while any valid manifest names it, including a merged or filtered copy
+    compactionMapsToDelete.removeAll(validCompactionMaps);
+    if (!compactionMapsToDelete.isEmpty()) {
+      deleteFiles(compactionMapsToDelete, "compaction map");
+    }
 
     if (hasAnyStatisticsFiles(beforeExpiration)) {
       Set<String> expiredStatisticsFilesLocations =
