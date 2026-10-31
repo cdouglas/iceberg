@@ -21,16 +21,20 @@ package org.apache.iceberg.data.snaprewrite;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.PartitionData;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.ReachableFileUtil;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.TableMetadata;
@@ -45,6 +49,7 @@ import org.apache.iceberg.snaprewrite.RewriteRefusal;
 import org.apache.iceberg.snaprewrite.RewriteRefusedException;
 import org.apache.iceberg.snaprewrite.SnapshotReconstructReport;
 import org.apache.iceberg.snaprewrite.SnapshotReconstructResult;
+import org.apache.iceberg.snaprewrite.SnapshotRewriteLedger;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteReconstruct;
 import org.apache.iceberg.snaprewrite.SnapshotRewriteResult;
 import org.apache.iceberg.types.Types;
@@ -149,6 +154,95 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
     commitAndReclaim(result);
     before.assertReproducedBy(table);
     assertThat(compactionMapOf(table.snapshot(middle.snapshotId()))).isEqualTo(middleMap);
+  }
+
+  /**
+   * After reclaim, only the ledger names the maps of the compactions inside the window, and only
+   * the rewritten snapshots' summaries name the ledger. Orphan-file removal must keep both, or
+   * reconstruction has nothing to read.
+   */
+  @Test
+  public void orphanRemovalKeepsTheLedgerAndTheMapsItNames() throws IOException {
+    useFormatVersion(3);
+
+    append(records(1, 6, "base"));
+    Snapshot floor = compact();
+    DataFile alpha = append(records(10, 4, "alpha"));
+    delete(ImmutableList.of(at(alpha, 0)));
+    Snapshot middle = compact();
+    append(records(20, 3, "beta"));
+    compact();
+
+    LayoutFingerprint before = LayoutFingerprint.of(table);
+    String middleMap = compactionMapOf(middle);
+    SnapshotRewriteResult rewritten = rewriter().floor(floor.snapshotId()).materialize();
+    commitAndReclaim(rewritten);
+
+    Set<String> needed = Sets.newHashSet(fileName(rewritten.ledgerLocation()), fileName(middleMap));
+    rewritten.ledger().window().stream()
+        .map(SnapshotRewriteLedger.WindowSnapshot::compactionMapLocation)
+        .filter(Objects::nonNull)
+        .forEach(location -> needed.add(fileName(location)));
+
+    Set<String> removed = removeUnreachableMapsAndLedgers();
+    assertThat(removed)
+        .as("orphan removal keeps the ledger and the maps it names")
+        .doesNotContainAnyElementsOf(needed);
+
+    SnapshotReconstructResult result = reconstruct();
+    before.assertReproducedBy(result.asTable());
+  }
+
+  /**
+   * Expiry keeps a ledger, and the maps it names, while a retained snapshot names the ledger, and
+   * deletes them once none does.
+   */
+  @Test
+  public void expiryDeletesALedgerOnceNoSnapshotNamesIt() throws IOException {
+    useFormatVersion(3);
+
+    append(records(1, 6, "base"));
+    Snapshot beforeTheWindow = table.currentSnapshot();
+    Snapshot floor = compact();
+    DataFile alpha = append(records(10, 4, "alpha"));
+    delete(ImmutableList.of(at(alpha, 0)));
+    compact();
+    append(records(20, 3, "beta"));
+    compact();
+
+    SnapshotRewriteResult rewritten = rewriter().floor(floor.snapshotId()).materialize();
+    commitAndReclaim(rewritten);
+    String ledger = rewritten.ledgerLocation();
+    Set<String> ledgerMaps = Sets.newHashSet();
+    rewritten.ledger().window().stream()
+        .map(SnapshotRewriteLedger.WindowSnapshot::compactionMapLocation)
+        .filter(Objects::nonNull)
+        .forEach(ledgerMaps::add);
+    assertThat(ledgerMaps).isNotEmpty();
+
+    Set<String> deleted = ConcurrentHashMap.newKeySet();
+    table
+        .expireSnapshots()
+        .expireSnapshotId(beforeTheWindow.snapshotId())
+        .deleteWith(deleted::add)
+        .commit();
+    assertThat(deleted)
+        .as("the rewritten snapshots still name the ledger")
+        .doesNotContain(ledger)
+        .doesNotContainAnyElementsOf(ledgerMaps);
+
+    append(records(30, 2, "gamma"));
+    long now = System.currentTimeMillis();
+    while (now <= table.currentSnapshot().timestampMillis()) {
+      now = System.currentTimeMillis();
+    }
+
+    table.expireSnapshots().expireOlderThan(now).deleteWith(deleted::add).commit();
+    Set<String> stillNamed = ReachableFileUtil.compactionMapLocations(table);
+    assertThat(deleted)
+        .as("no retained snapshot names the ledger, and no retained manifest names its maps")
+        .contains(ledger)
+        .containsAll(Sets.difference(ledgerMaps, stillNamed));
   }
 
   /** Rebuilt files land in their own partitions, and their deletion vectors with them. */
@@ -545,5 +639,36 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
     }
 
     return appended;
+  }
+
+  /**
+   * Deletes the compaction maps and ledgers in the metadata directory that table maintenance does
+   * not treat as reachable, as orphan-file removal does once they pass its cutoff. Returns the
+   * names of the files it deleted.
+   */
+  private Set<String> removeUnreachableMapsAndLedgers() {
+    table.refresh();
+    Set<String> reachable = Sets.newHashSet();
+    ReachableFileUtil.compactionMapLocations(table).forEach(path -> reachable.add(fileName(path)));
+    ReachableFileUtil.snapshotRewriteLocations(table)
+        .forEach(path -> reachable.add(fileName(path)));
+
+    Set<String> removed = Sets.newHashSet();
+    File metadata = new File(table.location().replaceFirst("^file:", ""), "metadata");
+    for (File file : metadata.listFiles()) {
+      String name = file.getName();
+      boolean mapOrLedger =
+          name.startsWith("compaction-map-") || name.startsWith("snaprewrite-ledger-");
+      if (mapOrLedger && !reachable.contains(name)) {
+        assertThat(file.delete()).isTrue();
+        removed.add(name);
+      }
+    }
+
+    return removed;
+  }
+
+  private static String fileName(String location) {
+    return location.substring(location.lastIndexOf('/') + 1);
   }
 }

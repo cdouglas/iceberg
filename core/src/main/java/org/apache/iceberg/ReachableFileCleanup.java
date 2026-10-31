@@ -75,6 +75,7 @@ class ReachableFileCleanup extends FileCleanupStrategy {
     Set<ManifestFile> deletionCandidates = readManifests(expiredSnapshots);
     Set<String> compactionMapCandidates = Sets.newHashSet();
     deletionCandidates.forEach(manifest -> addCompactionMap(compactionMapCandidates, manifest));
+    compactionMapCandidates.addAll(snapshotRewriteLocations(expiredSnapshots));
 
     if (!deletionCandidates.isEmpty()) {
       Set<ManifestFile> currentManifests = ConcurrentHashMap.newKeySet();
@@ -100,10 +101,12 @@ class ReachableFileCleanup extends FileCleanupStrategy {
     LOG.debug("Deleting {} manifest-list files", manifestListsToDelete.size());
     deleteFiles(manifestListsToDelete, "manifest list");
 
-    // a map is in use while any retained manifest names it, including a merged or filtered copy
+    // a map is in use while any retained manifest names it, including a merged or filtered copy,
+    // or a retained snapshot's ledger does; a ledger is in use while a retained snapshot names it
     if (!compactionMapCandidates.isEmpty()) {
       compactionMapCandidates.removeAll(compactionMapLocations(snapshotsAfterExpiration));
-      deleteFiles(compactionMapCandidates, "compaction map");
+      compactionMapCandidates.removeAll(snapshotRewriteLocations(snapshotsAfterExpiration));
+      deleteFiles(compactionMapCandidates, "compaction map or ledger");
     }
 
     if (hasAnyStatisticsFiles(beforeExpiration)) {

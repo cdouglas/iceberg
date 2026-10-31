@@ -27,15 +27,19 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import org.apache.iceberg.ContentFileParser;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.JsonUtil;
 
 /**
@@ -400,6 +404,50 @@ public class SnapshotRewriteLedger {
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  /**
+   * Returns the locations of the ledgers that {@code snapshot}'s summary names, at any depth.
+   *
+   * <p>A snapshot rewritten twice carries its first ledger one prefix down, and a reconstructed
+   * snapshot keeps the ledgers it replaced under another prefix. Table maintenance keeps all of
+   * them while a snapshot names them.
+   */
+  public static Set<String> namedBy(Snapshot snapshot) {
+    Set<String> locations = Sets.newHashSet();
+    Map<String, String> summary = snapshot.summary();
+    if (summary != null) {
+      for (Map.Entry<String, String> entry : summary.entrySet()) {
+        if (entry.getKey().endsWith(SUMMARY_KEY)) {
+          locations.add(entry.getValue());
+        }
+      }
+    }
+
+    return locations;
+  }
+
+  /**
+   * Returns the compaction maps that the window of the ledger at {@code in} names, without reading
+   * its entries. Reconstruction re-attaches those maps, and after reclaim no manifest names them. A
+   * ledger that no longer exists names none.
+   */
+  public static Set<String> compactionMapLocations(InputFile in) {
+    Set<String> locations = Sets.newHashSet();
+    try (InputStream stream = in.newStream()) {
+      for (JsonNode snapshot : JsonUtil.mapper().readTree(stream).get(WINDOW)) {
+        String location = JsonUtil.getStringOrNull(COMPACTION_MAP, snapshot);
+        if (location != null) {
+          locations.add(location);
+        }
+      }
+    } catch (NotFoundException e) {
+      return locations;
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+
+    return locations;
   }
 
   public static SnapshotRewriteLedger read(InputFile in, Map<Integer, PartitionSpec> specsById) {

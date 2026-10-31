@@ -88,6 +88,9 @@ public class ListMetadataFiles extends ProcessFunction<Trigger, String> {
                   }
                 }
               });
+
+      // Snapshot-rewrite ledgers, and the compaction maps only they name after a reclaim
+      ReachableFileUtil.snapshotRewriteLocations(table).forEach(collector::collect);
     } catch (Exception e) {
       LOG.error("Exception listing metadata files for {} at {}", table, ctx.timestamp(), e);
       ctx.output(DeleteOrphanFiles.ERROR_STREAM, e);
