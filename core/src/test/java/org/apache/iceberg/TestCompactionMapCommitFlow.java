@@ -35,7 +35,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Integration tests for compaction map commit flow.
  *
- * <p>These tests verify that compaction maps are automatically generated and referenced in
+ * <p>These tests verify that the compaction map given to a rewrite is written and referenced in
  * ManifestFile records when data files are rewritten.
  */
 public class TestCompactionMapCommitFlow {
@@ -87,7 +87,7 @@ public class TestCompactionMapCommitFlow {
 
     long snapshotBeforeRewrite = table.currentSnapshot().snapshotId();
 
-    // 3. Perform rewrite via RewriteFiles API
+    // 3. Perform rewrite via RewriteFiles API, with the map of concatenating the sources
     RewriteFiles rewrite = table.newRewrite();
     sourceFiles.forEach(rewrite::deleteFile);
 
@@ -100,6 +100,7 @@ public class TestCompactionMapCommitFlow {
             .build();
 
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, sourceFiles, targetFile);
     rewrite.commit();
 
     // 4. Verify compaction map was written
@@ -217,6 +218,7 @@ public class TestCompactionMapCommitFlow {
             .build();
 
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, List.of(sourceFile), targetFile);
     rewrite.commit();
 
     // Get compaction map location from manifest with added files
@@ -247,7 +249,7 @@ public class TestCompactionMapCommitFlow {
 
   @Test
   public void testMultipleRewritesGenerateMultipleMaps() throws IOException {
-    // Test that multiple rewrite operations each generate their own compaction map
+    // Test that multiple rewrite operations each write their own compaction map
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_table_multiple");
     Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
 
@@ -280,6 +282,7 @@ public class TestCompactionMapCommitFlow {
             .build();
 
     rewrite1.addFile(target1);
+    ConcatenationMaps.concatenate(table, rewrite1, List.of(source1), target1);
     rewrite1.commit();
 
     String mapLocation1 =
@@ -314,6 +317,7 @@ public class TestCompactionMapCommitFlow {
             .build();
 
     rewrite2.addFile(target2);
+    ConcatenationMaps.concatenate(table, rewrite2, List.of(source2), target2);
     rewrite2.commit();
 
     String mapLocation2 =
@@ -327,7 +331,7 @@ public class TestCompactionMapCommitFlow {
 
     // Verify the two maps are different
     assertThat(mapLocation2)
-        .as("Each rewrite should generate a unique compaction map")
+        .as("Each rewrite should write a unique compaction map")
         .isNotEqualTo(mapLocation1);
   }
 

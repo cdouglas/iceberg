@@ -127,11 +127,6 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
       rewrite.dataSequenceNumber(sequenceNumber);
     }
 
-    // Disable BaseRewriteFiles auto-generation: this commit manager controls map generation
-    if (shouldGenerateCompactionMap() && rewrite instanceof BaseRewriteFiles) {
-      ((BaseRewriteFiles) rewrite).disableAutoCompactionMap();
-    }
-
     if (compactionMap != null && rewrite instanceof BaseRewriteFiles) {
       ((BaseRewriteFiles) rewrite).setCompactionMap(compactionMap);
     }

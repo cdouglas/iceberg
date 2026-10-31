@@ -121,6 +121,7 @@ public class TestCompactionConflictDetection {
             .build();
 
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, sourceFiles, targetFile);
     rewrite.commit(); // Compaction commits successfully
 
     // 5. Try to commit the RowDelta - should fail with CompactionConflictException
@@ -312,6 +313,7 @@ public class TestCompactionConflictDetection {
             .build();
 
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, sourceFiles, targetFile);
     rewrite.commit(); // Compaction commits successfully
 
     // 5. Try to commit the RowDelta - should fail with CompactionConflictException
@@ -489,6 +491,7 @@ public class TestCompactionConflictDetection {
     RewriteFiles rewrite1 = table.newRewrite().validateFromSnapshot(snapshotS1);
     rewrite1.deleteFile(f1);
     rewrite1.addFile(f2);
+    ConcatenationMaps.concatenate(table, rewrite1, List.of(f1), f2);
     rewrite1.commit();
 
     // Second compaction: F2 -> F3 (S2 -> S3)
@@ -503,6 +506,7 @@ public class TestCompactionConflictDetection {
     RewriteFiles rewrite2 = table.newRewrite().validateFromSnapshot(snapshotS2);
     rewrite2.deleteFile(f2);
     rewrite2.addFile(f3);
+    ConcatenationMaps.concatenate(table, rewrite2, List.of(f2), f3);
     rewrite2.commit();
 
     // Try to commit - should detect chain F1 -> F2 -> F3
@@ -549,6 +553,7 @@ public class TestCompactionConflictDetection {
     RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
     rewrite.deleteFile(source);
     rewrite.addFile(target);
+    ConcatenationMaps.concatenate(table, rewrite, List.of(source), target);
     rewrite.commit();
 
     // Create validator and use findCompactionMaps()
@@ -591,7 +596,9 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    table.newRewrite().validateFromSnapshot(startingSnapshot).deleteFile(f1).addFile(f2).commit();
+    RewriteFiles rewrite1 =
+        table.newRewrite().validateFromSnapshot(startingSnapshot).deleteFile(f1).addFile(f2);
+    ConcatenationMaps.concatenate(table, rewrite1, List.of(f1), f2).commit();
 
     // Second compaction
     long snap2 = table.currentSnapshot().snapshotId();
@@ -602,7 +609,9 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    table.newRewrite().validateFromSnapshot(snap2).deleteFile(f2).addFile(f3).commit();
+    RewriteFiles rewrite2 =
+        table.newRewrite().validateFromSnapshot(snap2).deleteFile(f2).addFile(f3);
+    ConcatenationMaps.concatenate(table, rewrite2, List.of(f2), f3).commit();
 
     // Create validator and use findCompactionMapChain()
     TableMetadata metadata = ((BaseTable) table).operations().current();
@@ -945,7 +954,7 @@ public class TestCompactionConflictDetection {
     rowDelta.addDeletes(deleteFile);
 
     // First compaction: F1 → {T1, T2} (fan-out, first 100 rows to T1, next 100 to T2)
-    // This requires an explicit map since auto-generation only handles single-target rewrites.
+    // The fan-out map is written up front and handed to the rewrite by location.
     DataFile t1 =
         DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("/path/to/t1.parquet")
@@ -980,7 +989,7 @@ public class TestCompactionConflictDetection {
 
     rewrite1.commit();
 
-    // Second compaction: T1 → T3 (auto-generated map via single-target fallback)
+    // Second compaction: T1 → T3 (explicit concatenation map)
     long snap2 = table.currentSnapshot().snapshotId();
 
     DataFile t3 =
@@ -990,9 +999,11 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    table.newRewrite().validateFromSnapshot(snap2).deleteFile(t1).addFile(t3).commit();
+    RewriteFiles rewrite2 =
+        table.newRewrite().validateFromSnapshot(snap2).deleteFile(t1).addFile(t3);
+    ConcatenationMaps.concatenate(table, rewrite2, List.of(t1), t3).commit();
 
-    // Third compaction: T2 → T4 (auto-generated map via single-target fallback)
+    // Third compaction: T2 → T4 (explicit concatenation map)
     long snap3 = table.currentSnapshot().snapshotId();
 
     DataFile t4 =
@@ -1002,7 +1013,9 @@ public class TestCompactionConflictDetection {
             .withRecordCount(100)
             .build();
 
-    table.newRewrite().validateFromSnapshot(snap3).deleteFile(t2).addFile(t4).commit();
+    RewriteFiles rewrite3 =
+        table.newRewrite().validateFromSnapshot(snap3).deleteFile(t2).addFile(t4);
+    ConcatenationMaps.concatenate(table, rewrite3, List.of(t2), t4).commit();
 
     // Try to commit deletes referencing F1 — should detect chain with ALL 3 maps
     org.apache.iceberg.exceptions.ChainedCompactionMapsException chainedException =

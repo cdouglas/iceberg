@@ -112,6 +112,7 @@ public class TestCompactionConflictDetectionDV {
             .build();
 
     rewrite.addFile(targetFile);
+    ConcatenationMaps.concatenate(table, rewrite, sourceFiles, targetFile);
     rewrite.commit(); // Compaction commits successfully
 
     // 5. Try to commit the RowDelta - should fail with CompactionConflictException
