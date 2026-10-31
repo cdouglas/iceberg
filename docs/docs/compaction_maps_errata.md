@@ -174,7 +174,7 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 ### Issue
 
 A compaction map is a file in the table's metadata directory (`CompactionMaps.newCompactionMapFile`),
-and the only thing that names it is a manifest's `compaction_map_location` (field 521). No maintenance
+and the only thing that names it is a manifest's `compaction_map_location` (field 550). No maintenance
 operation read that field:
 
 - **Orphan-file removal deleted maps that were still in use.** `DeleteOrphanFilesSparkAction` (Spark
@@ -183,7 +183,7 @@ operation read that field:
   cutoff (three days by default in Spark) was deleted, including maps a live manifest still named.
 - **Snapshot expiry never deleted maps.** `IncrementalFileCleanup`, `ReachableFileCleanup` and
   `ExpireSnapshotsSparkAction` deleted unreachable manifests, manifest lists and content files, but
-  never looked at field 521. A map outlived the last snapshot that named it, indefinitely.
+  never looked at field 550. A map outlived the last snapshot that named it, indefinitely.
 
 ### Impact
 
