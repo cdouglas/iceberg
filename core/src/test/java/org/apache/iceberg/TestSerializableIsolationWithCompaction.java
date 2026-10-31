@@ -37,6 +37,7 @@ import org.apache.iceberg.inmemory.InMemoryCatalog;
 import org.apache.iceberg.io.DeleteWriteResult;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.OutputFileFactory;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,9 +51,9 @@ import org.junit.jupiter.api.io.TempDir;
  * <p>These tests verify two distinct concerns:
  *
  * <ul>
- *   <li><b>Read conflicts (SERIALIZABLE isolation):</b> When a transaction reads data that was
- *       replaced by a concurrent compaction, structural changes (with compaction maps) are allowed
- *       because the logical data is unchanged. Data changes (without maps) are rejected.
+ *   <li><b>Read conflicts (SERIALIZABLE isolation):</b> A concurrent compaction is never a read
+ *       conflict, with or without a compaction map. A replace adds no rows, so {@code
+ *       validateAddedDataFiles} checks only appends and overwrites.
  *   <li><b>Write conflicts (position delete rebasing):</b> Position deletes contain physical {@code
  *       (file_path, position)} tuples. When those files are compacted, the deletes must be rebased
  *       through the compaction map — regardless of SERIALIZABLE isolation. This is not a read
@@ -195,7 +196,7 @@ public class TestSerializableIsolationWithCompaction {
         CompactionMaps.newCompactionMapFile(table, table.currentSnapshot().snapshotId() + 1);
     CompactionMaps.write(map, mapFile);
 
-    // Set map location on rewrite (this makes it a structural change)
+    // Set map location on rewrite (this lets the validator remap deletes through it)
     if (rewrite instanceof BaseRewriteFiles) {
       ((BaseRewriteFiles) rewrite).setCompactionMapLocation(mapFile.location());
     }
@@ -214,16 +215,16 @@ public class TestSerializableIsolationWithCompaction {
     } else {
       // V3: DV references non-compacted file (referencedDataFile is set and not in
       // the compacted set). No conflict — the DV's target file was not compacted.
-      // The SERIALIZABLE read check also passes because the compaction has a map.
       assertDoesNotThrow(() -> rowDelta.commit());
       assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
     }
   }
 
   @TestTemplate
-  public void testSerializableIsolationWithoutCompactionMap() throws IOException {
-    // This test verifies that a SERIALIZABLE DELETE operation FAILS when concurrent
-    // REPLACE does NOT have a compaction map (actual data change)
+  public void testSerializableIsolationAllowsCompactionWithoutMap() throws IOException {
+    // This test verifies that a SERIALIZABLE DELETE operation SUCCEEDS when a concurrent
+    // REPLACE has no compaction map. A replace adds no rows, so it is not a read conflict.
+    // A delete on a file the replace removed still fails, through validateDataFilesExist.
 
     // 1. Create table with compaction maps DISABLED
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_serializable_without_map");
@@ -289,6 +290,30 @@ public class TestSerializableIsolationWithCompaction {
     }
     rowDelta.addDeletes(deleteFile);
 
+    // A second SERIALIZABLE RowDelta deletes from a file the compaction will remove
+    String compactedPath = sourceFiles.get(0).path().toString();
+    RowDelta compactedRowDelta =
+        table
+            .newRowDelta()
+            .validateFromSnapshot(startingSnapshot)
+            .conflictDetectionFilter(Expressions.alwaysTrue())
+            .validateNoConflictingDataFiles()
+            .validateDataFilesExist(ImmutableList.of(compactedPath));
+
+    DeleteFile compactedDeleteFile;
+    if (formatVersion == 3) {
+      compactedDeleteFile = writeDV(table, compactedPath, 10L);
+    } else {
+      compactedDeleteFile =
+          FileMetadata.deleteFileBuilder(table.spec())
+              .ofPositionDeletes()
+              .withPath("/path/to/compacted_deletes.parquet")
+              .withFileSizeInBytes(100)
+              .withRecordCount(1)
+              .build();
+    }
+    compactedRowDelta.addDeletes(compactedDeleteFile);
+
     // 4. Meanwhile, compact the data files (WITHOUT compaction map)
     RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshot);
     sourceFiles.forEach(rewrite::deleteFile);
@@ -301,17 +326,17 @@ public class TestSerializableIsolationWithCompaction {
             .withRecordCount(300)
             .build();
     rewrite.addFile(targetFile);
-
-    // Do NOT set compaction map location - simulating a data change REPLACE
     rewrite.commit();
 
-    // 5. Try to commit the RowDelta - should FAIL because no compaction map
-    // (This is a read conflict - actual data may have changed)
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> rowDelta.commit());
+    // 5. The RowDelta that does not touch compacted files SUCCEEDS
+    assertDoesNotThrow(() -> rowDelta.commit());
+    assertThat(table.currentSnapshot().operation()).isEqualTo(DataOperations.DELETE);
 
-    assertThat(exception.getMessage())
-        .contains("Found conflicting files from REPLACE operation without compaction map");
+    // 6. The RowDelta on a compacted file FAILS because its data file is gone
+    ValidationException exception =
+        assertThrows(ValidationException.class, () -> compactedRowDelta.commit());
+
+    assertThat(exception.getMessage()).contains("Cannot commit, missing data files");
   }
 
   @TestTemplate
@@ -406,97 +431,6 @@ public class TestSerializableIsolationWithCompaction {
   }
 
   @TestTemplate
-  public void testFilteredConflictDetection() throws IOException {
-    // This test verifies that compaction-aware validation respects conflict detection filters
-    // Only REPLACE operations affecting filtered data should cause conflicts
-
-    // 1. Create partitioned table
-    PartitionSpec spec = PartitionSpec.builderFor(SCHEMA).identity("id").build();
-    TableIdentifier tableIdent = TableIdentifier.of("db", "test_filtered");
-    Table table = catalog.createTable(tableIdent, SCHEMA, spec);
-
-    table
-        .updateProperties()
-        .set(TableProperties.FORMAT_VERSION, String.valueOf(formatVersion))
-        .set(TableProperties.COMPACTION_MAP_ENABLED, "false")
-        .commit();
-
-    // 2. Write data files in different partitions
-    DataFile partition1File =
-        DataFiles.builder(spec)
-            .withPath("/path/to/partition1.parquet")
-            .withPartitionPath("id=1")
-            .withFileSizeInBytes(1024)
-            .withRecordCount(100)
-            .withPartition(TestHelpers.Row.of(1))
-            .build();
-
-    DataFile partition2File =
-        DataFiles.builder(spec)
-            .withPath("/path/to/partition2.parquet")
-            .withPartitionPath("id=2")
-            .withFileSizeInBytes(1024)
-            .withRecordCount(100)
-            .withPartition(TestHelpers.Row.of(2))
-            .build();
-
-    AppendFiles append = table.newAppend();
-    append.appendFile(partition1File);
-    append.appendFile(partition2File);
-    append.commit();
-
-    long startingSnapshot = table.currentSnapshot().snapshotId();
-
-    // 3. Start a RowDelta transaction with SERIALIZABLE isolation and filter for partition 1
-    RowDelta rowDelta =
-        table
-            .newRowDelta()
-            .validateFromSnapshot(startingSnapshot)
-            .conflictDetectionFilter(Expressions.equal("id", 1)) // Only partition 1
-            .validateNoConflictingDataFiles();
-
-    // Add delete file (V2: position delete file, V3: DV referencing partition1File)
-    DeleteFile deleteFile;
-    if (formatVersion == 3) {
-      // DV referencing partition 1 file (which is NOT being compacted)
-      deleteFile =
-          writeDV(
-              table, partition1File.path().toString(), partition1File.partition(), 10L, 20L, 30L);
-    } else {
-      // V2: position delete file
-      deleteFile =
-          FileMetadata.deleteFileBuilder(spec)
-              .ofPositionDeletes()
-              .withPath("/path/to/deletes.parquet")
-              .withPartitionPath("id=1")
-              .withFileSizeInBytes(100)
-              .withRecordCount(10)
-              .withPartition(TestHelpers.Row.of(1))
-              .build();
-    }
-    rowDelta.addDeletes(deleteFile);
-
-    // 4. Compact partition 2 (WITHOUT compaction map)
-    RewriteFiles rewrite = table.newRewrite();
-    rewrite.deleteFile(partition2File);
-
-    DataFile compactedPartition2 =
-        DataFiles.builder(spec)
-            .withPath("/path/to/partition2_compacted.parquet")
-            .withPartitionPath("id=2")
-            .withFileSizeInBytes(1024)
-            .withRecordCount(100)
-            .withPartition(TestHelpers.Row.of(2))
-            .build();
-    rewrite.addFile(compactedPartition2);
-    rewrite.commit();
-
-    // 5. Commit should SUCCEED because compaction was in partition 2, not partition 1
-    // Even though there's no compaction map, it doesn't affect filtered data
-    assertDoesNotThrow(() -> rowDelta.commit());
-  }
-
-  @TestTemplate
   public void testSerializableIsolationWithChainedCompactions() throws IOException {
     // This test verifies that SERIALIZABLE isolation works correctly when multiple
     // compactions (a chain) occur between a transaction's start and commit.
@@ -506,7 +440,8 @@ public class TestSerializableIsolationWithCompaction {
     //   2. Compaction C1: creates S2 with compaction map M1 (F1 -> F12)
     //   3. Compaction C2: creates S3 with compaction map M2 (F12 -> F123)
     //   4. Transaction T1 commits at S3
-    //   -> Should SUCCEED because both C1 and C2 have compaction maps (structural changes)
+    //   -> V2: the multi-file position delete must be rebased through M1 and M2
+    //   -> V3: the DV targets a file neither compaction touched, so it SUCCEEDS
 
     // 1. Create table with compaction maps enabled
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_serializable_chained");
@@ -654,21 +589,11 @@ public class TestSerializableIsolationWithCompaction {
 
   @TestTemplate
   public void testSerializableIsolationChainValidatesEachCompaction() throws IOException {
-    // This test verifies that SERIALIZABLE isolation validates EACH compaction
-    // in a chain independently. Each REPLACE operation must have a compaction map
-    // for the transaction to succeed.
+    // This test verifies that the validator follows every compaction in a chain of three:
+    // two independent compactions, then a third that merges their outputs.
     //
-    // This is a positive test confirming the validation logic iterates through
-    // all REPLACE operations and checks each one. The
-    // testSerializableIsolationWithChainedCompactions
-    // test above proves that when all compactions have maps, the transaction succeeds.
-    //
-    // Note: Testing the negative case (partial chain missing map causing failure) requires
-    // integration tests with real manifests. The unit test infrastructure uses simplified
-    // metadata that may not trigger the full validation path.
-
-    // This test confirms the validation logic by checking that three sequential
-    // compactions (all with maps) allows the transaction to succeed.
+    // V2: the multi-file position delete must be rebased through the chained maps.
+    // V3: the DV targets a file no compaction touched, so the transaction succeeds.
 
     // 1. Create table
     TableIdentifier tableIdent = TableIdentifier.of("db", "test_serializable_triple_chain");

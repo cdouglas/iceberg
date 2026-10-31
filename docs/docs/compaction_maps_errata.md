@@ -213,13 +213,10 @@ still live. Three bugs followed. Each is reproduced in `TestCompactionMapValidat
   applied, under the rewrite's own snapshot id. That id is kept across retries, so a retry reuses
   the map already written.
 
-### Still Open
+### Follow-up
 
-- SERIALIZABLE validation (`MergingSnapshotProducer.validateCompactionAwareConflicts`) treats a replace
-  as layout-only if any of its data manifests names a map. Carried locations make every replace after a
-  mapped compaction look mapped. That falls back to upstream's behavior, which never validates a
-  replace's added files, rather than to anything less safe. Whether to keep the exemption at all is
-  undecided.
+- SERIALIZABLE validation also read map locations, and carried locations made every replace after a
+  mapped compaction look mapped. That check is removed; see 6.
 
 ### Code Location
 
@@ -294,6 +291,43 @@ both versions kept lineage. The bug was found by a snapshot-rewrite test onto a 
 
 ---
 
+## 6. SERIALIZABLE Row Deltas Conflicted With Compactions Without Maps ✅ FIXED
+
+### Issue
+
+`MergingSnapshotProducer.validateCompactionAwareConflicts` extended SERIALIZABLE validation to replace
+snapshots. A SERIALIZABLE row delta failed if a concurrent replace added files matching its conflict
+filter, unless one of the replace's data manifests named a compaction map. Upstream's
+`validateAddedDataFiles` checks only appends and overwrites, because a replace adds no rows. The check
+could only add failures to upstream's.
+
+### Impact
+
+- The check ran whether or not `write.compaction-map.enabled` was set. On a table without maps, the
+  default, a SERIALIZABLE merge-on-read DELETE, UPDATE or MERGE failed against any concurrent
+  compaction of files matching its filter, even when its deletes touched no compacted file.
+  Copy-on-write operations were unaffected; only `BaseRowDelta` ran the check.
+- Sorted and Z-order compactions, which write no maps by design, conflicted with every such row delta.
+- A map is not evidence that a compaction kept its rows, so the check did not catch a compaction that
+  lost or duplicated rows, with or without a map.
+- Carried map locations (see 4) made every replace after a mapped compaction look mapped, so the same
+  history passed or failed depending on manifests left by earlier compactions.
+
+### Resolution
+
+The check is removed, and SERIALIZABLE row deltas validate added data files as upstream does. A delete
+on a file that a compaction removed still fails. `CompactionMapValidator` throws
+`CompactionConflictException` when maps are enabled and the compaction wrote one, and
+`validateDataFilesExist` fails for any removed file the row delta declares.
+
+### Code Location
+
+- `core/src/main/java/org/apache/iceberg/BaseRowDelta.java` -- `validate`
+- `core/src/test/java/org/apache/iceberg/TestSerializableIsolationWithCompaction.java` --
+  `testSerializableIsolationAllowsCompactionWithoutMap`
+
+---
+
 ## Summary
 
 | # | Issue | Impact | Status | Priority |
@@ -302,6 +336,7 @@ both versions kept lineage. The bug was found by a snapshot-rewrite test onto a 
 | 2 | Automatic conflict resolution | Compactions ✅, Application transactions ❌ | Partially implemented | Low |
 | 4 | Validator collected carried-forward maps, out of order | Spurious conflicts for multi-file deletes; chained remaps stopped early or threw | Fixed | - |
 | 5 | Position-tracked compactions dropped v3 row lineage | Moved rows got new `_row_id`s; files written before the fix keep them | Fixed | - |
+| 6 | SERIALIZABLE row deltas conflicted with compactions without maps | Spurious conflicts, including on tables without maps | Fixed | - |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)

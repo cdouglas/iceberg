@@ -91,18 +91,14 @@ exact pipeline that crashed in bug 5. We have *no* evidence the 4.0 path handles
 identically — only that the source code is the same. A divergence wouldn't be visible until a
 production v4.0 user filed a bug.
 
-## SERIALIZABLE optimization soundness
-
-The compaction-map value claim is sharper than what the current fuzzer tests:
-
-> WITH compaction map → no conflict (structural change only).
-> WITHOUT compaction map → ValidationException (data change).
+## Compaction row preservation
 
 The current harness verifies **confluence**: `hash(compact + remap-tx) == hash(tx + compact)`.
-That's necessary but not sufficient. The soundness claim is **structural-only**: a compaction
-snapshot preserves the row multiset exactly (modulo chain deletes that compaction applies
-during scan). If that ever fails, the SERIALIZABLE-isolation exemption is unsound — a reader
-could see compaction "appear to delete" a row.
+That's necessary but not sufficient. A compaction is a replace, and every concurrent-commit
+validation in Iceberg trusts a replace to preserve the row multiset exactly (modulo chain deletes
+that compaction applies during scan). SERIALIZABLE validation skips replaces entirely, with or
+without a compaction map, so a compaction that loses or duplicates a row corrupts the table
+without any conflict.
 
 ### 9. Verify compaction preserves the row multiset (cheap)
 
@@ -112,25 +108,25 @@ and `hashPost = CorrectnessCheck.hash(table_at_replace)`. Assert
 legitimately change the multiset, so the comparison either needs to subtract the chain delete
 set from `hashPre`, or run only on `format=V3` scenarios where compaction is bin-pack-only
 (no MoR scan during compaction). Adds one hash per scenario; the assertion directly attacks the
-soundness invariant the SERIALIZABLE optimization relies on.
+invariant that every replace validation relies on.
 
 ### 10. Fuzz the SERIALIZABLE reader path (medium)
 
-Build scenarios where a transaction takes a snapshot, compaction commits with a compaction map,
-then the transaction tries to commit a `RowDelta.validateNoConflictingDataFiles().commit()`
-against the pre-compaction snapshot. The compaction-map-aware validator should allow the commit
-without `ValidationException`. Today this is covered by `TestSerializableIsolationWithCompaction`
-as a hand-written unit test but never by fuzzed inputs — race-condition shapes and oddly-positioned
+Build scenarios where a transaction takes a snapshot, a compaction commits, then the transaction
+tries to commit a `RowDelta.validateNoConflictingDataFiles().commit()` against the pre-compaction
+snapshot. The commit should succeed, with or without a compaction map, unless its deletes
+reference compacted files. Today this is covered by `TestSerializableIsolationWithCompaction` as
+a hand-written unit test but never by fuzzed inputs — race-condition shapes and oddly-positioned
 compaction maps don't get tested. Add a `serializableReader` op kind that captures a snapshot id
 pre-compaction, post-compaction attempts the no-op `RowDelta`, and asserts no exception. Run
-against scenarios *with* a compaction map (must succeed) and *without* (negative control —
-should throw `ValidationException`). Catches both false-positive conflicts (the optimization is
-too conservative) and false-negative conflicts (the optimization is unsound).
+against scenarios with and without a compaction map; both must succeed. A concurrent append
+matching the filter is the negative control and must throw `ValidationException`. Catches
+spurious conflicts from compactions and missed conflicts from appends.
 
 ## Ordering by value-per-effort
 
-If picking one or two: **9 (SERIALIZABLE multiset preservation)** first — cheap, directly attacks
-the soundness claim, no new op-kind plumbing — then **3 (compaction-map chains)** for the
+If picking one or two: **9 (compaction multiset preservation)** first — cheap, directly attacks
+the invariant every replace validation trusts, no new op-kind plumbing — then **3 (compaction-map chains)** for the
 documented-but-unfuzzed path. **10 (SERIALIZABLE reader)** has the highest invariant value but
 needs the most plumbing. **8 (Spark 4.0 CI)** is the only one that's a build-system task rather
 than a fuzzer change, so it slots into a different work block.
