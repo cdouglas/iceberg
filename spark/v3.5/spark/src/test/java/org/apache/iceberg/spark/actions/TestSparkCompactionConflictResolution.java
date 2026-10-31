@@ -51,7 +51,7 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
-import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.GenericFileWriterFactory;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
@@ -650,15 +650,14 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     EncryptedOutputFile encryptedOutputFile =
         EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY);
 
-    GenericAppenderFactory appenderFactory =
-        new GenericAppenderFactory(table.schema(), table.spec(), null, null, null);
     PositionDeleteWriter<Record> posDeleteWriter =
-        appenderFactory
-            .set(TableProperties.DEFAULT_WRITE_METRICS_MODE, "full")
-            .newPosDeleteWriter(encryptedOutputFile, FileFormat.PARQUET, dataFile.partition());
+        new GenericFileWriterFactory.Builder(table)
+            .deleteFileFormat(FileFormat.PARQUET)
+            .build()
+            .newPositionDeleteWriter(encryptedOutputFile, table.spec(), dataFile.partition());
 
     PositionDelete<Record> posDelete = PositionDelete.create();
-    posDeleteWriter.write(posDelete.set(dataFile.path().toString(), position, null));
+    posDeleteWriter.write(posDelete.set(dataFile.path().toString(), position));
 
     try {
       posDeleteWriter.close();
@@ -705,13 +704,14 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     OutputFileFactory fileFactory =
         OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PARQUET).build();
 
-    GenericAppenderFactory appenderFactory =
-        new GenericAppenderFactory(
-            table.schema(), table.spec(), ArrayUtil.toIntArray(equalityFieldIds), idSchema, null);
-
     EncryptedOutputFile outputFile = fileFactory.newOutputFile();
     EqualityDeleteWriter<Record> eqDeleteWriter =
-        appenderFactory.newEqDeleteWriter(outputFile, FileFormat.PARQUET, null);
+        new GenericFileWriterFactory.Builder(table)
+            .deleteFileFormat(FileFormat.PARQUET)
+            .equalityFieldIds(ArrayUtil.toIntArray(equalityFieldIds))
+            .equalityDeleteRowSchema(idSchema)
+            .build()
+            .newEqualityDeleteWriter(outputFile, table.spec(), null);
 
     Record deleteRecord = GenericRecord.create(idSchema).copy(ImmutableMap.of("id", deleteId));
 
@@ -741,14 +741,14 @@ public class TestSparkCompactionConflictResolution extends TestBase {
                     .newDataLocation(
                         FileFormat.PARQUET.addExtension(UUID.randomUUID().toString())));
 
-    GenericAppenderFactory appenderFactory =
-        new GenericAppenderFactory(table.schema(), table.spec(), null, null, null);
-
     DataWriter<Record> dataWriter =
-        appenderFactory.newDataWriter(
-            EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY),
-            FileFormat.PARQUET,
-            null);
+        new GenericFileWriterFactory.Builder(table)
+            .dataFileFormat(FileFormat.PARQUET)
+            .build()
+            .newDataWriter(
+                EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY),
+                table.spec(),
+                null);
 
     for (int i = startId; i < startId + count; i++) {
       Record record = GenericRecord.create(table.schema());

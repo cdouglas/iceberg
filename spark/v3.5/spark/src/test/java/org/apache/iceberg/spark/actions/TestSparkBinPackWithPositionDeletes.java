@@ -45,7 +45,7 @@ import org.apache.iceberg.actions.ActionsProvider;
 import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
-import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.GenericFileWriterFactory;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
 import org.apache.iceberg.deletes.DVFileWriter;
@@ -684,7 +684,8 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
     for (ManifestFile manifest :
         partitionedTable.currentSnapshot().dataManifests(partitionedTable.io())) {
       try (org.apache.iceberg.ManifestReader<DataFile> reader =
-          org.apache.iceberg.ManifestFiles.read(manifest, partitionedTable.io())) {
+          org.apache.iceberg.ManifestFiles.read(
+              manifest, partitionedTable.io(), partitionedTable.specs())) {
         reader.forEach(dataFiles::add);
       }
     }
@@ -936,17 +937,15 @@ public class TestSparkBinPackWithPositionDeletes extends TestBase {
     org.apache.iceberg.encryption.EncryptedOutputFile encryptedOutputFile =
         EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY);
 
-    GenericAppenderFactory appenderFactory =
-        new GenericAppenderFactory(table.schema(), table.spec(), null, null, null);
-
     PositionDeleteWriter<Record> posDeleteWriter =
-        appenderFactory
-            .set(TableProperties.DEFAULT_WRITE_METRICS_MODE, "full")
-            .newPosDeleteWriter(encryptedOutputFile, FileFormat.PARQUET, partition);
+        new GenericFileWriterFactory.Builder(table)
+            .deleteFileFormat(FileFormat.PARQUET)
+            .build()
+            .newPositionDeleteWriter(encryptedOutputFile, table.spec(), partition);
 
     PositionDelete<Record> posDelete = PositionDelete.create();
     for (Long position : positions) {
-      posDeleteWriter.write(posDelete.set(path, position, null));
+      posDeleteWriter.write(posDelete.set(path, position));
     }
 
     try {

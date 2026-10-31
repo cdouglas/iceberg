@@ -554,7 +554,7 @@ public class SparkCompactionConflictResolver implements Serializable {
     }
 
     PositionDelete<?> delete = PositionDelete.create();
-    delete.set(filePath, position, null);
+    delete.set(filePath, position);
 
     // Use the lenient remapper: positions that aren't in the compaction map (because the row was
     // already deleted by a chain PD that compaction applied and filtered out) return null. The

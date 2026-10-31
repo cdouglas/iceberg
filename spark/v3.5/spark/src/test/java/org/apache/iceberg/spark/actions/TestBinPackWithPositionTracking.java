@@ -51,7 +51,7 @@ import org.apache.iceberg.actions.ActionsProvider;
 import org.apache.iceberg.actions.BinPackRewriteFilePlanner;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.data.FileHelpers;
-import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.GenericFileWriterFactory;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
@@ -631,18 +631,17 @@ public class TestBinPackWithPositionTracking extends TestBase {
       EncryptedOutputFile encryptedOutputFile =
           EncryptedFiles.encryptedOutput(outputFile, EncryptionKeyMetadata.EMPTY);
 
-      GenericAppenderFactory appenderFactory =
-          new GenericAppenderFactory(table.schema(), table.spec(), null, null, null);
       PositionDeleteWriter<Record> posDeleteWriter =
-          appenderFactory
-              .set(TableProperties.DEFAULT_WRITE_METRICS_MODE, "full")
-              .newPosDeleteWriter(encryptedOutputFile, FileFormat.PARQUET, partition);
+          new GenericFileWriterFactory.Builder(table)
+              .deleteFileFormat(FileFormat.PARQUET)
+              .build()
+              .newPositionDeleteWriter(encryptedOutputFile, table.spec(), partition);
 
       PositionDelete<Record> posDelete = PositionDelete.create();
 
       int deletesInThisFile = Math.min(positionsPerFile, totalPositionsToDelete);
       for (int i = 0; i < deletesInThisFile; i++) {
-        posDeleteWriter.write(posDelete.set(path, currentPosition++, null));
+        posDeleteWriter.write(posDelete.set(path, currentPosition++));
       }
       totalPositionsToDelete -= deletesInThisFile;
 
