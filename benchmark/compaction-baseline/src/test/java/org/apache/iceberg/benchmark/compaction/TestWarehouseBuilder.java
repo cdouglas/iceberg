@@ -332,7 +332,8 @@ class TestWarehouseBuilder {
    * Root-cause test for fuzz seeds 1 and 4 (adversarial smoke 2026-05-14).
    *
    * <p>{@link WorkloadCommitter#writePositionDeleteFiles} writes V2 PD files via {@code
-   * GenericAppenderFactory.newPosDeleteWriter}, whose {@code PositionDeleteWriter.toDeleteFile()}
+   * GenericFileWriterFactory.newPositionDeleteWriter}, whose {@code
+   * PositionDeleteWriter.toDeleteFile()}
    * does not populate the {@code referenced_data_file} manifest field. Parquet's default 16-byte
    * truncation of column statistics makes the {@code file_path} lower/upper bounds straddle the
    * shared path prefix, so {@code ContentFileUtil.referencedDataFile}'s bounds fallback also

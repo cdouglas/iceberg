@@ -19,6 +19,7 @@
 package org.apache.iceberg.benchmark.compaction;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -431,8 +432,7 @@ public final class WarehouseBuilder {
           }
         }
       } catch (IOException e) {
-        throw new RuntimeException(
-            "Failed to read delete manifest " + manifest.path(), e);
+        throw new UncheckedIOException("Failed to read delete manifest " + manifest.path(), e);
       }
     }
   }

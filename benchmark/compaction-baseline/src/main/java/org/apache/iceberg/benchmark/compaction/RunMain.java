@@ -20,6 +20,7 @@ package org.apache.iceberg.benchmark.compaction;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -214,7 +215,7 @@ public final class RunMain {
                 Files.copy(source, target);
               }
             } catch (IOException e) {
-              throw new RuntimeException("Failed to copy " + source, e);
+              throw new UncheckedIOException("Failed to copy " + source, e);
             }
           });
     }

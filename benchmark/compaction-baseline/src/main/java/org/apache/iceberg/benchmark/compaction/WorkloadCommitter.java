@@ -31,9 +31,10 @@ import org.apache.iceberg.FileMetadata;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.GenericFileWriterFactory;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
+import org.apache.iceberg.data.parquet.GenericParquetWriter;
 import org.apache.iceberg.deletes.BaseDVFileWriter;
 import org.apache.iceberg.deletes.DVFileWriter;
 import org.apache.iceberg.deletes.EqualityDeleteWriter;
@@ -45,6 +46,7 @@ import org.apache.iceberg.io.DeleteWriteResult;
 import org.apache.iceberg.io.FileAppender;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.OutputFileFactory;
+import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 
 /**
@@ -81,7 +83,6 @@ public final class WorkloadCommitter {
       throw new IllegalArgumentException("rowsPerFile must be > 0, got " + rowsPerFile);
     }
 
-    GenericAppenderFactory appenderFactory = new GenericAppenderFactory(table.schema());
     GenericRecord template = GenericRecord.create(table.schema());
     Random rng = new Random(seed);
     List<DataFile> files = Lists.newArrayList();
@@ -94,7 +95,11 @@ public final class WorkloadCommitter {
       long byteLength;
 
       try (FileAppender<org.apache.iceberg.data.Record> appender =
-          appenderFactory.newAppender(outputFile, FileFormat.PARQUET)) {
+          Parquet.write(outputFile)
+              .schema(table.schema())
+              .createWriterFunc(GenericParquetWriter::create)
+              .overwrite()
+              .build()) {
         for (int i = 0; i < chunk; i++) {
           appender.add(WorkloadGenerator.nextRow(rng, template));
         }
@@ -188,7 +193,8 @@ public final class WorkloadCommitter {
       return new DeleteWriteResult(Lists.newArrayList());
     }
 
-    GenericAppenderFactory appenderFactory = new GenericAppenderFactory(table.schema());
+    GenericFileWriterFactory writerFactory =
+        new GenericFileWriterFactory.Builder(table).deleteFileFormat(FileFormat.PARQUET).build();
     List<DeleteFile> outputs = Lists.newArrayListWithCapacity(deletesByDataFile.size());
     for (Map.Entry<String, long[]> entry : deletesByDataFile.entrySet()) {
       String dataFilePath = entry.getKey();
@@ -198,11 +204,11 @@ public final class WorkloadCommitter {
       }
       EncryptedOutputFile encrypted = fileFactory.newOutputFile();
       PositionDeleteWriter<Record> writer =
-          appenderFactory.newPosDeleteWriter(encrypted, FileFormat.PARQUET, null /* partition */);
+          writerFactory.newPositionDeleteWriter(encrypted, table.spec(), null /* partition */);
       PositionDelete<Record> pd = PositionDelete.create();
       try {
         for (long pos : positions) {
-          writer.write(pd.set(dataFilePath, pos, null));
+          writer.write(pd.set(dataFilePath, pos));
         }
       } finally {
         writer.close();
@@ -241,16 +247,15 @@ public final class WorkloadCommitter {
     if (rowsPerOp <= 0) {
       throw new IllegalArgumentException("rowsPerOp must be > 0, got " + rowsPerOp);
     }
-    GenericAppenderFactory factory =
-        new GenericAppenderFactory(
-            table.schema(),
-            PartitionSpec.unpartitioned(),
-            equalityFieldIds,
-            eqDeleteRowSchema,
-            null);
     EncryptedOutputFile encrypted = fileFactory.newOutputFile();
     EqualityDeleteWriter<Record> writer =
-        factory.newEqDeleteWriter(encrypted, FileFormat.PARQUET, null /* partition */);
+        new GenericFileWriterFactory.Builder(table)
+            .deleteFileFormat(FileFormat.PARQUET)
+            .equalityFieldIds(equalityFieldIds)
+            .equalityDeleteRowSchema(eqDeleteRowSchema)
+            .build()
+            .newEqualityDeleteWriter(
+                encrypted, PartitionSpec.unpartitioned(), null /* partition */);
     java.util.Random rng = new java.util.Random(opSeed);
     GenericRecord template = GenericRecord.create(eqDeleteRowSchema);
     try {

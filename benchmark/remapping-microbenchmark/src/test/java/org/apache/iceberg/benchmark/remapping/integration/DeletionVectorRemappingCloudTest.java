@@ -314,7 +314,7 @@ public class DeletionVectorRemappingCloudTest {
     Set<Long> remappedPositions = new HashSet<>();
     for (int pos : inputBitmap) {
       PositionDelete<Record> delete = PositionDelete.create();
-      delete.set(sourceFile, pos, null);
+      delete.set(sourceFile, pos);
 
       @SuppressWarnings("unchecked")
       PositionDelete<Record> remapped = (PositionDelete<Record>) remapper.remapDeleteOrNull(delete);
@@ -376,7 +376,7 @@ public class DeletionVectorRemappingCloudTest {
 
       for (int pos : bitmap) {
         PositionDelete<Record> delete = PositionDelete.create();
-        delete.set(sourceFile, pos, null);
+        delete.set(sourceFile, pos);
 
         @SuppressWarnings("unchecked")
         PositionDelete<Record> remapped =
@@ -447,7 +447,7 @@ public class DeletionVectorRemappingCloudTest {
 
     for (int pos : inputBitmap) {
       PositionDelete<Record> delete = PositionDelete.create();
-      delete.set(sourceFile, pos, null);
+      delete.set(sourceFile, pos);
 
       @SuppressWarnings("unchecked")
       PositionDelete<Record> remapped = (PositionDelete<Record>) remapper.remapDeleteOrNull(delete);
@@ -504,7 +504,7 @@ public class DeletionVectorRemappingCloudTest {
     int remappedCount = 0;
     for (int pos : inputBitmap) {
       PositionDelete<Record> delete = PositionDelete.create();
-      delete.set(sourceFile, pos, null);
+      delete.set(sourceFile, pos);
 
       PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);
       assertThat(remapped).isNotNull();
@@ -555,7 +555,7 @@ public class DeletionVectorRemappingCloudTest {
 
     for (int pos : inputBitmap) {
       PositionDelete<Record> delete = PositionDelete.create();
-      delete.set(sourceFile, pos, null);
+      delete.set(sourceFile, pos);
 
       @SuppressWarnings("unchecked")
       PositionDelete<Record> remapped = (PositionDelete<Record>) remapper.remapDeleteOrNull(delete);
@@ -603,7 +603,7 @@ public class DeletionVectorRemappingCloudTest {
     Set<Long> remappedPositions = new HashSet<>();
     for (int pos : inputBitmap) {
       PositionDelete<Record> delete = PositionDelete.create();
-      delete.set(sourceFile, pos, null);
+      delete.set(sourceFile, pos);
 
       @SuppressWarnings("unchecked")
       PositionDelete<Record> remapped = (PositionDelete<Record>) remapper.remapDeleteOrNull(delete);

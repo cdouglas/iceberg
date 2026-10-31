@@ -277,7 +277,7 @@ public class PositionDeleteRemappingCloudTest {
     long[] testPositions = {0, 100, 500, 1000, 2500, 4999};
     for (long pos : testPositions) {
       PositionDelete<Record> delete = PositionDelete.create();
-      delete.set(sourceFile, pos, null);
+      delete.set(sourceFile, pos);
       deletes.add(delete);
     }
 
@@ -351,7 +351,7 @@ public class PositionDeleteRemappingCloudTest {
       // Delete positions 0, 100, 500 from each file
       for (long pos : new long[] {0, 100, 500}) {
         PositionDelete<Record> delete = PositionDelete.create();
-        delete.set(sourceFile, pos, null);
+        delete.set(sourceFile, pos);
         deletes.add(delete);
       }
     }
@@ -615,7 +615,7 @@ public class PositionDeleteRemappingCloudTest {
 
   private PositionDelete<Record> createDelete(String filePath, long position) {
     PositionDelete<Record> delete = PositionDelete.create();
-    delete.set(filePath, position, null);
+    delete.set(filePath, position);
     return delete;
   }
 
@@ -653,7 +653,7 @@ public class PositionDeleteRemappingCloudTest {
         String filePath = (String) record.getField("file_path");
         Long pos = (Long) record.getField("pos");
         PositionDelete<Record> delete = PositionDelete.create();
-        delete.set(filePath, pos, null);
+        delete.set(filePath, pos);
         deletes.add(delete);
       }
     }

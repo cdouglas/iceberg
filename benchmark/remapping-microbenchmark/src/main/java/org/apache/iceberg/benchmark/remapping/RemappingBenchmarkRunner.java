@@ -283,7 +283,7 @@ public class RemappingBenchmarkRunner {
         String filePath = (String) record.getField("file_path");
         Long pos = (Long) record.getField("pos");
         PositionDelete<Record> delete = PositionDelete.create();
-        delete.set(filePath, pos, null);
+        delete.set(filePath, pos);
         deletes.add(delete);
       }
     }

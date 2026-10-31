@@ -32,6 +32,9 @@ dependencies {
   implementation project(':iceberg-api')
   implementation project(':iceberg-core')
   implementation project(':iceberg-parquet')
+  // GenericParquetWriter::create names parquet's MessageType; iceberg-parquet keeps it off the
+  // compile classpath.
+  compileOnly libs.parquet.column
   implementation project(':iceberg-data')
   // Iceberg's relocated Guava (Lists, Sets, Maps, Preconditions, etc.) is required by checkstyle.
   implementation project(path: ':iceberg-bundled-guava', configuration: 'shadow')

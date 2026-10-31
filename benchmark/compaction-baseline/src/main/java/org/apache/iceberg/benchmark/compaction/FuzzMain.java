@@ -348,7 +348,7 @@ public final class FuzzMain {
 
   private static void writeJson(Path path, Object record) throws IOException {
     ObjectMapper mapper = new ObjectMapper();
-    mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+    mapper.setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
     mapper.enable(SerializationFeature.INDENT_OUTPUT);
     try (java.io.OutputStream out = Files.newOutputStream(path)) {
       mapper.writeValue(out, record);

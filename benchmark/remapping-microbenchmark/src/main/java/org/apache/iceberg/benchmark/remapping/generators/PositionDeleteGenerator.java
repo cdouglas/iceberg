@@ -99,7 +99,7 @@ public class PositionDeleteGenerator {
 
       for (long pos : positions) {
         PositionDelete<Record> delete = PositionDelete.create();
-        delete.set(filePath, pos, null);
+        delete.set(filePath, pos);
         deletes.add(delete);
       }
     }

@@ -278,7 +278,7 @@ public class EndToEndRemappingCloudTest {
 
       // Test remapping a position from this file
       PositionDelete<Record> delete = PositionDelete.create();
-      delete.set(sourceFile, 100L, null);
+      delete.set(sourceFile, 100L);
 
       PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);
       assertThat(remapped).isNotNull();
@@ -322,13 +322,13 @@ public class EndToEndRemappingCloudTest {
 
     // Test position in first target range
     PositionDelete<Record> delete1 = PositionDelete.create();
-    delete1.set(sourceFile, 5000L, null);
+    delete1.set(sourceFile, 5000L);
     PositionDelete<?> remapped1 = remapper.remapDeleteOrNull(delete1);
     assertThat(remapped1).isNotNull();
 
     // Test position in last target range
     PositionDelete<Record> delete2 = PositionDelete.create();
-    delete2.set(sourceFile, 25000L, null);
+    delete2.set(sourceFile, 25000L);
     PositionDelete<?> remapped2 = remapper.remapDeleteOrNull(delete2);
     assertThat(remapped2).isNotNull();
   }
@@ -469,7 +469,7 @@ public class EndToEndRemappingCloudTest {
         String filePath = (String) record.getField("file_path");
         Long pos = (Long) record.getField("pos");
         PositionDelete<Record> delete = PositionDelete.create();
-        delete.set(filePath, pos, null);
+        delete.set(filePath, pos);
         deletes.add(delete);
       }
     }
