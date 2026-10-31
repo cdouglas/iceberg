@@ -185,7 +185,7 @@ Compaction Conflict Resolution (Spark 3.5 and 4.0)
 - `RemappingAlgorithmSelector.java` - Smart automatic strategy selection
 
 *Schema/Metadata:*
-- `ManifestFile.java` - Extended with `compactionMapLocation` field (ID 521)
+- `ManifestFile.java` - Extended with `compactionMapLocation` field (ID 550)
 - `ManifestWriter.java` - Attaches map locations
 - `TableProperties.java` - Configuration properties
 

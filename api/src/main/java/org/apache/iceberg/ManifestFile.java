@@ -97,11 +97,11 @@ public interface ManifestFile {
           "Starting row ID to assign to new rows in ADDED data files");
   Types.NestedField COMPACTION_MAP_LOCATION =
       optional(
-          521,
+          550,
           "compaction_map_location",
           Types.StringType.get(),
           "Location URI of the compaction map file for this manifest");
-  // next ID to assign: 522
+  // next ID to assign: 521 (the prototype's 550 stays clear of upstream's manifest field IDs)
 
   Schema SCHEMA =
       new Schema(

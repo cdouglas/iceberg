@@ -458,7 +458,7 @@ try {
 - Used Avro serialization (not Java Serializable) to follow Iceberg patterns
 - Implemented StructLike, IndexedRecord, SchemaConstructable for Avro compatibility
 - Used InternalData.read() with setCustomType() for nested types
-- Added compactionMapLocation field (ID 521) to ManifestFile schema
+- Added compactionMapLocation field (ID 550) to ManifestFile schema
 
 ### Phase 2: Map Generation (Completed)
 
