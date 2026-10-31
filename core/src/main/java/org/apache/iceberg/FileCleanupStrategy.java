@@ -30,6 +30,7 @@ import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.SupportsBulkOperations;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.snaprewrite.SnapshotRewriteLedger;
 import org.apache.iceberg.util.Tasks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -146,6 +147,25 @@ abstract class FileCleanupStrategy {
                     e, "Failed to close manifest list: %s", snapshot.manifestListLocation());
               }
             });
+
+    return locations;
+  }
+
+  /**
+   * Returns the snapshot-rewrite ledgers that the given snapshots name, and the compaction maps
+   * those ledgers name. After reclaim, a ledger is the only thing that names the maps of the
+   * compactions inside its window.
+   */
+  protected Set<String> snapshotRewriteLocations(Iterable<Snapshot> snapshots) {
+    Set<String> ledgers = Sets.newHashSet();
+    for (Snapshot snapshot : snapshots) {
+      ledgers.addAll(SnapshotRewriteLedger.namedBy(snapshot));
+    }
+
+    Set<String> locations = Sets.newHashSet(ledgers);
+    for (String ledger : ledgers) {
+      locations.addAll(SnapshotRewriteLedger.compactionMapLocations(fileIO.newInputFile(ledger)));
+    }
 
     return locations;
   }

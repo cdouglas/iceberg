@@ -28,6 +28,7 @@ import java.util.function.Consumer;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.PropertyUtil;
 import org.apache.iceberg.util.SnapshotUtil;
@@ -263,10 +264,20 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
     deleteFiles(manifestsToDelete, "manifest");
     deleteFiles(manifestListsToDelete, "manifest list");
 
-    // a map is in use while any valid manifest names it, including a merged or filtered copy
+    // a map is in use while any valid manifest names it, including a merged or filtered copy, or a
+    // valid snapshot's ledger does; a ledger is in use while a valid snapshot names it
+    List<Snapshot> expiredSnapshots = Lists.newArrayList();
+    for (Snapshot snapshot : beforeExpiration.snapshots()) {
+      if (expiredIds.contains(snapshot.snapshotId())) {
+        expiredSnapshots.add(snapshot);
+      }
+    }
+
+    compactionMapsToDelete.addAll(snapshotRewriteLocations(expiredSnapshots));
     compactionMapsToDelete.removeAll(validCompactionMaps);
     if (!compactionMapsToDelete.isEmpty()) {
-      deleteFiles(compactionMapsToDelete, "compaction map");
+      compactionMapsToDelete.removeAll(snapshotRewriteLocations(snapshots));
+      deleteFiles(compactionMapsToDelete, "compaction map or ledger");
     }
 
     if (hasAnyStatisticsFiles(beforeExpiration)) {

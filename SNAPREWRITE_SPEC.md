@@ -1175,12 +1175,12 @@ rebuilt next to the original files' sizes from the ledger, and what the rewritte
    compaction whose source moved (§14.4), so such a history can be rewritten again. The refusal stays,
    for a map that does not name a file. The cost of reusing paths is any engine cache keyed by path:
    the rows are the same, but the bytes are not.
-2. **Keeping the ledger reachable: open** (user doc errata 14; compaction maps errata 3). Only a summary
-   string points to the ledger, so orphan-file removal would delete it. Compaction-map files are exposed the same way today: `ReachableFileUtil`
-   does not know about them either.
+2. **Keeping the ledger reachable: done** (user doc errata 14; compaction maps errata 3). Only a summary
+   string points to the ledger, and after reclaim only the ledger points to the window's maps.
+   `ReachableFileUtil.snapshotRewriteLocations` lists both, so orphan-file removal keeps them.
 3. **Expiry: refused, not skipped.** A window snapshot that expired after the rewrite makes its ledger
    refuse (`LEDGER_MISMATCH`). Skipping it would leave rows whose births fall in the expired snapshot
-   with nothing to assign them to. Collecting a ledger once all its snapshots have expired is open
+   with nothing to assign them to. Expiry deletes a ledger once no retained snapshot names it
    (errata 14).
 4. **A null `_last_updated_sequence_number`: refused** (P1c, `LAST_UPDATED_NOT_PRESERVED`). The rewrite
    stamps every file `C_B` holds at the shared base, and a null reads as the file's number, so each

@@ -28,6 +28,7 @@ import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.snaprewrite.SnapshotRewriteLedger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -166,6 +167,50 @@ public class ReachableFileUtil {
           locations.add(manifest.compactionMapLocation());
         }
       }
+    }
+
+    return locations;
+  }
+
+  /**
+   * Returns locations of the snapshot-rewrite ledgers that a table's snapshots name, and of the
+   * compaction maps those ledgers name.
+   *
+   * @param table table for which ledgers need to be listed
+   * @return the locations of ledgers and the compaction maps they name
+   */
+  public static Set<String> snapshotRewriteLocations(Table table) {
+    return snapshotRewriteLocations(table, null);
+  }
+
+  /**
+   * Returns locations of the snapshot-rewrite ledgers that the given snapshots' summaries name, and
+   * of the compaction maps those ledgers name.
+   *
+   * <p>A rewrite records each window snapshot's compaction map in its ledger, and reconstruction
+   * re-attaches the maps from there. Once the old layout is reclaimed, no manifest names those
+   * maps, so they are reachable through the ledger alone.
+   *
+   * @param table table for which ledgers need to be listed
+   * @param snapshotIds ids of snapshots whose summaries are read. If null, every snapshot's summary
+   *     is read.
+   * @return the locations of ledgers and the compaction maps they name
+   */
+  public static Set<String> snapshotRewriteLocations(Table table, Set<Long> snapshotIds) {
+    Iterable<Snapshot> snapshots = table.snapshots();
+    if (snapshotIds != null) {
+      snapshots = Iterables.filter(snapshots, s -> snapshotIds.contains(s.snapshotId()));
+    }
+
+    Set<String> ledgers = Sets.newHashSet();
+    for (Snapshot snapshot : snapshots) {
+      ledgers.addAll(SnapshotRewriteLedger.namedBy(snapshot));
+    }
+
+    Set<String> locations = Sets.newHashSet(ledgers);
+    for (String ledger : ledgers) {
+      locations.addAll(
+          SnapshotRewriteLedger.compactionMapLocations(table.io().newInputFile(ledger)));
     }
 
     return locations;

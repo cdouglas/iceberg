@@ -631,8 +631,8 @@ through the ledger the rewrite writes. Its limits:
 - **Removals need the parent.** A snapshot whose parent has expired lists nothing as removed. A deletion
   vector carried into the window from an expired snapshot comes back owned by the floor, at the floor's
   sequence number. Reads are unaffected.
-- **Table maintenance does not know about the ledger**, so orphan-file removal can delete it and
-  snapshot expiry never does. See errata 14.
+- **Table maintenance keeps the ledger** while a snapshot names it, and the maps it names, and
+  expiry deletes them once nothing does. See errata 14.
 - **It holds the window in memory.** See errata 15.
 - **Not byte-identical.** Files are rewritten by whatever writer the `SnapshotRewriteIO` uses, and
   manifests and manifest lists are new files.
@@ -685,25 +685,33 @@ point of the rewrite. The manifest lists cannot be shared at all; a snapshot is 
 Reducing this further would mean fewer, larger rewritten snapshots, which is the coalescing an
 `ARCHIVE` layout would permit and this prototype does not attempt.
 
-### 14. Ledgers are invisible to table maintenance
+### 14. Ledgers were invisible to table maintenance (fixed)
 
 A rewrite's ledger is a JSON file in the metadata directory, and the only thing that names it is the
-`snapshot-rewrite-ledger` key in each rewritten snapshot's summary. Table maintenance reads neither, so
-the ledger is treated the way compaction maps are
-([compaction maps errata 3](compaction_maps_errata.md#3-compaction-map-files-are-invisible-to-table-maintenance)):
+`snapshot-rewrite-ledger` key in each rewritten snapshot's summary. After reclaim, the ledger is also
+the only thing that names the maps of the compactions inside the window: the rewritten snapshots'
+manifests do not carry them, and reconstruction re-attaches them from the ledger. Table maintenance
+read neither:
 
-- **Orphan-file removal deletes it** once it is older than the action's cutoff, three days by default.
-  The rewritten snapshots still read correctly, but the window can no longer be reconstructed:
-  reconstruction fails when it tries to read the ledger. Reclaim becomes the point of no return, as it
-  is on v2.
-- **Snapshot expiry never deletes it.** Once a snapshot the ledger describes expires, reconstruction
+- **Orphan-file removal deleted the ledger** once it was older than the action's cutoff, three days by
+  default, and the window's maps with it. The rewritten snapshots still read correctly, but the window
+  could no longer be reconstructed. Reclaim became the point of no return, as it is on v2.
+- **Snapshot expiry never deleted it.** Once a snapshot the ledger describes expires, reconstruction
   refuses (`LEDGER_MISMATCH`), because rows first read in that snapshot have nowhere to go. From then on
-  the file is dead weight.
+  the file was dead weight.
 
-The same fix applies to both kinds of file: maintenance would treat what reachable snapshots name as
-reachable, and delete it once nothing does. For a ledger that means the summary key. Until then, run
-orphan-file removal with a cutoff longer than the history you intend to keep reversible, or not at all
-on a rewritten table.
+The fix is the one for [compaction maps errata 3](compaction_maps_errata.md): maintenance treats what
+reachable snapshots name as reachable, and deletes it once nothing does.
+
+- `ReachableFileUtil.snapshotRewriteLocations` lists the ledgers that snapshot summaries name, at any
+  prefix depth, and the maps each ledger's window names. Orphan-file removal in Spark and Flink keeps
+  them.
+- Expiry deletes a ledger once no retained snapshot names it, and a map it named once no retained
+  manifest or ledger does. A ledger whose window has partly expired already refuses, and it is kept
+  until the last snapshot that names it expires.
+
+`TestSnapshotRewriteReconstruct#orphanRemovalKeepsTheLedgerAndTheMapsItNames` and
+`#expiryDeletesALedgerOnceNoSnapshotNamesIt` pin both.
 
 ### 15. Reconstruction holds the window in memory
 

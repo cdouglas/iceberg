@@ -207,6 +207,9 @@ merged copy, which keeps the location (`ManifestFilterManager`, `ManifestMergeMa
 - Expiry deletes a map that a manifest of an expired snapshot names and no retained manifest does.
   Both core cleanup strategies read the location from the manifest list, which is now in their
   projection, and `ExpireSnapshotsSparkAction` compares maps along with the other files.
+- A snapshot-rewrite ledger, and the maps its window names, are reachable while a snapshot's summary
+  names the ledger. After reclaim, the ledger is the only thing that names those maps
+  ([rewrite errata 14](compaction_maps_rewrite.md#14-ledgers-were-invisible-to-table-maintenance-fixed)).
 
 Listing maps reads every snapshot's manifest list on the driver. Spark reads manifest lists
 distributed elsewhere, through the `all_manifests` metadata table, but that table has no compaction
