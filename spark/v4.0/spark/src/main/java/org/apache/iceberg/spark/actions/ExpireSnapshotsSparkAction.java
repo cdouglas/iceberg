@@ -241,7 +241,8 @@ public class ExpireSnapshotsSparkAction extends BaseSparkAction<ExpireSnapshotsS
     return contentFileDS(staticTable, snapshotIds)
         .union(manifestDS(staticTable, snapshotIds))
         .union(manifestListDS(staticTable, snapshotIds))
-        .union(statisticsFileDS(staticTable, snapshotIds));
+        .union(statisticsFileDS(staticTable, snapshotIds))
+        .union(compactionMapDS(staticTable, snapshotIds));
   }
 
   private Set<Long> findExpiredSnapshotIds(

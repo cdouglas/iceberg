@@ -132,6 +132,46 @@ public class ReachableFileUtil {
   }
 
   /**
+   * Returns locations of the compaction maps that a table's manifests name.
+   *
+   * @param table table for which compaction maps need to be listed
+   * @return the locations of compaction maps
+   */
+  public static Set<String> compactionMapLocations(Table table) {
+    return compactionMapLocations(table, null);
+  }
+
+  /**
+   * Returns locations of the compaction maps that the manifests of the given snapshots name.
+   *
+   * <p>A compaction map is a file in the metadata directory, and only a manifest's {@code
+   * compaction_map_location} names it. A map is reachable while a manifest of a reachable snapshot
+   * names it.
+   *
+   * @param table table for which compaction maps need to be listed
+   * @param snapshotIds ids of snapshots whose manifests are read. If null, the manifests of every
+   *     snapshot are read.
+   * @return the locations of compaction maps
+   */
+  public static Set<String> compactionMapLocations(Table table, Set<Long> snapshotIds) {
+    Iterable<Snapshot> snapshots = table.snapshots();
+    if (snapshotIds != null) {
+      snapshots = Iterables.filter(snapshots, s -> snapshotIds.contains(s.snapshotId()));
+    }
+
+    Set<String> locations = Sets.newHashSet();
+    for (Snapshot snapshot : snapshots) {
+      for (ManifestFile manifest : snapshot.dataManifests(table.io())) {
+        if (manifest.compactionMapLocation() != null) {
+          locations.add(manifest.compactionMapLocation());
+        }
+      }
+    }
+
+    return locations;
+  }
+
+  /**
    * Returns locations of all statistics files in a table.
    *
    * @param table table for which statistics files needs to be listed

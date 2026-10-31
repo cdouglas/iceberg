@@ -204,6 +204,12 @@ abstract class BaseSparkAction<ThisT> {
     return toFileInfoDS(statisticsFiles, STATISTICS_FILES);
   }
 
+  protected Dataset<FileInfo> compactionMapDS(Table table, Set<Long> snapshotIds) {
+    List<String> compactionMaps =
+        Lists.newArrayList(ReachableFileUtil.compactionMapLocations(table, snapshotIds));
+    return toFileInfoDS(compactionMaps, OTHERS);
+  }
+
   protected Dataset<FileInfo> otherMetadataFileDS(Table table) {
     return otherMetadataFileDS(table, false /* include all reachable old metadata locations */);
   }
@@ -217,6 +223,7 @@ abstract class BaseSparkAction<ThisT> {
     otherMetadataFiles.addAll(ReachableFileUtil.metadataFileLocations(table, recursive));
     otherMetadataFiles.add(ReachableFileUtil.versionHintLocation(table));
     otherMetadataFiles.addAll(ReachableFileUtil.statisticsFilesLocations(table));
+    otherMetadataFiles.addAll(ReachableFileUtil.compactionMapLocations(table));
     return toFileInfoDS(otherMetadataFiles, OTHERS);
   }
 

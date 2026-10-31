@@ -18,10 +18,13 @@
  */
 package org.apache.iceberg;
 
+import java.io.IOException;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 import org.apache.iceberg.exceptions.NotFoundException;
+import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -68,7 +71,8 @@ abstract class FileCleanupStrategy {
               "manifest_length",
               "partition_spec_id",
               "added_snapshot_id",
-              "deleted_data_files_count");
+              "deleted_data_files_count",
+              "compaction_map_location");
 
   protected CloseableIterable<ManifestFile> readManifests(Snapshot snapshot) {
     if (snapshot.manifestListLocation() != null) {
@@ -109,6 +113,47 @@ abstract class FileCleanupStrategy {
           .onFailure(
               (file, thrown) -> LOG.warn("Delete failed for {} file: {}", fileType, file, thrown))
           .run(deleteFuncToUse::accept);
+    }
+  }
+
+  /**
+   * Returns the compaction maps that the manifests of the given snapshots name.
+   *
+   * <p>A manifest list that cannot be read fails the call, so that a caller never deletes a map
+   * that an unread manifest names.
+   */
+  protected Set<String> compactionMapLocations(Iterable<Snapshot> snapshots) {
+    Set<String> locations = ConcurrentHashMap.newKeySet();
+    Tasks.foreach(snapshots)
+        .retry(3)
+        .stopOnFailure()
+        .throwFailureWhenFinished()
+        .executeWith(planExecutorService)
+        .onFailure(
+            (snapshot, exc) ->
+                LOG.warn(
+                    "Failed to determine compaction maps for snapshot {}",
+                    snapshot.snapshotId(),
+                    exc))
+        .run(
+            snapshot -> {
+              try (CloseableIterable<ManifestFile> manifests = readManifests(snapshot)) {
+                for (ManifestFile manifest : manifests) {
+                  addCompactionMap(locations, manifest);
+                }
+              } catch (IOException e) {
+                throw new RuntimeIOException(
+                    e, "Failed to close manifest list: %s", snapshot.manifestListLocation());
+              }
+            });
+
+    return locations;
+  }
+
+  /** Adds the location of the compaction map that {@code manifest} names, if it names one. */
+  protected static void addCompactionMap(Set<String> locations, ManifestFile manifest) {
+    if (manifest.compactionMapLocation() != null) {
+      locations.add(manifest.compactionMapLocation());
     }
   }
 
