@@ -192,7 +192,7 @@ public class TestCompactionConflictResolution {
 
     // For this test, we demonstrate the API:
     PositionDelete<?> exampleDelete = PositionDelete.create();
-    exampleDelete.set(fileToDelete.path().toString(), 50L, null);
+    exampleDelete.set(fileToDelete.path().toString(), 50L);
 
     PositionDelete<?> remappedDelete = remapper.remapDelete(exampleDelete);
     assertThat(remappedDelete).isNotNull();

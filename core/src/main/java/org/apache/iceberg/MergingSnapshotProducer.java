@@ -239,11 +239,14 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   /**
    * Returns all delete files that will be added in this snapshot.
    *
+   * <p>DVs for the same data file are listed as added; the commit merges them into one DV that
+   * references the same data file.
+   *
    * @return list of delete files across all partition specs
    */
   protected List<DeleteFile> addedDeleteFiles() {
-    List<DeleteFile> allDeleteFiles = Lists.newArrayList();
-    newDeleteFilesBySpec.values().forEach(allDeleteFiles::addAll);
+    List<DeleteFile> allDeleteFiles = Lists.newArrayList(v2Deletes);
+    dvsByReferencedFile.values().forEach(allDeleteFiles::addAll);
     return allDeleteFiles;
   }
 

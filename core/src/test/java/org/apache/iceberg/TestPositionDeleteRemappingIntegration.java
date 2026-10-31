@@ -57,12 +57,12 @@ public class TestPositionDeleteRemappingIntegration {
 
     // Create position deletes on source files
     List<PositionDelete<?>> originalDeletes = new ArrayList<>();
-    originalDeletes.add(PositionDelete.create().set(source1, 10L, null)); // -> target:10
-    originalDeletes.add(PositionDelete.create().set(source1, 50L, null)); // -> target:50
-    originalDeletes.add(PositionDelete.create().set(source2, 10L, null)); // -> target:110
-    originalDeletes.add(PositionDelete.create().set(source2, 80L, null)); // -> target:180
-    originalDeletes.add(PositionDelete.create().set(source3, 5L, null)); // -> target:205
-    originalDeletes.add(PositionDelete.create().set(source3, 95L, null)); // -> target:295
+    originalDeletes.add(PositionDelete.create().set(source1, 10L)); // -> target:10
+    originalDeletes.add(PositionDelete.create().set(source1, 50L)); // -> target:50
+    originalDeletes.add(PositionDelete.create().set(source2, 10L)); // -> target:110
+    originalDeletes.add(PositionDelete.create().set(source2, 80L)); // -> target:180
+    originalDeletes.add(PositionDelete.create().set(source3, 5L)); // -> target:205
+    originalDeletes.add(PositionDelete.create().set(source3, 95L)); // -> target:295
 
     // Remap deletes
     PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
@@ -126,7 +126,7 @@ public class TestPositionDeleteRemappingIntegration {
     for (String source : sources) {
       for (int i = 0; i < 10; i++) {
         long pos = random.nextInt(50);
-        originalDeletes.add(PositionDelete.create().set(source, pos, null));
+        originalDeletes.add(PositionDelete.create().set(source, pos));
       }
     }
 
@@ -167,9 +167,9 @@ public class TestPositionDeleteRemappingIntegration {
 
     // Create position deletes in various ranges
     List<PositionDelete<?>> originalDeletes = new ArrayList<>();
-    originalDeletes.add(PositionDelete.create().set(source, 10L, null)); // In first run -> 10
-    originalDeletes.add(PositionDelete.create().set(source, 110L, null)); // In second run -> 60
-    originalDeletes.add(PositionDelete.create().set(source, 220L, null)); // In third run -> 120
+    originalDeletes.add(PositionDelete.create().set(source, 10L)); // In first run -> 10
+    originalDeletes.add(PositionDelete.create().set(source, 110L)); // In second run -> 60
+    originalDeletes.add(PositionDelete.create().set(source, 220L)); // In third run -> 120
 
     // Remap deletes
     PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
@@ -186,32 +186,6 @@ public class TestPositionDeleteRemappingIntegration {
   }
 
   @Test
-  public void testRemappingPreservesRowData() {
-    // Test that remapping preserves optional row data
-    String source = "s3://bucket/source.parquet";
-    String target = "s3://bucket/target.parquet";
-
-    CompactionMapBuilder builder = new CompactionMapBuilder(1L, 2L);
-    builder.addFileMapping(source, target).addRun(0L, 0L, 100L);
-
-    CompactionMap map = builder.build();
-
-    // Create position delete with row data
-    String rowData = "test-row-data";
-    PositionDelete<String> deleteWithRow =
-        PositionDelete.<String>create().set(source, 50L, rowData);
-
-    // Remap delete
-    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
-    PositionDelete<?> remapped = remapper.remapDelete(deleteWithRow);
-
-    // Verify row data preserved
-    assertThat(remapped.path().toString()).isEqualTo(target);
-    assertThat(remapped.pos()).isEqualTo(50L);
-    assertThat(remapped.row()).isEqualTo(rowData);
-  }
-
-  @Test
   public void testNonCompactedFilesPassThrough() {
     // Test that deletes on non-compacted files pass through unchanged
     String compactedFile = "s3://bucket/compacted.parquet";
@@ -224,8 +198,8 @@ public class TestPositionDeleteRemappingIntegration {
     CompactionMap map = builder.build();
 
     // Create deletes on both compacted and non-compacted files
-    PositionDelete<?> deleteCompacted = PositionDelete.create().set(compactedFile, 50L, null);
-    PositionDelete<?> deleteNonCompacted = PositionDelete.create().set(nonCompactedFile, 50L, null);
+    PositionDelete<?> deleteCompacted = PositionDelete.create().set(compactedFile, 50L);
+    PositionDelete<?> deleteNonCompacted = PositionDelete.create().set(nonCompactedFile, 50L);
 
     // Remap deletes
     PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
@@ -268,7 +242,7 @@ public class TestPositionDeleteRemappingIntegration {
     for (String source : sources) {
       for (int i = 0; i < 10; i++) {
         long pos = random.nextInt((int) rowsPerFile);
-        originalDeletes.add(PositionDelete.create().set(source, pos, null));
+        originalDeletes.add(PositionDelete.create().set(source, pos));
       }
     }
 

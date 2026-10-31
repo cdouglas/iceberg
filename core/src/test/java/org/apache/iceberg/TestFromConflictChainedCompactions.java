@@ -124,7 +124,7 @@ public class TestFromConflictChainedCompactions {
     // Verify the remapper composes the chain correctly: F1[50] -> F2[50] -> F3[250]
     PositionDeleteRemapper remapper = remappers.get("F1");
     PositionDelete<?> delete = PositionDelete.create();
-    delete.set("F1", 50L, null);
+    delete.set("F1", 50L);
 
     PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);
     assertThat(remapped).isNotNull();
@@ -156,7 +156,7 @@ public class TestFromConflictChainedCompactions {
 
     // F1 should remap through F2 to F3
     PositionDelete<?> f1Delete = PositionDelete.create();
-    f1Delete.set("F1", 25L, null);
+    f1Delete.set("F1", 25L);
     PositionDelete<?> f1Remapped = remappers.get("F1").remapDeleteOrNull(f1Delete);
     assertThat(f1Remapped).isNotNull();
     assertThat(f1Remapped.path().toString()).isEqualTo("F3");
@@ -164,7 +164,7 @@ public class TestFromConflictChainedCompactions {
 
     // G1 should remap to G2 (only in M1, not chained further)
     PositionDelete<?> g1Delete = PositionDelete.create();
-    g1Delete.set("G1", 10L, null);
+    g1Delete.set("G1", 10L);
     PositionDelete<?> g1Remapped = remappers.get("G1").remapDeleteOrNull(g1Delete);
     assertThat(g1Remapped).isNotNull();
     assertThat(g1Remapped.path().toString()).isEqualTo("G2");
@@ -199,7 +199,7 @@ public class TestFromConflictChainedCompactions {
     assertThat(remappers).containsKey("F1");
 
     PositionDelete<?> delete = PositionDelete.create();
-    delete.set("F1", 25L, null);
+    delete.set("F1", 25L);
 
     PositionDelete<?> remapped = remappers.get("F1").remapDeleteOrNull(delete);
     assertThat(remapped).isNotNull();

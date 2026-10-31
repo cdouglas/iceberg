@@ -98,31 +98,6 @@ public class TestPositionDeleteRemapper {
   }
 
   @Test
-  public void testRemapDeleteWithRow() {
-    // Create a compaction map
-    Run run = new GenericRun(0L, 0L, 100L);
-    FileMapping mapping =
-        new GenericFileMapping(
-            "s3://bucket/file1.parquet", "s3://bucket/file2.parquet", ImmutableList.of(run));
-    CompactionMap map = new GenericCompactionMap(1L, 2L, ImmutableList.of(mapping));
-
-    PositionDeleteRemapper remapper = new PositionDeleteRemapper(map);
-
-    // Create a position delete with row data
-    String rowData = "test-row-data";
-    PositionDelete<String> delete =
-        PositionDelete.<String>create().set("s3://bucket/file1.parquet", 50L, rowData);
-
-    // Remap the delete
-    PositionDelete<?> remapped = remapper.remapDelete(delete);
-
-    // Should preserve the row data
-    assertThat(remapped.path().toString()).isEqualTo("s3://bucket/file2.parquet");
-    assertThat(remapped.pos()).isEqualTo(50L);
-    assertThat(remapped.row()).isEqualTo(rowData);
-  }
-
-  @Test
   public void testRemapDeleteWithMultipleRuns() {
     // Create a compaction map with multiple runs
     // file1: rows 0-99 -> file2 rows 0-99

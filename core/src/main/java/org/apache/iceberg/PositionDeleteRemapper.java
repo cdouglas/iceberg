@@ -381,7 +381,7 @@ public class PositionDeleteRemapper {
     String targetFile = run.targetFile() != null ? run.targetFile() : mapping.targetFile();
 
     // Create remapped delete with new file and position
-    return PositionDelete.create().set(targetFile, newPosition, delete.row());
+    return PositionDelete.create().set(targetFile, newPosition);
   }
 
   /**

@@ -200,7 +200,7 @@ public class TestCompactionMapValidatorHistory {
               Map<String, PositionDeleteRemapper> remappers =
                   PositionDeleteRemapper.fromConflict(chained, table.io());
               PositionDelete<?> delete = PositionDelete.create();
-              delete.set(source.location(), 5L, null);
+              delete.set(source.location(), 5L);
               PositionDelete<?> remapped =
                   remappers.get(source.location()).remapDeleteOrNull(delete);
               assertThat(remapped).isNotNull();

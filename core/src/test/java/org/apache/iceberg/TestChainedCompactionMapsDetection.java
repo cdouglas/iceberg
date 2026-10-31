@@ -89,7 +89,7 @@ public class TestChainedCompactionMapsDetection {
     // Create a position delete for F1
     org.apache.iceberg.deletes.PositionDelete<?> delete =
         org.apache.iceberg.deletes.PositionDelete.create();
-    delete.set("F1", 50L, null);
+    delete.set("F1", 50L);
 
     // Remap should go through the chain: F1[50] -> F2[50] -> F3[150]
     org.apache.iceberg.deletes.PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);
@@ -117,7 +117,7 @@ public class TestChainedCompactionMapsDetection {
     // Position 75 in F1 is not covered by the first map
     org.apache.iceberg.deletes.PositionDelete<?> delete =
         org.apache.iceberg.deletes.PositionDelete.create();
-    delete.set("F1", 75L, null);
+    delete.set("F1", 75L);
 
     // Should return null since position is not in the mapping
     org.apache.iceberg.deletes.PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);
@@ -137,7 +137,7 @@ public class TestChainedCompactionMapsDetection {
     // Position delete for file not in the chain
     org.apache.iceberg.deletes.PositionDelete<?> delete =
         org.apache.iceberg.deletes.PositionDelete.create();
-    delete.set("uncompacted_file.parquet", 50L, null);
+    delete.set("uncompacted_file.parquet", 50L);
 
     // Should return original delete unchanged
     org.apache.iceberg.deletes.PositionDelete<?> remapped = remapper.remapDeleteOrNull(delete);

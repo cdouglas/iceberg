@@ -112,6 +112,43 @@ public class GenericManifestFile extends SupportsIndexProjection
       Long existingRowsCount,
       Integer deletedFilesCount,
       Long deletedRowsCount,
+      Long firstRowId) {
+    this(
+        path,
+        length,
+        specId,
+        content,
+        sequenceNumber,
+        minSequenceNumber,
+        snapshotId,
+        partitions,
+        keyMetadata,
+        addedFilesCount,
+        addedRowsCount,
+        existingFilesCount,
+        existingRowsCount,
+        deletedFilesCount,
+        deletedRowsCount,
+        firstRowId,
+        null);
+  }
+
+  GenericManifestFile(
+      String path,
+      long length,
+      int specId,
+      ManifestContent content,
+      long sequenceNumber,
+      long minSequenceNumber,
+      Long snapshotId,
+      List<PartitionFieldSummary> partitions,
+      ByteBuffer keyMetadata,
+      Integer addedFilesCount,
+      Long addedRowsCount,
+      Integer existingFilesCount,
+      Long existingRowsCount,
+      Integer deletedFilesCount,
+      Long deletedRowsCount,
       Long firstRowId,
       String compactionMapLocation) {
     super(ManifestFile.schema().columns().size());
