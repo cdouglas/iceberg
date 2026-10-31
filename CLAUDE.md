@@ -101,7 +101,6 @@ When working on this codebase, prefer these approaches:
 - Full infrastructure for compaction-aware transactions (~18k lines)
 - Advanced remapping optimization (1.1-32x speedup via smart algorithm selection)
 - Comprehensive test coverage (256 tests) and empirical validation (324 JMH benchmarks)
-- SERIALIZABLE isolation enhancements
 - **Compaction conflict resolution** - Automatic remapping of concurrent position deletes during compaction
 - **Staged scan optimization** - Position tracking now uses efficient staged scans with explicit metadata column selection
 - **Multi-target mapping support** - Source files can span multiple target files with per-run target tracking
@@ -122,7 +121,6 @@ Position deletes reference rows via `(file_path, row_position)` tuples. When fil
 Compaction maps track position transformations from source to target files:
 - **Automatic remapping** of position deletes using efficient algorithms
 - **Conflict detection** when transactions reference compacted files
-- **SERIALIZABLE isolation** that distinguishes structural vs data changes
 
 ### High-Level Flow
 
@@ -140,11 +138,9 @@ Transaction with Position Deletes
             └─> Application remaps deletes using PositionDeleteRemapper
                 └─> Retry with remapped deletes
 
-SERIALIZABLE Isolation
-└─> MergingSnapshotProducer.validateCompactionAwareConflicts()
-    └─> Check REPLACE operations for compaction maps
-        └─> WITH maps → no conflict (structural change only)
-        └─> WITHOUT maps → ValidationException (data change)
+SERIALIZABLE Isolation (upstream, unchanged)
+└─> MergingSnapshotProducer.validateAddedDataFiles()
+    └─> Checks APPEND and OVERWRITE only; a REPLACE is never a read conflict
 
 Compaction Conflict Resolution (Spark 3.5 and 4.0)
 └─> SparkRewriteDataFilesCommitManager.commitFileGroups()
@@ -177,7 +173,7 @@ Compaction Conflict Resolution (Spark 3.5 and 4.0)
 - `PositionDeleteRemapper.java` - Remaps position deletes (includes smart selector)
 - `CompactionMapValidator.java` - Detects conflicts during commit
 - `BaseRowDelta.java` - Validation hooks
-- `MergingSnapshotProducer.java` - SERIALIZABLE isolation logic
+- `MergingSnapshotProducer.java` - `addedDeleteFiles()` for the validator
 
 *Remapping Optimization:*
 - `RemappingStrategy.java` - Interface with Factory pattern and bulk API
@@ -296,12 +292,12 @@ Compaction maps support **source files mapping to multiple target files** (e.g.,
 - Throws `CompactionConflictException` with compaction map for remapping
 - Application can remap and retry
 
-**B. Read Conflicts** (detected by MergingSnapshotProducer):
-- SERIALIZABLE transactions read data that was replaced
-- WITH compaction map → no conflict (structural change)
-- WITHOUT compaction map → ValidationException (data change)
+**B. Read Conflicts** (upstream SERIALIZABLE validation):
+- A concurrent compaction is never a read conflict, with or without a map
+- Only appends and overwrites matching the filter fail `validateAddedDataFiles`
+- The fork's map-aware replace check was removed Oct 31, 2026 (compaction maps errata 6)
 
-**Location**: `BaseRowDelta.java:219-238`, `MergingSnapshotProducer.java:430-508`
+**Location**: `BaseRowDelta.java:219-238`
 
 ## Remapping Algorithm Selection
 
@@ -454,7 +450,7 @@ return RangeQuery;                          // Default for sorted
 grep -r "buildCompactionMap" core/src/main/java/
 
 # Find validation logic
-grep -r "validateCompactionAwareConflicts" core/src/main/java/
+grep -r "validateNoCompactedReferences" core/src/main/java/
 
 # Find exception throwing sites
 grep -r "CompactionConflictException" core/src/main/java/
@@ -484,10 +480,6 @@ Jump directly to these sections instead of reading entire files:
 **Compaction Conflict Resolution (Spark 3.5 and 4.0)**:
 - `SparkRewriteDataFilesCommitManager.java:185-234` - detectAndResolveConflicts()
 - `SparkCompactionConflictResolver.java` - Read, remap, write position deletes and DVs
-
-**Isolation Logic**:
-- `MergingSnapshotProducer.java:430-508` - validateCompactionAwareConflicts()
-- `BaseRowDelta.java:160-168` - Integration point
 
 **Run Merging**:
 - `CompactionMapBuilder.java:89-118` - Automatic run merging logic
@@ -559,7 +551,7 @@ python3 visualize_results.py results_20260116_162342.csv
 grep -r "CompactionMap" core/src/main/java/
 
 # Find validation logic
-grep -r "validateCompactionAware" core/
+grep -r "CompactionMapValidator" core/
 
 # Find strategy implementations
 grep -l "implements RemappingStrategy" core/src/main/java/org/apache/iceberg/*.java

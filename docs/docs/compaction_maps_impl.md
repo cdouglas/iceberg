@@ -532,28 +532,22 @@ builder.addFileMapping("file1", "file2")
 5. Set location on BaseRewriteFiles via setCompactionMapLocation()
 6. Commit proceeds with map location attached to manifest
 
-### Phase 4.5: SERIALIZABLE Isolation Enhancements (Completed)
+### Phase 4.5: SERIALIZABLE Isolation Enhancements (Removed)
 
-**Files:**
-- `core/src/main/java/org/apache/iceberg/MergingSnapshotProducer.java` - Compaction-aware validation
-- `core/src/main/java/org/apache/iceberg/BaseRowDelta.java` - Integration with RowDelta
+This phase added `MergingSnapshotProducer.validateCompactionAwareConflicts()`, which failed a
+SERIALIZABLE row delta when a concurrent REPLACE without a compaction map added files matching its
+conflict filter. It was removed on October 31, 2026 (compaction maps errata 6):
 
-**Features:**
-- `validateCompactionAwareConflicts()` method for SERIALIZABLE isolation
-- Distinguishes between structural changes (with compaction maps) and data changes (without maps)
-- Only validates REPLACE operations when validateNoConflictingDataFiles() is called
-- Respects conflict detection filters for partition-aware validation
-- Clear error messages indicating whether remapping is possible
+- Upstream's `validateAddedDataFiles` checks only appends and overwrites, because a replace adds no
+  rows. The new check could only add failures, and those failures were spurious.
+- It ran on tables without compaction maps too, so SERIALIZABLE merge-on-read row deltas failed
+  against every concurrent compaction of files that matched their filter.
+- A map is not evidence that a compaction kept its rows, so the check did not catch a compaction that
+  lost or duplicated rows either way.
 
-**Isolation Semantics (read-conflict optimization only):**
-- **REPLACE with compaction map**: No read conflict (structural change only, data unchanged)
-- **REPLACE without compaction map**: Validation failure (potential data change)
-- **SNAPSHOT isolation**: REPLACE operations not checked (existing behavior)
-- **SERIALIZABLE isolation**: REPLACE operations checked with compaction awareness
-
-**Note:** This is independent of write-conflict checking. Position deletes that reference
-compacted files always trigger `CompactionConflictException` via `CompactionMapValidator`,
-regardless of isolation level. See Phase 4 above.
+SERIALIZABLE validation is now upstream's. Position deletes that reference compacted files still
+trigger `CompactionConflictException` via `CompactionMapValidator`, regardless of isolation level.
+See Phase 4 above.
 
 ### Phase 5: Compaction Integration - Core (Completed)
 
@@ -1100,11 +1094,10 @@ However, retrying an overlapping compaction will fail repeatedly because `refres
 - End-to-end resolution workflow
 
 **TestSerializableIsolationWithCompaction** - SERIALIZABLE isolation
-- DELETE operations succeed when REPLACE has compaction maps
-- DELETE operations fail when REPLACE lacks compaction maps
+- DELETE operations commit over a concurrent REPLACE, with or without a compaction map
+- A DELETE on a file the REPLACE removed fails `validateDataFilesExist`
 - SNAPSHOT isolation ignores REPLACE operations
-- Filtered conflict detection respects partition boundaries
-- Validation of isolation semantics
+- Multi-file position deletes must be rebased through chained compactions
 
 **TestRemappingStrategies** - Remapping algorithm optimization
 - 44 comprehensive tests covering all strategies
@@ -1183,7 +1176,7 @@ However, retrying an overlapping compaction will fail repeatedly because `refres
     - TestRemappingStrategiesIntegration: 4 integration tests
     - TestRemappingAlgorithmSelector: 15 selector tests
     - TestRemappingBenchmarkUtils: 22 tests
-  - **SERIALIZABLE isolation tests: 12 tests** (including chained compaction scenarios)
+  - **SERIALIZABLE isolation tests: 10 tests** (including chained compaction scenarios)
   - **Spark integration tests: 36 parameterized tests** (across format versions and file formats)
     - TestSparkCompactionConflictResolution: 18 tests per Spark version (Spark 3.5 and 4.0)
   - **JMH benchmarks: 8 benchmarks × 54 scenarios = 324+ benchmark configurations**

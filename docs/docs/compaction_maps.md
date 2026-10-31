@@ -56,7 +56,7 @@ In Apache Iceberg, **position deletes** identify deleted rows using `(file_path,
 
 **`write.delete.isolation-level`** (default: `"serializable"`)
 - Controls isolation level for DELETE/UPDATE/MERGE operations
-- `"serializable"`: Validates concurrent data changes with compaction awareness
+- `"serializable"`: Validates that no concurrent append or overwrite added data matching the operation's filter. Compactions add no data, so they never conflict
 - `"snapshot"`: No validation of concurrent operations
 
 **`write.compaction.resolve-delete-conflicts`** (default: `false`)
@@ -134,9 +134,9 @@ rowDelta.commit();
 
 This is **mandatory for correctness**: committing stale position deletes without remapping would silently delete wrong rows or fail to delete intended rows.
 
-### SERIALIZABLE Read-Conflict Optimization
+### SERIALIZABLE Read Conflicts
 
-Separately, SERIALIZABLE isolation checks whether concurrent data changes conflict with a transaction's reads. Compaction maps allow this check to distinguish structural changes (compaction) from logical changes (inserts/deletes):
+Separately, SERIALIZABLE isolation checks whether concurrent commits added data that a transaction should have read. A compaction is a replace, which adds no rows, so it is never a read conflict, with or without a compaction map. Iceberg checks only appends and overwrites:
 
 ```java
 // Start DELETE transaction with SERIALIZABLE isolation
@@ -147,13 +147,12 @@ RowDelta rowDelta = table.newRowDelta()
 
 rowDelta.addDeletes(deleteFile);
 
-// Concurrent compaction occurred (REPLACE operation):
-// - WITH compaction map: no read conflict (structural change only)
-// - WITHOUT compaction map: ValidationException (potential data change)
+// Concurrent compaction occurred (REPLACE operation): no read conflict
+// Concurrent append or overwrite matching the filter: ValidationException
 rowDelta.commit();
 ```
 
-**Note:** Both checks run independently. A transaction can pass the SERIALIZABLE read check (compaction is structural) but still fail the write check (position deletes reference compacted files). The write-conflict `CompactionConflictException` must always be handled.
+**Note:** Compaction maps matter only for the write check. A transaction passes the SERIALIZABLE read check over any compaction but still fails the write check if its position deletes reference compacted files. The write-conflict `CompactionConflictException` must always be handled.
 
 ## Handling Compaction Conflicts in Application Transactions
 
