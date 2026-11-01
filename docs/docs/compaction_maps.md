@@ -336,6 +336,8 @@ try {
 
 - **Spark 3.5:** Position tracking fully implemented
 - **Spark 4.0:** Position tracking fully implemented
+- **Spark local mode only:** Tasks record position mappings in their own JVM, so on a cluster the
+  driver sees none and compactions write no map ([errata 14](compaction_maps_errata.md)).
 - **Other engines:** Compaction map infrastructure works (read/validate/remap), but generation requires Spark-specific position tracking
 
 ### 2. Design Scope: Order-Preserving Compactions
@@ -357,7 +359,7 @@ Order-changing operations are **not appropriate** for compaction maps because:
 **How Merge Compactions Work:**
 
 When compacting files with position deletes:
-1. Normal scan reads data files and applies position deletes (standard Iceberg behavior)
+1. The rewrite's scan reads data files and applies position deletes (standard Iceberg behavior)
 2. Only surviving rows appear in the DataFrame with `_file` and `_pos` metadata
 3. PositionTrackingDataWriter records mappings only for surviving rows
 4. Gaps in compaction map runs automatically represent deleted positions

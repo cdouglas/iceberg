@@ -590,6 +590,36 @@ them. Sort and Z-order rewrites run and write no map.
 
 ---
 
+## 14. Position Mappings Reach the Driver Only in Local Mode
+
+### Issue
+
+`PositionTrackingDataWriter` runs in each Spark task and records the positions it moves in
+`PositionMappingCoordinator`, a per-JVM singleton. The rewrite runner reads the mappings from the
+driver's singleton when the group finishes. Nothing carries them from an executor to the driver: the
+task's commit message holds only its data files. Every test and benchmark runs Spark in local mode,
+where tasks share the driver's JVM.
+
+### Impact
+
+On a cluster the driver sees no mappings, so a compaction commits without a map, silently. Nothing is
+wrong as a result: a concurrent delete on a replaced file conflicts as it would on a table without
+maps, and the transaction retries. But the feature does nothing.
+
+### Status
+
+Open. The fix is to return each task's mappings in its commit message, or through an accumulator,
+and build the map on the driver from those.
+
+### Code Location
+
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/source/PositionTrackingDataWriter.java`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/PositionMappingCoordinator.java`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/actions/SparkDataFileRewriteRunner.java` --
+  `rewrite`
+
+---
+
 ## Summary
 
 | # | Issue | Impact | Status | Priority |
@@ -607,6 +637,7 @@ them. Sort and Z-order rewrites run and write no map.
 | 11 | Bin-pack rewrites failed outside Hadoop tables | `rewrite_data_files` failed in Hive, REST and session catalogs | Fixed | - |
 | 12 | Spark 4.0 replaced tracked mappings with concatenations | Maps of files with deletes remapped positions to the wrong rows | Fixed | - |
 | 13 | Sort and Z-order rewrites failed on tables with maps | Only bin-pack could compact a table with maps | Fixed | - |
+| 14 | Position mappings reach the driver only in local mode | On a cluster, compactions write no map | Open | High |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)

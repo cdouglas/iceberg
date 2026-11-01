@@ -600,6 +600,7 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 **Pending Work**:
 1. Application transaction conflict resolution (BaseRowDelta auto-remapping)
+2. Position mappings reach the driver only in Spark local mode (errata 14)
 
 ---
 
