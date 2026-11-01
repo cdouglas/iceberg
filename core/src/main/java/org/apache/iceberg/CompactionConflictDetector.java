@@ -24,6 +24,8 @@ import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.util.ContentFileUtil;
+import org.apache.iceberg.util.DeleteFileSet;
+import org.apache.iceberg.util.Pair;
 import org.apache.iceberg.util.SnapshotUtil;
 
 /**
@@ -118,27 +120,38 @@ public class CompactionConflictDetector {
         SnapshotUtil.ancestorsBetween(
             currentSnapshot.snapshotId(), startingSnapshotId, base::snapshot);
 
+    DeleteFileSet removed = DeleteFileSet.create();
+    List<Pair<Long, SnapshotConflicts>> found = Lists.newArrayList();
     for (Snapshot snapshot : snapshots) {
-      SnapshotConflicts snapshotConflicts =
-          findConflictingDeletesInSnapshot(snapshot, filesToCompact);
+      found.add(
+          Pair.of(
+              snapshot.snapshotId(),
+              findConflictingDeletesInSnapshot(snapshot, filesToCompact, removed)));
+    }
+
+    // A delete file that a later commit removed is no longer live, so it is not a conflict
+    for (Pair<Long, SnapshotConflicts> snapshotConflicts : found) {
+      long snapshotId = snapshotConflicts.first();
 
       // Process file-scoped conflicts
-      if (!snapshotConflicts.fileScopedConflicts.isEmpty()) {
-        List<DeleteFile> deleteFiles = Lists.newArrayList();
-        for (DeleteFileWithReference conflict : snapshotConflicts.fileScopedConflicts) {
-          builder.addConflict(
-              conflict.deleteFile, snapshot.snapshotId(), conflict.referencedDataFile);
+      List<DeleteFile> deleteFiles = Lists.newArrayList();
+      for (DeleteFileWithReference conflict : snapshotConflicts.second().fileScopedConflicts) {
+        if (!removed.contains(conflict.deleteFile)) {
+          builder.addConflict(conflict.deleteFile, snapshotId, conflict.referencedDataFile);
           deleteFiles.add(conflict.deleteFile);
         }
-        builder.addSnapshotDeletes(snapshot.snapshotId(), deleteFiles);
       }
+      builder.addSnapshotDeletes(snapshotId, deleteFiles);
 
       // Process multi-file position deletes (need content-based resolution)
-      for (DeleteFile multiFileDelete : snapshotConflicts.multiFilePositionDeletes) {
-        builder.addMultiFilePositionDelete(multiFileDelete);
+      for (DeleteFile multiFileDelete : snapshotConflicts.second().multiFilePositionDeletes) {
+        if (!removed.contains(multiFileDelete)) {
+          builder.addMultiFilePositionDelete(multiFileDelete);
+        }
       }
     }
 
+    removed.forEach(builder::addRemovedDeleteFile);
     return builder.build();
   }
 
@@ -174,7 +187,7 @@ public class CompactionConflictDetector {
    * @return conflicts found in the snapshot (both file-scoped and multi-file)
    */
   private SnapshotConflicts findConflictingDeletesInSnapshot(
-      Snapshot snapshot, Set<String> filesToCompact) {
+      Snapshot snapshot, Set<String> filesToCompact, DeleteFileSet removed) {
     List<DeleteFileWithReference> fileScopedConflicts = Lists.newArrayList();
     List<DeleteFile> multiFileDeletes = Lists.newArrayList();
 
@@ -184,7 +197,8 @@ public class CompactionConflictDetector {
     for (ManifestFile manifestFile : deleteManifests) {
       // Only check manifests added by this snapshot
       if (manifestFile.snapshotId() != null && manifestFile.snapshotId() == snapshot.snapshotId()) {
-        ManifestConflicts manifestConflicts = findConflictsInManifest(manifestFile, filesToCompact);
+        ManifestConflicts manifestConflicts =
+            findConflictsInManifest(manifestFile, filesToCompact, removed);
         fileScopedConflicts.addAll(manifestConflicts.fileScopedConflicts);
         multiFileDeletes.addAll(manifestConflicts.multiFilePositionDeletes);
       }
@@ -222,7 +236,7 @@ public class CompactionConflictDetector {
    * @return conflicts found in the manifest (both file-scoped and multi-file)
    */
   private ManifestConflicts findConflictsInManifest(
-      ManifestFile manifestFile, Set<String> filesToCompact) {
+      ManifestFile manifestFile, Set<String> filesToCompact, DeleteFileSet removed) {
     List<DeleteFileWithReference> fileScopedConflicts = Lists.newArrayList();
     List<DeleteFile> multiFileDeletes = Lists.newArrayList();
 
@@ -230,8 +244,9 @@ public class CompactionConflictDetector {
         ManifestFiles.readDeleteManifest(manifestFile, io, null)) {
 
       for (ManifestEntry<DeleteFile> entry : reader.entries()) {
-        // Only check ADDED entries (not EXISTING or DELETED)
-        if (entry.status() == ManifestEntry.Status.ADDED) {
+        if (entry.status() == ManifestEntry.Status.DELETED) {
+          removed.add(entry.file().copy(false));
+        } else if (entry.status() == ManifestEntry.Status.ADDED) {
           // ManifestReader.entries() reuses the same ManifestEntry instance (and therefore the
           // same DeleteFile instance) across iterations to avoid per-row allocations. Copy
           // before retaining so the elements we add to fileScopedConflicts / multiFileDeletes

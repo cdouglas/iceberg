@@ -39,7 +39,10 @@ import org.apache.iceberg.actions.RewriteFileGroup;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.ValidationException;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.DataFileSet;
 import org.apache.iceberg.util.DeleteFileSet;
@@ -128,13 +131,16 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
     }
 
     // Check for conflicts and potentially resolve them
-    List<DeleteFile> remappedDeleteFiles = null;
+    Resolution resolution = null;
     if (shouldResolveDeleteConflicts() && compactionMap != null) {
-      remappedDeleteFiles = detectAndResolveConflicts(compactionMap, rewrittenDataFiles);
+      resolution = detectAndResolveConflicts(compactionMap, rewrittenDataFiles);
     }
 
-    // Perform the commit
-    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshotId);
+    // A resolution accounts for every delete committed up to the snapshot it read, so the rewrite
+    // only validates the deletes committed after that snapshot
+    long validateFromSnapshotId =
+        resolution != null ? resolution.resolvedSnapshotId : startingSnapshotId;
+    RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(validateFromSnapshotId);
     if (useStartingSequenceNumber) {
       long sequenceNumber = table.snapshot(startingSnapshotId).sequenceNumber();
       rewrite.dataSequenceNumber(sequenceNumber);
@@ -146,12 +152,21 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
 
     rewrittenDataFiles.forEach(rewrite::deleteFile);
     addedDataFiles.forEach(rewrite::addFile);
-    danglingDVs.forEach(rewrite::deleteFile);
+    for (DeleteFile dv : danglingDVs) {
+      // a concurrent commit may already have replaced a rewritten file's DV
+      if (resolution == null || !resolution.removedDeleteFiles.contains(dv)) {
+        rewrite.deleteFile(dv);
+      }
+    }
 
-    // Add remapped delete files if any
-    if (remappedDeleteFiles != null && !remappedDeleteFiles.isEmpty()) {
-      remappedDeleteFiles.forEach(rewrite::addFile);
-      LOG.info("Including {} remapped delete files in commit", remappedDeleteFiles.size());
+    // Each remapped delete file replaces the conflicting deletes it came from
+    if (resolution != null) {
+      resolution.replacedDeleteFiles.forEach(rewrite::deleteFile);
+      resolution.remappedDeleteFiles.forEach(rewrite::addFile);
+      LOG.info(
+          "Replacing {} conflicting delete files with {} remapped delete files",
+          resolution.replacedDeleteFiles.size(),
+          resolution.remappedDeleteFiles.size());
     }
 
     snapshotProperties.forEach(rewrite::set);
@@ -160,7 +175,15 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
       rewrite.toBranch(branch);
     }
 
-    rewrite.commit();
+    try {
+      rewrite.commit();
+    } catch (RuntimeException e) {
+      if (resolution != null && e instanceof CleanableFailure) {
+        resolution.remappedDeleteFiles.forEach(file -> table.io().deleteFile(file.location()));
+      }
+
+      throw e;
+    }
   }
 
   @Override
@@ -185,13 +208,18 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
   }
 
   /**
-   * Detects conflicts with concurrent position delete transactions and resolves them.
+   * Detects deletes committed to the rewritten data files since the rewrite started, and remaps
+   * them to the files the rewrite writes.
+   *
+   * <p>A deletion vector or position delete file that references only rewritten data files is
+   * replaced by its remapped copy. A position delete file that references rewritten data files and
+   * others cannot be replaced by a rewrite, so the rewrite fails.
    *
    * @param compactionMap the compaction map describing file transformations
    * @param rewrittenDataFiles the data files being rewritten
-   * @return list of new delete files with remapped positions, or null if no conflicts
+   * @return the resolution, or null if no snapshot was committed since the rewrite started
    */
-  private List<DeleteFile> detectAndResolveConflicts(
+  private Resolution detectAndResolveConflicts(
       CompactionMap compactionMap, DataFileSet rewrittenDataFiles) {
     // Refresh table to get the latest snapshot of the branch the rewrite commits to
     table.refresh();
@@ -199,6 +227,14 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
 
     if (currentSnapshot == null || currentSnapshot.snapshotId() == startingSnapshotId) {
       LOG.debug("No intervening snapshots, skipping conflict detection");
+      return null;
+    }
+
+    // Without the starting sequence number, the rewritten files would be newer than equality
+    // deletes committed since the rewrite started, which would stop applying to them. Only the
+    // rewrite's own validation from the starting snapshot catches that.
+    if (!useStartingSequenceNumber) {
+      LOG.info("Not resolving delete conflicts: the rewrite does not use the starting sequence");
       return null;
     }
 
@@ -220,7 +256,11 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
 
     if (!conflicts.hasConflicts()) {
       LOG.debug("No delete conflicts detected");
-      return null;
+      return new Resolution(
+          currentSnapshot.snapshotId(),
+          ImmutableList.of(),
+          ImmutableList.of(),
+          conflicts.removedDeleteFiles());
     }
 
     // Check if we should resolve based on limits
@@ -237,9 +277,53 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
     LOG.info(
         "Detected {} conflicting delete files, attempting resolution", conflicts.deleteFileCount());
 
-    // Resolve conflicts using the Spark resolver
     SparkCompactionConflictResolver resolver = new SparkCompactionConflictResolver(spark, table);
-    return resolver.resolve(compactionMap, conflicts);
+    List<DeleteFile> replaced = Lists.newArrayList(conflicts.conflictingDeleteFiles());
+    if (conflicts.hasMultiFilePositionDeletes()) {
+      Map<String, Set<String>> referenced =
+          resolver.referencedDataFiles(conflicts.multiFilePositionDeletes());
+      for (DeleteFile deleteFile : conflicts.multiFilePositionDeletes()) {
+        Set<String> dataFiles = referenced.getOrDefault(deleteFile.location(), ImmutableSet.of());
+        Set<String> rewritten = Sets.intersection(dataFiles, sourceFilePaths);
+        if (rewritten.isEmpty()) {
+          continue;
+        }
+
+        ValidationException.check(
+            rewritten.size() == dataFiles.size(),
+            "Cannot resolve position delete file %s: it references %s rewritten data files and %s "
+                + "others, and a rewrite can only replace deletes of the files it rewrites",
+            deleteFile.location(),
+            rewritten.size(),
+            dataFiles.size() - rewritten.size());
+        replaced.add(deleteFile);
+      }
+    }
+
+    // Resolve conflicts using the Spark resolver
+    List<DeleteFile> remapped =
+        replaced.isEmpty() ? ImmutableList.of() : resolver.resolve(compactionMap, replaced);
+    return new Resolution(
+        currentSnapshot.snapshotId(), replaced, remapped, conflicts.removedDeleteFiles());
+  }
+
+  /** The deletes a rewrite replaces, and the snapshot through which it accounted for them. */
+  private static class Resolution {
+    private final long resolvedSnapshotId;
+    private final List<DeleteFile> replacedDeleteFiles;
+    private final List<DeleteFile> remappedDeleteFiles;
+    private final Set<DeleteFile> removedDeleteFiles;
+
+    private Resolution(
+        long resolvedSnapshotId,
+        List<DeleteFile> replacedDeleteFiles,
+        List<DeleteFile> remappedDeleteFiles,
+        Set<DeleteFile> removedDeleteFiles) {
+      this.resolvedSnapshotId = resolvedSnapshotId;
+      this.replacedDeleteFiles = replacedDeleteFiles;
+      this.remappedDeleteFiles = remappedDeleteFiles;
+      this.removedDeleteFiles = removedDeleteFiles;
+    }
   }
 
   /**

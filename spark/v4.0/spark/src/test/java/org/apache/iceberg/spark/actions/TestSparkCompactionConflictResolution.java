@@ -19,15 +19,23 @@
 package org.apache.iceberg.spark.actions;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assumptions.assumeThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.CompactionConflictDetector;
 import org.apache.iceberg.CompactionMap;
@@ -52,6 +60,7 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.RewriteDataFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
+import org.apache.iceberg.data.FileHelpers;
 import org.apache.iceberg.data.GenericFileWriterFactory;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
@@ -63,19 +72,26 @@ import org.apache.iceberg.deletes.PositionDeleteWriter;
 import org.apache.iceberg.encryption.EncryptedFiles;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.encryption.EncryptionKeyMetadata;
+import org.apache.iceberg.exceptions.ValidationException;
+import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.DataWriter;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.OutputFileFactory;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.SparkWriteOptions;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.spark.data.TestHelpers;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.ArrayUtil;
+import org.apache.iceberg.util.ContentFileUtil;
+import org.apache.iceberg.util.SnapshotUtil;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.internal.SQLConf;
@@ -628,7 +644,361 @@ public class TestSparkCompactionConflictResolution extends TestBase {
     assertEquals("Branch rows must keep the delete", expectedBranch, branchData(branch));
   }
 
+  /**
+   * A delete committed after the rewrite planned and before it commits is remapped to the rewritten
+   * files, and the remapped copy replaces it in the rewrite's commit.
+   */
+  @TestTemplate
+  public void testConcurrentDeleteIsRemapped() {
+    Table table = createTableWithResolution(2);
+    List<DataFile> dataFiles = TestHelpers.dataFiles(table);
+    List<DeleteFile> concurrent = Lists.newArrayList();
+    List<Object[]> expected = Lists.newArrayList();
+
+    RewriteDataFiles.Result result =
+        rewriteWithConcurrentCommit(
+            table,
+            null,
+            true,
+            null,
+            () -> {
+              concurrent.add(writePositionDelete(table, dataFiles.get(0), 0));
+              table.newRowDelta().addDeletes(concurrent.get(0)).commit();
+              expected.addAll(currentData());
+            });
+
+    assertThat(result.rewrittenDataFilesCount()).isEqualTo(dataFiles.size());
+    assertThat(expected).hasSize(2 * SCALE - 1);
+    assertEquals("Rows must keep the concurrent delete", expected, currentData());
+    assertReplaced(table, concurrent);
+    assertDVsReferenceLiveDataFiles(table);
+  }
+
+  /** Concurrent deletes of two files that land in one target file become one DV for it. */
+  @TestTemplate
+  public void testConcurrentDeletesSharingATargetAreMerged() {
+    Table table = createTableWithResolution(2);
+    List<DataFile> dataFiles = TestHelpers.dataFiles(table);
+    assertThat(dataFiles).hasSizeGreaterThan(1);
+    List<DeleteFile> concurrent = Lists.newArrayList();
+    List<Object[]> expected = Lists.newArrayList();
+
+    RewriteDataFiles.Result result =
+        rewriteWithConcurrentCommit(
+            table,
+            null,
+            true,
+            null,
+            () -> {
+              concurrent.add(writePositionDelete(table, dataFiles.get(0), 0));
+              concurrent.add(writePositionDelete(table, dataFiles.get(1), 0));
+              table
+                  .newRowDelta()
+                  .addDeletes(concurrent.get(0))
+                  .addDeletes(concurrent.get(1))
+                  .commit();
+              expected.addAll(currentData());
+            });
+
+    assertThat(result.addedDataFilesCount()).isEqualTo(1);
+    assertThat(expected).hasSize(2 * SCALE - 2);
+    assertEquals("Rows must keep both concurrent deletes", expected, currentData());
+    assertReplaced(table, concurrent);
+    assertDVsReferenceLiveDataFiles(table);
+  }
+
+  /**
+   * A concurrent delete of a file that had deletes when the rewrite planned. In v3 the concurrent
+   * DV replaces the planned one, which the rewrite must then not remove again.
+   */
+  @TestTemplate
+  public void testConcurrentDeleteOfFileWithDeletes() {
+    Table table = createTableWithResolution(2);
+    DataFile file = TestHelpers.dataFiles(table).get(0);
+    DeleteFile planned =
+        formatVersion >= 3
+            ? writeDeletionVector(table, file, ImmutableList.of(1L))
+            : writePositionDeleteFile(table, file, 1);
+    table.newRowDelta().addDeletes(planned).commit();
+    List<DeleteFile> concurrent = Lists.newArrayList();
+    List<Object[]> expected = Lists.newArrayList();
+
+    rewriteWithConcurrentCommit(
+        table,
+        null,
+        true,
+        null,
+        () -> {
+          if (formatVersion >= 3) {
+            concurrent.add(writeDeletionVector(table, file, ImmutableList.of(1L, 2L)));
+            table
+                .newRowDelta()
+                .validateFromSnapshot(table.currentSnapshot().snapshotId())
+                .removeDeletes(planned)
+                .addDeletes(concurrent.get(0))
+                .commit();
+          } else {
+            concurrent.add(writePositionDeleteFile(table, file, 2));
+            table.newRowDelta().addDeletes(concurrent.get(0)).commit();
+          }
+          expected.addAll(currentData());
+        });
+
+    assertThat(expected).hasSize(2 * SCALE - 2);
+    assertEquals("Rows must keep the planned and concurrent deletes", expected, currentData());
+    assertReplaced(table, concurrent);
+    assertDVsReferenceLiveDataFiles(table);
+  }
+
+  /** A concurrent position delete file of several rewritten files is replaced like one of one. */
+  @TestTemplate
+  public void testConcurrentMultiFileDeleteOfRewrittenFilesIsReplaced() {
+    assumeThat(formatVersion).as("v3 writes deletion vectors").isEqualTo(2);
+    Table table = createTableWithResolution(2);
+    List<DataFile> dataFiles = TestHelpers.dataFiles(table);
+    List<DeleteFile> concurrent = Lists.newArrayList();
+    List<Object[]> expected = Lists.newArrayList();
+
+    rewriteWithConcurrentCommit(
+        table,
+        null,
+        true,
+        null,
+        () -> {
+          concurrent.add(writeMultiFilePositionDelete(table, dataFiles.get(0), dataFiles.get(1)));
+          table.newRowDelta().addDeletes(concurrent.get(0)).commit();
+          expected.addAll(currentData());
+        });
+
+    assertThat(expected).hasSize(2 * SCALE - 2);
+    assertEquals("Rows must keep the concurrent deletes", expected, currentData());
+    assertReplaced(table, concurrent);
+  }
+
+  /**
+   * A concurrent position delete file of a rewritten file and a file the rewrite leaves alone
+   * cannot be replaced by the rewrite, which fails without committing.
+   */
+  @TestTemplate
+  public void testConcurrentMultiFileDeleteBeyondRewriteFails() {
+    assumeThat(formatVersion).as("v3 writes deletion vectors").isEqualTo(2);
+    Table table = createTableWithResolution(2);
+    Set<String> firstBatch =
+        spark
+            .read()
+            .format("iceberg")
+            .load(tableLocation)
+            .where("id < " + SCALE)
+            .select("_file")
+            .distinct()
+            .collectAsList()
+            .stream()
+            .map(row -> row.getString(0))
+            .collect(Collectors.toSet());
+    List<DataFile> dataFiles = TestHelpers.dataFiles(table);
+    DataFile rewritten =
+        dataFiles.stream().filter(f -> firstBatch.contains(f.location())).findFirst().get();
+    DataFile untouched =
+        dataFiles.stream().filter(f -> !firstBatch.contains(f.location())).findFirst().get();
+    List<Long> snapshotIds = Lists.newArrayList();
+
+    assertThatThrownBy(
+            () ->
+                rewriteWithConcurrentCommit(
+                    table,
+                    null,
+                    true,
+                    Expressions.lessThan("id", SCALE),
+                    () -> {
+                      DeleteFile delete = writeMultiFilePositionDelete(table, rewritten, untouched);
+                      table.newRowDelta().addDeletes(delete).commit();
+                      snapshotIds.add(table.currentSnapshot().snapshotId());
+                    }))
+        .isInstanceOf(RuntimeException.class)
+        .cause()
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("Cannot resolve position delete file");
+
+    table.refresh();
+    assertThat(table.currentSnapshot().snapshotId())
+        .as("The rewrite must not commit")
+        .isEqualTo(snapshotIds.get(0));
+  }
+
+  /** A delete committed to a branch while a rewrite of that branch runs is remapped there. */
+  @TestTemplate
+  public void testConcurrentDeleteOnBranchIsRemapped() {
+    Table table = createTableWithResolution(2);
+    String branch = "compaction";
+    List<DataFile> dataFiles = TestHelpers.dataFiles(table);
+    table.manageSnapshots().createBranch(branch, table.currentSnapshot().snapshotId()).commit();
+
+    // main moves on, so its history is not the branch's
+    writeRecords(2 * SCALE, SCALE);
+    table.refresh();
+    long mainSnapshotId = table.currentSnapshot().snapshotId();
+    List<Object[]> expectedMain = currentData();
+    List<Object[]> expectedBranch = Lists.newArrayList();
+
+    rewriteWithConcurrentCommit(
+        table,
+        branch,
+        true,
+        null,
+        () -> {
+          DeleteFile delete = writePositionDelete(table, dataFiles.get(0), 0);
+          table.newRowDelta().addDeletes(delete).toBranch(branch).commit();
+          expectedBranch.addAll(branchData(branch));
+        });
+
+    table.refresh();
+    assertThat(table.currentSnapshot().snapshotId())
+        .as("The rewrite must not commit to main")
+        .isEqualTo(mainSnapshotId);
+    assertEquals("Main must be unchanged", expectedMain, currentData());
+    assertThat(table.snapshot(branch).operation()).isEqualTo(DataOperations.REPLACE);
+    assertThat(expectedBranch).hasSize(2 * SCALE - 1);
+    assertEquals("Branch rows must keep the concurrent delete", expectedBranch, branchData(branch));
+  }
+
+  /**
+   * Without the starting sequence number, the rewritten files would be newer than concurrent
+   * equality deletes, so the rewrite does not resolve conflicts and fails as it would without maps.
+   */
+  @TestTemplate
+  public void testConcurrentDeleteWithoutStartingSequenceNumberFails() {
+    Table table = createTableWithResolution(2);
+    List<DataFile> dataFiles = TestHelpers.dataFiles(table);
+
+    assertThatThrownBy(
+            () ->
+                rewriteWithConcurrentCommit(
+                    table,
+                    null,
+                    false,
+                    null,
+                    () ->
+                        table
+                            .newRowDelta()
+                            .addDeletes(writePositionDelete(table, dataFiles.get(0), 0))
+                            .commit()))
+        .isInstanceOf(RuntimeException.class)
+        .cause()
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("found new delete for replaced data file");
+  }
+
   // Helper methods
+
+  private Table createTableWithResolution(int numFiles) {
+    Table table = createTableWithData(numFiles);
+    table
+        .updateProperties()
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .set(TableProperties.COMPACTION_RESOLVE_DELETE_CONFLICTS, "true")
+        .commit();
+    return table;
+  }
+
+  /**
+   * Runs a rewrite that lets {@code concurrent} commit after the rewrite planned and before it
+   * commits, the window in which a writer's deletes conflict with it.
+   */
+  private RewriteDataFiles.Result rewriteWithConcurrentCommit(
+      Table table,
+      String branch,
+      boolean useStartingSequenceNumber,
+      Expression filter,
+      Runnable concurrent) {
+    long startingSnapshotId = SnapshotUtil.latestSnapshot(table, branch).snapshotId();
+    RewriteDataFilesSparkAction action =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "1");
+    if (branch != null) {
+      action = action.toBranch(branch);
+    }
+
+    if (filter != null) {
+      action = action.filter(filter);
+    }
+
+    RewriteDataFilesSparkAction rewrite = spy(action);
+    SparkRewriteDataFilesCommitManager commitManager =
+        spy(
+            new SparkRewriteDataFilesCommitManager(
+                spark,
+                table,
+                startingSnapshotId,
+                useStartingSequenceNumber,
+                ImmutableMap.of(),
+                branch));
+    doAnswer(
+            invocation -> {
+              concurrent.run();
+              return invocation.callRealMethod();
+            })
+        .when(commitManager)
+        .commitFileGroups(any());
+    doReturn(commitManager).when(rewrite).commitManager(startingSnapshotId);
+    return rewrite.execute();
+  }
+
+  /** Asserts that none of the given delete files is live any more. */
+  private void assertReplaced(Table table, List<DeleteFile> deleteFiles) {
+    table.refresh();
+    Set<String> live =
+        TestHelpers.deleteFiles(table).stream()
+            .map(ContentFile::location)
+            .collect(Collectors.toSet());
+    for (DeleteFile deleteFile : deleteFiles) {
+      assertThat(live)
+          .as("Concurrent delete file must be replaced by its remapped copy")
+          .doesNotContain(deleteFile.location());
+    }
+  }
+
+  /** Asserts that every DV references a live data file, and no data file has two. */
+  private void assertDVsReferenceLiveDataFiles(Table table) {
+    table.refresh();
+    Set<String> dataFiles =
+        TestHelpers.dataFiles(table).stream()
+            .map(ContentFile::location)
+            .collect(Collectors.toSet());
+    Map<String, Integer> dvsByDataFile = Maps.newHashMap();
+    for (DeleteFile deleteFile : TestHelpers.deleteFiles(table)) {
+      if (ContentFileUtil.isDV(deleteFile)) {
+        assertThat(dataFiles)
+            .as("DV %s must reference a live data file", deleteFile.location())
+            .contains(deleteFile.referencedDataFile());
+        dvsByDataFile.merge(deleteFile.referencedDataFile(), 1, Integer::sum);
+      }
+    }
+
+    assertThat(dvsByDataFile.values()).as("A data file may have only one DV").allMatch(n -> n == 1);
+  }
+
+  /** Writes a v2 position delete file of position 0 in each of two data files. */
+  private DeleteFile writeMultiFilePositionDelete(Table table, DataFile first, DataFile second) {
+    List<PositionDelete<?>> deletes =
+        Lists.newArrayList(
+            PositionDelete.create().set(first.location(), 0L),
+            PositionDelete.create().set(second.location(), 0L));
+    deletes.sort(Comparator.comparing(delete -> delete.path().toString()));
+    OutputFile out =
+        table
+            .io()
+            .newOutputFile(
+                table
+                    .locationProvider()
+                    .newDataLocation(
+                        FileFormat.PARQUET.addExtension(UUID.randomUUID().toString())));
+    try {
+      return FileHelpers.writePosDeleteFile(table, out, first.partition(), deletes);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
 
   private Table createTableWithData(int numFiles) {
     Map<String, String> options =
@@ -724,6 +1094,10 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
   /** Writes a deletion vector (V3 format). */
   private DeleteFile writeDeletionVector(Table table, DataFile dataFile, long position) {
+    return writeDeletionVector(table, dataFile, ImmutableList.of(position));
+  }
+
+  private DeleteFile writeDeletionVector(Table table, DataFile dataFile, List<Long> positions) {
     OutputFileFactory fileFactory =
         OutputFileFactory.builderFor(table, 1, 1).format(FileFormat.PUFFIN).build();
 
@@ -732,7 +1106,9 @@ public class TestSparkCompactionConflictResolution extends TestBase {
 
     DVFileWriter writer = new BaseDVFileWriter(fileFactory, p -> null);
     try {
-      writer.delete(path, position, table.spec(), partition);
+      for (long position : positions) {
+        writer.delete(path, position, table.spec(), partition);
+      }
       writer.close();
       List<DeleteFile> deleteFiles = writer.result().deleteFiles();
       assertThat(deleteFiles).hasSize(1);

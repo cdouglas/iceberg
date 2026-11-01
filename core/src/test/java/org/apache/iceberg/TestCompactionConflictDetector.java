@@ -105,6 +105,126 @@ public class TestCompactionConflictDetector {
     assertThat(conflicts.conflictingDeleteFiles()).hasSize(1);
   }
 
+  /**
+   * A delete file added and then replaced after the starting snapshot is not live, so it is not a
+   * conflict. It and any delete file the compaction planned with that was replaced are reported as
+   * removed, so the compaction does not remove them again.
+   */
+  @Test
+  public void testReplacedDeletesAreNotConflicts() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "replaced_deletes");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+    table.updateProperties().set(TableProperties.FORMAT_VERSION, "2").commit();
+
+    DataFile dataFile =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("/path/to/data1.parquet")
+            .withFileSizeInBytes(1024)
+            .withRecordCount(100)
+            .build();
+    table.newAppend().appendFile(dataFile).commit();
+    DeleteFile planned = positionDelete("/path/to/planned-deletes.parquet", dataFile);
+    table.newRowDelta().addDeletes(planned).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    DeleteFile first = positionDelete("/path/to/first-deletes.parquet", dataFile);
+    table.newRowDelta().removeDeletes(planned).addDeletes(first).commit();
+    DeleteFile second = positionDelete("/path/to/second-deletes.parquet", dataFile);
+    table.newRowDelta().removeDeletes(first).addDeletes(second).commit();
+
+    CompactionConflictDetector detector =
+        new CompactionConflictDetector(
+            table.io(),
+            ((HasTableOperations) table).operations().current(),
+            startingSnapshot,
+            table.currentSnapshot());
+    DeleteConflictInfo conflicts = detector.detectConflicts(ImmutableSet.of(dataFile.location()));
+
+    assertThat(conflicts.conflictingDeleteFiles())
+        .extracting(DeleteFile::location)
+        .containsExactly(second.location());
+    assertThat(conflicts.removedDeleteFiles())
+        .extracting(DeleteFile::location)
+        .containsExactlyInAnyOrder(planned.location(), first.location());
+  }
+
+  /**
+   * One Puffin file holds the DVs of several data files. Replacing one of them leaves the others
+   * live, so they are still conflicts.
+   */
+  @Test
+  public void testReplacingOneDVOfAPuffinFileKeepsTheOthers() throws IOException {
+    TableIdentifier tableIdent = TableIdentifier.of("db", "shared_puffin");
+    Table table = catalog.createTable(tableIdent, SCHEMA, PartitionSpec.unpartitioned());
+    table.updateProperties().set(TableProperties.FORMAT_VERSION, "3").commit();
+
+    DataFile first = dataFile("/path/to/data1.parquet");
+    DataFile second = dataFile("/path/to/data2.parquet");
+    table.newAppend().appendFile(first).appendFile(second).commit();
+    long startingSnapshot = table.currentSnapshot().snapshotId();
+
+    DeleteFile firstDV = dv("/path/to/shared.puffin", 4L, first);
+    DeleteFile secondDV = dv("/path/to/shared.puffin", 100L, second);
+    table.newRowDelta().addDeletes(firstDV).addDeletes(secondDV).commit();
+    DeleteFile replacement = dv("/path/to/replacement.puffin", 4L, second);
+    table
+        .newRowDelta()
+        .validateFromSnapshot(table.currentSnapshot().snapshotId())
+        .removeDeletes(secondDV)
+        .addDeletes(replacement)
+        .commit();
+
+    CompactionConflictDetector detector =
+        new CompactionConflictDetector(
+            table.io(),
+            ((HasTableOperations) table).operations().current(),
+            startingSnapshot,
+            table.currentSnapshot());
+    DeleteConflictInfo conflicts =
+        detector.detectConflicts(ImmutableSet.of(first.location(), second.location()));
+
+    assertThat(conflicts.conflictingDeleteFiles())
+        .extracting(DeleteFile::referencedDataFile)
+        .containsExactlyInAnyOrder(first.location(), second.location());
+    assertThat(conflicts.conflictingDeleteFiles())
+        .extracting(DeleteFile::location)
+        .containsExactlyInAnyOrder(firstDV.location(), replacement.location());
+    assertThat(conflicts.removedDeleteFiles())
+        .extracting(DeleteFile::referencedDataFile)
+        .containsExactly(second.location());
+  }
+
+  private static DataFile dataFile(String path) {
+    return DataFiles.builder(PartitionSpec.unpartitioned())
+        .withPath(path)
+        .withFileSizeInBytes(1024)
+        .withRecordCount(100)
+        .build();
+  }
+
+  private static DeleteFile dv(String path, long contentOffset, DataFile dataFile) {
+    return FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+        .ofPositionDeletes()
+        .withFormat(FileFormat.PUFFIN)
+        .withPath(path)
+        .withFileSizeInBytes(1000)
+        .withRecordCount(1)
+        .withContentOffset(contentOffset)
+        .withContentSizeInBytes(40)
+        .withReferencedDataFile(dataFile.location())
+        .build();
+  }
+
+  private static DeleteFile positionDelete(String path, DataFile dataFile) {
+    return FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+        .ofPositionDeletes()
+        .withPath(path)
+        .withFileSizeInBytes(100)
+        .withRecordCount(10)
+        .withReferencedDataFile(dataFile.location())
+        .build();
+  }
+
   @Test
   public void testNoConflictsWhenNoDeletes() throws IOException {
     // Setup: Create table with only data files (no deletes)
