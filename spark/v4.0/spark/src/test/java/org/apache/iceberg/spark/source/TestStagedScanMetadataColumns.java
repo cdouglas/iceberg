@@ -32,6 +32,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.ScanTaskSetManager;
 import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.SparkTestHelperBase;
+import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.types.Types;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -81,6 +82,7 @@ public class TestStagedScanMetadataColumns extends SparkTestHelperBase {
             .master("local[2]")
             .appName("TestStagedScanMetadataColumns")
             .config("spark.sql.shuffle.partitions", "4")
+            .config(TestBase.DISABLE_UI)
             .getOrCreate();
     tables = new HadoopTables(spark.sessionState().newHadoopConf());
   }
