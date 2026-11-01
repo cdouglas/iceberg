@@ -34,6 +34,7 @@ import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.LocationProviders;
@@ -1330,6 +1331,13 @@ public class SnapshotRewriteReconstruct {
      * A snapshot's manifests of one content: the files it holds, added if it is the snapshot that
      * added them and carried otherwise, then the files its parent held that it does not, removed.
      * Each at the sequence numbers it was listed with, one manifest per partition spec.
+     *
+     * <p>Under v3 the data files a snapshot added go first, in manifests of their own. A manifest
+     * writer drops an added file's {@code first_row_id}, and a reader gives it the manifest's plus
+     * the rows of the added files listed before it, so the files are listed in id order -- in any
+     * other order, files one commit added trade ids -- and each manifest is assigned the first id
+     * of its files. A manifest ends where the next file's ids do not follow on: after a file
+     * rebuilt without its holes, or where a file left out entirely was.
      */
     private <F extends ContentFile<F>> List<ManifestFile> writeManifests(
         long snapshotId,
@@ -1338,9 +1346,12 @@ public class SnapshotRewriteReconstruct {
         String prefix,
         String mapLocation,
         BiFunction<PartitionSpec, OutputFile, ManifestWriter<F>> newWriter) {
+      Map<Integer, List<Listed<F>>> inheriting = Maps.newTreeMap();
       Map<Integer, List<Listed<F>>> kept = Maps.newTreeMap();
       for (Listed<F> file : held.values()) {
-        kept.computeIfAbsent(file.file.specId(), id -> Lists.newArrayList()).add(file);
+        (inheritsId(file, snapshotId) ? inheriting : kept)
+            .computeIfAbsent(file.file.specId(), id -> Lists.newArrayList())
+            .add(file);
       }
 
       Map<Integer, List<Listed<F>>> removed = Maps.newTreeMap();
@@ -1351,42 +1362,101 @@ public class SnapshotRewriteReconstruct {
       }
 
       List<ManifestFile> manifests = Lists.newArrayList();
+      for (Map.Entry<Integer, List<Listed<F>>> spec : inheriting.entrySet()) {
+        for (List<Listed<F>> run : idRuns(spec.getValue())) {
+          ManifestFile manifest =
+              writeManifest(
+                  snapshotId, spec.getKey(), run, List.of(), prefix, mapLocation, newWriter);
+          manifests.add(
+              SnapshotRewriteUnsafe.assignFirstRowId(manifest, run.get(0).file.firstRowId()));
+        }
+      }
+
       for (int specId : Sets.union(kept.keySet(), removed.keySet())) {
-        String path = newMetadataPath(prefix + snapshotId, "avro");
-        ManifestWriter<F> writer =
-            newWriter.apply(base.specsById().get(specId), io.newOutputFile(path));
-        if (mapLocation != null) {
-          writer.setCompactionMapLocation(mapLocation);
-        }
-
-        int entries = 0;
-        try {
-          for (Listed<F> file : kept.getOrDefault(specId, List.of())) {
-            if (file.snapshotId == snapshotId) {
-              writer.add(file.file, file.dataSequenceNumber);
-            } else {
-              writer.existing(
-                  file.file, file.snapshotId, file.dataSequenceNumber, file.fileSequenceNumber);
-            }
-
-            entries += 1;
-          }
-
-          for (Listed<F> file : removed.getOrDefault(specId, List.of())) {
-            writer.delete(file.file, file.dataSequenceNumber, file.fileSequenceNumber);
-            entries += 1;
-          }
-        } finally {
-          close(writer);
-        }
-
-        ManifestFile manifest = keepIfAny(writer, path, entries);
+        ManifestFile manifest =
+            writeManifest(
+                snapshotId,
+                specId,
+                kept.getOrDefault(specId, List.of()),
+                removed.getOrDefault(specId, List.of()),
+                prefix,
+                mapLocation,
+                newWriter);
         if (manifest != null) {
           manifests.add(manifest);
         }
       }
 
       return manifests;
+    }
+
+    /** Whether a file takes its {@code first_row_id} from the manifest it is listed in. */
+    private <F extends ContentFile<F>> boolean inheritsId(Listed<F> file, long snapshotId) {
+      return base.formatVersion() >= 3
+          && file.snapshotId == snapshotId
+          && file.file.content() == FileContent.DATA
+          && file.file.firstRowId() != null;
+    }
+
+    /** Files one snapshot added, in id order, split wherever the next file's ids do not follow. */
+    private <F extends ContentFile<F>> List<List<Listed<F>>> idRuns(List<Listed<F>> added) {
+      List<Listed<F>> sorted = Lists.newArrayList(added);
+      sorted.sort(Comparator.comparingLong(file -> file.file.firstRowId()));
+      List<List<Listed<F>>> runs = Lists.newArrayList();
+      List<Listed<F>> run = null;
+      long next = 0;
+      for (Listed<F> file : sorted) {
+        long first = file.file.firstRowId();
+        if (run == null || first != next) {
+          run = Lists.newArrayList();
+          runs.add(run);
+        }
+
+        run.add(file);
+        next = first + file.file.recordCount();
+      }
+
+      return runs;
+    }
+
+    /** One manifest: held files, added or carried, then removed ones. Null if it has no entries. */
+    private <F extends ContentFile<F>> ManifestFile writeManifest(
+        long snapshotId,
+        int specId,
+        List<Listed<F>> kept,
+        List<Listed<F>> removed,
+        String prefix,
+        String mapLocation,
+        BiFunction<PartitionSpec, OutputFile, ManifestWriter<F>> newWriter) {
+      String path = newMetadataPath(prefix + snapshotId, "avro");
+      ManifestWriter<F> writer =
+          newWriter.apply(base.specsById().get(specId), io.newOutputFile(path));
+      if (mapLocation != null) {
+        writer.setCompactionMapLocation(mapLocation);
+      }
+
+      int entries = 0;
+      try {
+        for (Listed<F> file : kept) {
+          if (file.snapshotId == snapshotId) {
+            writer.add(file.file, file.dataSequenceNumber);
+          } else {
+            writer.existing(
+                file.file, file.snapshotId, file.dataSequenceNumber, file.fileSequenceNumber);
+          }
+
+          entries += 1;
+        }
+
+        for (Listed<F> file : removed) {
+          writer.delete(file.file, file.dataSequenceNumber, file.fileSequenceNumber);
+          entries += 1;
+        }
+      } finally {
+        close(writer);
+      }
+
+      return keepIfAny(writer, path, entries);
     }
 
     private ManifestFile keepIfAny(ManifestWriter<?> writer, String path, int entries) {
