@@ -213,7 +213,7 @@ public class SparkTable
     // A position-tracked rewrite moves rows with their lineage, and also reads each row's source
     // file and position. Those come last: the writer records them for the compaction map and
     // writes only the columns before them.
-    if (isTableRewrite && isCompactionMapEnabled()) {
+    if (isTableRewrite && readsSourcePositions(icebergTable)) {
       result =
           org.apache.iceberg.types.TypeUtil.join(
               result,
@@ -225,9 +225,14 @@ public class SparkTable
     return result;
   }
 
-  private boolean isCompactionMapEnabled() {
+  /**
+   * Whether a rewrite of this table reads each row's source file and position: where it keeps
+   * compaction maps. Every rewrite does, but only a bin-pack, which keeps rows in order, records
+   * them; the rest must still leave them out of the files they write.
+   */
+  static boolean readsSourcePositions(Table table) {
     return org.apache.iceberg.util.PropertyUtil.propertyAsBoolean(
-        icebergTable.properties(),
+        table.properties(),
         org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED,
         org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT);
   }

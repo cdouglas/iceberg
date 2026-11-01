@@ -205,7 +205,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
         useFanoutWriter,
         writeProperties,
         writeConf.trackSourcePositions(),
-        writeConf.rewrittenFileSetId());
+        writeConf.rewrittenFileSetId(),
+        writeConf.rewrittenFileSetId() != null && SparkTable.readsSourcePositions(table));
   }
 
   private void commitOperation(SnapshotUpdate<?> operation, String description) {
@@ -677,6 +678,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     private final Map<String, String> writeProperties;
     private final boolean trackSourcePositions;
     private final String fileSetId;
+    private final boolean readsSourcePositions;
 
     protected WriterFactory(
         Broadcast<Table> tableBroadcast,
@@ -689,7 +691,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
         boolean useFanoutWriter,
         Map<String, String> writeProperties,
         boolean trackSourcePositions,
-        String fileSetId) {
+        String fileSetId,
+        boolean readsSourcePositions) {
       this.tableBroadcast = tableBroadcast;
       this.format = format;
       this.outputSpecId = outputSpecId;
@@ -701,6 +704,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       this.writeProperties = writeProperties;
       this.trackSourcePositions = trackSourcePositions;
       this.fileSetId = fileSetId;
+      this.readsSourcePositions = readsSourcePositions;
     }
 
     @Override
@@ -719,13 +723,11 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
               .format(format)
               .operationId(operationId)
               .build();
-      // Filter metadata columns from dsSchema if position tracking is enabled
-      // Position tracking columns (_file, _pos) are in dsSchema for PositionTrackingDataWriter
-      // but should not be passed to file writer factory
+      // A rewrite of a table that keeps compaction maps reads each row's source file and position
+      // (_file, _pos) last. PositionTrackingDataWriter records them if the rewrite tracks
+      // positions, and whether or not it does, they are not passed to the file writer factory
       StructType dsSchemaForWriter =
-          trackSourcePositions && fileSetId != null
-              ? filterPositionTrackingColumns(dsSchema)
-              : dsSchema;
+          readsSourcePositions ? filterPositionTrackingColumns(dsSchema) : dsSchema;
 
       SparkFileWriterFactory writerFactory =
           SparkFileWriterFactory.builderFor(table)

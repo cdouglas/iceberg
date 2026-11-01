@@ -151,7 +151,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
             sparkWriteSchema,
             writeConf,
             writeRequiresRowLineage,
-            writeIncludesPositionTracking);
+            writeConf.rewrittenFileSetId() != null && SparkTable.readsSourcePositions(table));
 
     SparkUtil.validatePartitionTransforms(table.spec());
 
@@ -216,7 +216,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       StructType dsSchema,
       SparkWriteConf writeConf,
       boolean writeIncludesRowLineage,
-      boolean writeIncludesPositionTracking) {
+      boolean writeReadsSourcePositions) {
     Schema writeSchema;
     boolean caseSensitive = writeConf.caseSensitive();
     if (writeConf.mergeSchema()) {
@@ -240,7 +240,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       // Filter out position tracking columns from dsSchema when creating writeSchema
       // This ensures _file and _pos are not added to the table schema
       StructType filteredDsSchema =
-          writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
+          writeReadsSourcePositions ? filterPositionTrackingColumns(dsSchema) : dsSchema;
       writeSchema = SparkSchemaUtil.convert(mergedSchema, filteredDsSchema, caseSensitive);
 
       TypeUtil.validateWriteSchema(
@@ -259,7 +259,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
 
       // Filter out position tracking columns from dsSchema when creating writeSchema
       StructType filteredDsSchema =
-          writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
+          writeReadsSourcePositions ? filterPositionTrackingColumns(dsSchema) : dsSchema;
       writeSchema = SparkSchemaUtil.convert(schema, filteredDsSchema, caseSensitive);
       TypeUtil.validateWriteSchema(
           table.schema(), writeSchema, writeConf.checkNullability(), writeConf.checkOrdering());

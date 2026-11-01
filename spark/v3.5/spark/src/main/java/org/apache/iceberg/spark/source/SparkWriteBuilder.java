@@ -158,7 +158,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
             sparkWriteSchema,
             writeConf,
             writeRequiresRowLineage,
-            writeRequiresPositionTracking);
+            writeConf.rewrittenFileSetId() != null && SparkTable.readsSourcePositions(table));
     SparkUtil.validatePartitionTransforms(table.spec());
 
     // Get application id
@@ -215,7 +215,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       StructType dsSchema,
       SparkWriteConf writeConf,
       boolean writeIncludesRowLineage,
-      boolean writeIncludesPositionTracking) {
+      boolean writeReadsSourcePositions) {
     Schema writeSchema;
     boolean caseSensitive = writeConf.caseSensitive();
     if (writeConf.mergeSchema()) {
@@ -238,7 +238,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
       // reconvert the dsSchema without assignment to use the ids assigned by UpdateSchema
       // Filter out position tracking columns from dsSchema when creating writeSchema
       StructType filteredDsSchema =
-          writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
+          writeReadsSourcePositions ? filterPositionTrackingColumns(dsSchema) : dsSchema;
       writeSchema = SparkSchemaUtil.convert(mergedSchema, filteredDsSchema, caseSensitive);
 
       TypeUtil.validateWriteSchema(
@@ -257,7 +257,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
 
       // Filter out position tracking columns from dsSchema when creating writeSchema
       StructType filteredDsSchema =
-          writeIncludesPositionTracking ? filterPositionTrackingColumns(dsSchema) : dsSchema;
+          writeReadsSourcePositions ? filterPositionTrackingColumns(dsSchema) : dsSchema;
       writeSchema = SparkSchemaUtil.convert(schema, filteredDsSchema, caseSensitive);
       TypeUtil.validateWriteSchema(
           table.schema(), writeSchema, writeConf.checkNullability(), writeConf.checkOrdering());
