@@ -147,7 +147,11 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
 
     Schema writeSchema =
         validateOrMergeWriteSchema(
-            table, dsSchema, writeConf, writeRequiresRowLineage, writeIncludesPositionTracking);
+            table,
+            sparkWriteSchema,
+            writeConf,
+            writeRequiresRowLineage,
+            writeIncludesPositionTracking);
 
     SparkUtil.validatePartitionTransforms(table.spec());
 
