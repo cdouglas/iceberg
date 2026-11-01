@@ -64,9 +64,12 @@ public class TestSnapshotRewriteLayouts extends SnapshotRewriteTestBase {
     List<DataFile> compacted = dataFiles(table.currentSnapshot());
     assertThat(compacted).as("one target file per partition").hasSize(2);
 
+    // A snapshot's files come in no particular order, so pick each partition's target by partition
+    DataFile east = inPartition(compacted, "east");
+    DataFile west = inPartition(compacted, "west");
     append(partition("east"), rows(20, 2, "east"));
-    delete(partition("east"), ImmutableList.of(at(compacted.get(0), 0)));
-    delete(partition("west"), ImmutableList.of(at(compacted.get(1), 1)));
+    delete(partition("east"), ImmutableList.of(at(east, 0)));
+    delete(partition("west"), ImmutableList.of(at(west, 1)));
     compact();
 
     SnapshotRewriteResult result = rewrite();
