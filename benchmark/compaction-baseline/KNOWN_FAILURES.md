@@ -9,20 +9,7 @@ linkage is captured in git history. See "Lifecycle" at the bottom of this file.
 
 ## Open pre-flight test failures (M7)
 
-- `TestRewritePositionDeleteFilesAction.testRemoveDanglingDVsAfterCompaction` — fails in
-  **both** `iceberg-spark-3.5_2.12` and `iceberg-spark-4.0_2.13` with `NoSuchTableException:
-  [TABLE_OR_VIEW_NOT_FOUND]`. The stack lands in `SparkBinPackFileRewriteRunner.doRewrite()`
-  → `DataFrameReader.load()`, well upstream of any compaction-map code. Verified pre-existing
-  by re-running with the engagement's changes stashed (commit `9272eec67`, 2026-05-13). This
-  is a Spark catalog-resolution issue in the existing test setup, not a regression.
-
-  **Resolution:** it was a regression. Position tracking made `SparkBinPackFileRewriteRunner`
-  load and save the rewrite by table location, which only a Hadoop table resolves, so the
-  test's session-catalog table failed. Stashing the engagement's changes left the runner as it
-  was, so the failure looked pre-existing. The runner loads and saves by group id again
-  ("Read and write a bin-pack rewrite group by its group id"; compaction maps errata 11), and
-  the test passes on Spark 3.5, 4.0 and 4.2. `TestRewriteDataFilesProcedureWithCompactionMaps`
-  rewrites tables with maps in every test catalog.
+*(no active failures)*
 
 The other two pre-flight commands — `iceberg-core *Compaction*` and `iceberg-core
 *Remapping*` — pass cleanly.
