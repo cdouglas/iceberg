@@ -180,7 +180,10 @@ class PositionTrackingDataWriter implements DataWriter<InternalRow> {
    * <p>The WriterCommitMessage (TaskCommit) contains the DataFile objects with actual file paths
    * that were written. When a single writer task produces multiple output files (due to rollover),
    * each run is assigned to the output files it spans, based on its target positions and the
-   * cumulative record counts of the output files, which the writer wrote one after another.
+   * cumulative record counts of the output files, which the writer wrote one after another. That
+   * holds only if the task reports its files in the order it wrote them, so SparkWrite never gives
+   * a tracking writer a fanout delegate, which keeps a file open per partition and reports them in
+   * its own order.
    *
    * <p>A map that left out rows of a source file would read as if those rows were deleted, so a
    * task whose rows cannot all be placed fails rather than returning a partial mapping.

@@ -263,7 +263,9 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
         targetFileSize,
         writeSchema,
         dsSchema,
-        useFanoutWriter,
+        // A tracking writer places rows by the order of the files its task reports, which a fanout
+        // writer does not report in the order it wrote them
+        useFanoutWriter && trackedFileSetId == null,
         writeProperties,
         sortOrderId,
         readsSourcePositions,

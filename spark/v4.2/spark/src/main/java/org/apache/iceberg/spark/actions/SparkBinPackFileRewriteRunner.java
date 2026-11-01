@@ -52,12 +52,15 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
             .load(groupId);
 
     // A table that keeps compaction maps reads each row's source file and position with it (see
-    // SparkRewriteTable), and bin-pack, which keeps rows in order, records where each one landed
+    // SparkRewriteTable), and bin-pack, which keeps rows in order, records where each one landed.
+    // A bin-pack into another spec shuffles its rows into their new partitions, which reorders
+    // them as a sort does, so it records nothing
     boolean trackPositions =
-        PropertyUtil.propertyAsBoolean(
-            table().properties(),
-            TableProperties.COMPACTION_MAP_ENABLED,
-            TableProperties.COMPACTION_MAP_ENABLED_DEFAULT);
+        !requiresRepartition(group)
+            && PropertyUtil.propertyAsBoolean(
+                table().properties(),
+                TableProperties.COMPACTION_MAP_ENABLED,
+                TableProperties.COMPACTION_MAP_ENABLED_DEFAULT);
 
     // write the packed data into new files where each split becomes a new file
     scanDF
@@ -73,8 +76,10 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
 
   // invoke a shuffle if the original spec does not match the output spec
   private DistributionMode distributionMode(RewriteFileGroup group) {
-    boolean requiresRepartition =
-        !group.fileScanTasks().get(0).spec().equals(spec(group.outputSpecId()));
-    return requiresRepartition ? DistributionMode.RANGE : DistributionMode.NONE;
+    return requiresRepartition(group) ? DistributionMode.RANGE : DistributionMode.NONE;
+  }
+
+  private boolean requiresRepartition(RewriteFileGroup group) {
+    return !group.fileScanTasks().get(0).spec().equals(spec(group.outputSpecId()));
   }
 }

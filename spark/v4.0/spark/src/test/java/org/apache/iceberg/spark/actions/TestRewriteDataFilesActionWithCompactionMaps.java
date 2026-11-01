@@ -25,6 +25,8 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.apache.hadoop.conf.Configuration;
@@ -54,6 +56,7 @@ import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Streams;
 import org.apache.iceberg.spark.SparkWriteOptions;
 import org.apache.iceberg.spark.TestBase;
@@ -570,5 +573,141 @@ public class TestRewriteDataFilesActionWithCompactionMaps extends TestBase {
     CompactionMap map =
         CompactionMaps.read(table.io().newInputFile(manifest.compactionMapLocation()));
     assertThat(map.fileMappings()).as("Map should have file mappings").isNotEmpty();
+  }
+
+  /**
+   * A bin-pack into a new partition spec shuffles its rows into their new partitions, which
+   * reorders them as a sort does, so it writes no map. It once tracked them: a task wrote several
+   * partitions, which a fanout writer interleaves, and the map sent rows to the wrong positions.
+   */
+  @TestTemplate
+  public void testBinPackIntoANewSpecWritesNoMap() {
+    Table table = createTable();
+    writeRows(table, 16);
+    table.updateSpec().addField("c1").commit();
+    List<Object[]> expected = currentData();
+
+    // Few shuffle partitions, so each task writes several partitions
+    String shufflePartitions = spark.conf().get(SQLConf.SHUFFLE_PARTITIONS().key());
+    spark.conf().set(SQLConf.SHUFFLE_PARTITIONS().key(), "2");
+    Result result;
+    try {
+      result =
+          SparkActions.get(spark)
+              .rewriteDataFiles(table)
+              .option(SizeBasedFileRewritePlanner.REWRITE_ALL, "true")
+              .execute();
+    } finally {
+      spark.conf().set(SQLConf.SHUFFLE_PARTITIONS().key(), shufflePartitions);
+    }
+
+    assertReorderedWithoutMap(table, result, expected);
+  }
+
+  /** A bin-pack of a partitioned table maps each partition's rows to where they landed. */
+  @TestTemplate
+  public void testBinPackOfAPartitionedTableMapsEveryRow() {
+    Map<String, String> options =
+        ImmutableMap.of(
+            TableProperties.FORMAT_VERSION,
+            "2",
+            TableProperties.COMPACTION_MAP_ENABLED,
+            "true",
+            TableProperties.DEFAULT_FILE_FORMAT,
+            fileFormat.name());
+    Table table =
+        TABLES.create(
+            SCHEMA,
+            PartitionSpec.builderFor(SCHEMA).identity("c1").build(),
+            options,
+            tableLocation);
+    writeRows(table, 2);
+    Map<Pair<String, Long>, String> before = rowsByPosition();
+
+    Result result =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .option(SizeBasedFileRewritePlanner.REWRITE_ALL, "true")
+            .execute();
+    assertThat(result.rewrittenDataFilesCount()).isGreaterThan(2);
+
+    table.refresh();
+    // Manifests of one commit can share a map
+    Set<String> mapLocations =
+        table.currentSnapshot().dataManifests(table.io()).stream()
+            .map(ManifestFile::compactionMapLocation)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+    List<CompactionMap.FileMapping> mappings = Lists.newArrayList();
+    for (String location : mapLocations) {
+      mappings.addAll(CompactionMaps.read(table.io().newInputFile(location)).fileMappings());
+    }
+
+    assertThat(mappings).hasSize(result.rewrittenDataFilesCount());
+    assertMapsEveryRow(mappings, before);
+  }
+
+  /**
+   * Writes 4000 rows in four tasks, each writing every partition, with unique c2 and c1 cycling
+   * through the given number of values.
+   */
+  private void writeRows(Table table, int c1Values) {
+    List<ThreeColumnRecord> records =
+        IntStream.range(0, 4000)
+            .mapToObj(i -> new ThreeColumnRecord(i % c1Values, "row-" + i, "bar"))
+            .collect(Collectors.toList());
+    spark
+        .createDataFrame(records, ThreeColumnRecord.class)
+        .repartition(4)
+        .select("c1", "c2", "c3")
+        .write()
+        .format("iceberg")
+        .mode("append")
+        .option(SparkWriteOptions.FANOUT_ENABLED, "true")
+        .option(SparkWriteOptions.USE_TABLE_DISTRIBUTION_AND_ORDERING, "false")
+        .save(tableLocation);
+    table.refresh();
+  }
+
+  /**
+   * Checks that the mappings send each live source row to the target position that now holds it.
+   */
+  private void assertMapsEveryRow(
+      List<CompactionMap.FileMapping> mappings, Map<Pair<String, Long>, String> before) {
+    Map<Pair<String, Long>, String> after = rowsByPosition();
+    assertThat(after).hasSameSizeAs(before);
+
+    Map<Pair<String, Long>, String> mapped = Maps.newHashMap();
+    for (CompactionMap.FileMapping mapping : mappings) {
+      for (CompactionMap.Run run : mapping.runs()) {
+        String targetFile = run.targetFile() != null ? run.targetFile() : mapping.targetFile();
+        for (long offset = 0; offset < run.length(); offset += 1) {
+          String row = before.get(Pair.of(mapping.sourceFile(), run.sourcePosition() + offset));
+          assertThat(row).as("Mapped source row must be live").isNotNull();
+          assertThat(mapped.put(Pair.of(targetFile, run.targetPosition() + offset), row))
+              .as("Target row must be mapped once")
+              .isNull();
+        }
+      }
+    }
+
+    // c2 is unique, so this also maps every live source row exactly once
+    assertThat(mapped).isEqualTo(after);
+  }
+
+  /** Returns each live row's c2, which is unique, by its file and position. */
+  private Map<Pair<String, Long>, String> rowsByPosition() {
+    Map<Pair<String, Long>, String> rows = Maps.newHashMap();
+    for (Row row :
+        spark
+            .read()
+            .format("iceberg")
+            .load(tableLocation)
+            .select("_file", "_pos", "c2")
+            .collectAsList()) {
+      rows.put(Pair.of(row.getString(0), row.getLong(1)), row.getString(2));
+    }
+
+    return rows;
   }
 }
