@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -26,6 +27,7 @@ import org.apache.iceberg.relocated.com.google.common.base.MoreObjects;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
+import org.apache.iceberg.util.DeleteFileSet;
 
 /**
  * Information about delete conflicts detected during compaction.
@@ -64,18 +66,21 @@ public class DeleteConflictInfo {
   private final Map<Long, List<DeleteFile>> deleteFilesBySnapshot;
   private final Map<String, List<DeleteFile>> deleteFilesByDataFile;
   private final List<DeleteFile> multiFilePositionDeletes;
+  private final DeleteFileSet removedDeleteFiles;
 
   private DeleteConflictInfo(
       Set<String> affectedDataFiles,
       List<DeleteFile> conflictingDeleteFiles,
       Map<Long, List<DeleteFile>> deleteFilesBySnapshot,
       Map<String, List<DeleteFile>> deleteFilesByDataFile,
-      List<DeleteFile> multiFilePositionDeletes) {
+      List<DeleteFile> multiFilePositionDeletes,
+      DeleteFileSet removedDeleteFiles) {
     this.affectedDataFiles = affectedDataFiles;
     this.conflictingDeleteFiles = conflictingDeleteFiles;
     this.deleteFilesBySnapshot = deleteFilesBySnapshot;
     this.deleteFilesByDataFile = deleteFilesByDataFile;
     this.multiFilePositionDeletes = multiFilePositionDeletes;
+    this.removedDeleteFiles = removedDeleteFiles;
   }
 
   /** Returns the set of data files that have conflicting deletes. */
@@ -116,6 +121,18 @@ public class DeleteConflictInfo {
    */
   public List<DeleteFile> multiFilePositionDeletes() {
     return multiFilePositionDeletes;
+  }
+
+  /**
+   * Returns the delete files that a commit after the starting snapshot removed.
+   *
+   * <p>None of them is a conflict: a delete file added and then replaced, such as a DV replaced by
+   * a newer DV for the same data file, is no longer live. A rewrite must not remove them again. A
+   * DV is identified by its content offset as well as its location, since one Puffin file holds the
+   * DVs of several data files.
+   */
+  public Set<DeleteFile> removedDeleteFiles() {
+    return Collections.unmodifiableSet(removedDeleteFiles);
   }
 
   /**
@@ -165,7 +182,8 @@ public class DeleteConflictInfo {
         ImmutableList.of(),
         ImmutableMap.of(),
         ImmutableMap.of(),
-        ImmutableList.of());
+        ImmutableList.of(),
+        DeleteFileSet.create());
   }
 
   @Override
@@ -189,6 +207,7 @@ public class DeleteConflictInfo {
         org.apache.iceberg.relocated.com.google.common.collect.Maps.newHashMap();
     private final ImmutableList.Builder<DeleteFile> multiFilePositionDeletes =
         ImmutableList.builder();
+    private final DeleteFileSet removedDeleteFiles = DeleteFileSet.create();
 
     /**
      * Adds a conflicting delete file.
@@ -234,6 +253,16 @@ public class DeleteConflictInfo {
       return this;
     }
 
+    /**
+     * Records a delete file that a commit after the starting snapshot removed.
+     *
+     * @param deleteFile the removed delete file
+     */
+    public Builder addRemovedDeleteFile(DeleteFile deleteFile) {
+      removedDeleteFiles.add(deleteFile);
+      return this;
+    }
+
     /** Builds the DeleteConflictInfo. */
     public DeleteConflictInfo build() {
       ImmutableMap.Builder<String, List<DeleteFile>> byDataFile = ImmutableMap.builder();
@@ -246,7 +275,8 @@ public class DeleteConflictInfo {
           conflictingDeleteFiles.build(),
           deleteFilesBySnapshot.build(),
           byDataFile.build(),
-          multiFilePositionDeletes.build());
+          multiFilePositionDeletes.build(),
+          DeleteFileSet.of(removedDeleteFiles));
     }
   }
 }
