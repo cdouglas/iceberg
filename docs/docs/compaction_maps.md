@@ -335,8 +335,6 @@ try {
 ### 1. Spark Version Support
 
 - **Spark 3.5, 4.0 and 4.2:** Position tracking fully implemented. Spark 4.1 is not supported.
-- **Spark local mode only:** Tasks record position mappings in their own JVM, so on a cluster the
-  driver sees none and compactions write no map ([errata 14](compaction_maps_errata.md)).
 - **Other engines:** Compaction map infrastructure works (read/validate/remap), but generation requires Spark-specific position tracking
 
 ### 2. Design Scope: Order-Preserving Compactions

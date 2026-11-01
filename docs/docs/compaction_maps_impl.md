@@ -1133,7 +1133,7 @@ However, retrying an overlapping compaction will fail repeatedly because `refres
 
 - **Test 9: Manual Conflict Resolution Workflow** (4 parameterized test cases)
   - Verifies compaction maps contain **real target file paths** (not "target-pending" placeholders)
-  - **Critical bug fix validation:** Ensures buffer-and-record pattern correctly resolves file paths
+  - **Critical bug fix validation:** Ensures the writer records runs with the paths of the files it wrote
   - Validates target file paths have proper format (contain '/', end with .parquet or .orc)
   - Confirms `PositionDeleteRemapper` can be created successfully
   - Verifies basic remapping operation succeeds
@@ -1300,14 +1300,21 @@ Sort and Z-order rewrites of such a table read the same columns and drop them, w
 
 **Write side:**
 - `PositionTrackingDataWriter` wraps the data writer. It reads `_file` and `_pos` from each row,
-  writes the row, and buffers the source file, source position and output position. On commit it
-  learns the target files from the task's commit message and records the mappings in
-  `PositionMappingCoordinator`.
+  writes the row, and extends the current run while rows of one source file come in order; a gap or
+  another source file starts a new run, which starts at the task's output position. On commit it
+  learns the target files and their record counts from the delegate's commit message, splits the runs
+  where the writer rolled to a new file, and returns them in a `TrackedTaskCommit`, which extends that
+  message.
 - The file writers are given the Spark schema without `_file` and `_pos`, so neither is written.
 
 **Coordination and commit:**
-- `PositionMappingCoordinator` groups each source file's positions into runs by detecting gaps. It
-  is a per-JVM singleton, so it sees a task's mappings only in Spark local mode (errata 14).
+- Executors run in their own JVMs, so a task's runs reach the driver only with its commit message
+  (errata 14). `SparkWrite.RewriteFiles.commit` records the runs of the messages it commits in
+  `PositionMappingCoordinator`, on the driver, before it stages the rewrite. Only tasks whose files
+  the rewrite commits contribute runs.
+- `PositionMappingCoordinator` sorts each source file's runs, and joins two runs only if both the
+  source and target positions of the second continue the first's, in the same target file. A source
+  file that the rewrite split between tasks gets runs from each of them.
 - `SparkDataFileRewriteRunner` attaches the mappings to the file group. The commit manager builds the
   map and hands it to `BaseRewriteFiles.setCompactionMap`, which writes it at commit.
 
@@ -1322,6 +1329,7 @@ is not supported.
 | Read the group | `SparkBinPackFileRewriteRunner`: staged scan by task set id, explicit column list | `SparkBinPackFileRewriteRunner`: loads the group id, which resolves to `SparkRewriteTable` |
 | Drop them from the write schema | `SparkWriteBuilder` | `SparkRewriteWriteBuilder` |
 | Drop them from the file writers; wrap the tracking writer | `SparkWrite.WriterFactory` | `SparkWrite.WriterFactory` |
+| Record the tasks' runs on the driver | `SparkWrite.RewriteFiles.commit` | same |
 | Request tracking | write option `track-source-positions`, set by `SparkBinPackFileRewriteRunner` | same |
 
 All three versions share `PositionTrackingDataWriter`, `PositionMappingCoordinator`,
@@ -1329,9 +1337,10 @@ All three versions share `PositionTrackingDataWriter`, `PositionMappingCoordinat
 
 ### Cost
 
-Tracking reads two extra columns per row, and each writer holds one buffered mapping per row until
-its task commits. It does not re-plan the scan. Maps are opt-in per table, and only bin-pack pays for
-tracking.
+Tracking reads two extra columns per row, and each writer holds one entry per run until its task
+commits, which sends the runs to the driver. A bin-pack writes about one run per source file it
+reads; a merge adds one per stretch of deleted rows. It does not re-plan the scan. Maps are opt-in
+per table, and only bin-pack pays for tracking.
 
 ## Design Considerations
 
@@ -1394,13 +1403,15 @@ The following invariants are maintained throughout the compaction map generation
 
 **Implementation:**
 - `PositionTrackingDataWriter.write()` is called for every row
-- Each call buffers a `(sourceFile, sourcePos, targetPos)` tuple
-- After commit, all buffered mappings are recorded to `PositionMappingCoordinator`
-- The recording happens atomically with the writer commit
+- Each call extends the current run, or starts a run at `(sourceFile, sourcePos, targetPos)`
+- The task's commit returns its runs in its commit message, with the files that hold the rows
+- The rewrite's commit, on the driver, records the runs of every message it commits in
+  `PositionMappingCoordinator`, so a run is recorded exactly when its rows' file is committed
 
 **Code path:**
 ```
-write(row) → buffer mapping → commit() → recordBufferedMappingsWithActualPaths()
+write(row) → extend or start a run → commit() → withSourcePositions() → TrackedTaskCommit
+    → (driver) RewriteFiles.commit() → recordSourcePositions() → recordRun()
 ```
 
 #### 2. Source Position Correctness
@@ -1419,11 +1430,14 @@ write(row) → buffer mapping → commit() → recordBufferedMappingsWithActualP
 **Guarantee:** Target positions in the map match actual row positions in target files.
 
 **Implementation:**
-- `outputPosition` counter starts at 0 for each target file
+- `outputPosition` counter starts at 0 for each task
 - Counter increments by 1 for each `write()` call
+- A task's writer rolls from one file to the next, so on commit each run is split at the cumulative
+  record counts of the task's files and its target positions are taken from the first row of its file
 - This matches exactly how rows are written to Parquet/ORC files (0-indexed, sequential)
 
-**Invariant:** `outputPosition` after N writes equals N, matching the target file's row count.
+**Invariant:** `outputPosition` after N writes equals N, matching the total row count of the task's
+files. The writer checks this on commit and fails the task otherwise.
 
 #### 4. Target File Path Correctness
 
@@ -1432,9 +1446,10 @@ write(row) → buffer mapping → commit() → recordBufferedMappingsWithActualP
 **Implementation:**
 - Target paths are extracted from `WriterCommitMessage` after `commit()` completes
 - The commit message contains `DataFile` objects with actual paths
-- Buffered mappings are recorded only after paths are known
+- Runs name their target by its index in the message's files, which the driver resolves to the path
 
-**Historical note:** An early bug used placeholder strings; this was fixed by the buffer-and-record pattern (see `PositionTrackingDataWriter.recordBufferedMappingsWithActualPaths()`).
+**Historical note:** An early bug used placeholder strings; this was fixed by holding mappings until
+commit, when the paths are known (see `PositionTrackingDataWriter.withSourcePositions()`).
 
 #### 5. Gap Correctness (Deleted Rows)
 
@@ -1455,8 +1470,9 @@ write(row) → buffer mapping → commit() → recordBufferedMappingsWithActualP
 **Guarantee:** When a source file spans multiple target files, each run has the correct target.
 
 **Implementation:**
-- Each `recordMapping()` call includes the actual target file path
-- `PositionMappingCoordinator.aggregateMappings()` creates new runs when target files change
+- The writer splits a run where it rolled to a new file, and each `recordRun()` call includes the
+  actual target file path
+- `PositionMappingCoordinator.aggregateMappings()` never joins runs with different target files
 - `CompactionMapBuilder.canMerge()` only merges runs with matching target files
 
 **Invariant:** Runs with different target files are never merged.
@@ -1491,8 +1507,9 @@ Then merged run (s1, t1, len1+len2) produces identical mappings for all position
 
 | Failure Mode | Detection | Mitigation |
 |--------------|-----------|------------|
-| Writer task failure | Spark task retry | Buffered mappings discarded on abort |
-| Coordinator data loss | Map has fewer mappings | Commit manager logs warning; incomplete maps not written |
+| Writer task failure | Spark task retry | Runs are discarded with the task; only committed tasks' messages reach the driver |
+| Task's files hold other rows than it wrote | Record count check on commit | Task fails rather than return a partial mapping |
+| Executors run in their own JVMs | - | Runs travel in the task's commit message (errata 14) |
 | Avro write failure | IOException during write | Compaction map location not set; rewrite proceeds without map |
 | Schema mismatch | Avro deserialization error | Maps are immutable; schema evolution via optional fields |
 
@@ -1500,16 +1517,18 @@ Then merged run (s1, t1, len1+len2) produces identical mappings for all position
 
 The soundness of compaction maps is verified by:
 
-1. **Unit tests:** `TestCompactionMapBuilder`, `TestCompactionMapSerialization`
+1. **Unit tests:** `TestCompactionMapBuilder`, `TestCompactionMapSerialization`,
+   `TestPositionTrackingDataWriter`, `TestPositionMappingCoordinator`
 2. **Integration tests:** `TestDVRemappingEndToEnd`, `TestSparkBinPackWithPositionDeletes`
 3. **Property-based tests:** `TestRemappingStrategies` (10,000+ lookups comparing all strategies)
-4. **End-to-end Spark tests:** `TestSparkCompactionConflictResolution`
+4. **End-to-end Spark tests:** `TestSparkCompactionConflictResolution`; `TestCompactionMapsOnCluster`
+   checks every row of a map built on a `local-cluster` master (Spark 3.5 and 4.2)
 
 ### Summary
 
 **Compaction maps are sound by construction:**
 
-1. **Row tracking is complete:** Every `write()` records a mapping
+1. **Row tracking is complete:** Every `write()` lands in a run, which reaches the driver with its file
 2. **Source positions are authoritative:** `_pos` comes from Iceberg's scan
 3. **Target positions are sequential:** Counter matches file layout
 4. **Target paths are actual:** Extracted from commit message

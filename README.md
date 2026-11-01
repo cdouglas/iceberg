@@ -62,7 +62,7 @@ Detailed documentation lives in `docs/docs/`:
 - [compaction_maps_impl.md](docs/docs/compaction_maps_impl.md) — implementation walkthrough, schema, integration points.
 - [compaction_maps_impl_pseudocode.md](docs/docs/compaction_maps_impl_pseudocode.md) — pseudocode for the remapping strategies.
 - [compaction_maps_bench.md](docs/docs/compaction_maps_bench.md) — benchmark suites, methodology, and how to reproduce.
-- [compaction_maps_errata.md](docs/docs/compaction_maps_errata.md) — design scope and known limitations (e.g. sort/z-order rewrites write no map, and position tracking works only in Spark local mode).
+- [compaction_maps_errata.md](docs/docs/compaction_maps_errata.md) — design scope and known limitations (e.g. sort/z-order rewrites write no map, and maps are written in plaintext).
 
 ## Building
 

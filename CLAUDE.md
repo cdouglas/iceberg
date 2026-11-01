@@ -220,7 +220,10 @@ Compaction Conflict Resolution (Spark 3.5, 4.0 and 4.2)
 hooks that add `_file`/`_pos` to a rewrite and drop them before writing are in `SparkTable`,
 `SparkWriteBuilder` and `SparkWrite` on 3.5 and 4.0, and in `SparkRewriteTable`,
 `SparkRewriteWriteBuilder` and `SparkWrite` on 4.2, where rewrites no longer go through `SparkTable`.
-Only bin-pack tracks positions. See `compaction_maps_impl.md`, "Where the Hooks Live".
+Only bin-pack tracks positions. Each task returns its runs to the driver in its commit message
+(`TrackedTaskCommit`), and `SparkWrite.RewriteFiles.commit` records them in the driver's coordinator;
+executors run in their own JVMs (errata 14). `TestCompactionMapsOnCluster` (3.5, 4.2) checks this on a
+`local-cluster` master. See `compaction_maps_impl.md`, "Where the Hooks Live".
 
 *Note*: Spark 4.0 and 4.2 require a cast to `org.apache.spark.sql.classic.SparkSession` for `cloneSession()`
 
@@ -296,7 +299,7 @@ Compaction maps support **source files mapping to multiple target files** (e.g.,
 **Implementation** (added Jan 24, 2026):
 - Each `Run` in a `FileMapping` can specify its own `targetFile` (optional, null means use parent's default)
 - `CompactionMapBuilder` accepts per-run target files and only merges runs with matching targets
-- `PositionMappingCoordinator` tracks target file changes and creates multi-target runs
+- `PositionTrackingDataWriter` splits a run where the writer rolled to a new file, and `PositionMappingCoordinator` never joins runs with different targets
 - Target file paths are interned for memory efficiency (shared String instances)
 
 **Schema**: The Run struct includes an optional `target_file` field (ID 12) for per-run targets.
@@ -612,6 +615,7 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 **Documentation Status**: Current ✅
 
 **Recent Additions** (hashes are from the 1.10.1-based history, `cmpmap-1.10.1`):
+- Position mappings reach the driver in task commit messages, so maps work on clusters, not only in local mode (errata 14, Nov 1, 2026)
 - Smart selector tuning: require m >= 100 for StreamJoin (Jan 22, 2026) - 4.68% avg overhead
 - Spark 4.0 conflict resolution parity (commit 539432b51)
 - V3 Deletion Vector conflict resolution support (commit 368ae59e9)
@@ -622,7 +626,6 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 **Pending Work**:
 1. Application transaction conflict resolution (BaseRowDelta auto-remapping)
-2. Position mappings reach the driver only in Spark local mode (errata 14)
 
 ---
 
