@@ -99,7 +99,7 @@ public class SnapshotRewritePlanner {
           RewriteRefusal.NO_COMPACTION, "unknown snapshot " + compactionSnapshotId);
     }
 
-    CompactionMapLookup lookup = new CompactionMapLookup(io);
+    CompactionMapLookup lookup = new CompactionMapLookup(io, base.specsById());
     List<Snapshot> window = resolveWindow(compaction, floorSnapshotId, lookup);
     checkStaticPreconditions(compaction, window);
 

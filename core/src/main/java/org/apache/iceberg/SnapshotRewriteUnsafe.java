@@ -185,6 +185,15 @@ public class SnapshotRewriteUnsafe {
   }
 
   /**
+   * Returns the data files a snapshot added, reading its manifests with the table's specs. A v4
+   * manifest is Parquet and does not record its own spec.
+   */
+  public static Iterable<DataFile> addedDataFiles(
+      Snapshot snapshot, FileIO io, Map<Integer, PartitionSpec> specsById) {
+    return SnapshotChanges.builderFor(snapshot, io, specsById).build().addedDataFiles();
+  }
+
+  /**
    * Writes a manifest list for a rewritten snapshot.
    *
    * <p><b>Asserted:</b> every manifest in {@code manifests} was written by this rewrite and stamps

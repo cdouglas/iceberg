@@ -749,7 +749,7 @@ public class SnapshotRewriteReconstruct {
                 summary(rewritten)));
       }
 
-      CompactionMapLookup lookup = new CompactionMapLookup(io);
+      CompactionMapLookup lookup = new CompactionMapLookup(io, base.specsById());
       for (Snapshot snapshot : base.snapshots()) {
         Long parentId = snapshot.parentId();
         if (!restored.contains(snapshot.snapshotId())

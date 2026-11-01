@@ -296,6 +296,6 @@ public class SnapshotRewrite {
   }
 
   private boolean hasCompactionMap(Snapshot snapshot) {
-    return new CompactionMapLookup(io).forSnapshot(snapshot) != null;
+    return new CompactionMapLookup(io, base.specsById()).forSnapshot(snapshot) != null;
   }
 }

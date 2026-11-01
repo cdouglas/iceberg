@@ -24,7 +24,9 @@ import org.apache.iceberg.CompactionMap;
 import org.apache.iceberg.CompactionMaps;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SnapshotRewriteUnsafe;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
@@ -43,10 +45,12 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  */
 class CompactionMapLookup {
   private final FileIO io;
+  private final Map<Integer, PartitionSpec> specsById;
   private final Map<String, CompactionMap> cache = Maps.newHashMap();
 
-  CompactionMapLookup(FileIO io) {
+  CompactionMapLookup(FileIO io, Map<Integer, PartitionSpec> specsById) {
     this.io = io;
+    this.specsById = specsById;
   }
 
   /** Returns the compaction map this snapshot wrote, or null if it wrote none. */
@@ -58,7 +62,7 @@ class CompactionMapLookup {
   /** Returns where the compaction map this snapshot wrote is stored, or null if it wrote none. */
   String locationFor(Snapshot snapshot) {
     Set<String> added = Sets.newHashSet();
-    for (DataFile file : snapshot.addedDataFiles(io)) {
+    for (DataFile file : SnapshotRewriteUnsafe.addedDataFiles(snapshot, io, specsById)) {
       added.add(file.location());
     }
 

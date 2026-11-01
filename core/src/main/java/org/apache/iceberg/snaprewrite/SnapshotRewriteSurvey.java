@@ -60,7 +60,7 @@ public class SnapshotRewriteSurvey {
   public static List<Candidate> survey(Table table, SnapshotRewriteIO rewriteIO) {
     TableMetadata base = ((HasTableOperations) table).operations().current();
     FileIO io = table.io();
-    CompactionMapLookup lookup = new CompactionMapLookup(io);
+    CompactionMapLookup lookup = new CompactionMapLookup(io, base.specsById());
 
     List<Snapshot> ancestry = ancestry(base);
     Snapshot target = null;
