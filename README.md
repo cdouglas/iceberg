@@ -52,7 +52,10 @@ over history.
 ## Prerequisite: compaction maps
 
 Nothing here works without a compaction that records what it moved. That is the
-[`cmpmap`](https://github.com/cdouglas/iceberg/tree/cmpmap) branch, which this one builds on:
+[`cmpmap-1.10`](https://github.com/cdouglas/iceberg/tree/cmpmap-1.10) branch, which this one builds on,
+over Apache Iceberg 1.10.1. This branch is kept for reference and carries the fixes made since;
+development continues on [`remap`](https://github.com/cdouglas/iceberg/tree/remap), over Iceberg
+1.12.0. `cmpmap-1.10` contributes:
 
 - the compaction map data structure, builder, Avro storage, and manifest-list reference;
 - conflict detection and `SERIALIZABLE` integration in `BaseRowDelta` / `MergingSnapshotProducer`;
@@ -155,7 +158,7 @@ change-log provenance on purpose.
 - `SNAPREWRITE_SPEC.md` — design specification, soundness argument, and the reasoning behind each
   decision.
 
-Compaction-map documentation lives on the [`cmpmap`](https://github.com/cdouglas/iceberg/tree/cmpmap)
+Compaction-map documentation lives on the [`cmpmap-1.10`](https://github.com/cdouglas/iceberg/tree/cmpmap-1.10)
 branch, under `docs/docs/compaction_maps*.md`.
 
 ## Building
