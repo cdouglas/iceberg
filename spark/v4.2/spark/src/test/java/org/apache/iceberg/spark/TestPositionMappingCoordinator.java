@@ -62,10 +62,10 @@ public class TestPositionMappingCoordinator {
   @Test
   public void testSimpleSequentialMapping() {
     // Record sequential positions without gaps
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 1L, "target1.parquet", 1L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 2L, "target1.parquet", 2L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 3L, "target1.parquet", 3L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 1L, "target1.parquet", 1L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 2L, "target1.parquet", 2L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 3L, "target1.parquet", 3L, 1L);
 
     Map<String, RewriteFileGroup.FilePositionMapping> mappings =
         coordinator.fetchMappings(mockTable, fileSetId);
@@ -87,11 +87,11 @@ public class TestPositionMappingCoordinator {
     // Record positions with gaps representing deleted rows
     // Source positions: 0, 1, 3, 4 (position 2 deleted)
     // Target positions: 0, 1, 2, 3 (consecutive)
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 1L, "target1.parquet", 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 1L, "target1.parquet", 1L, 1L);
     // Gap at source position 2 (deleted)
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 3L, "target1.parquet", 2L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 4L, "target1.parquet", 3L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 3L, "target1.parquet", 2L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 4L, "target1.parquet", 3L, 1L);
 
     Map<String, RewriteFileGroup.FilePositionMapping> mappings =
         coordinator.fetchMappings(mockTable, fileSetId);
@@ -117,11 +117,11 @@ public class TestPositionMappingCoordinator {
   public void testMappingWithMultipleGaps() {
     // Source positions: 0, 2, 5, 6, 8 (gaps at 1, 3-4, 7)
     // Target positions: 0, 1, 2, 3, 4
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 2L, "target1.parquet", 1L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 5L, "target1.parquet", 2L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 6L, "target1.parquet", 3L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 8L, "target1.parquet", 4L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 2L, "target1.parquet", 1L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 5L, "target1.parquet", 2L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 6L, "target1.parquet", 3L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 8L, "target1.parquet", 4L, 1L);
 
     Map<String, RewriteFileGroup.FilePositionMapping> mappings =
         coordinator.fetchMappings(mockTable, fileSetId);
@@ -168,20 +168,32 @@ public class TestPositionMappingCoordinator {
     // Multiple source files compacted into one target
     // SourceA: 100 rows -> target positions 0-99
     for (int i = 0; i < 100; i++) {
-      coordinator.recordMapping(
-          mockTable, fileSetId, "sourceA.parquet", (long) i, "target1.parquet", (long) i);
+      coordinator.recordRun(
+          mockTable, fileSetId, "sourceA.parquet", (long) i, "target1.parquet", (long) i, 1L);
     }
 
     // SourceB: 50 rows -> target positions 100-149
     for (int i = 0; i < 50; i++) {
-      coordinator.recordMapping(
-          mockTable, fileSetId, "sourceB.parquet", (long) i, "target1.parquet", (long) (100 + i));
+      coordinator.recordRun(
+          mockTable,
+          fileSetId,
+          "sourceB.parquet",
+          (long) i,
+          "target1.parquet",
+          (long) (100 + i),
+          1L);
     }
 
     // SourceC: 75 rows -> target positions 150-224
     for (int i = 0; i < 75; i++) {
-      coordinator.recordMapping(
-          mockTable, fileSetId, "sourceC.parquet", (long) i, "target1.parquet", (long) (150 + i));
+      coordinator.recordRun(
+          mockTable,
+          fileSetId,
+          "sourceC.parquet",
+          (long) i,
+          "target1.parquet",
+          (long) (150 + i),
+          1L);
     }
 
     Map<String, RewriteFileGroup.FilePositionMapping> mappings =
@@ -221,14 +233,20 @@ public class TestPositionMappingCoordinator {
 
     // SourceA positions 0-99 -> target1
     for (int i = 0; i < 100; i++) {
-      coordinator.recordMapping(
-          mockTable, fileSetId, "sourceA.parquet", (long) i, "target1.parquet", (long) i);
+      coordinator.recordRun(
+          mockTable, fileSetId, "sourceA.parquet", (long) i, "target1.parquet", (long) i, 1L);
     }
 
     // SourceA positions 100-199 -> target2
     for (int i = 100; i < 200; i++) {
-      coordinator.recordMapping(
-          mockTable, fileSetId, "sourceA.parquet", (long) i, "target2.parquet", (long) (i - 100));
+      coordinator.recordRun(
+          mockTable,
+          fileSetId,
+          "sourceA.parquet",
+          (long) i,
+          "target2.parquet",
+          (long) (i - 100),
+          1L);
     }
 
     Map<String, RewriteFileGroup.FilePositionMapping> mappings =
@@ -274,8 +292,8 @@ public class TestPositionMappingCoordinator {
 
   @Test
   public void testClearRewrite() {
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 1L, "target1.parquet", 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 1L, "target1.parquet", 1L, 1L);
 
     Map<String, RewriteFileGroup.FilePositionMapping> mappings =
         coordinator.fetchMappings(mockTable, fileSetId);
@@ -293,10 +311,10 @@ public class TestPositionMappingCoordinator {
     String fileSetId2 = "fileset-2";
 
     // Record mappings for fileSetId1
-    coordinator.recordMapping(mockTable, fileSetId1, "sourceA.parquet", 0L, "target1.parquet", 0L);
+    coordinator.recordRun(mockTable, fileSetId1, "sourceA.parquet", 0L, "target1.parquet", 0L, 1L);
 
     // Record mappings for fileSetId2
-    coordinator.recordMapping(mockTable, fileSetId2, "sourceB.parquet", 0L, "target2.parquet", 0L);
+    coordinator.recordRun(mockTable, fileSetId2, "sourceB.parquet", 0L, "target2.parquet", 0L, 1L);
 
     Map<String, RewriteFileGroup.FilePositionMapping> mappings1 =
         coordinator.fetchMappings(mockTable, fileSetId1);
@@ -332,13 +350,14 @@ public class TestPositionMappingCoordinator {
             try {
               startLatch.await(); // Wait for all threads to be ready
               for (int i = 0; i < recordsPerThread; i++) {
-                coordinator.recordMapping(
+                coordinator.recordRun(
                     mockTable,
                     fileSetId,
                     "source.parquet",
                     basePosition + i,
                     "target.parquet",
-                    basePosition + i);
+                    basePosition + i,
+                    1L);
               }
             } catch (Exception e) {
               errorCount.incrementAndGet();
@@ -371,10 +390,10 @@ public class TestPositionMappingCoordinator {
   @Test
   public void testOutOfOrderRecording() {
     // Record positions out of order - coordinator should sort them
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 3L, "target1.parquet", 3L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 1L, "target1.parquet", 1L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L);
-    coordinator.recordMapping(mockTable, fileSetId, "sourceA.parquet", 2L, "target1.parquet", 2L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 3L, "target1.parquet", 3L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 1L, "target1.parquet", 1L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L, 1L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 2L, "target1.parquet", 2L, 1L);
 
     Map<String, RewriteFileGroup.FilePositionMapping> mappings =
         coordinator.fetchMappings(mockTable, fileSetId);
@@ -387,5 +406,63 @@ public class TestPositionMappingCoordinator {
     assertThat(run.sourceOffset()).isEqualTo(0L);
     assertThat(run.targetOffset()).isEqualTo(0L);
     assertThat(run.length()).isEqualTo(4L);
+  }
+
+  @Test
+  public void testRunsOfTasksJoinWhenOneContinuesAnother() {
+    // Two tasks wrote consecutive parts of a source file to consecutive positions of one target
+    coordinator.recordRun(
+        mockTable, fileSetId, "sourceA.parquet", 100L, "target1.parquet", 100L, 50L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L, 100L);
+
+    RewriteFileGroup.FilePositionMapping mapping =
+        coordinator.fetchMappings(mockTable, fileSetId).get("sourceA.parquet");
+
+    assertThat(mapping.runs()).hasSize(1);
+    RewriteFileGroup.FilePositionMapping.Run run = mapping.runs().get(0);
+    assertThat(run.sourceOffset()).isEqualTo(0L);
+    assertThat(run.targetOffset()).isEqualTo(0L);
+    assertThat(run.length()).isEqualTo(150L);
+    assertThat(run.targetFile()).isEqualTo("target1.parquet");
+  }
+
+  @Test
+  public void testRunsOfTasksStaySeparateAcrossTargetFiles() {
+    // Two tasks split a source file, and each wrote its part to its own target file
+    coordinator.recordRun(
+        mockTable, fileSetId, "sourceA.parquet", 100L, "target2.parquet", 0L, 80L);
+    coordinator.recordRun(
+        mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 20L, 100L);
+
+    RewriteFileGroup.FilePositionMapping mapping =
+        coordinator.fetchMappings(mockTable, fileSetId).get("sourceA.parquet");
+
+    assertThat(mapping.isMultiTarget()).isTrue();
+    assertThat(mapping.runs()).hasSize(2);
+    RewriteFileGroup.FilePositionMapping.Run first = mapping.runs().get(0);
+    assertThat(first.sourceOffset()).isEqualTo(0L);
+    assertThat(first.targetOffset()).isEqualTo(20L);
+    assertThat(first.length()).isEqualTo(100L);
+    assertThat(first.targetFile()).isEqualTo("target1.parquet");
+    RewriteFileGroup.FilePositionMapping.Run second = mapping.runs().get(1);
+    assertThat(second.sourceOffset()).isEqualTo(100L);
+    assertThat(second.targetOffset()).isEqualTo(0L);
+    assertThat(second.length()).isEqualTo(80L);
+    assertThat(second.targetFile()).isEqualTo("target2.parquet");
+  }
+
+  @Test
+  public void testRunsStaySeparateAcrossDeletedRows() {
+    // Rows 10 to 14 were deleted, so the run after them starts where the one before them ended
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 0L, "target1.parquet", 0L, 10L);
+    coordinator.recordRun(mockTable, fileSetId, "sourceA.parquet", 15L, "target1.parquet", 10L, 5L);
+
+    RewriteFileGroup.FilePositionMapping mapping =
+        coordinator.fetchMappings(mockTable, fileSetId).get("sourceA.parquet");
+
+    assertThat(mapping.runs()).hasSize(2);
+    assertThat(mapping.runs().get(1).sourceOffset()).isEqualTo(15L);
+    assertThat(mapping.runs().get(1).targetOffset()).isEqualTo(10L);
+    assertThat(mapping.runs().get(1).length()).isEqualTo(5L);
   }
 }

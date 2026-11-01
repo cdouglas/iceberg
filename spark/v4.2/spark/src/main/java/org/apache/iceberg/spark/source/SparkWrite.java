@@ -608,6 +608,8 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
 
     @Override
     public void commit(WriterCommitMessage[] messages) {
+      // Tasks that track source positions return them with their files, on any executor
+      PositionTrackingDataWriter.recordSourcePositions(table, fileSetID, messages);
       FileRewriteCoordinator coordinator = FileRewriteCoordinator.get();
       coordinator.stageRewrite(table, fileSetID, files(messages));
     }
@@ -848,7 +850,7 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
       }
 
       if (trackedFileSetId != null) {
-        writer = new PositionTrackingDataWriter(writer, table, trackedFileSetId, dsSchema);
+        writer = new PositionTrackingDataWriter(writer, trackedFileSetId, dsSchema);
       }
 
       return writer;

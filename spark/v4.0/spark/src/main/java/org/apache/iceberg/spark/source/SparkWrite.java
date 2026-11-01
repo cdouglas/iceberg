@@ -549,6 +549,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
 
     @Override
     public void commit(WriterCommitMessage[] messages) {
+      // Tasks that track source positions return them with their files, on any executor
+      PositionTrackingDataWriter.recordSourcePositions(table, fileSetID, messages);
       FileRewriteCoordinator coordinator = FileRewriteCoordinator.get();
       coordinator.stageRewrite(table, fileSetID, files(messages));
     }
@@ -793,7 +795,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
 
       // Wrap with position tracking if enabled
       if (trackSourcePositions && fileSetId != null) {
-        writer = new PositionTrackingDataWriter(writer, table, fileSetId, dsSchema);
+        writer = new PositionTrackingDataWriter(writer, fileSetId, dsSchema);
       }
 
       return writer;

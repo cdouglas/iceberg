@@ -33,21 +33,23 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Singleton coordinator to aggregate position mappings from distributed Spark executors.
+ * Collects the position mappings of Spark rewrites on the driver.
  *
- * <p>During Spark rewrite operations with position tracking enabled, this coordinator collects raw
- * position mappings from executor tasks and aggregates them into run-based FilePositionMapping
- * objects. Gaps in source positions indicate rows filtered out by position deletes.
+ * <p>Each task of a rewrite that tracks source positions sends back, with its commit message, the
+ * runs of source positions it wrote to each target file. The rewrite's commit records the runs of
+ * its committed tasks here, under its file set id, and the action fetches them once the rewrite
+ * completes. A source file that the rewrite split between tasks gets runs from each of them. Gaps
+ * in source positions indicate rows filtered out by position deletes.
  *
- * <p>Thread-safe for concurrent access from multiple Spark executors and driver.
+ * <p>Thread-safe for rewrites of several file groups at once.
  */
 public class PositionMappingCoordinator {
   private static final Logger LOG = LoggerFactory.getLogger(PositionMappingCoordinator.class);
   private static final PositionMappingCoordinator INSTANCE = new PositionMappingCoordinator();
 
   // Key: (tableUuid, fileSetId)
-  // Value: Map of (sourceFile -> List<PositionMapping>)
-  private final Map<Pair<String, String>, Map<String, List<PositionMapping>>> mappings =
+  // Value: Map of (sourceFile -> List<PositionRun>)
+  private final Map<Pair<String, String>, Map<String, List<PositionRun>>> mappings =
       Maps.newConcurrentMap();
 
   private PositionMappingCoordinator() {}
@@ -57,40 +59,41 @@ public class PositionMappingCoordinator {
   }
 
   /**
-   * Records a single position mapping from a source file to a target file.
+   * Records a run of rows that a rewrite wrote from a source file to a target file.
    *
-   * <p>Called from Spark executors during write operations. Each row written generates one mapping.
+   * <p>Called on the driver when the rewrite commits, for each run of each committed task.
    *
    * @param table the table being rewritten
    * @param fileSetId the unique identifier for this rewrite group
    * @param sourceFile the source file path
-   * @param sourcePos the position in the source file (after deletes applied)
+   * @param sourcePos the position of the run's first row in the source file
    * @param targetFile the target file path
-   * @param targetPos the position in the target file
+   * @param targetPos the position of the run's first row in the target file
+   * @param length the number of rows in the run
    */
-  public synchronized void recordMapping(
+  public synchronized void recordRun(
       Table table,
       String fileSetId,
       String sourceFile,
       long sourcePos,
       String targetFile,
-      long targetPos) {
+      long targetPos,
+      long length) {
     Pair<String, String> id = toId(table, fileSetId);
 
-    Map<String, List<PositionMapping>> fileMappings =
+    Map<String, List<PositionRun>> fileMappings =
         mappings.computeIfAbsent(id, k -> Maps.newHashMap());
 
-    List<PositionMapping> positions =
-        fileMappings.computeIfAbsent(sourceFile, k -> Lists.newArrayList());
+    List<PositionRun> runs = fileMappings.computeIfAbsent(sourceFile, k -> Lists.newArrayList());
 
-    positions.add(new PositionMapping(sourceFile, sourcePos, targetFile, targetPos));
+    runs.add(new PositionRun(sourcePos, targetFile, targetPos, length));
   }
 
   /**
    * Fetches and aggregates all position mappings for a rewrite group.
    *
-   * <p>Called from the driver after write completes. Groups raw position mappings by source file,
-   * sorts by position, and identifies consecutive runs. Gaps in source positions indicate rows that
+   * <p>Called from the driver after the rewrite commits. Groups runs by source file, sorts them by
+   * position, and joins runs that continue one another. Gaps in source positions indicate rows that
    * were filtered out by position deletes.
    *
    * @param table the table being rewritten
@@ -100,9 +103,9 @@ public class PositionMappingCoordinator {
   public synchronized Map<String, RewriteFileGroup.FilePositionMapping> fetchMappings(
       Table table, String fileSetId) {
     Pair<String, String> id = toId(table, fileSetId);
-    Map<String, List<PositionMapping>> rawMappings = mappings.get(id);
+    Map<String, List<PositionRun>> recorded = mappings.get(id);
 
-    if (rawMappings == null || rawMappings.isEmpty()) {
+    if (recorded == null || recorded.isEmpty()) {
       LOG.debug("No position mappings found for {} - fileset {}", table.name(), fileSetId);
       return Maps.newHashMap();
     }
@@ -111,9 +114,9 @@ public class PositionMappingCoordinator {
         "Aggregating position mappings for {} - fileset {} with {} source files",
         table.name(),
         fileSetId,
-        rawMappings.size());
+        recorded.size());
 
-    return aggregateMappings(rawMappings);
+    return aggregateMappings(recorded);
   }
 
   /**
@@ -131,29 +134,30 @@ public class PositionMappingCoordinator {
   }
 
   /**
-   * Aggregates raw position mappings into FilePositionMapping objects with runs.
+   * Aggregates recorded runs into FilePositionMapping objects.
    *
-   * <p>Key insight: gaps in source positions indicate deleted rows. We detect gaps by checking if
-   * positions are consecutive. When a gap is detected, we end the current run and start a new one.
+   * <p>Key insight: gaps in source positions indicate deleted rows. A run joins the one before it
+   * only if both its source and target positions continue that run's, in the same target file;
+   * otherwise it stays a run of its own.
    *
-   * <p>Overlapping intervals are impossible by construction: each source file is processed
-   * independently, positions are strictly increasing, and target positions are assigned
-   * sequentially.
+   * <p>Overlapping runs are impossible by construction: each task reads a source file's rows in
+   * order, tasks read disjoint ranges of it, and each task numbers the rows it writes to a target
+   * file sequentially.
    *
    * <p>Supports multi-target mappings where a source file's rows span multiple target files (e.g.,
    * due to target file size limits). Each run stores its target file path.
    *
-   * @param rawMappings map of source file to list of position mappings
+   * @param recorded map of source file to the runs recorded for it
    * @return map of source file to FilePositionMapping with runs
    */
   private Map<String, RewriteFileGroup.FilePositionMapping> aggregateMappings(
-      Map<String, List<PositionMapping>> rawMappings) {
+      Map<String, List<PositionRun>> recorded) {
 
     Map<String, RewriteFileGroup.FilePositionMapping> result = Maps.newHashMap();
 
-    for (Map.Entry<String, List<PositionMapping>> entry : rawMappings.entrySet()) {
+    for (Map.Entry<String, List<PositionRun>> entry : recorded.entrySet()) {
       String sourceFile = entry.getKey();
-      List<PositionMapping> positions = entry.getValue();
+      List<PositionRun> positions = entry.getValue();
 
       if (positions.isEmpty()) {
         continue;
@@ -175,27 +179,26 @@ public class PositionMappingCoordinator {
             targetFiles);
       }
 
-      // Identify runs by detecting gaps in source positions, target positions, or target file
-      // changes
+      // Join runs unless a gap in source positions, target positions, or a target file change
+      // separates them
       List<RewriteFileGroup.FilePositionMapping.Run> runs = new ArrayList<>();
-      PositionMapping first = positions.get(0);
+      PositionRun first = positions.get(0);
       long runStartSource = first.sourcePos;
       long runStartTarget = first.targetPos;
       String runTargetFile = first.targetFile;
-      long runLength = 1;
+      long runLength = first.length;
 
       for (int i = 1; i < positions.size(); i++) {
-        PositionMapping curr = positions.get(i);
-        PositionMapping prev = positions.get(i - 1);
+        PositionRun curr = positions.get(i);
 
-        // Gap detection: positions are consecutive if they differ by exactly 1
-        boolean sourceConsecutive = (curr.sourcePos == prev.sourcePos + 1);
-        boolean targetConsecutive = (curr.targetPos == prev.targetPos + 1);
-        boolean sameTarget = curr.targetFile.equals(prev.targetFile);
+        // Gap detection: a run continues the current one if it starts right after it
+        boolean sourceConsecutive = curr.sourcePos == runStartSource + runLength;
+        boolean targetConsecutive = curr.targetPos == runStartTarget + runLength;
+        boolean sameTarget = curr.targetFile.equals(runTargetFile);
 
         if (sourceConsecutive && targetConsecutive && sameTarget) {
           // Continue current run
-          runLength++;
+          runLength += curr.length;
         } else {
           // Gap detected or target file changed - end current run, start new one
           // Store target file in run for multi-target support
@@ -208,12 +211,12 @@ public class PositionMappingCoordinator {
                 "Target file changed at source position {} in {}: {} -> {}",
                 curr.sourcePos,
                 sourceFile,
-                prev.targetFile,
+                runTargetFile,
                 curr.targetFile);
           } else {
             LOG.debug(
                 "Detected gap at source position {} -> {} in {}",
-                prev.sourcePos,
+                runStartSource + runLength - 1,
                 curr.sourcePos,
                 sourceFile);
           }
@@ -221,7 +224,7 @@ public class PositionMappingCoordinator {
           runStartSource = curr.sourcePos;
           runStartTarget = curr.targetPos;
           runTargetFile = curr.targetFile;
-          runLength = 1;
+          runLength = curr.length;
         }
       }
 
@@ -231,7 +234,7 @@ public class PositionMappingCoordinator {
               runStartSource, runStartTarget, runLength, runTargetFile));
 
       LOG.debug(
-          "Aggregated {} position mappings into {} runs for source file {} (targets: {})",
+          "Aggregated {} recorded runs into {} runs for source file {} (targets: {})",
           positions.size(),
           runs.size(),
           sourceFile,
@@ -250,18 +253,18 @@ public class PositionMappingCoordinator {
     return Pair.of(table.uuid().toString(), setId);
   }
 
-  /** Represents a single position mapping from source to target. */
-  static class PositionMapping {
-    final String sourceFile;
+  /** Represents a run of rows mapped from a source file to a target file. */
+  static class PositionRun {
     final long sourcePos;
     final String targetFile;
     final long targetPos;
+    final long length;
 
-    PositionMapping(String sourceFile, long sourcePos, String targetFile, long targetPos) {
-      this.sourceFile = sourceFile;
+    PositionRun(long sourcePos, String targetFile, long targetPos, long length) {
       this.sourcePos = sourcePos;
       this.targetFile = targetFile;
       this.targetPos = targetPos;
+      this.length = length;
     }
   }
 }
