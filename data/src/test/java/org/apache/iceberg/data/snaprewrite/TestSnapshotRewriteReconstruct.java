@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.HasTableOperations;
@@ -125,6 +126,80 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
     assertThat(result.report().holes()).isOne();
     assertThat(result.report().compactions()).isOne();
     assertThat(result.report().maps()).isOne();
+
+    commitAndReclaim(result);
+    before.assertReproducedBy(table);
+  }
+
+  /**
+   * Files one commit added take their ids from the manifest that lists them, in the order it lists
+   * them, so they must come back in id order. The ledger lists files in the order of a hash of
+   * their paths, which over eight files is all but certain to be another.
+   */
+  @Test
+  public void filesOneCommitAddedKeepTheirIds() throws IOException {
+    useFormatVersion(3);
+    append(records(1, 6, "base"));
+    compact();
+
+    AppendFiles batch = table.newFastAppend();
+    for (int file = 0; file < 8; file += 1) {
+      batch.appendFile(writeData(records(10 + 10 * file, 3, "batch")));
+    }
+
+    batch.commit();
+    append(records(100, 2, "after"));
+    compact();
+
+    LayoutFingerprint before = LayoutFingerprint.of(table);
+    commitAndReclaim(rewrite());
+
+    SnapshotReconstructResult result = reconstruct();
+    before.assertReproducedBy(result.asTable());
+    assertThat(result.report().rebuiltInPlace()).isEqualTo(10);
+
+    commitAndReclaim(result);
+    before.assertReproducedBy(table);
+  }
+
+  /**
+   * After a file rebuilt without its hole, or one left out entirely, the next file the same commit
+   * added would inherit ids that were the first file's. In whichever order they are listed, neither
+   * commit's second file keeps its ids unless it starts a manifest of its own.
+   */
+  @Test
+  public void filesAfterAHoleOrALeftOutFileKeepTheirIds() throws IOException {
+    useFormatVersion(3);
+    append(records(1, 6, "base"));
+    compact();
+
+    DataFile holed = writeData(records(10, 3, "holed"));
+    table
+        .newRowDelta()
+        .addRows(holed)
+        .addRows(writeData(records(20, 3, "after-holed")))
+        .addDeletes(writeDeletes(ImmutableList.of(at(holed, 1))))
+        .commit();
+
+    DataFile dead = writeData(records(30, 2, "dead"));
+    table
+        .newRowDelta()
+        .addRows(dead)
+        .addRows(writeData(records(40, 3, "after-dead")))
+        .addDeletes(writeDeletes(ImmutableList.of(at(dead, 0), at(dead, 1))))
+        .commit();
+
+    compact();
+
+    LayoutFingerprint before = LayoutFingerprint.of(table);
+    commitAndReclaim(rewrite());
+
+    SnapshotReconstructResult result = reconstruct();
+    LayoutFingerprint.Comparison shadow = before.assertReproducedBy(result.asTable());
+    assertThat(shadow.moved()).isOne();
+    assertThat(result.report().rebuiltMoved()).isOne();
+    assertThat(result.report().skippedFiles()).isOne();
+    assertThat(result.report().holes()).isEqualTo(3);
 
     commitAndReclaim(result);
     before.assertReproducedBy(table);

@@ -26,6 +26,7 @@ import java.util.function.BiConsumer;
 import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
@@ -265,6 +266,42 @@ public class SnapshotRewriteUnsafe {
         manifest.deletedFilesCount(),
         manifest.deletedRowsCount(),
         manifest.firstRowId(),
+        manifest.compactionMapLocation());
+  }
+
+  /**
+   * Rebuilds a data manifest with an assigned {@code first_row_id}, which the manifest-list writer
+   * then keeps instead of assigning one from the snapshot's.
+   *
+   * <p>A manifest writer drops the {@code first_row_id} of every file it adds, and a reader assigns
+   * each, in entry order, the manifest's plus the record counts of those before it. That is how a
+   * commit gives its files their ids, and the only way a file a snapshot added can carry one.
+   *
+   * <p><b>Asserted:</b> the manifest's added files are listed in id order and their ranges are
+   * contiguous from {@code firstRowId}, and every other entry carries an id of its own.
+   */
+  public static ManifestFile assignFirstRowId(ManifestFile manifest, long firstRowId) {
+    Preconditions.checkArgument(
+        manifest.content() == ManifestContent.DATA,
+        "Cannot assign a first-row-id to a delete manifest: %s",
+        manifest.path());
+    return new GenericManifestFile(
+        manifest.path(),
+        manifest.length(),
+        manifest.partitionSpecId(),
+        manifest.content(),
+        manifest.sequenceNumber(),
+        manifest.minSequenceNumber(),
+        manifest.snapshotId(),
+        manifest.partitions(),
+        manifest.keyMetadata(),
+        manifest.addedFilesCount(),
+        manifest.addedRowsCount(),
+        manifest.existingFilesCount(),
+        manifest.existingRowsCount(),
+        manifest.deletedFilesCount(),
+        manifest.deletedRowsCount(),
+        firstRowId,
         manifest.compactionMapLocation());
   }
 
