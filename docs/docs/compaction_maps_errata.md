@@ -419,6 +419,179 @@ the fallback state their layout through a test helper, `ConcatenationMaps`.
 
 ---
 
+## 8. Compaction Maps Are Written in Plaintext
+
+### Issue
+
+Iceberg encrypts a table's manifests with its encryption manager. A compaction map is a
+metadata-directory file that `BaseRewriteFiles` writes, and the prototype writes it through
+`FileIO.newOutputFile`, in plaintext. No key is recorded for it, and every reader opens it with
+`FileIO.newInputFile`.
+
+### Impact
+
+On an encrypted table a map exposes what an encrypted manifest hides: the paths of the files a
+compaction replaced and wrote, and which row positions moved where. It holds no row values. Deletes
+the conflict resolver remaps are written through `OutputFileFactory` and are encrypted. Writers and
+readers agree, so nothing fails: the gap is confidentiality only.
+
+### Status
+
+Open, out of scope for the prototype. Encrypting maps needs key metadata recorded beside the map's
+location, which manifest field 550 does not have room for. Maps are written plaintext whether or not
+the table is encrypted.
+
+### Code Location
+
+- `core/src/main/java/org/apache/iceberg/BaseRewriteFiles.java` -- the map written at `apply`
+- `core/src/main/java/org/apache/iceberg/CompactionMaps.java` -- `newCompactionMapFile`, `read`
+
+---
+
+## 9. Commit-Time Conflict Resolution Could Never Commit ✅ FIXED
+
+### Issue
+
+With `write.compaction.resolve-delete-conflicts` set, `SparkRewriteDataFilesCommitManager` remapped
+the deletes committed to a rewrite's files since it started. It then added the remapped copies to its
+`RewriteFiles` without removing the originals. `RewriteFiles` accepts new delete files only alongside
+removed ones, and validates from the starting snapshot that no new delete applies to a rewritten
+file. So the commit always failed. No test committed a delete while a rewrite was running.
+
+### Impact
+
+The option never worked. A compaction that met a concurrent delete failed, as it would have without
+the option, and left its written files behind.
+
+### Resolution
+
+The rewrite resolves through the branch head it read, and in one commit removes each conflicting
+deletion vector or file-scoped position delete file and adds its remapped copy. It validates from
+that head, so a delete committed after resolution still fails it.
+
+- DVs remapped into one target file are merged, since a data file may have one DV.
+- The detector tells DVs apart by content offset as well as location, since one Puffin file holds
+  the DVs of several data files. It does not count a delete a later commit already replaced.
+- A position delete file that also references files outside the rewrite fails it with a
+  `ValidationException`.
+- A rewrite that does not use its starting sequence number does not resolve.
+- The remapped files are deleted if the commit fails cleanly.
+
+### Code Location
+
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/actions/SparkRewriteDataFilesCommitManager.java`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/actions/SparkCompactionConflictResolver.java`
+- `core/src/main/java/org/apache/iceberg/CompactionConflictDetector.java`, `DeleteConflictInfo.java`
+- Tests: `TestSparkCompactionConflictResolution`, `TestCompactionConflictDetector`
+
+---
+
+## 10. Spark 4.0 Copy-on-Write Writes Failed on v3 ✅ FIXED
+
+### Issue
+
+Position tracking made Spark 4.0's `SparkWriteBuilder` validate the write schema against the incoming
+Spark schema instead of the one it writes, which adds `_row_id` and `_last_updated_sequence_number`
+when the write must carry row lineage. A copy-on-write MERGE, UPDATE or DELETE on a v3 table wrote
+rows with lineage through a writer built without it.
+
+### Impact
+
+Every such write failed with `IndexOutOfBoundsException` in `ParquetWithSparkSchemaVisitor`, on any v3
+table, with or without compaction maps. Spark 3.5 was not affected.
+
+### Resolution
+
+`SparkWriteBuilder` validates against the schema it writes, as Spark 3.5 and upstream do.
+
+### Code Location
+
+- `spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/source/SparkWriteBuilder.java`
+- Tests: `TestCopyOnWriteWithLineage` (failed 27 of 30 cases before)
+
+---
+
+## 11. Bin-Pack Rewrites Failed Outside Hadoop Tables ✅ FIXED
+
+### Issue
+
+Position tracking made `SparkBinPackFileRewriteRunner` load and save the rewrite through the table's
+location instead of the rewrite group's id, whether or not the table kept maps. Only a Hadoop table
+loads by path. Every fork test used Hadoop tables.
+
+### Impact
+
+A bin-pack rewrite of a table in a Hive, REST or session catalog failed with
+`NoSuchTableException`. That made `rewrite_data_files` and dangling-delete removal fail on those
+catalogs, with maps on or off.
+
+### Resolution
+
+The runner loads and saves the group id, which resolves through the table cache to the same rewrite
+table.
+
+### Code Location
+
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/actions/SparkBinPackFileRewriteRunner.java`
+- Tests: `TestRewriteDataFilesProcedureWithCompactionMaps` (v2 and v3 in every test catalog)
+
+---
+
+## 12. Spark 4.0 Replaced Tracked Mappings With Concatenations ✅ FIXED
+
+### Issue
+
+After the runner attached the position mappings the writers recorded, Spark 4.0's
+`RewriteDataFilesSparkAction` replaced them with mappings that concatenated the source files by
+record count. A record count includes rows the rewrite drops as deleted.
+
+### Impact
+
+The map of a source file with deletes was one gapless run, so positions after its first deleted row
+remapped to the wrong rows. A concurrent delete remapped through such a map deleted another row.
+Spark 3.5 was not affected. Errata 7 removed the same assumption from `BaseRewriteFiles`.
+
+### Resolution
+
+The concatenation is removed; Spark 4.0 keeps the recorded mappings, as Spark 3.5 does.
+
+### Code Location
+
+- `spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/actions/RewriteDataFilesSparkAction.java`
+- Tests: `TestSparkBinPackWithPositionDeletes`, which had run only on Spark 3.5 (failed 19 of 20
+  cases on 4.0 before)
+
+---
+
+## 13. Sort and Z-Order Rewrites Failed on Tables With Maps ✅ FIXED
+
+### Issue
+
+Errata 1 still holds: only order-preserving compactions write maps. To track positions, `SparkTable`
+added `_file` and `_pos` to the rewrite schema of every table that keeps maps. The write path dropped
+them only from a write that tracks positions, which only bin-pack asks for.
+
+### Impact
+
+Every sort or Z-order rewrite of a table with maps failed with "Field _file not found in source
+schema". Errata 1 expects such a table to be sorted without tracking; it could not be compacted by
+anything but bin-pack. No test rewrote a table with maps by anything but bin-pack.
+
+### Resolution
+
+Every rewrite of a table with maps drops the two columns before writing, and only bin-pack records
+them. Sort and Z-order rewrites run and write no map. On Spark 4.2 the rewrite table adds the columns
+and its write builder drops them, by the same rule.
+
+### Code Location
+
+- `spark/v3.5`, `spark/v4.0`: `SparkTable.readsSourcePositions`, `SparkWriteBuilder`, `SparkWrite`
+- `spark/v4.2`: `SparkRewriteTable`, `SparkRewriteWriteBuilder`, `SparkWrite`
+- Tests: `TestRewriteDataFilesActionWithCompactionMaps` -- `testSortRewriteWritesNoMap`,
+  `testZOrderRewriteWritesNoMap`
+
+---
+
 ## Summary
 
 | # | Issue | Impact | Status | Priority |
@@ -430,6 +603,12 @@ the fallback state their layout through a test helper, `ConcatenationMaps`.
 | 5 | Position-tracked compactions dropped v3 row lineage | Moved rows got new `_row_id`s; files written before the fix keep them | Fixed | - |
 | 6 | SERIALIZABLE row deltas conflicted with compactions without maps | Spurious conflicts, including on tables without maps | Fixed | - |
 | 7 | Direct rewrites recorded a map that assumed their layout | Remapped deletes hit the wrong rows after a sort rewrite; rewrites that applied deletes could not commit | Fixed | - |
+| 8 | Compaction maps are written in plaintext | An encrypted table's maps expose file paths and moved positions | Open | Low |
+| 9 | Commit-time conflict resolution could never commit | Compactions that met a concurrent delete failed with resolution on | Fixed | - |
+| 10 | Spark 4.0 copy-on-write writes failed on v3 | MERGE, UPDATE and DELETE failed on every v3 table | Fixed | - |
+| 11 | Bin-pack rewrites failed outside Hadoop tables | `rewrite_data_files` failed in Hive, REST and session catalogs | Fixed | - |
+| 12 | Spark 4.0 replaced tracked mappings with concatenations | Maps of files with deletes remapped positions to the wrong rows | Fixed | - |
+| 13 | Sort and Z-order rewrites failed on tables with maps | Only bin-pack could compact a table with maps | Fixed | - |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)
