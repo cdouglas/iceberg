@@ -241,7 +241,7 @@ public class CompactionConflictDetector {
     List<DeleteFile> multiFileDeletes = Lists.newArrayList();
 
     try (ManifestReader<DeleteFile> reader =
-        ManifestFiles.readDeleteManifest(manifestFile, io, null)) {
+        ManifestFiles.readDeleteManifest(manifestFile, io, base.specsById())) {
 
       for (ManifestEntry<DeleteFile> entry : reader.entries()) {
         if (entry.status() == ManifestEntry.Status.DELETED) {
@@ -398,7 +398,7 @@ public class CompactionConflictDetector {
    */
   private boolean hasConflictsInManifest(ManifestFile manifestFile, Set<String> filesToCompact) {
     try (ManifestReader<DeleteFile> reader =
-        ManifestFiles.readDeleteManifest(manifestFile, io, null)) {
+        ManifestFiles.readDeleteManifest(manifestFile, io, base.specsById())) {
 
       for (ManifestEntry<DeleteFile> entry : reader.entries()) {
         if (entry.status() == ManifestEntry.Status.ADDED) {
