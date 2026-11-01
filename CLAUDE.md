@@ -8,8 +8,8 @@
 
 | | |
 |---|---|
-| Iceberg base | 1.12.0 (tag `apache-iceberg-1.12.0`; rebase onto `apache/1.12.x` once it exists) |
-| Earlier version | on Iceberg 1.10.1, the one the paper evaluates: `cmpmap-1.10.1` |
+| Iceberg base | 1.12.0 (tag `apache-iceberg-1.12.0`); no further rebases are planned |
+| Earlier version | on Iceberg 1.10.1, the one the paper evaluates: branch `cmpmap-1.10` |
 | Java | 17 or 21 |
 | Spark | 3.5, 4.0, 4.2 (not 4.1). Spark 4.x builds with `-DscalaVersion=2.13` |
 | Flink | 1.20, 2.1, 2.2, 2.3, with the default Scala 2.12, so in a separate Gradle invocation from Spark 4.x |
@@ -609,12 +609,12 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 ## Branch and Status
 
-**Branch**: `cmpmap` (NOT `vldb` - that's separate prototype)
+**Branch**: `cmpmap` (NOT `atomicio`, `atomicio-1.6` or the former `vldb` - those are a separate prototype)
 **Status**: Implementation complete, full conflict resolution for Spark 3.5, 4.0 and 4.2
 **Test Status**: No test class worse than vanilla Iceberg 1.12.0 ✅
 **Documentation Status**: Current ✅
 
-**Recent Additions** (hashes are from the 1.10.1-based history, `cmpmap-1.10.1`):
+**Recent Additions** (hashes are from the 1.10.1-based history, branch `cmpmap-1.10`):
 - Position mappings reach the driver in task commit messages, so maps work on clusters, not only in local mode (errata 14, Nov 1, 2026)
 - Smart selector tuning: require m >= 100 for StreamJoin (Jan 22, 2026) - 4.68% avg overhead
 - Spark 4.0 conflict resolution parity (commit 539432b51)

@@ -654,7 +654,7 @@ rows it wrote now fails, since a map that left out rows would read as if they ha
 | 13 | Sort and Z-order rewrites failed on tables with maps | Only bin-pack could compact a table with maps | Fixed | - |
 | 14 | Position mappings reached the driver only in local mode | On a cluster, compactions wrote no map | Fixed | - |
 
-**Fixed Issues (Removed from Active List; commit hashes are from the 1.10.1-based history, `cmpmap-1.10.1`):**
+**Fixed Issues (Removed from Active List; commit hashes are from the 1.10.1-based history, branch `cmpmap-1.10`):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)
 - ~~Source files spanning multiple targets~~ - ✅ FIXED: Per-run target files now supported (Jan 24, 2026)
 - ~~Normal scans vs staged scans~~ - ✅ FIXED: Staged scans now work with explicit metadata column selection
