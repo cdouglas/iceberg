@@ -939,12 +939,14 @@ public class SnapshotRewriteReconstruct {
 
     /**
      * The compaction map a snapshot should carry: the one it had, or, if a file it names as a
-     * source moved, that map with the file's new path and positions.
+     * source moved or was left out, that map with the file's new path and positions, or without the
+     * file.
      *
      * <p>A moved file lost only its holes, and no compaction maps a hole: a row the compaction
      * copied was live in its parent, so some window snapshot read it. Each run therefore still
-     * covers consecutive positions of the moved file, and only its start changes. A compaction's
-     * own output never has holes, so a target never moves.
+     * covers consecutive positions of the moved file, and only its start changes. A file left out
+     * was nothing but holes, so the map names it without a run, and the parent no longer holds it.
+     * A compaction's own output never has holes, so a target never moves.
      */
     private String mapFor(Snapshot snapshot, String location) {
       if (location == null) {
@@ -959,6 +961,16 @@ public class SnapshotRewriteReconstruct {
         Preconditions.checkState(
             !moved(mapping.targetFile()), "A compaction's output moved: %s", mapping.targetFile());
         Physical source = physical.get(mapping.sourceFile());
+        if (source != null && source.isSkipped()) {
+          Preconditions.checkState(
+              mapping.runs().isEmpty(),
+              "Snapshot %s maps a hole of %s",
+              snapshot.snapshotId(),
+              mapping.sourceFile());
+          changed = true;
+          continue;
+        }
+
         boolean sourceMoved = moved(mapping.sourceFile());
         CompactionMapBuilder.FileMappingBuilder files =
             builder.addFileMapping(

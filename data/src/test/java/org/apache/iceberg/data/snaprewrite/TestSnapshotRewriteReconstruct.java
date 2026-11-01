@@ -439,6 +439,39 @@ public class TestSnapshotRewriteReconstruct extends SnapshotRewriteTestBase {
   }
 
   /**
+   * A file whose every row its own commit deleted is left out, and so is its mapping, without a
+   * run, from the map of the compaction that replaced it: that compaction's parent no longer holds
+   * the file.
+   */
+  @Test
+  public void aFileLeftOutLeavesTheMapThatNamedIt() throws IOException {
+    useFormatVersion(3);
+    append(records(1, 6, "base"));
+    compact();
+
+    DataFile dead = writeData(records(10, 2, "dead"));
+    table
+        .newRowDelta()
+        .addRows(dead)
+        .addDeletes(writeDeletes(ImmutableList.of(at(dead, 0), at(dead, 1))))
+        .commit();
+    append(records(20, 3, "after"));
+    compact();
+
+    LayoutFingerprint before = LayoutFingerprint.of(table);
+    commitAndReclaim(rewrite());
+
+    SnapshotReconstructResult result = reconstruct();
+    before.assertReproducedBy(result.asTable());
+    assertThat(result.report().skippedFiles()).isOne();
+    assertThat(result.report().holes()).isEqualTo(2);
+    assertThat(result.report().maps()).isOne();
+
+    commitAndReclaim(result);
+    before.assertReproducedBy(table);
+  }
+
+  /**
    * Two passes, reconstructed in one step.
    *
    * <p>The second pass rewrote the first pass's output, so the first pass's snapshots carry both
