@@ -2,7 +2,7 @@
 
 ## Quick Reference (Read This First)
 
-**Branch:** `cmpmap` | **Status:** Implementation complete, DV optimization pending
+**Branch:** `cmpmap` | **Status:** Implementation complete; a research prototype, kept up only with fixes
 
 ### Base and Versions
 
@@ -15,11 +15,12 @@
 | Flink | 1.20, 2.1, 2.2, 2.3, with the default Scala 2.12, so in a separate Gradle invocation from Spark 4.x |
 | Manifest field | `compaction_map_location` is field 550, clear of upstream's manifest field IDs |
 
-### Current Work: Remapping Optimization
+### Remapping Performance
 
-**Completed:** Position Delete bulk remapping (1.3% avg remap time)
-**Pending:** Deletion Vector bulk remapping (currently 20%+ remap time)
-**Details:** See `/workspace/REMAPPING_OPTIMIZATION_STATUS.md`
+Bulk remapping is done for both position delete files and deletion vectors
+(`PositionDeleteRemapper.remapPositionsBulk`, `remapDVBulk`). At 1M deletes the DV remap phase costs
+at most ~15 ms median more than position deletes, and DVs win overall on read and write. Numbers and
+methodology: `docs/docs/compaction_maps_bench.md`.
 
 ### Key Files for Common Tasks
 
@@ -109,15 +110,15 @@ When working on this codebase, prefer these approaches:
 **Compaction Maps** enable concurrent transactions writing position deletes to coexist with compaction operations in Apache Iceberg. When files are compacted, position deletes become invalid because referenced files no longer exist and row positions change. Compaction maps track these transformations, enabling automatic remapping and conflict detection.
 
 **Key Achievements**:
-- Full infrastructure for compaction-aware transactions (~18k lines)
+- Full infrastructure for compaction-aware transactions (about 22k lines in `api` and `core`, and 7k per Spark version)
 - Advanced remapping optimization (1.1-32x speedup via smart algorithm selection)
-- Comprehensive test coverage (256 tests) and empirical validation (324 JMH benchmarks)
+- 94 fork test classes (`dev/fork-validation/fork-test-classes.txt`) and empirical validation (324 JMH benchmark configurations)
 - **Compaction conflict resolution** - Automatic remapping of concurrent position deletes during compaction
 - **Staged scan optimization** - Position tracking now uses efficient staged scans with explicit metadata column selection
 - **Multi-target mapping support** - Source files can span multiple target files with per-run target tracking
 
 **Implementation Status**: Complete on `cmpmap` branch
-**Last Updated**: January 24, 2026
+**Last Updated**: November 1, 2026
 
 ## Feature Architecture
 
@@ -627,13 +628,14 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 **Documentation Status**: Current ✅
 
 **Recent Additions** (hashes are from the 1.10.1-based history, branch `cmpmap-1.10`):
+- A bin-pack into a new partition spec writes no map; it recorded wrong ones (errata 15, Nov 1, 2026)
 - Position mappings reach the driver in task commit messages, so maps work on clusters, not only in local mode (errata 14, Nov 1, 2026)
 - Smart selector tuning: require m >= 100 for StreamJoin (Jan 22, 2026) - 4.68% avg overhead
 - Spark 4.0 conflict resolution parity (commit 539432b51)
 - V3 Deletion Vector conflict resolution support (commit 368ae59e9)
 - Staged scan optimization for position tracking (commit 0fef1aee2)
 - Compaction conflict resolution (SparkRewriteDataFilesCommitManager, SparkCompactionConflictResolver)
-- TestSparkCompactionConflictResolution (12 tests: V2 + V3 for both Spark versions)
+- TestSparkCompactionConflictResolution (V2 and V3 cases on each Spark version)
 - Configuration properties for opt-in conflict resolution
 
 **Pending Work**:
@@ -641,6 +643,6 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 ---
 
-*Generated during Claude Code sessions, 2026-01-07 to 2026-01-22*
-*Models: Claude Sonnet 4.5, Claude Opus 4.5*
-*Total Implementation: ~19k lines across core, tests, and documentation*
+*Generated during Claude Code sessions, 2026-01-07 to 2026-11-01*
+*Models: Claude Sonnet 4.5, Claude Opus 4.5, Claude Opus 5.5*
+*Total implementation, against Iceberg 1.12.0: about 22k lines in `api` and `core`, 21k across three Spark versions, and 3k of documentation*
