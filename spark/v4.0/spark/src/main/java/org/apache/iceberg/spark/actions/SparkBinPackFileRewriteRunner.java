@@ -85,7 +85,7 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
               .option(SparkReadOptions.SPLIT_SIZE, group.inputSplitSize())
               .option(SparkReadOptions.FILE_OPEN_COST, "0")
               .option(SparkReadOptions.TRACK_SOURCE_POSITIONS, String.valueOf(trackPositions))
-              .load(table().location())
+              .load(groupId)
               .selectExpr(selectExprs);
 
     } else {
@@ -97,7 +97,7 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
               .option(SparkReadOptions.SCAN_TASK_SET_ID, groupId)
               .option(SparkReadOptions.SPLIT_SIZE, group.inputSplitSize())
               .option(SparkReadOptions.FILE_OPEN_COST, "0")
-              .load(table().location());
+              .load(groupId);
     }
 
     // write the packed data into new files where each split becomes a new file
@@ -112,7 +112,7 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
         .option(SparkWriteOptions.OUTPUT_SPEC_ID, group.outputSpecId())
         .option(SparkWriteOptions.TRACK_SOURCE_POSITIONS, String.valueOf(trackPositions))
         .mode("append")
-        .save(table().location());
+        .save(groupId);
   }
 
   // invoke a shuffle if the original spec does not match the output spec
