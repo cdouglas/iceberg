@@ -627,7 +627,8 @@ through the ledger the rewrite writes. Its limits:
   irreversible once reclaimed.
 - **Holes are not restored.** A row no window snapshot could read was never in the rewritten layout, so
   a file that held one comes back without it, at a new path. Every readable row keeps its id, but rows
-  after a hole move up. The map of the compaction that removed the file is written again to match.
+  after a hole move up. The map of the compaction that removed the file is written again to match. A
+  file that held nothing but holes is left out, and so is its mapping, which had no runs.
 - **Removals need the parent.** A snapshot whose parent has expired lists nothing as removed. A deletion
   vector carried into the window from an expired snapshot comes back owned by the floor, at the floor's
   sequence number. Reads are unaffected.
@@ -760,3 +761,36 @@ The maps the harness writes are correct by construction (`LocalCompactor`), so t
 remapping, not the map writers. The check matters most for maps from writers the suites never run.
 That covers Spark's `RewriteDataFilesSparkAction`, and any direct-API caller that passes its own map.
 A direct rewrite given no map records none ([compaction maps errata 7](compaction_maps_errata.md)).
+
+### 17. Reconstruction traded the row ids of files one commit added (fixed)
+
+A manifest writer drops the `first_row_id` of every file it lists as added. A reader gives each added
+file the manifest's `first_row_id`, plus the rows of the added files listed before it, which is how a
+commit assigns ids. Reconstruction listed a snapshot's added files in ledger order, in one manifest per
+spec. The ledger's order follows a hash of the files' paths. So two files one commit added traded id
+ranges whenever the ledger held them out of id order. And a file after one rebuilt without its holes,
+or after one left out entirely, inherited ids that were not its own, in any order.
+
+Every row read back with the right values and the wrong `_row_id`. Spark's file names carry a random
+UUID, so `TestSparkSnapshotRewrite` failed this way in about a third of its runs.
+
+Reconstruction now lists a snapshot's added data files first, in id order, in manifests of their own.
+A new manifest starts wherever the next file's ids do not follow on, and each is assigned its first
+file's id (`SnapshotRewriteUnsafe.assignFirstRowId`). `TestSnapshotRewriteReconstruct` pins the
+order (`filesOneCommitAddedKeepTheirIds`) and the gaps (`filesAfterAHoleOrALeftOutFileKeepTheirIds`).
+
+The same tests found a second gap. When a file was left out, the compaction that replaced it still
+named it in its map, as a source without runs, so the map named a file the compaction's parent no
+longer held. Reconstruction now drops that mapping (`aFileLeftOutLeavesTheMapThatNamedIt`).
+
+### 18. Rewrite output is written in plaintext
+
+Like compaction maps ([compaction maps errata 8](compaction_maps_errata.md)), the files a rewrite or a
+reconstruction writes go through `FileIO` in plaintext. That covers the ledger, the manifests and
+manifest lists, the recovery files, and rebuilt data files. The deletion vectors they write go through
+`OutputFileFactory` and are encrypted.
+
+On an encrypted table, recovery and rebuilt files hold rows in plaintext. Rewritten manifests expose
+the file paths, partition values and column bounds the originals hid; Iceberg encrypts manifests, and
+since 1.12 manifest lists too. A rewrite does not refuse an encrypted table. Out of scope for the
+prototype.
