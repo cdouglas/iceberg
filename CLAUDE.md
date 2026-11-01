@@ -220,7 +220,7 @@ Compaction Conflict Resolution (Spark 3.5, 4.0 and 4.2)
 hooks that add `_file`/`_pos` to a rewrite and drop them before writing are in `SparkTable`,
 `SparkWriteBuilder` and `SparkWrite` on 3.5 and 4.0, and in `SparkRewriteTable`,
 `SparkRewriteWriteBuilder` and `SparkWrite` on 4.2, where rewrites no longer go through `SparkTable`.
-Only bin-pack tracks positions. Each task returns its runs to the driver in its commit message
+Only a bin-pack within one partition spec tracks positions. Each task returns its runs to the driver in its commit message
 (`TrackedTaskCommit`), and `SparkWrite.RewriteFiles.commit` records them in the driver's coordinator;
 executors run in their own JVMs (errata 14). `TestCompactionMapsOnCluster` (3.5, 4.2) checks this on a
 `local-cluster` master. See `compaction_maps_impl.md`, "Where the Hooks Live".
@@ -281,6 +281,7 @@ Compaction maps support **order-preserving** operations only:
 - ✅ **Merge compactions**: Bin-pack with position deletes applied during scan
 - ❌ **Sorted compactions**: Out of scope by design
 - ❌ **Z-ordered compactions**: Out of scope by design
+- ❌ **Bin-packs into a new partition spec**: They shuffle rows, so they write no map (errata 15)
 
 **Why order-changing operations are inappropriate** (not just unsupported):
 

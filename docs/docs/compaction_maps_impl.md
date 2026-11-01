@@ -1286,9 +1286,11 @@ See `REMAPPING_BENCHMARKS.md` for comprehensive benchmark documentation.
 
 ### Position Tracking Architecture
 
-Position tracking runs only in a bin-pack rewrite of a table with `write.compaction-map.enabled`.
-Sort and Z-order rewrites of such a table read the same columns and drop them, writing no map
-(errata 1 and 13).
+Position tracking runs only in a bin-pack rewrite of a table with `write.compaction-map.enabled`,
+and only one that keeps the files' partition spec. Sort and Z-order rewrites of such a table, and a
+bin-pack into a new spec, read the same columns and drop them, writing no map (errata 1, 13 and
+15). A write that tracks positions never gets a fanout writer, whose files come back in its own
+order.
 
 **Read side:**
 - The rewrite reads its file group with a staged scan of the planned `FileScanTask`s, without
