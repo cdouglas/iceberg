@@ -19,7 +19,7 @@
 
 # Compaction Maps for Apache Iceberg
 
-This branch is a research prototype built on **Apache Iceberg 1.10.1** (tag [`apache-iceberg-1.10.1`](https://github.com/apache/iceberg/releases/tag/apache-iceberg-1.10.1)). It adds **compaction maps**: a compact data structure that records the position transformations applied by a compaction so that concurrent transactions writing position deletes (or deletion vectors) can be rebased onto the new layout instead of restarted.
+This branch is a research prototype built on **Apache Iceberg 1.12.0** (tag [`apache-iceberg-1.12.0`](https://github.com/apache/iceberg/releases/tag/apache-iceberg-1.12.0)). It adds **compaction maps**: a compact data structure that records the position transformations applied by a compaction so that concurrent transactions writing position deletes (or deletion vectors) can be rebased onto the new layout instead of restarted.
 
 Compactions and concurrent updates logically commute — compaction does not change table contents — but in current table formats they conflict on direct file references. A compaction map captures, per run of rows, the move from a source file to one or more target files. Either side of a conflict can use the map to rewrite its position-delete references and commit, with no global coordination beyond Iceberg's existing snapshot pointer swap.
 
@@ -27,11 +27,11 @@ Compactions and concurrent updates logically commute — compaction does not cha
 
 Chris Douglas and Joseph M. Hellerstein. **Commutative Compaction.** *1st International Workshop on Data FORMATS for Modern Architectures and Workloads ([FORMATS '26](https://dataformats.org/))*, May 31–June 5, 2026, Bengaluru, India. ACM. <https://doi.org/10.1145/3802514.3809174>
 
-The paper introduces compaction maps, the rebase operation, and the remapping policy, and evaluates an Apache Iceberg prototype (this branch) on Apache Spark 3.5 and 4.0 with both v2 position delete files and v3 deletion vectors.
+The paper introduces compaction maps, the rebase operation, and the remapping policy, and evaluates an Apache Iceberg prototype on Apache Spark 3.5 and 4.0 with both v2 position delete files and v3 deletion vectors. That prototype is this branch's earlier version on Iceberg 1.10.1, kept as `cmpmap-1.10.1`.
 
 ## Benchmark Results
 
-End-to-end remapping was measured against object storage in three clouds (AWS S3 us-west-2, Azure ADLSv2 westus2, GCS uswest1) on commodity VMs (4 vCPU, 16 GiB), varying the number of runs in the compaction map (10 to 10K) and the size of the position delete file or deletion vector (1K to 1M deletes):
+End-to-end remapping was measured against object storage in three clouds (AWS S3 us-west-2, Azure ADLSv2 westus2, GCS uswest1) on commodity VMs (4 vCPU, 16 GiB), varying the number of runs in the compaction map (10 to 10K) and the size of the position delete file or deletion vector (1K to 1M deletes). These results are from the Iceberg 1.10.1 version:
 
 ![Total latency heatmap for deletion vectors across AWS, Azure, and GCP](benchmark/remapping-microbenchmark/results/plots/total_latency_heatmap_dv.png)
 
@@ -51,7 +51,7 @@ Implementation is on the `cmpmap` branch:
 
 - Core data structure, builder, Avro storage, and manifest-list reference.
 - Conflict detection and SERIALIZABLE-isolation integration in `BaseRowDelta` / `MergingSnapshotProducer`.
-- Automatic remapping in `RewriteDataFilesCommitManager` for Spark 3.5 and 4.0, for both position delete files (v2) and deletion vectors (v3).
+- Automatic remapping in `RewriteDataFilesCommitManager` for Spark 3.5, 4.0 and 4.2, for both position delete files (v2) and deletion vectors (v3). Spark 4.1 is not supported.
 - Empirically-tuned remapping policy (IntervalTree / RangeQuery / StreamJoin) selected at runtime from the shape of the inputs.
 
 ## Documentation
@@ -62,11 +62,11 @@ Detailed documentation lives in `docs/docs/`:
 - [compaction_maps_impl.md](docs/docs/compaction_maps_impl.md) — implementation walkthrough, schema, integration points.
 - [compaction_maps_impl_pseudocode.md](docs/docs/compaction_maps_impl_pseudocode.md) — pseudocode for the remapping strategies.
 - [compaction_maps_bench.md](docs/docs/compaction_maps_bench.md) — benchmark suites, methodology, and how to reproduce.
-- [compaction_maps_errata.md](docs/docs/compaction_maps_errata.md) — design scope and known limitations (e.g. sort/z-order rewrites are out of scope).
+- [compaction_maps_errata.md](docs/docs/compaction_maps_errata.md) — design scope and known limitations (e.g. sort/z-order rewrites write no map, and position tracking works only in Spark local mode).
 
 ## Building
 
-This branch builds with the standard Iceberg toolchain (Gradle, Java 11/17/21):
+This branch builds with the standard Iceberg toolchain (Gradle, Java 17 or 21):
 
 ```bash
 ./gradlew :iceberg-core:compileJava
@@ -74,5 +74,8 @@ This branch builds with the standard Iceberg toolchain (Gradle, Java 11/17/21):
 ./gradlew :iceberg-core:test --tests "*Remapping*"
 ./gradlew spotlessApply
 ```
+
+Spark 4.0 and 4.2 build with Scala 2.13 (`-DscalaVersion=2.13`). Flink builds with the default Scala
+2.12, so the two need separate Gradle invocations.
 
 For general Iceberg build, engine-compatibility, and contribution information, see the upstream project at <https://iceberg.apache.org>.

@@ -1178,7 +1178,7 @@ However, retrying an overlapping compaction will fail repeatedly because `refres
     - TestRemappingBenchmarkUtils: 22 tests
   - **SERIALIZABLE isolation tests: 10 tests** (including chained compaction scenarios)
   - **Spark integration tests: 36 parameterized tests** (across format versions and file formats)
-    - TestSparkCompactionConflictResolution: 18 tests per Spark version (Spark 3.5 and 4.0)
+    - TestSparkCompactionConflictResolution: v2 and v3 cases per Spark version (Spark 3.5, 4.0 and 4.2)
   - **JMH benchmarks: 8 benchmarks × 54 scenarios = 324+ benchmark configurations**
   - 1 test disabled (TestCompactionConflictDetectionDV - manifest timing issue)
 - **All enabled tests passing**
@@ -1284,74 +1284,54 @@ See `REMAPPING_BENCHMARKS.md` for comprehensive benchmark documentation.
 
 ## Spark Implementation Details
 
-### Position Tracking Architecture (Spark 3.5)
+### Position Tracking Architecture
 
-**Read Side:**
-- Normal scans with metadata columns (`_file`, `_pos`)
-- File path filtering to select specific files from rewrite group
-- Position deletes applied during scan (standard Iceberg behavior)
+Position tracking runs only in a bin-pack rewrite of a table with `write.compaction-map.enabled`.
+Sort and Z-order rewrites of such a table read the same columns and drop them, writing no map
+(errata 1 and 13).
 
-**Write Side:**
-- PositionTrackingDataWriter wraps delegate writer
-- Extracts `_file` and `_pos` from each row
-- Records position mappings to PositionMappingCoordinator
-- Filters metadata columns before writing to data files
-- **Schema Filtering (Fixed in 8b811d951):** SparkWrite.WriterFactory filters metadata columns for both UnpartitionedDataWriter and PartitionedDataWriter to prevent schema mismatch errors
+**Read side:**
+- The rewrite reads its file group with a staged scan of the planned `FileScanTask`s, without
+  re-planning. Position deletes and DVs are applied during the scan, so deleted rows never reach the
+  writer, and the map has a gap where they were.
+- Each row carries its data columns, then `_row_id` and `_last_updated_sequence_number` on v3, since
+  moved rows keep their lineage (errata 5), then `_file` and `_pos`, its source file and position.
+  Those two come last, so a file writer can write a row's leading columns by ordinal and ignore them.
 
-**Coordination:**
-- PositionMappingCoordinator aggregates mappings from distributed executors
-- Identifies runs by detecting gaps in position sequences
-- Returns FilePositionMapping objects for commit flow
+**Write side:**
+- `PositionTrackingDataWriter` wraps the data writer. It reads `_file` and `_pos` from each row,
+  writes the row, and buffers the source file, source position and output position. On commit it
+  learns the target files from the task's commit message and records the mappings in
+  `PositionMappingCoordinator`.
+- The file writers are given the Spark schema without `_file` and `_pos`, so neither is written.
 
-**Integration:**
-- SparkBinPackFileRewriteRunner enables tracking based on table property
-- BaseFileRewriteCoordinator fetches aggregated mappings
-- RewriteDataFilesCommitManager builds and writes compaction maps
+**Coordination and commit:**
+- `PositionMappingCoordinator` groups each source file's positions into runs by detecting gaps. It
+  is a per-JVM singleton, so it sees a task's mappings only in Spark local mode (errata 14).
+- `SparkDataFileRewriteRunner` attaches the mappings to the file group. The commit manager builds the
+  map and hands it to `BaseRewriteFiles.setCompactionMap`, which writes it at commit.
 
-**Code Locations:**
-```
-spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/
-├── PositionMappingCoordinator.java (coordination layer)
-├── source/
-│   ├── PositionTrackingDataWriter.java (write-side tracking)
-│   └── SparkWriteBuilder.java (schema filtering)
-└── actions/
-    ├── SparkBinPackFileRewriteRunner.java (read/write integration)
-    └── BaseFileRewriteCoordinator.java (mapping fetch)
-```
+### Where the Hooks Live
 
-### Scan Type Selection
+Spark 4.1 (#15301) moved rewrites off `SparkTable`, so the hooks differ by version. Spark 4.1 itself
+is not supported.
 
-**Normal Operations (Position Tracking Disabled):**
-- Uses **staged scans** (`SparkStagedScanBuilder` → `SparkStagedScan`)
-- Pre-computed `FileScanTasks` from rewrite planning
-- No manifest re-scanning required
-- Optimal performance (~10-20% faster)
+| Step | Spark 3.5 and 4.0 | Spark 4.2 |
+|------|-------------------|-----------|
+| Add `_file`, `_pos` to the rewrite schema | `SparkTable` (`readsSourcePositions`) | `SparkRewriteTable` |
+| Read the group | `SparkBinPackFileRewriteRunner`: staged scan by task set id, explicit column list | `SparkBinPackFileRewriteRunner`: loads the group id, which resolves to `SparkRewriteTable` |
+| Drop them from the write schema | `SparkWriteBuilder` | `SparkRewriteWriteBuilder` |
+| Drop them from the file writers; wrap the tracking writer | `SparkWrite.WriterFactory` | `SparkWrite.WriterFactory` |
+| Request tracking | write option `track-source-positions`, set by `SparkBinPackFileRewriteRunner` | same |
 
-**Position Tracking Enabled:**
-- Uses **normal scans** (`SparkScanBuilder` → `SparkBatchQueryScan`)
-- Filters to specific file paths using `_file = 'path'` predicates
-- Explicitly selects `_file` and `_pos` metadata columns
-- Slight performance overhead due to manifest re-scanning
+All three versions share `PositionTrackingDataWriter`, `PositionMappingCoordinator`,
+`BaseFileRewriteCoordinator.fetchPositionMappings` and `SparkDataFileRewriteRunner`.
 
-**Why Normal Scans:**
+### Cost
 
-Staged scans don't properly expose metadata columns to Spark's physical planner. When metadata columns are included in a staged scan's schema, Spark's optimizer prunes them away during the `V2ScanRelationPushDown` optimization phase, causing errors.
-
-Normal scans fully support metadata columns through Spark's `SupportsMetadataColumns` interface and preserve them through the entire query planning pipeline.
-
-### Performance Considerations
-
-**Position Tracking Overhead:**
-- Manifest re-scanning: ~5-10% overhead
-- Filter evaluation on file paths: ~2-5% overhead
-- Total: ~10-20% slower than staged scans
-
-**Why Acceptable:**
-- Compaction map generation is an opt-in feature (disabled by default)
-- Used primarily for high-concurrency workloads where conflict resolution matters more than raw throughput
-- Overhead only applies when `write.compaction-map.enabled=true`
-- Most production workloads can absorb this cost for the safety guarantees
+Tracking reads two extra columns per row, and each writer holds one buffered mapping per row until
+its task commits. It does not re-plan the scan. Maps are opt-in per table, and only bin-pack pays for
+tracking.
 
 ## Design Considerations
 

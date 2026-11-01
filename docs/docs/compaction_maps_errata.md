@@ -69,11 +69,11 @@ This is a **design boundary**, not a missing feature. Order-changing operations 
 
 ### Issue
 
-Automatic conflict resolution is **now available for compaction operations** (Spark 3.5 and 4.0), but **application transactions still require manual resolution**.
+Automatic conflict resolution is **now available for compaction operations** (Spark 3.5, 4.0 and 4.2), but **application transactions still require manual resolution**.
 
 ### Current Status
 
-**✅ Compaction Operations (Spark 3.5 and 4.0):**
+**✅ Compaction Operations (Spark 3.5, 4.0 and 4.2):**
 
 Automatic conflict resolution is implemented via `SparkRewriteDataFilesCommitManager`:
 ```java
@@ -126,14 +126,12 @@ rowDelta.commit();
 
 ### Code Location
 
-**Compaction Resolution (Implemented for Spark 3.5 and 4.0):**
+**Compaction Resolution (Implemented for Spark 3.5, 4.0 and 4.2):**
 ```
-spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkRewriteDataFilesCommitManager.java
-spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/actions/SparkRewriteDataFilesCommitManager.java
+spark/v{3.5,4.0,4.2}/spark/src/main/java/org/apache/iceberg/spark/actions/SparkRewriteDataFilesCommitManager.java
   detectAndResolveConflicts() - Detects and resolves conflicts during commit
 
-spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/actions/SparkCompactionConflictResolver.java
-spark/v4.0/spark/src/main/java/org/apache/iceberg/spark/actions/SparkCompactionConflictResolver.java
+spark/v{3.5,4.0,4.2}/spark/src/main/java/org/apache/iceberg/spark/actions/SparkCompactionConflictResolver.java
   resolve() - Reads, remaps, and writes conflicting position deletes and DVs
 
 core/src/main/java/org/apache/iceberg/CompactionConflictDetector.java
@@ -159,9 +157,10 @@ core/src/main/java/org/apache/iceberg/PositionDeleteRemapper.java
 ./gradlew :iceberg-spark:iceberg-spark-3.5_2.12:test \
   --tests "TestSparkCompactionConflictResolution"
 
-# Test compaction conflict resolution (Spark 4.0)
-./gradlew :iceberg-spark:iceberg-spark-4.0_2.13:test \
-  --tests "TestSparkCompactionConflictResolution"
+# Test compaction conflict resolution (Spark 4.0 and 4.2, which build with Scala 2.13)
+./gradlew -DscalaVersion=2.13 \
+  :iceberg-spark:iceberg-spark-4.0_2.13:test --tests "TestSparkCompactionConflictResolution" \
+  :iceberg-spark:iceberg-spark-4.2_2.13:test --tests "TestSparkCompactionConflictResolution"
 
 # Test manual resolution (application transactions)
 ./gradlew :iceberg-core:test --tests "TestCompactionConflictResolution"
@@ -592,6 +591,36 @@ and its write builder drops them, by the same rule.
 
 ---
 
+## 14. Position Mappings Reach the Driver Only in Local Mode
+
+### Issue
+
+`PositionTrackingDataWriter` runs in each Spark task and records the positions it moves in
+`PositionMappingCoordinator`, a per-JVM singleton. The rewrite runner reads the mappings from the
+driver's singleton when the group finishes. Nothing carries them from an executor to the driver: the
+task's commit message holds only its data files. Every test and benchmark runs Spark in local mode,
+where tasks share the driver's JVM.
+
+### Impact
+
+On a cluster the driver sees no mappings, so a compaction commits without a map, silently. Nothing is
+wrong as a result: a concurrent delete on a replaced file conflicts as it would on a table without
+maps, and the transaction retries. But the feature does nothing.
+
+### Status
+
+Open. The fix is to return each task's mappings in its commit message, or through an accumulator,
+and build the map on the driver from those.
+
+### Code Location
+
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/source/PositionTrackingDataWriter.java`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/PositionMappingCoordinator.java`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/actions/SparkDataFileRewriteRunner.java` --
+  `rewrite`
+
+---
+
 ## Summary
 
 | # | Issue | Impact | Status | Priority |
@@ -609,8 +638,9 @@ and its write builder drops them, by the same rule.
 | 11 | Bin-pack rewrites failed outside Hadoop tables | `rewrite_data_files` failed in Hive, REST and session catalogs | Fixed | - |
 | 12 | Spark 4.0 replaced tracked mappings with concatenations | Maps of files with deletes remapped positions to the wrong rows | Fixed | - |
 | 13 | Sort and Z-order rewrites failed on tables with maps | Only bin-pack could compact a table with maps | Fixed | - |
+| 14 | Position mappings reach the driver only in local mode | On a cluster, compactions write no map | Open | High |
 
-**Fixed Issues (Removed from Active List):**
+**Fixed Issues (Removed from Active List; commit hashes are from the 1.10.1-based history, `cmpmap-1.10.1`):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)
 - ~~Source files spanning multiple targets~~ - ✅ FIXED: Per-run target files now supported (Jan 24, 2026)
 - ~~Normal scans vs staged scans~~ - ✅ FIXED: Staged scans now work with explicit metadata column selection
@@ -626,7 +656,7 @@ and its write builder drops them, by the same rule.
 
 If you'd like to help address the remaining issues:
 
-**Application Transaction Conflict Resolution (Priority: Low):** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete for both Spark 3.5 and 4.0.
+**Application Transaction Conflict Resolution (Priority: Low):** Implement opt-in automatic remapping in `BaseRowDelta` for application-level position delete conflicts. The compaction-level resolution (`SparkRewriteDataFilesCommitManager`) is already complete for Spark 3.5, 4.0 and 4.2.
 
 ## References
 

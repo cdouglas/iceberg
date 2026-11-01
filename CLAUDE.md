@@ -4,6 +4,17 @@
 
 **Branch:** `cmpmap` | **Status:** Implementation complete, DV optimization pending
 
+### Base and Versions
+
+| | |
+|---|---|
+| Iceberg base | 1.12.0 (tag `apache-iceberg-1.12.0`; rebase onto `apache/1.12.x` once it exists) |
+| Earlier version | on Iceberg 1.10.1, the one the paper evaluates: `cmpmap-1.10.1` |
+| Java | 17 or 21 |
+| Spark | 3.5, 4.0, 4.2 (not 4.1). Spark 4.x builds with `-DscalaVersion=2.13` |
+| Flink | 1.20, 2.1, 2.2, 2.3, with the default Scala 2.12, so in a separate Gradle invocation from Spark 4.x |
+| Manifest field | `compaction_map_location` is field 550, clear of upstream's manifest field IDs |
+
 ### Current Work: Remapping Optimization
 
 **Completed:** Position Delete bulk remapping (1.3% avg remap time)
@@ -142,7 +153,7 @@ SERIALIZABLE Isolation (upstream, unchanged)
 └─> MergingSnapshotProducer.validateAddedDataFiles()
     └─> Checks APPEND and OVERWRITE only; a REPLACE is never a read conflict
 
-Compaction Conflict Resolution (Spark 3.5 and 4.0)
+Compaction Conflict Resolution (Spark 3.5, 4.0 and 4.2)
 └─> SparkRewriteDataFilesCommitManager.commitFileGroups()
     └─> detectAndResolveConflicts()
         └─> CompactionConflictDetector.detectConflicts()
@@ -198,14 +209,20 @@ Compaction Conflict Resolution (Spark 3.5 and 4.0)
 - `DeleteConflictInfo.java` - Metadata about detected conflicts
 - `PositionDeletesScanTasks.java` - Helper to create scan tasks for delete files
 
-**Spark Layer** (`spark/v3.5/` and `spark/v4.0/`):
+**Spark Layer** (`spark/v3.5/`, `spark/v4.0/` and `spark/v4.2/`):
 
-*Conflict Resolution (both Spark 3.5 and 4.0):*
+*Conflict Resolution (all three versions):*
 - `SparkRewriteDataFilesCommitManager.java` - Extends core commit manager with conflict resolution
 - `SparkCompactionConflictResolver.java` - Reads, remaps, and writes position deletes and DVs using Spark
 - `RewriteDataFilesSparkAction.java` - Uses SparkRewriteDataFilesCommitManager
 
-*Note*: Spark 4.0 requires cast to `org.apache.spark.sql.classic.SparkSession` for `cloneSession()`
+*Position Tracking:* `PositionTrackingDataWriter` and `PositionMappingCoordinator` are shared. The
+hooks that add `_file`/`_pos` to a rewrite and drop them before writing are in `SparkTable`,
+`SparkWriteBuilder` and `SparkWrite` on 3.5 and 4.0, and in `SparkRewriteTable`,
+`SparkRewriteWriteBuilder` and `SparkWrite` on 4.2, where rewrites no longer go through `SparkTable`.
+Only bin-pack tracks positions. See `compaction_maps_impl.md`, "Where the Hooks Live".
+
+*Note*: Spark 4.0 and 4.2 require a cast to `org.apache.spark.sql.classic.SparkSession` for `cloneSession()`
 
 **Test Suite** (`core/src/test/java/org/apache/iceberg/`):
 - Core: TestCompactionMap{Serialization,Builder,Storage,Integration,CommitFlow}
@@ -214,8 +231,9 @@ Compaction Conflict Resolution (Spark 3.5 and 4.0)
 - Remapping: TestRemapping{Strategies,StrategiesIntegration,AlgorithmSelector}
 - Benchmarks: RemappingAlgorithmBenchmark (324 configurations)
 
-**Spark Test Suite** (both `spark/v3.5/` and `spark/v4.0/`):
-- TestSparkCompactionConflictResolution (12 tests each: 6 V2 + 6 V3) - End-to-end conflict resolution tests
+**Spark Test Suite** (`spark/v3.5/`, `spark/v4.0/` and `spark/v4.2/`):
+- TestSparkCompactionConflictResolution (V2 and V3 cases) - End-to-end conflict resolution tests
+- TestRewriteDataFilesActionWithCompactionMaps - Map generation; sort and Z-order rewrites write none
 
 ## Critical Implementation Patterns
 
@@ -348,7 +366,7 @@ return RangeQuery;              // Default for sorted (including small m with la
 // Isolation level (affects validation behavior)
 "write.delete.isolation-level" = "serializable" (default)
 
-// Enable automatic conflict resolution during compaction (Spark 3.5 and 4.0)
+// Enable automatic conflict resolution during compaction (Spark 3.5, 4.0 and 4.2)
 "write.compaction.resolve-delete-conflicts" = "true" (default: false)
 
 // Maximum conflicting delete files to resolve automatically
@@ -477,7 +495,7 @@ Jump directly to these sections instead of reading entire files:
 - `BaseRowDelta.java:219-238` - validateNoCompactionConflicts()
 - `CompactionConflictDetector.java` - Scans manifests for conflicting delete files
 
-**Compaction Conflict Resolution (Spark 3.5 and 4.0)**:
+**Compaction Conflict Resolution (Spark 3.5, 4.0 and 4.2)**:
 - `SparkRewriteDataFilesCommitManager.java:185-234` - detectAndResolveConflicts()
 - `SparkCompactionConflictResolver.java` - Read, remap, write position deletes and DVs
 
@@ -521,6 +539,10 @@ python3 visualize_results.py results_20260116_162342.csv
 
 # Run all remapping tests
 ./gradlew :iceberg-core:test --tests "*Remapping*"
+
+# Run Spark 4.x tests (Spark 4.x needs Scala 2.13)
+./gradlew -DscalaVersion=2.13 :iceberg-spark:iceberg-spark-4.2_2.13:test \
+    --tests "TestSparkCompactionConflictResolution"
 
 # Format code
 ./gradlew spotlessApply
@@ -585,11 +607,11 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 ## Branch and Status
 
 **Branch**: `cmpmap` (NOT `vldb` - that's separate prototype)
-**Status**: Implementation complete, full conflict resolution for Spark 3.5 and 4.0
-**Test Status**: 256 tests passing ✅
+**Status**: Implementation complete, full conflict resolution for Spark 3.5, 4.0 and 4.2
+**Test Status**: No test class worse than vanilla Iceberg 1.12.0 ✅
 **Documentation Status**: Current ✅
 
-**Recent Additions**:
+**Recent Additions** (hashes are from the 1.10.1-based history, `cmpmap-1.10.1`):
 - Smart selector tuning: require m >= 100 for StreamJoin (Jan 22, 2026) - 4.68% avg overhead
 - Spark 4.0 conflict resolution parity (commit 539432b51)
 - V3 Deletion Vector conflict resolution support (commit 368ae59e9)
@@ -600,6 +622,7 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 **Pending Work**:
 1. Application transaction conflict resolution (BaseRowDelta auto-remapping)
+2. Position mappings reach the driver only in Spark local mode (errata 14)
 
 ---
 
