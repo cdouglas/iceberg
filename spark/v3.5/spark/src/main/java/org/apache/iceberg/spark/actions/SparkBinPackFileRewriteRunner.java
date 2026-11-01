@@ -42,15 +42,18 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
 
   @Override
   protected void doRewrite(String groupId, RewriteFileGroup group) {
-    // Check if position tracking is enabled (for compaction map generation)
+    // Check if position tracking is enabled (for compaction map generation). A bin-pack into
+    // another spec shuffles its rows into their new partitions, which reorders them as a sort
+    // does, so it tracks nothing
     boolean trackPositions =
-        Boolean.parseBoolean(
-            table()
-                .properties()
-                .getOrDefault(
-                    org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED,
-                    String.valueOf(
-                        org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT)));
+        !requiresRepartition(group)
+            && Boolean.parseBoolean(
+                table()
+                    .properties()
+                    .getOrDefault(
+                        org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED,
+                        String.valueOf(
+                            org.apache.iceberg.TableProperties.COMPACTION_MAP_ENABLED_DEFAULT)));
 
     Dataset<Row> scanDF;
 
@@ -117,8 +120,10 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
 
   // invoke a shuffle if the original spec does not match the output spec
   private DistributionMode distributionMode(RewriteFileGroup group) {
-    boolean requiresRepartition =
-        !group.fileScanTasks().get(0).spec().equals(spec(group.outputSpecId()));
-    return requiresRepartition ? DistributionMode.RANGE : DistributionMode.NONE;
+    return requiresRepartition(group) ? DistributionMode.RANGE : DistributionMode.NONE;
+  }
+
+  private boolean requiresRepartition(RewriteFileGroup group) {
+    return !group.fileScanTasks().get(0).spec().equals(spec(group.outputSpecId()));
   }
 }

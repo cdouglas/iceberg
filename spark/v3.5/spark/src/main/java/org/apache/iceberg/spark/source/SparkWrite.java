@@ -194,6 +194,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     // broadcast the table metadata as the writer factory will be sent to executors
     Broadcast<Table> tableBroadcast =
         sparkContext.broadcast(SerializableTableWithSize.copyOf(table));
+    boolean tracksSourcePositions =
+        writeConf.trackSourcePositions() && writeConf.rewrittenFileSetId() != null;
     return new WriterFactory(
         tableBroadcast,
         queryId,
@@ -202,7 +204,9 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
         targetFileSize,
         writeSchema,
         dsSchema,
-        useFanoutWriter,
+        // A tracking writer places rows by the order of the files its task reports, which a fanout
+        // writer does not report in the order it wrote them
+        useFanoutWriter && !tracksSourcePositions,
         writeProperties,
         writeConf.trackSourcePositions(),
         writeConf.rewrittenFileSetId(),
