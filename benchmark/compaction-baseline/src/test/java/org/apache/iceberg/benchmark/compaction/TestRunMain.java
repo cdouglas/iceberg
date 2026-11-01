@@ -60,12 +60,11 @@ class TestRunMain {
             .config("spark.sql.catalog.default_iceberg.type", "hadoop")
             .config(
                 "spark.sql.catalog.default_iceberg.warehouse", "/tmp/compaction-baseline-tests-run")
+            // groupId-keyed rewrite scans resolve through SparkTableCache, so this must be
+            // SparkCachedTableCatalog
             .config(
-                "spark.sql.catalog.default_cache_iceberg", "org.apache.iceberg.spark.SparkCatalog")
-            .config("spark.sql.catalog.default_cache_iceberg.type", "hadoop")
-            .config(
-                "spark.sql.catalog.default_cache_iceberg.warehouse",
-                "/tmp/compaction-baseline-tests-run-cache")
+                "spark.sql.catalog.default_cache_iceberg",
+                "org.apache.iceberg.spark.SparkCachedTableCatalog")
             .getOrCreate();
   }
 

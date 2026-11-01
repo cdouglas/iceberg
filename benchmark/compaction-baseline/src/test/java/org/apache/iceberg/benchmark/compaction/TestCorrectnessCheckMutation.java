@@ -99,12 +99,11 @@ class TestCorrectnessCheckMutation {
             .config(
                 "spark.sql.catalog.default_iceberg.warehouse",
                 "/tmp/compaction-baseline-tests-m5")
+            // groupId-keyed rewrite scans resolve through SparkTableCache, so this must be
+            // SparkCachedTableCatalog
             .config(
-                "spark.sql.catalog.default_cache_iceberg", "org.apache.iceberg.spark.SparkCatalog")
-            .config("spark.sql.catalog.default_cache_iceberg.type", "hadoop")
-            .config(
-                "spark.sql.catalog.default_cache_iceberg.warehouse",
-                "/tmp/compaction-baseline-tests-m5-cache")
+                "spark.sql.catalog.default_cache_iceberg",
+                "org.apache.iceberg.spark.SparkCachedTableCatalog")
             .getOrCreate();
   }
 
