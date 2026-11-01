@@ -306,7 +306,7 @@ public class RewriteDataFilesSparkAction
   @VisibleForTesting
   RewriteDataFilesCommitManager commitManager(long startingSnapshotId) {
     return new SparkRewriteDataFilesCommitManager(
-        spark(), table, startingSnapshotId, useStartingSequenceNumber, commitSummary());
+        spark(), table, startingSnapshotId, useStartingSequenceNumber, commitSummary(), branch);
   }
 
   private Builder doExecute(

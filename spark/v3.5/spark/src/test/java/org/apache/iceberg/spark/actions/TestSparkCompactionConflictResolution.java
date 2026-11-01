@@ -35,6 +35,7 @@ import org.apache.iceberg.CompactionMapBuilder;
 import org.apache.iceberg.CompactionMapChain;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.DeleteConflictInfo;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
@@ -69,6 +70,7 @@ import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.SparkWriteOptions;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.spark.data.TestHelpers;
@@ -585,6 +587,47 @@ public class TestSparkCompactionConflictResolution extends TestBase {
         .isFalse();
   }
 
+  /** A rewrite on a branch commits to that branch, with the deletes on the branch, not to main. */
+  @TestTemplate
+  public void testConflictResolutionOnBranch() {
+    Table table = createTableWithData(2);
+    table
+        .updateProperties()
+        .set(TableProperties.COMPACTION_MAP_ENABLED, "true")
+        .set(TableProperties.COMPACTION_RESOLVE_DELETE_CONFLICTS, "true")
+        .commit();
+
+    String branch = "compaction";
+    List<DataFile> dataFiles = TestHelpers.dataFiles(table);
+    table.manageSnapshots().createBranch(branch, table.currentSnapshot().snapshotId()).commit();
+    DeleteFile delete = writePositionDelete(table, dataFiles.get(0), 0);
+    table.newRowDelta().addDeletes(delete).toBranch(branch).commit();
+    List<Object[]> expectedBranch = branchData(branch);
+    assertThat(expectedBranch).hasSize(2 * SCALE - 1);
+
+    // main moves on, so its history is not the branch's
+    writeRecords(2 * SCALE, SCALE);
+    table.refresh();
+    long mainSnapshotId = table.currentSnapshot().snapshotId();
+    List<Object[]> expectedMain = currentData();
+
+    RewriteDataFiles.Result result =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .toBranch(branch)
+            .option(SizeBasedFileRewritePlanner.MIN_INPUT_FILES, "1")
+            .execute();
+
+    assertThat(result.rewrittenDataFilesCount()).isEqualTo(dataFiles.size());
+    table.refresh();
+    assertThat(table.currentSnapshot().snapshotId())
+        .as("The rewrite must not commit to main")
+        .isEqualTo(mainSnapshotId);
+    assertEquals("Main must be unchanged", expectedMain, currentData());
+    assertThat(table.snapshot(branch).operation()).isEqualTo(DataOperations.REPLACE);
+    assertEquals("Branch rows must keep the delete", expectedBranch, branchData(branch));
+  }
+
   // Helper methods
 
   private Table createTableWithData(int numFiles) {
@@ -617,6 +660,17 @@ public class TestSparkCompactionConflictResolution extends TestBase {
         .mode("append")
         .option(SparkWriteOptions.USE_TABLE_DISTRIBUTION_AND_ORDERING, "false")
         .save(tableLocation);
+  }
+
+  private List<Object[]> branchData(String branch) {
+    return rowsToJava(
+        spark
+            .read()
+            .format("iceberg")
+            .option(SparkReadOptions.BRANCH, branch)
+            .load(tableLocation)
+            .orderBy("id")
+            .collectAsList());
   }
 
   private List<Object[]> currentData() {

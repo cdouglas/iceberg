@@ -43,6 +43,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.DataFileSet;
 import org.apache.iceberg.util.DeleteFileSet;
+import org.apache.iceberg.util.SnapshotUtil;
 import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,6 +65,7 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
   private final long startingSnapshotId;
   private final boolean useStartingSequenceNumber;
   private final Map<String, String> snapshotProperties;
+  private final String branch;
 
   public SparkRewriteDataFilesCommitManager(
       SparkSession spark, Table table, long startingSnapshotId) {
@@ -81,12 +83,23 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
       long startingSnapshotId,
       boolean useStartingSequenceNumber,
       Map<String, String> snapshotProperties) {
-    super(table, startingSnapshotId, useStartingSequenceNumber, snapshotProperties);
+    this(spark, table, startingSnapshotId, useStartingSequenceNumber, snapshotProperties, null);
+  }
+
+  public SparkRewriteDataFilesCommitManager(
+      SparkSession spark,
+      Table table,
+      long startingSnapshotId,
+      boolean useStartingSequenceNumber,
+      Map<String, String> snapshotProperties,
+      String branch) {
+    super(table, startingSnapshotId, useStartingSequenceNumber, snapshotProperties, branch);
     this.spark = spark;
     this.table = table;
     this.startingSnapshotId = startingSnapshotId;
     this.useStartingSequenceNumber = useStartingSequenceNumber;
     this.snapshotProperties = snapshotProperties;
+    this.branch = branch;
   }
 
   /**
@@ -143,6 +156,10 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
 
     snapshotProperties.forEach(rewrite::set);
 
+    if (branch != null) {
+      rewrite.toBranch(branch);
+    }
+
     rewrite.commit();
   }
 
@@ -176,9 +193,9 @@ public class SparkRewriteDataFilesCommitManager extends RewriteDataFilesCommitMa
    */
   private List<DeleteFile> detectAndResolveConflicts(
       CompactionMap compactionMap, DataFileSet rewrittenDataFiles) {
-    // Refresh table to get latest snapshot
+    // Refresh table to get the latest snapshot of the branch the rewrite commits to
     table.refresh();
-    Snapshot currentSnapshot = table.currentSnapshot();
+    Snapshot currentSnapshot = SnapshotUtil.latestSnapshot(table, branch);
 
     if (currentSnapshot == null || currentSnapshot.snapshotId() == startingSnapshotId) {
       LOG.debug("No intervening snapshots, skipping conflict detection");
