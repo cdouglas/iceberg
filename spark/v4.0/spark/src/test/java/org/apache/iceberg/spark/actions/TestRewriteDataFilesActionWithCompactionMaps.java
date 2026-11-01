@@ -42,12 +42,16 @@ import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.RewriteDataFiles.Result;
+import org.apache.iceberg.actions.RewritePositionDeleteFiles;
 import org.apache.iceberg.actions.SizeBasedFileRewritePlanner;
+import org.apache.iceberg.data.FileHelpers;
 import org.apache.iceberg.exceptions.CompactionConflictException;
 import org.apache.iceberg.hadoop.HadoopTables;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Streams;
@@ -55,6 +59,7 @@ import org.apache.iceberg.spark.SparkWriteOptions;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.spark.source.ThreeColumnRecord;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.util.Pair;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.internal.SQLConf;
@@ -364,6 +369,93 @@ public class TestRewriteDataFilesActionWithCompactionMaps extends TestBase {
           .as("Manifest should not have compaction map when feature disabled")
           .isNull();
     }
+  }
+
+  /**
+   * A sort rewrite reorders rows, so it records no positions and writes no map. It still reads the
+   * rewrite table of a table that keeps maps, source positions included, and must write only the
+   * table's columns.
+   */
+  @TestTemplate
+  public void testSortRewriteWritesNoMap() {
+    Table table = createTable(3);
+    table.refresh();
+    List<Object[]> expected = currentData();
+
+    Result result =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .sort(SortOrder.builderFor(table.schema()).asc("c2").build())
+            .option(SizeBasedFileRewritePlanner.REWRITE_ALL, "true")
+            .execute();
+
+    assertReorderedWithoutMap(table, result, expected);
+  }
+
+  /** As a sort rewrite: a z-order rewrite reorders rows, and writes no map. */
+  @TestTemplate
+  public void testZOrderRewriteWritesNoMap() {
+    Table table = createTable(3);
+    table.refresh();
+    List<Object[]> expected = currentData();
+
+    Result result =
+        SparkActions.get(spark)
+            .rewriteDataFiles(table)
+            .zOrder("c2", "c3")
+            .option(SizeBasedFileRewritePlanner.REWRITE_ALL, "true")
+            .execute();
+
+    assertReorderedWithoutMap(table, result, expected);
+  }
+
+  /**
+   * The position deletes table keeps no compaction map of its own, so rewriting a table's delete
+   * files reads no source positions and writes as it would without maps.
+   */
+  @TestTemplate
+  public void testPositionDeleteRewriteReadsNoSourcePositions() throws IOException {
+    Table table = createTable(1);
+    table.refresh();
+    DataFile dataFile = getDataFiles(table).get(0);
+    RowDelta rowDelta = table.newRowDelta();
+    for (long pos = 0; pos < 2; pos += 1) {
+      rowDelta.addDeletes(
+          FileHelpers.writeDeleteFile(
+                  table,
+                  table
+                      .io()
+                      .newOutputFile(
+                          tableLocation + "/data/" + fileFormat.addExtension("deletes-" + pos)),
+                  ImmutableList.of(Pair.of(dataFile.location(), pos)))
+              .first());
+    }
+
+    rowDelta.commit();
+    List<Object[]> expected = currentData();
+
+    RewritePositionDeleteFiles.Result result =
+        SparkActions.get(spark)
+            .rewritePositionDeletes(table)
+            .option(SizeBasedFileRewritePlanner.REWRITE_ALL, "true")
+            .execute();
+
+    assertThat(result.rewrittenDeleteFilesCount()).isEqualTo(2);
+    assertThat(result.addedDeleteFilesCount()).isOne();
+    assertEquals("Rows must match", expected, currentData());
+  }
+
+  private void assertReorderedWithoutMap(Table table, Result result, List<Object[]> expected) {
+    assertThat(result.rewrittenDataFilesCount()).isGreaterThan(0);
+    table.refresh();
+    for (ManifestFile manifest : table.currentSnapshot().dataManifests(table.io())) {
+      assertThat(manifest.compactionMapLocation())
+          .as("A reordering rewrite writes no compaction map")
+          .isNull();
+    }
+
+    assertThat(table.schema().asStruct()).isEqualTo(SCHEMA.asStruct());
+    assertEquals("Rows must match", expected, currentData());
   }
 
   @TestTemplate
