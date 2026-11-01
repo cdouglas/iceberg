@@ -29,6 +29,9 @@ coordination service.
 The companion catalog implementation that consumes these primitives lives in a
 separate repository: <https://github.com/cdouglas/catalog>.
 
+This branch, `atomicio-1.10`, is the version on Iceberg 1.10.1, kept for reference. Development
+continues on [`atomicio`](https://github.com/cdouglas/iceberg/tree/atomicio), over Iceberg 1.12.0.
+
 ## What this fork adds
 
 - **`SupportsAtomicOperations`** — a `FileIO` extension exposing atomic
