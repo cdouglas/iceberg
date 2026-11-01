@@ -27,7 +27,7 @@ Compactions and concurrent updates logically commute — compaction does not cha
 
 Chris Douglas and Joseph M. Hellerstein. **Commutative Compaction.** *1st International Workshop on Data FORMATS for Modern Architectures and Workloads ([FORMATS '26](https://dataformats.org/))*, May 31–June 5, 2026, Bengaluru, India. ACM. <https://doi.org/10.1145/3802514.3809174>
 
-The paper introduces compaction maps, the rebase operation, and the remapping policy, and evaluates an Apache Iceberg prototype (this branch) on Apache Spark 3.5 and 4.0 with both v2 position delete files and v3 deletion vectors.
+The paper introduces compaction maps, the rebase operation, and the remapping policy, and evaluates an Apache Iceberg prototype (this branch) on Apache Spark 3.5 and 4.0 with both v2 position delete files and v3 deletion vectors. This branch is kept for reference and carries the fixes made since; development continues on [`cmpmap`](https://github.com/cdouglas/iceberg/tree/cmpmap), over Iceberg 1.12.0.
 
 ## Benchmark Results
 
@@ -47,7 +47,7 @@ See [docs/docs/compaction_maps_bench.md](docs/docs/compaction_maps_bench.md) for
 
 ## Status
 
-Implementation is on the `cmpmap` branch:
+Implementation is on the `cmpmap-1.10` branch:
 
 - Core data structure, builder, Avro storage, and manifest-list reference.
 - Conflict detection and SERIALIZABLE-isolation integration in `BaseRowDelta` / `MergingSnapshotProducer`.

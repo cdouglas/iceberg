@@ -2,7 +2,7 @@
 
 ## Quick Reference (Read This First)
 
-**Branch:** `cmpmap` | **Status:** Implementation complete, DV optimization pending
+**Branch:** `cmpmap-1.10` (Iceberg 1.10.1; the current version is `cmpmap`, on 1.12.0) | **Status:** Implementation complete, DV optimization pending
 
 ### Current Work: Remapping Optimization
 
@@ -590,7 +590,7 @@ git log --oneline --grep="compaction\|remapping" cmpmap
 
 ## Branch and Status
 
-**Branch**: `cmpmap` (NOT `vldb` - that's separate prototype)
+**Branch**: `cmpmap-1.10`, the Iceberg 1.10.1 version of `cmpmap` (NOT `atomicio`, `atomicio-1.6` or the former `vldb` - those are a separate prototype)
 **Status**: Implementation complete, full conflict resolution for Spark 3.5 and 4.0
 **Test Status**: 256 tests passing ✅
 **Documentation Status**: Current ✅
