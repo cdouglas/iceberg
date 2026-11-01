@@ -205,8 +205,8 @@ Compaction Conflict Resolution (Spark 3.5 and 4.0)
 - `SparkCompactionConflictResolver.java` - Reads, remaps, and writes position deletes and DVs using Spark
 - `RewriteDataFilesSparkAction.java` - Uses SparkRewriteDataFilesCommitManager
 
-*Position Tracking:* `PositionTrackingDataWriter` and `PositionMappingCoordinator` are shared. Only
-bin-pack tracks positions. Each task returns its runs to the driver in its commit message
+*Position Tracking:* `PositionTrackingDataWriter` and `PositionMappingCoordinator` are shared. Only a
+bin-pack within one partition spec tracks positions. Each task returns its runs to the driver in its commit message
 (`TrackedTaskCommit`), and `SparkWrite.RewriteFiles.commit` records them in the driver's coordinator;
 executors run in their own JVMs (errata 14). `TestCompactionMapsOnCluster` checks this on a
 `local-cluster` master.
@@ -266,6 +266,7 @@ Compaction maps support **order-preserving** operations only:
 - ✅ **Merge compactions**: Bin-pack with position deletes applied during scan
 - ❌ **Sorted compactions**: Out of scope by design
 - ❌ **Z-ordered compactions**: Out of scope by design
+- ❌ **Bin-packs into a new partition spec**: They shuffle rows, so they write no map (errata 15)
 
 **Why order-changing operations are inappropriate** (not just unsupported):
 

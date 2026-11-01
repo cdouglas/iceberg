@@ -348,6 +348,7 @@ Compaction maps support **order-preserving** compaction operations:
 **Out of scope by design:**
 - **Sorted compactions**: Rewriting data sorted by column(s)
 - **Z-ordered compactions**: Reorganizing data along a space-filling curve
+- **Bin-packs into a new partition spec**: Shuffling old files' rows into their new partitions
 
 Order-changing operations are **not appropriate** for compaction maps because:
 1. Reordering produces degenerate maps (runs of length 1), defeating run-length encoding

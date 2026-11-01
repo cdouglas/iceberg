@@ -31,6 +31,9 @@ Compaction maps support **order-preserving** compaction operations:
 - ✅ **Bin-pack rewrites**: Combining multiple files without reordering (simple concatenation)
 - ✅ **Merge compactions**: Bin-pack with position deletes applied during scan
 
+A bin-pack into another partition spec is not one of these: it shuffles rows into their new
+partitions, and writes no map (errata 15).
+
 These operations preserve the relative order of rows within each source file, allowing position mappings to be represented efficiently as runs.
 
 ### How Merge Compactions Work
@@ -633,6 +636,45 @@ rows it wrote now fails, since a map that left out rows would read as if they ha
 
 ---
 
+## 15. Bin-Packs Into a New Partition Spec Recorded Wrong Maps ✅ FIXED
+
+### Issue
+
+A bin-pack of files written under an older partition spec rewrites them into the current spec,
+shuffling rows into their new partitions with a range distribution. Errata 1 still holds, and that
+shuffle reorders rows as a sort does, but the rewrite tracked positions anyway. On a table with no
+sort order, Iceberg also drops the sort within each task when fanout writers are enabled, which is
+the default. A task then wrote several partitions with rows interleaved, while the tracking writer
+assumed each task wrote its files one after another. It also took the files in the order the
+fanout writer reported them, grouped by partition in hash order.
+
+### Impact
+
+After partition evolution, compacting old files on a table with maps recorded a map that sent rows
+to the wrong target positions, whenever a task wrote more than one partition. The record-count check
+added with errata 14 does not catch it, since the counts still add up. A concurrent delete remapped
+through such a map deleted other rows. A correct map would still have been degenerate, runs of a row
+or a few, which errata 1 excludes.
+
+### Resolution
+
+A bin-pack that repartitions tracks nothing and writes no map, as sort and Z-order rewrites do;
+concurrent deletes conflict as on a table without maps. As a backstop, a write that tracks positions
+never gets a fanout writer, so a tracked task that wrote interleaved partitions would fail instead
+of recording a wrong map.
+
+### Code Location
+
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/actions/SparkBinPackFileRewriteRunner.java`
+  -- `requiresRepartition`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/source/SparkWrite.java` --
+  `createWriterFactory`
+- Tests: `TestRewriteDataFilesActionWithCompactionMaps` -- `testBinPackIntoANewSpecWritesNoMap`
+  (failed on Spark 3.5 and 4.0 before the fix) and
+  `testBinPackOfAPartitionedTableMapsEveryRow`
+
+---
+
 ## Summary
 
 | # | Issue | Impact | Status | Priority |
@@ -651,6 +693,7 @@ rows it wrote now fails, since a map that left out rows would read as if they ha
 | 12 | Spark 4.0 replaced tracked mappings with concatenations | Maps of files with deletes remapped positions to the wrong rows | Fixed | - |
 | 13 | Sort and Z-order rewrites failed on tables with maps | Only bin-pack could compact a table with maps | Fixed | - |
 | 14 | Position mappings reached the driver only in local mode | On a cluster, compactions wrote no map | Fixed | - |
+| 15 | Bin-packs into a new partition spec recorded wrong maps | Remapped deletes hit the wrong rows after partition evolution | Fixed | - |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)
