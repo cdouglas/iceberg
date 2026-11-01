@@ -30,6 +30,7 @@ import org.apache.spark.sql.connector.write.LogicalWriteInfo;
 import org.apache.spark.sql.connector.write.Write;
 import org.apache.spark.sql.connector.write.WriteBuilder;
 import org.apache.spark.sql.connector.write.streaming.StreamingWrite;
+import org.apache.spark.sql.types.StructType;
 
 class SparkRewriteWriteBuilder implements WriteBuilder {
 
@@ -42,9 +43,19 @@ class SparkRewriteWriteBuilder implements WriteBuilder {
   private final boolean caseSensitive;
   private final boolean checkNullability;
   private final boolean checkOrdering;
+  private final boolean readsSourcePositions;
 
+  /**
+   * @param readsSourcePositions whether each row carries its source file and position after the
+   *     columns in {@code schema}, which are written only if the rewrite tracks positions
+   */
   SparkRewriteWriteBuilder(
-      SparkSession spark, Table table, Schema schema, String groupId, LogicalWriteInfo info) {
+      SparkSession spark,
+      Table table,
+      Schema schema,
+      String groupId,
+      LogicalWriteInfo info,
+      boolean readsSourcePositions) {
     this.spark = spark;
     this.table = table;
     this.schema = schema;
@@ -54,6 +65,7 @@ class SparkRewriteWriteBuilder implements WriteBuilder {
     this.caseSensitive = writeConf.caseSensitive();
     this.checkNullability = writeConf.checkNullability();
     this.checkOrdering = writeConf.checkOrdering();
+    this.readsSourcePositions = readsSourcePositions;
   }
 
   @Override
@@ -61,6 +73,9 @@ class SparkRewriteWriteBuilder implements WriteBuilder {
     Schema writeSchema = validateWriteSchema();
     SparkUtil.validatePartitionTransforms(table.spec());
     String appId = spark.sparkContext().applicationId();
+    // Only a bin-pack rewrite preserves order, so only it records where each row came from
+    String trackedFileSetId =
+        readsSourcePositions && writeConf.trackSourcePositions() ? groupId : null;
     return new SparkWrite(
         spark,
         table,
@@ -70,7 +85,9 @@ class SparkRewriteWriteBuilder implements WriteBuilder {
         appId,
         writeSchema,
         info.schema(),
-        writeConf.writeRequirements()) {
+        writeConf.writeRequirements(),
+        readsSourcePositions,
+        trackedFileSetId) {
 
       @Override
       public BatchWrite toBatch() {
@@ -85,7 +102,11 @@ class SparkRewriteWriteBuilder implements WriteBuilder {
   }
 
   private Schema validateWriteSchema() {
-    Schema writeSchema = SparkSchemaUtil.convert(schema, info.schema(), caseSensitive);
+    StructType written =
+        readsSourcePositions
+            ? PositionTrackingDataWriter.withoutSourcePositions(info.schema())
+            : info.schema();
+    Schema writeSchema = SparkSchemaUtil.convert(schema, written, caseSensitive);
     TypeUtil.validateWriteSchema(schema, writeSchema, checkNullability, checkOrdering);
     return writeSchema;
   }

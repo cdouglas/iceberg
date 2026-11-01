@@ -116,6 +116,8 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
   private final boolean useMergeAppendForStreaming;
   private final SparkWriteRequirements writeRequirements;
   private final Map<String, String> writeProperties;
+  private final boolean readsSourcePositions;
+  private final String trackedFileSetId;
 
   private boolean cleanupOnAbort = false;
   private InMemoryMetricsReporter metricsReporter;
@@ -130,6 +132,37 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
       Schema writeSchema,
       StructType dsSchema,
       SparkWriteRequirements writeRequirements) {
+    this(
+        spark,
+        table,
+        branch,
+        writeConf,
+        writeInfo,
+        applicationId,
+        writeSchema,
+        dsSchema,
+        writeRequirements,
+        false,
+        null);
+  }
+
+  /**
+   * @param readsSourcePositions whether each row ends with the source file and position a rewrite
+   *     read, which no file writer writes
+   * @param trackedFileSetId the rewrite to record each row's source position for, or null
+   */
+  SparkWrite(
+      SparkSession spark,
+      Table table,
+      String branch,
+      SparkWriteConf writeConf,
+      LogicalWriteInfo writeInfo,
+      String applicationId,
+      Schema writeSchema,
+      StructType dsSchema,
+      SparkWriteRequirements writeRequirements,
+      boolean readsSourcePositions,
+      String trackedFileSetId) {
     this.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
     this.table = table;
     this.writeConf = writeConf;
@@ -148,6 +181,8 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
     this.writeRequirements = writeRequirements;
     this.outputSpecId = writeConf.outputSpecId();
     this.writeProperties = writeConf.writeProperties();
+    this.readsSourcePositions = readsSourcePositions;
+    this.trackedFileSetId = trackedFileSetId;
 
     if (this.table instanceof BaseTable) {
       this.metricsReporter = new InMemoryMetricsReporter();
@@ -230,7 +265,9 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
         dsSchema,
         useFanoutWriter,
         writeProperties,
-        sortOrderId);
+        sortOrderId,
+        readsSourcePositions,
+        trackedFileSetId);
   }
 
   private void commitOperation(SnapshotUpdate<?> operation, String description) {
@@ -727,6 +764,8 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
     private final String queryId;
     private final Map<String, String> writeProperties;
     private final int sortOrderId;
+    private final boolean readsSourcePositions;
+    private final String trackedFileSetId;
 
     protected WriterFactory(
         Broadcast<Table> tableBroadcast,
@@ -738,7 +777,9 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
         StructType dsSchema,
         boolean useFanoutWriter,
         Map<String, String> writeProperties,
-        int sortOrderId) {
+        int sortOrderId,
+        boolean readsSourcePositions,
+        String trackedFileSetId) {
       this.tableBroadcast = tableBroadcast;
       this.format = format;
       this.outputSpecId = outputSpecId;
@@ -749,6 +790,8 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
       this.queryId = queryId;
       this.writeProperties = writeProperties;
       this.sortOrderId = sortOrderId;
+      this.readsSourcePositions = readsSourcePositions;
+      this.trackedFileSetId = trackedFileSetId;
     }
 
     @Override
@@ -767,33 +810,48 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
               .format(format)
               .operationId(operationId)
               .build();
+      // A file writer writes each row's leading columns by ordinal, so the source file and position
+      // a rewrite read last are left out of the type it is given
+      StructType writtenSparkType =
+          readsSourcePositions
+              ? PositionTrackingDataWriter.withoutSourcePositions(dsSchema)
+              : dsSchema;
       SparkFileWriterFactory writerFactory =
           SparkFileWriterFactory.builderFor(table)
               .dataFileFormat(format)
               .dataSchema(writeSchema)
-              .dataSparkType(dsSchema)
+              .dataSparkType(writtenSparkType)
               .writeProperties(writeProperties)
               .dataSortOrder(table.sortOrders().get(sortOrderId))
               .build();
 
       Function<InternalRow, InternalRow> rowLineageExtractor = new ExtractRowLineage(writeSchema);
 
+      DataWriter<InternalRow> writer;
       if (spec.isUnpartitioned()) {
-        return new UnpartitionedDataWriter(
-            writerFactory, fileFactory, io, spec, targetFileSize, rowLineageExtractor);
+        writer =
+            new UnpartitionedDataWriter(
+                writerFactory, fileFactory, io, spec, targetFileSize, rowLineageExtractor);
 
       } else {
-        return new PartitionedDataWriter(
-            writerFactory,
-            fileFactory,
-            io,
-            spec,
-            writeSchema,
-            dsSchema,
-            targetFileSize,
-            useFanoutWriter,
-            rowLineageExtractor);
+        writer =
+            new PartitionedDataWriter(
+                writerFactory,
+                fileFactory,
+                io,
+                spec,
+                writeSchema,
+                writtenSparkType,
+                targetFileSize,
+                useFanoutWriter,
+                rowLineageExtractor);
       }
+
+      if (trackedFileSetId != null) {
+        writer = new PositionTrackingDataWriter(writer, table, trackedFileSetId, dsSchema);
+      }
+
+      return writer;
     }
   }
 

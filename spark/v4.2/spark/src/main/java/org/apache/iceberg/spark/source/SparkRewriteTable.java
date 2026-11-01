@@ -23,8 +23,11 @@ import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.PositionDeletesTable;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.TableUtil;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
+import org.apache.iceberg.types.TypeUtil;
+import org.apache.iceberg.util.PropertyUtil;
 import org.apache.spark.sql.connector.catalog.SupportsRead;
 import org.apache.spark.sql.connector.catalog.SupportsWrite;
 import org.apache.spark.sql.connector.catalog.TableCapability;
@@ -41,7 +44,7 @@ public class SparkRewriteTable extends BaseSparkTable implements SupportsRead, S
   private final String groupId;
 
   public SparkRewriteTable(Table table, String groupId) {
-    super(table, rewriteSchema(table));
+    super(table, readSchema(table));
     this.groupId = groupId;
   }
 
@@ -60,7 +63,8 @@ public class SparkRewriteTable extends BaseSparkTable implements SupportsRead, S
     if (table() instanceof PositionDeletesTable) {
       return new SparkPositionDeletesRewriteBuilder(spark(), table(), groupId, info);
     } else {
-      return new SparkRewriteWriteBuilder(spark(), table(), rewriteSchema(table()), groupId, info);
+      return new SparkRewriteWriteBuilder(
+          spark(), table(), rewriteSchema(table()), groupId, info, readsSourcePositions(table()));
     }
   }
 
@@ -70,5 +74,28 @@ public class SparkRewriteTable extends BaseSparkTable implements SupportsRead, S
     } else {
       return table.schema();
     }
+  }
+
+  /**
+   * What a rewrite reads: the rows it writes, and, where the table keeps compaction maps, each
+   * row's source file and position. Those come last: a position-tracked writer records them for the
+   * compaction map, and every writer writes only the columns before them.
+   */
+  private static Schema readSchema(Table table) {
+    Schema schema = rewriteSchema(table);
+    if (readsSourcePositions(table)) {
+      return TypeUtil.join(
+          schema, new Schema(MetadataColumns.FILE_PATH, MetadataColumns.ROW_POSITION));
+    } else {
+      return schema;
+    }
+  }
+
+  private static boolean readsSourcePositions(Table table) {
+    return !(table instanceof PositionDeletesTable)
+        && PropertyUtil.propertyAsBoolean(
+            table.properties(),
+            TableProperties.COMPACTION_MAP_ENABLED,
+            TableProperties.COMPACTION_MAP_ENABLED_DEFAULT);
   }
 }

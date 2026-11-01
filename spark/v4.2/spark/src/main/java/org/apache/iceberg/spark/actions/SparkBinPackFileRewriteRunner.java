@@ -20,9 +20,11 @@ package org.apache.iceberg.spark.actions;
 
 import org.apache.iceberg.DistributionMode;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.actions.RewriteFileGroup;
 import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.SparkWriteOptions;
+import org.apache.iceberg.util.PropertyUtil;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -49,6 +51,14 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
             .option(SparkReadOptions.FILE_OPEN_COST, "0")
             .load(groupId);
 
+    // A table that keeps compaction maps reads each row's source file and position with it (see
+    // SparkRewriteTable), and bin-pack, which keeps rows in order, records where each one landed
+    boolean trackPositions =
+        PropertyUtil.propertyAsBoolean(
+            table().properties(),
+            TableProperties.COMPACTION_MAP_ENABLED,
+            TableProperties.COMPACTION_MAP_ENABLED_DEFAULT);
+
     // write the packed data into new files where each split becomes a new file
     scanDF
         .write()
@@ -56,6 +66,7 @@ class SparkBinPackFileRewriteRunner extends SparkDataFileRewriteRunner {
         .option(SparkWriteOptions.TARGET_FILE_SIZE_BYTES, group.maxOutputFileSize())
         .option(SparkWriteOptions.DISTRIBUTION_MODE, distributionMode(group).modeName())
         .option(SparkWriteOptions.OUTPUT_SPEC_ID, group.outputSpecId())
+        .option(SparkWriteOptions.TRACK_SOURCE_POSITIONS, String.valueOf(trackPositions))
         .mode("append")
         .save(groupId);
   }
