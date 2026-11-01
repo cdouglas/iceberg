@@ -236,7 +236,8 @@ class CompactionMapValidator {
 
       if (removed == null) {
         removed = Sets.newHashSet();
-        for (DataFile file : snapshot.removedDataFiles(io)) {
+        for (DataFile file :
+            SnapshotChanges.builderFor(snapshot, io, base.specsById()).build().removedDataFiles()) {
           removed.add(file.location());
         }
       }
