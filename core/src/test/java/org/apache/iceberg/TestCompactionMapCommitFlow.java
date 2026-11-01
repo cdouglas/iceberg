@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Set;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,7 +53,9 @@ public class TestCompactionMapCommitFlow {
   @BeforeEach
   public void setup() {
     catalog = new InMemoryCatalog();
-    catalog.initialize("test", java.util.Collections.emptyMap());
+    // v4 tables need a table location with a scheme
+    catalog.initialize(
+        "test", ImmutableMap.of(CatalogProperties.WAREHOUSE_LOCATION, temp.toURI().toString()));
     catalog.createNamespace(org.apache.iceberg.catalog.Namespace.of("db"));
   }
 

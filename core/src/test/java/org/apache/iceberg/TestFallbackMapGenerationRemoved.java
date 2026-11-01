@@ -22,7 +22,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +33,7 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.expressions.ResidualEvaluator;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -64,7 +64,9 @@ public class TestFallbackMapGenerationRemoved {
   @BeforeEach
   public void setup() {
     catalog = new InMemoryCatalog();
-    catalog.initialize("test", Collections.emptyMap());
+    // v4 tables need a table location with a scheme
+    catalog.initialize(
+        "test", ImmutableMap.of(CatalogProperties.WAREHOUSE_LOCATION, temp.toURI().toString()));
     catalog.createNamespace(Namespace.of("db"));
   }
 
