@@ -53,7 +53,8 @@ over history.
 
 Nothing here works without a compaction that records what it moved. That is the
 [`cmpmap`](https://github.com/cdouglas/iceberg/tree/cmpmap) branch, which this one builds on, over
-Apache Iceberg 1.12.0. The earlier version on Iceberg 1.10.1 is kept as `remap-1.10.1`. `cmpmap`
+Apache Iceberg 1.12.0. The earlier version on Iceberg 1.10.1 is kept on the
+[`remap-1.10`](https://github.com/cdouglas/iceberg/tree/remap-1.10) branch. `cmpmap`
 contributes:
 
 - the compaction map data structure, builder, Avro storage, and manifest-list reference;
