@@ -30,3 +30,5 @@ sitemap.xml
 **/*_index.md
 **/.venv/**
 **/runtime-deps.txt
+dev/fork-validation/*.csv
+dev/fork-validation/*.txt

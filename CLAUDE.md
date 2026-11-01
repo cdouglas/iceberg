@@ -529,6 +529,17 @@ python3 visualize_results.py results_20260116_162342.csv
 
 ## Quick Reference Commands
 
+### Validation Against Vanilla Iceberg
+
+```bash
+# Run the Spark suites (about an hour), then compare per class with vanilla Iceberg 1.12.0
+dev/fork-validation/run-suite.sh "$PWD" /tmp/gate 3.5,4.0,4.2 "" spark,lineage
+python3 -I dev/fork-validation/junit_summary.py dev/fork-validation/baseline-vanilla-1.12.0.csv /tmp/gate
+```
+
+No class may do worse than the baseline. See `dev/fork-validation/README.md` for the parts, the
+timing-sensitive upstream tests to rerun alone, and how the baseline was made.
+
 ### Development
 
 ```bash
