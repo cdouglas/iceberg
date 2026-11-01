@@ -17,6 +17,18 @@
   - under the License.
   -->
 
+# `atomicio-1.6` — the first storage-only catalog prototype
+
+This branch, formerly `vldb`, is the first prototype of a catalog whose state lives in object
+storage and commits through atomic FileIO operations (`FileIOCatalog`, `CatalogFile`,
+`CASCatalogFormat`, `LogCatalogFormat` and `BaseCatalogTransaction` in `core`), with its
+benchmarks. It is built on **Apache Iceberg 1.6.1**: it forked from Iceberg's main branch before
+the 1.6.0 release and merged the tag `apache-iceberg-1.6.1`.
+
+It is kept for reference. The atomic FileIO operations continue on
+[`atomicio`](https://github.com/cdouglas/iceberg/tree/atomicio), over Iceberg 1.12.0, and the
+catalog in <https://github.com/cdouglas/catalog>. The rest of this README is upstream's.
+
 ![Iceberg](https://iceberg.apache.org/assets/images/Iceberg-logo.svg)
 
 [![](https://github.com/apache/iceberg/actions/workflows/java-ci.yml/badge.svg)](https://github.com/apache/iceberg/actions/workflows/java-ci.yml)
