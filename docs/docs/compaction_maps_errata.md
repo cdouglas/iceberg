@@ -590,33 +590,46 @@ them. Sort and Z-order rewrites run and write no map.
 
 ---
 
-## 14. Position Mappings Reach the Driver Only in Local Mode
+## 14. Position Mappings Reached the Driver Only in Local Mode ✅ FIXED
 
 ### Issue
 
-`PositionTrackingDataWriter` runs in each Spark task and records the positions it moves in
+`PositionTrackingDataWriter` runs in each Spark task and recorded the positions it moved in
 `PositionMappingCoordinator`, a per-JVM singleton. The rewrite runner reads the mappings from the
-driver's singleton when the group finishes. Nothing carries them from an executor to the driver: the
-task's commit message holds only its data files. Every test and benchmark runs Spark in local mode,
+driver's singleton when the group finishes. Nothing carried them from an executor to the driver: the
+task's commit message held only its data files. Every test and benchmark ran Spark in local mode,
 where tasks share the driver's JVM.
 
 ### Impact
 
-On a cluster the driver sees no mappings, so a compaction commits without a map, silently. Nothing is
-wrong as a result: a concurrent delete on a replaced file conflicts as it would on a table without
-maps, and the transaction retries. But the feature does nothing.
+On a cluster the driver saw no mappings, so a compaction committed without a map, silently. Nothing
+was wrong as a result: a concurrent delete on a replaced file conflicted as it would on a table
+without maps, and the transaction retried. But the feature did nothing.
 
-### Status
+### Resolution
 
-Open. The fix is to return each task's mappings in its commit message, or through an accumulator,
-and build the map on the driver from those.
+Each task returns its mappings with its commit message. The writer groups rows into runs of
+consecutive source positions as it writes them, and on commit splits the runs where it rolled to a
+new file. It returns them in a `TrackedTaskCommit`, a `TaskCommit` that also carries the runs. The
+rewrite's commit, on the driver, records the runs of the messages it commits in the driver's
+coordinator, where the runner reads them as before. An accumulator would also have reached the
+driver, but it counts a retried task's rows twice; the commit messages are exactly the tasks whose
+files the rewrite commits.
+
+A task holds one entry per run rather than one per row. A task whose files do not hold exactly the
+rows it wrote now fails, since a map that left out rows would read as if they had been deleted.
 
 ### Code Location
 
-- `spark/*/spark/src/main/java/org/apache/iceberg/spark/source/PositionTrackingDataWriter.java`
-- `spark/*/spark/src/main/java/org/apache/iceberg/spark/PositionMappingCoordinator.java`
-- `spark/*/spark/src/main/java/org/apache/iceberg/spark/actions/SparkDataFileRewriteRunner.java` --
-  `rewrite`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/source/PositionTrackingDataWriter.java` --
+  `withSourcePositions`, `recordSourcePositions`, `TrackedTaskCommit`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/source/SparkWrite.java` -- `RewriteFiles`
+- `spark/*/spark/src/main/java/org/apache/iceberg/spark/PositionMappingCoordinator.java` --
+  `recordRun`
+- Tests: `TestCompactionMapsOnCluster` bin-packs and merges on a `local-cluster` master, whose
+  executors run in their own JVMs, and checks the map against the rows (failed all 4 cases before,
+  on Spark 3.5 and 4.0). `TestPositionTrackingDataWriter` and `TestPositionMappingCoordinator` (now
+  also on 3.5) cover the commit message and its recording.
 
 ---
 
@@ -637,7 +650,7 @@ and build the map on the driver from those.
 | 11 | Bin-pack rewrites failed outside Hadoop tables | `rewrite_data_files` failed in Hive, REST and session catalogs | Fixed | - |
 | 12 | Spark 4.0 replaced tracked mappings with concatenations | Maps of files with deletes remapped positions to the wrong rows | Fixed | - |
 | 13 | Sort and Z-order rewrites failed on tables with maps | Only bin-pack could compact a table with maps | Fixed | - |
-| 14 | Position mappings reach the driver only in local mode | On a cluster, compactions write no map | Open | High |
+| 14 | Position mappings reached the driver only in local mode | On a cluster, compactions wrote no map | Fixed | - |
 
 **Fixed Issues (Removed from Active List):**
 - ~~Chained compaction maps~~ - ✅ FIXED: Lazy composition via CompactionMapChain (Feb 2, 2026, commit 8cb1e6156)

@@ -336,8 +336,6 @@ try {
 
 - **Spark 3.5:** Position tracking fully implemented
 - **Spark 4.0:** Position tracking fully implemented
-- **Spark local mode only:** Tasks record position mappings in their own JVM, so on a cluster the
-  driver sees none and compactions write no map ([errata 14](compaction_maps_errata.md)).
 - **Other engines:** Compaction map infrastructure works (read/validate/remap), but generation requires Spark-specific position tracking
 
 ### 2. Design Scope: Order-Preserving Compactions
