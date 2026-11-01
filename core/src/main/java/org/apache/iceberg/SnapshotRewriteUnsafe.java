@@ -23,6 +23,7 @@ import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
@@ -210,9 +211,16 @@ public class SnapshotRewriteUnsafe {
       Long firstRowId,
       List<ManifestFile> manifests)
       throws IOException {
+    // Rewritten snapshots carry no manifest-list key id, so their manifest lists are plaintext
     try (ManifestListWriter writer =
         ManifestLists.write(
-            formatVersion, out, snapshotId, parentSnapshotId, sequenceNumber, firstRowId)) {
+            formatVersion,
+            out,
+            PlaintextEncryptionManager.instance(),
+            snapshotId,
+            parentSnapshotId,
+            sequenceNumber,
+            firstRowId)) {
       writer.addAll(manifests);
     }
   }

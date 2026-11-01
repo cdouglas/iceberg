@@ -29,7 +29,9 @@ import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.MetadataColumns;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.TableUtil;
@@ -44,7 +46,7 @@ import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
 import org.apache.iceberg.encryption.EncryptedFiles;
 import org.apache.iceberg.io.CloseableIterable;
-import org.apache.iceberg.io.FileAppender;
+import org.apache.iceberg.io.DataWriter;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
@@ -159,31 +161,25 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
   @Override
   public DataFile writeRebuilt(RebuildRequest request) {
     FileFormat format = FileFormat.fromFileName(request.outputPath());
-    GenericAppenderFactory factory =
-        new GenericAppenderFactory(request.schema(), request.spec()).setAll(table.properties());
-    FileAppender<Record> appender =
-        factory.newAppender(io.newOutputFile(request.outputPath()), format);
+    DataWriter<Record> writer =
+        newDataWriter(
+            request.schema(),
+            format,
+            io.newOutputFile(request.outputPath()),
+            request.spec(),
+            request.partition());
     try {
       for (Record row : request.rows()) {
-        appender.add(row);
+        writer.write(row);
       }
     } finally {
-      close(appender);
+      close(writer);
     }
 
-    DataFiles.Builder builder =
-        DataFiles.builder(request.spec())
-            .withPath(request.outputPath())
-            .withFormat(format)
-            .withFileSizeInBytes(appender.length())
-            .withMetrics(appender.metrics())
-            .withRecordCount(request.rows().size())
-            .withFirstRowId(request.firstRowId());
-    if (request.spec().isPartitioned()) {
-      builder.withPartition(request.partition());
-    }
-
-    return builder.build();
+    return DataFiles.builder(request.spec())
+        .copy(writer.toDataFile())
+        .withFirstRowId(request.firstRowId())
+        .build();
   }
 
   @Override
@@ -195,11 +191,8 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
 
     OutputFile output = io.newOutputFile(request.outputPath());
     FileFormat format = FileFormat.fromFileName(request.outputPath());
-    GenericAppenderFactory factory =
-        new GenericAppenderFactory(readSchema, request.spec()).setAll(table.properties());
-
-    long recordCount = 0;
-    FileAppender<Record> appender = factory.newAppender(output, format);
+    DataWriter<Record> writer =
+        newDataWriter(readSchema, format, output, request.spec(), request.partition());
     try {
       for (RowRef source : request.sources()) {
         Record record = loaded.get(source.path()).get(source.position());
@@ -220,24 +213,13 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
                   lastUpdatedOf(record, source, request));
         }
 
-        appender.add(record);
-        recordCount += 1;
+        writer.write(record);
       }
     } finally {
-      close(appender);
+      close(writer);
     }
 
-    DataFiles.Builder builder =
-        DataFiles.builder(request.spec())
-            .withPath(request.outputPath())
-            .withFormat(format)
-            .withFileSizeInBytes(appender.length())
-            .withMetrics(appender.metrics())
-            .withRecordCount(recordCount);
-    if (request.spec().isPartitioned()) {
-      builder.withPartition(request.partition());
-    }
-
+    DataFiles.Builder builder = DataFiles.builder(request.spec()).copy(writer.toDataFile());
     if (lineage) {
       // A materialized id is only read when the file also carries a first_row_id, so one is needed
       // even though nothing derives from it. Reusing a source range keeps this file from laying
@@ -284,6 +266,24 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
     return lowest == Long.MAX_VALUE ? 0L : lowest;
   }
 
+  /** A data writer for {@code schema}, configured by the table's properties. */
+  private DataWriter<Record> newDataWriter(
+      Schema schema,
+      FileFormat format,
+      OutputFile output,
+      PartitionSpec spec,
+      StructLike partition) {
+    return GenericFileWriterFactory.builderFor(table)
+        .dataSchema(schema)
+        .dataFileFormat(format)
+        .writerProperties(table.properties())
+        .build()
+        .newDataWriter(
+            EncryptedFiles.plainAsEncryptedOutput(output),
+            spec,
+            spec.isPartitioned() ? partition : null);
+  }
+
   @Override
   public DeleteFile writePositionDeletes(PositionDeleteRequest request) {
     if (TableUtil.formatVersion(table) >= 3) {
@@ -302,13 +302,15 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
                             TableProperties.DEFAULT_FILE_FORMAT,
                             TableProperties.DEFAULT_FILE_FORMAT_DEFAULT)));
 
-    GenericAppenderFactory factory =
-        new GenericAppenderFactory(table.schema(), request.spec()).setAll(table.properties());
     PositionDeleteWriter<Record> writer =
-        factory.newPosDeleteWriter(
-            EncryptedFiles.plainAsEncryptedOutput(io.newOutputFile(request.outputPath())),
-            format,
-            request.partition());
+        GenericFileWriterFactory.builderFor(table)
+            .deleteFileFormat(format)
+            .writerProperties(table.properties())
+            .build()
+            .newPositionDeleteWriter(
+                EncryptedFiles.plainAsEncryptedOutput(io.newOutputFile(request.outputPath())),
+                request.spec(),
+                request.partition());
 
     List<String> paths = Lists.newArrayList(request.deletes().keySet());
     paths.sort(String::compareTo);
@@ -317,7 +319,7 @@ public class GenericSnapshotRewriteIO implements SnapshotRewriteIO {
     try {
       for (String path : paths) {
         PositionSet positions = request.deletes().get(path);
-        positions.forEach(position -> writer.write(delete.set(path, position, null)));
+        positions.forEach(position -> writer.write(delete.set(path, position)));
       }
     } finally {
       close(writer);

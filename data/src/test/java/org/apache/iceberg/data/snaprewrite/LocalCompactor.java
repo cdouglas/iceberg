@@ -19,6 +19,7 @@
 package org.apache.iceberg.data.snaprewrite;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -33,17 +34,19 @@ import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.MetricsConfig;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.data.GenericAppenderFactory;
 import org.apache.iceberg.data.GenericRowLineage;
 import org.apache.iceberg.data.GenericSnapshotRewriteIO;
 import org.apache.iceberg.data.Record;
+import org.apache.iceberg.data.parquet.GenericParquetWriter;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileAppender;
+import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
@@ -183,12 +186,9 @@ class LocalCompactor {
     List<DataFile> written = Lists.newArrayList();
     boolean lineage = GenericRowLineage.tracked(table);
     Schema writeSchema = lineage ? GenericRowLineage.writeSchema(table.schema()) : table.schema();
-    GenericAppenderFactory factory =
-        new GenericAppenderFactory(writeSchema, table.spec()).setAll(table.properties());
 
     String targetPath = newTargetPath(table);
-    FileAppender<Record> appender =
-        factory.newAppender(table.io().newOutputFile(targetPath), FileFormat.PARQUET);
+    FileAppender<Record> appender = newAppender(table, writeSchema, targetPath);
     long targetPosition = 0;
     Long firstRowId = null;
 
@@ -225,8 +225,7 @@ class LocalCompactor {
             close(appender);
             written.add(finish(table, partition, targetPath, appender, firstRowId));
             targetPath = newTargetPath(table);
-            appender =
-                factory.newAppender(table.io().newOutputFile(targetPath), FileFormat.PARQUET);
+            appender = newAppender(table, writeSchema, targetPath);
             targetPosition = 0;
           }
 
@@ -403,6 +402,21 @@ class LocalCompactor {
     return table.location()
         + "/data/"
         + FileFormat.PARQUET.addExtension("compaction-" + UUID.randomUUID());
+  }
+
+  /** A Parquet appender for {@code schema}, configured by the table's properties and metrics. */
+  private static FileAppender<Record> newAppender(Table table, Schema schema, String path) {
+    try {
+      return Parquet.write(table.io().newOutputFile(path))
+          .schema(schema)
+          .createWriterFunc(GenericParquetWriter::create)
+          .setAll(table.properties())
+          .metricsConfig(MetricsConfig.forTable(table))
+          .overwrite()
+          .build();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
   }
 
   private static void close(FileAppender<?> appender) {
