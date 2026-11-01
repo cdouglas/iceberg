@@ -52,12 +52,14 @@ over history.
 ## Prerequisite: compaction maps
 
 Nothing here works without a compaction that records what it moved. That is the
-[`cmpmap`](https://github.com/cdouglas/iceberg/tree/cmpmap) branch, which this one builds on:
+[`cmpmap`](https://github.com/cdouglas/iceberg/tree/cmpmap) branch, which this one builds on, over
+Apache Iceberg 1.12.0. The earlier version on Iceberg 1.10.1 is kept as `remap-1.10.1`. `cmpmap`
+contributes:
 
 - the compaction map data structure, builder, Avro storage, and manifest-list reference;
 - conflict detection and `SERIALIZABLE` integration in `BaseRowDelta` / `MergingSnapshotProducer`;
-- automatic remapping in `RewriteDataFilesCommitManager` for Spark 3.5 and 4.0, v2 position delete
-  files and v3 deletion vectors;
+- automatic remapping in `RewriteDataFilesCommitManager` for Spark 3.5, 4.0 and 4.2, v2 position
+  delete files and v3 deletion vectors;
 - the empirically-tuned remapping policy.
 
 Background: Chris Douglas and Joseph M. Hellerstein, **Commutative Compaction**, FORMATS '26,
@@ -96,7 +98,7 @@ Writes nothing, reports what each available reach would cost:
 ```bash
 ./gradlew :iceberg-data:jar :iceberg-core:jar
 
-VERSION=1.11.0-SNAPSHOT
+VERSION=1.13.0-SNAPSHOT   # jars are versioned one minor past the base tag, apache-iceberg-1.12.0
 java -cp "data/build/libs/iceberg-data-$VERSION.jar:core/build/libs/iceberg-core-$VERSION.jar:$(hadoop classpath)" \
     org.apache.iceberg.data.SnapshotRewriteDryRun \
     --dry-run --table /warehouse/db/orders
@@ -118,7 +120,7 @@ undone byte-identically until reclaim runs. On v3 it can still be undone after r
 
 Implemented: v2 and v3, partitioned and unpartitioned tables, partial and chained compactions, windows
 reaching back through older compactions, deletion vectors, materialized `_row_id`, reversibility,
-reconstruction after reclaim on v3, reclaim accounting, and window pricing. 147 test cases including 20
+reconstruction after reclaim on v3, reclaim accounting, and window pricing. 152 test cases including 20
 fuzz seeds over both format versions (`SNAPREWRITE_FUZZ_SEEDS=N` adds seeds 1 to N; 407 pass); the
 lossless matrix, the layouts suite and the v3 fuzz seeds also run through reclaim and reconstruction.
 
@@ -159,6 +161,8 @@ Compaction-map documentation lives on the [`cmpmap`](https://github.com/cdouglas
 branch, under `docs/docs/compaction_maps*.md`.
 
 ## Building
+
+With Java 17 or 21:
 
 ```bash
 ./gradlew :iceberg-core:compileJava :iceberg-data:compileJava

@@ -109,7 +109,7 @@ compaction's bytes per row, so byte figures are indicative.
 ```bash
 ./gradlew :iceberg-data:jar :iceberg-core:jar
 
-VERSION=1.11.0-SNAPSHOT
+VERSION=1.13.0-SNAPSHOT   # jars are versioned one minor past the base tag, apache-iceberg-1.12.0
 java -cp "data/build/libs/iceberg-data-$VERSION.jar:core/build/libs/iceberg-core-$VERSION.jar:$(hadoop classpath)" \
     org.apache.iceberg.data.SnapshotRewriteDryRun \
     --dry-run --table /warehouse/db/orders
