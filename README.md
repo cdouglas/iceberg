@@ -118,7 +118,7 @@ undone byte-identically until reclaim runs. On v3 it can still be undone after r
 
 Implemented: v2 and v3, partitioned and unpartitioned tables, partial and chained compactions, windows
 reaching back through older compactions, deletion vectors, materialized `_row_id`, reversibility,
-reconstruction after reclaim on v3, reclaim accounting, and window pricing. 147 test cases including 20
+reconstruction after reclaim on v3, reclaim accounting, and window pricing. 152 test cases including 20
 fuzz seeds over both format versions (`SNAPREWRITE_FUZZ_SEEDS=N` adds seeds 1 to N; 407 pass); the
 lossless matrix, the layouts suite and the v3 fuzz seeds also run through reclaim and reconstruction.
 
