@@ -280,7 +280,8 @@ public class TestSnapshotRewriteSkips extends SnapshotRewriteTestBase {
         SCHEMA,
         PartitionSpec.unpartitioned(),
         all,
-        tempDir.toString() + "/other-" + UUID.randomUUID());
+        // a v4 table location must have a scheme
+        tempDir.toURI() + "other-" + UUID.randomUUID());
   }
 
   private void appendTo(Table target, List<Record> rows) throws IOException {
