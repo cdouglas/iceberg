@@ -195,6 +195,51 @@ public class TestSnapshotProducer extends TestBase {
             manifest -> assertThat(metadata.listFiles()).contains(new File(manifest.path())));
   }
 
+  @TestTemplate
+  public void committedSnapshotFoundWithoutRefreshWhenCommitLeavesItCurrent() {
+    // Operations whose commit leaves the table as committed current (as REST's take the metadata
+    // the commit returns) are not refreshed after the commit: only apply() refreshes
+    String tableName = "committed-current";
+    int[] refreshes = {0};
+    TestTables.TestTableOperations ops =
+        new TestTables.TestTableOperations(tableName, tableDir) {
+          private boolean committing = false;
+
+          @Override
+          public void commit(TableMetadata base, TableMetadata updatedMetadata) {
+            // the test operations refresh within their commit, to check the base
+            committing = true;
+            try {
+              super.commit(base, updatedMetadata);
+            } finally {
+              committing = false;
+            }
+          }
+
+          @Override
+          public TableMetadata refresh() {
+            if (!committing) {
+              refreshes[0] += 1;
+            }
+            return super.refresh();
+          }
+        };
+    TestTables.TestTable table =
+        TestTables.create(
+            tableDir, tableName, SCHEMA, SPEC, SortOrder.unsorted(), formatVersion, ops);
+    refreshes[0] = 0;
+
+    table.newFastAppend().appendFile(FILE_A).commit();
+
+    assertThat(refreshes[0]).isEqualTo(1);
+    Snapshot snapshot = table.currentSnapshot();
+    File metadata = Paths.get(tableDir.getPath(), "metadata").toFile();
+    assertThat(snapshot.allManifests(table.io()))
+        .isNotEmpty()
+        .allSatisfy(
+            manifest -> assertThat(metadata.listFiles()).contains(new File(manifest.path())));
+  }
+
   /**
    * Creates a TableOperations that returns stale metadata (without the newly committed snapshot) on
    * the first refresh() after a commit. This simulates eventual consistency where the committed
@@ -211,7 +256,9 @@ public class TestSnapshotProducer extends TestBase {
       public void commit(TableMetadata base, TableMetadata updatedMetadata) {
         super.commit(base, updatedMetadata);
         if (base != null) {
+          // as a metastore catalog's operations do, leave the table to the next refresh, and
           // return stale metadata on the first refresh() call
+          this.current = base;
           this.metadataToReturnOnNextRefresh = base;
         }
       }
