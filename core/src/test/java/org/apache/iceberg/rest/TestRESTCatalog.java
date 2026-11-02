@@ -3792,8 +3792,8 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     BaseTable table = (BaseTable) catalog.createTable(TABLE, SCHEMA);
     table.newAppend().appendFile(FILE_A).commit();
 
-    // loadTable is executed once
-    Mockito.verify(adapter, times(2))
+    // loadTable is executed once: the commit returns the table, with the snapshot it committed
+    Mockito.verify(adapter, times(1))
         .execute(matches(HTTPMethod.GET, RESOURCE_PATHS.table(TABLE)), any(), any(), any());
 
     // CommitReport reflects the table state after the commit (reported asynchronously)
