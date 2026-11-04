@@ -49,6 +49,8 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
   private final JdbcClientPool connections;
   private final Map<String, String> catalogProperties;
   private final JdbcUtil.SchemaVersion schemaVersion;
+  // the table as doCommit committed it, which commit adopts as current once it returns
+  private TableMetadata committed = null;
 
   protected JdbcTableOperations(
       JdbcClientPool dbConnPool,
@@ -100,9 +102,36 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
   }
 
   @Override
+  public void commit(TableMetadata base, TableMetadata metadata) {
+    this.committed = null;
+    super.commit(base, metadata);
+    TableMetadata justCommitted = committed;
+    this.committed = null;
+    if (justCommitted != null) {
+      // the table's row now names the metadata file this commit wrote, whose contents are the
+      // table as committed: hold them as current instead of reading the file back on the next
+      // current(), as REST's table operations hold a commit's response
+      try {
+        refreshFromMetadataLocation(
+            justCommitted.metadataFileLocation(), null, 0, location -> justCommitted);
+      } catch (RuntimeException e) {
+        // the commit succeeded; the next current() refreshes from the catalog, as it did before
+        LOG.warn("Failed to adopt committed metadata for table {}", tableIdentifier, e);
+      }
+    }
+  }
+
+  @Override
   public void doCommit(TableMetadata base, TableMetadata metadata) {
     boolean newTable = base == null;
     String newMetadataLocation = writeNewMetadataIfRequired(newTable, metadata);
+    // what TableMetadataParser.read returns for the file just written, built before the row
+    // changes so that nothing can fail after it does
+    TableMetadata written =
+        TableMetadata.buildFrom(metadata)
+            .withMetadataLocation(newMetadataLocation)
+            .discardChanges()
+            .build();
     try {
       Map<String, String> table =
           JdbcUtil.loadTable(schemaVersion, connections, catalogName, tableIdentifier);
@@ -118,6 +147,10 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
         LOG.debug("Committing new table: {}", tableName());
         createTable(newMetadataLocation);
       }
+
+      // the conditional UPDATE changed exactly one row from base's location to this one, or the
+      // INSERT created the row with it: the table is now the file just written
+      this.committed = written;
 
     } catch (SQLTimeoutException e) {
       throw new UncheckedSQLException(e, "Database Connection timeout");
