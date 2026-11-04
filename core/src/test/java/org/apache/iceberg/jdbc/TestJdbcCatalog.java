@@ -61,6 +61,7 @@ import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
@@ -608,6 +609,195 @@ public class TestJdbcCatalog extends CatalogTests<JdbcCatalog> {
         .isInstanceOf(NoSuchTableException.class);
     assertThatThrownBy(() -> table.newAppend().commit()).isInstanceOf(NoSuchTableException.class);
     assertThat(catalog.tableExists(tableIdentifier)).isFalse();
+  }
+
+  /**
+   * A JDBC client pool runs a statement again after its connection fails (JdbcClientPool). A commit
+   * whose UPDATE committed but whose reply was lost matched no row when run again, and was reported
+   * as a conflict: a CommitFailedException, after which Iceberg cleans up the commit's files,
+   * though the table is now that commit.
+   */
+  @Test
+  public void testCommitWhoseUpdateReplyIsLost() throws Exception {
+    Faults faults = new Faults();
+    JdbcCatalog jdbcCatalog = catalogWithFaults("lost_update_reply", faults);
+    TableIdentifier tableIdentifier = TableIdentifier.of("db", "table");
+    Table table =
+        jdbcCatalog
+            .buildTable(tableIdentifier, SCHEMA)
+            .withProperty(TableProperties.COMMIT_NUM_RETRIES, "0")
+            .create();
+    table.newFastAppend().appendFile(FILE_A).commit();
+
+    faults.next("UPDATE " + JdbcUtil.CATALOG_TABLE_VIEW_NAME, Fault.LOSE_REPLY);
+    table.newFastAppend().appendFile(FILE_B).commit();
+    assertThat(faults.pending()).isZero();
+
+    Table loaded = jdbcCatalog.loadTable(tableIdentifier);
+    assertThat(loaded.currentSnapshot().snapshotId())
+        .isEqualTo(table.currentSnapshot().snapshotId());
+    assertThat(loaded.newScan().planFiles()).hasSize(2);
+  }
+
+  /**
+   * A commit whose UPDATE committed, but whose connection failed on that run and on the pool's
+   * second, committed; it was reported as an unknown SQL failure.
+   */
+  @Test
+  public void testCommitWhoseConnectionFailsAfterItsUpdateCommitted() throws Exception {
+    Faults faults = new Faults();
+    JdbcCatalog jdbcCatalog = catalogWithFaults("failed_after_update", faults);
+    TableIdentifier tableIdentifier = TableIdentifier.of("db", "table");
+    Table table = jdbcCatalog.createTable(tableIdentifier, SCHEMA);
+
+    faults.next("UPDATE " + JdbcUtil.CATALOG_TABLE_VIEW_NAME, Fault.LOSE_REPLY, Fault.REFUSE);
+    table.updateSchema().addColumn("n", Types.IntegerType.get()).commit();
+    assertThat(faults.pending()).isZero();
+
+    assertThat(jdbcCatalog.loadTable(tableIdentifier).schema().findField("n")).isNotNull();
+  }
+
+  /**
+   * A commit whose connection fails before its UPDATE runs, on every run, cannot tell that it did
+   * not commit: its state is unknown, not a failure, as a metastore's check of commit status says.
+   */
+  @Test
+  public void testCommitWhoseConnectionFailsBeforeItsUpdateIsUnknown() throws Exception {
+    Faults faults = new Faults();
+    JdbcCatalog jdbcCatalog = catalogWithFaults("failed_before_update", faults);
+    TableIdentifier tableIdentifier = TableIdentifier.of("db", "table");
+    Table table = jdbcCatalog.createTable(tableIdentifier, SCHEMA);
+
+    faults.next("UPDATE " + JdbcUtil.CATALOG_TABLE_VIEW_NAME, Fault.REFUSE, Fault.REFUSE);
+    assertThatThrownBy(() -> table.updateProperties().set("k", "v").commit())
+        .isInstanceOf(CommitStateUnknownException.class)
+        .hasMessageContaining("Connection failed (test)");
+    assertThat(jdbcCatalog.loadTable(tableIdentifier).properties()).doesNotContainKey("k");
+  }
+
+  /** A create whose INSERT committed but whose reply was lost created the table. */
+  @Test
+  public void testCreateWhoseInsertReplyIsLost() throws Exception {
+    Faults faults = new Faults();
+    JdbcCatalog jdbcCatalog = catalogWithFaults("lost_insert_reply", faults);
+    TableIdentifier tableIdentifier = TableIdentifier.of("db", "table");
+
+    faults.next("INSERT INTO " + JdbcUtil.CATALOG_TABLE_VIEW_NAME, Fault.LOSE_REPLY);
+    Table table = jdbcCatalog.createTable(tableIdentifier, SCHEMA);
+    assertThat(faults.pending()).isZero();
+
+    assertThat(jdbcCatalog.loadTable(tableIdentifier).uuid()).isEqualTo(table.uuid());
+  }
+
+  /**
+   * A catalog on a file database (the pool connects again after a failure, and an in-memory SQLite
+   * database is its connection's) whose connections fail as {@code faults} says.
+   */
+  private JdbcCatalog catalogWithFaults(String name, Faults faults) throws IOException {
+    java.nio.file.Path dbFile = Files.createTempFile("iceberg" + name, "db");
+    Map<String, String> properties = Maps.newHashMap();
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, this.tableDir.toAbsolutePath().toString());
+    properties.put(CatalogProperties.URI, "jdbc:sqlite:" + dbFile.toAbsolutePath());
+    properties.put(JdbcUtil.SCHEMA_VERSION_PROPERTY, JdbcUtil.SchemaVersion.V1.name());
+    JdbcCatalog jdbcCatalog =
+        new JdbcCatalog(
+            null,
+            props -> new FaultyClientPool(props.get(CatalogProperties.URI), props, faults),
+            true);
+    jdbcCatalog.setConf(conf);
+    jdbcCatalog.initialize(name, properties);
+    jdbcCatalog.createNamespace(Namespace.of("db"));
+    return jdbcCatalog;
+  }
+
+  private enum Fault {
+    // the statement runs, then its connection fails before the reply
+    LOSE_REPLY,
+    // the connection fails before the statement runs
+    REFUSE
+  }
+
+  /** The faults of the next runs of statements that begin with a prefix. */
+  private static class Faults {
+    private String prefix = null;
+    private final java.util.Deque<Fault> next = new java.util.ArrayDeque<>();
+
+    synchronized void next(String statementPrefix, Fault... faults) {
+      this.prefix = statementPrefix;
+      next.addAll(List.of(faults));
+    }
+
+    synchronized int pending() {
+      return next.size();
+    }
+
+    int executeUpdate(String statement, java.sql.PreparedStatement sql) throws SQLException {
+      Fault fault;
+      synchronized (this) {
+        fault = prefix != null && statement.startsWith(prefix) ? next.poll() : null;
+      }
+
+      if (fault == Fault.REFUSE) {
+        throw new SQLException("Connection failed (test)", "08006");
+      }
+
+      int updated = sql.executeUpdate();
+      if (fault == Fault.LOSE_REPLY) {
+        throw new SQLException("Connection failed after the statement ran (test)", "08006");
+      }
+
+      return updated;
+    }
+  }
+
+  /** A client pool whose connections run statements through {@link Faults}. */
+  private static class FaultyClientPool extends JdbcClientPool {
+    private final Faults faults;
+
+    FaultyClientPool(String dbUrl, Map<String, String> properties, Faults faults) {
+      super(dbUrl, properties);
+      this.faults = faults;
+    }
+
+    @Override
+    protected Connection newClient() {
+      Connection connection = super.newClient();
+      return (Connection)
+          java.lang.reflect.Proxy.newProxyInstance(
+              Connection.class.getClassLoader(),
+              new Class<?>[] {Connection.class},
+              (proxy, method, args) -> {
+                Object result = invoke(connection, method, args);
+                if (method.getName().equals("prepareStatement")
+                    && args.length == 1
+                    && args[0] instanceof String) {
+                  String statement = (String) args[0];
+                  java.sql.PreparedStatement sql = (java.sql.PreparedStatement) result;
+                  return java.lang.reflect.Proxy.newProxyInstance(
+                      java.sql.PreparedStatement.class.getClassLoader(),
+                      new Class<?>[] {java.sql.PreparedStatement.class},
+                      (p, m, a) ->
+                          m.getName().equals("executeUpdate") && a == null
+                              ? faults.executeUpdate(statement, sql)
+                              : invoke(sql, m, a));
+                }
+
+                return result;
+              });
+    }
+
+    private static Object invoke(Object target, java.lang.reflect.Method method, Object[] args)
+        throws Exception {
+      try {
+        return method.invoke(target, args);
+      } catch (java.lang.reflect.InvocationTargetException e) {
+        if (e.getCause() instanceof Exception) {
+          throw (Exception) e.getCause();
+        }
+
+        throw (Error) e.getCause();
+      }
+    }
   }
 
   @Test

@@ -32,6 +32,7 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.io.FileIO;
@@ -112,11 +113,11 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
         String oldMetadataLocation = base.metadataFileLocation();
         // Start atomic update
         LOG.debug("Committing existing table: {}", tableName());
-        updateTable(newMetadataLocation, oldMetadataLocation);
+        updateTable(newMetadataLocation, oldMetadataLocation, metadata);
       } else {
         // table not exists create it
         LOG.debug("Committing new table: {}", tableName());
-        createTable(newMetadataLocation);
+        createTable(newMetadataLocation, metadata);
       }
 
     } catch (SQLTimeoutException e) {
@@ -143,26 +144,74 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
     }
   }
 
-  private void updateTable(String newMetadataLocation, String oldMetadataLocation)
+  private void updateTable(
+      String newMetadataLocation, String oldMetadataLocation, TableMetadata metadata)
       throws SQLException, InterruptedException {
-    int updatedRecords =
-        JdbcUtil.updateTable(
-            schemaVersion,
-            connections,
-            catalogName,
-            tableIdentifier,
-            newMetadataLocation,
-            oldMetadataLocation);
+    int updatedRecords;
+    try {
+      updatedRecords =
+          JdbcUtil.updateTable(
+              schemaVersion,
+              connections,
+              catalogName,
+              tableIdentifier,
+              newMetadataLocation,
+              oldMetadataLocation);
+    } catch (SQLException e) {
+      if (connections.isConnectionException(e)) {
+        // the connection failed while the UPDATE ran, on every attempt the pool made: it may
+        // have committed
+        checkCommitted(newMetadataLocation, metadata, e);
+        return;
+      }
+
+      throw e;
+    }
 
     if (updatedRecords == 1) {
       LOG.debug("Successfully committed to existing table: {}", tableIdentifier);
     } else {
-      throw new CommitFailedException(
-          "Failed to update table %s from catalog %s", tableIdentifier, catalogName);
+      // No row had the base's metadata location: another process committed, or the pool ran the
+      // UPDATE again after its connection failed (JdbcClientPool) and the first run had committed,
+      // so the table names this commit's metadata file. The UPDATE has finished either way, so a
+      // table that does not name the file now never will.
+      switch (checkCommitStatusStrict(newMetadataLocation, metadata)) {
+        case SUCCESS:
+          LOG.info(
+              "Committed to existing table {}, whose UPDATE matched no row when run again",
+              tableIdentifier);
+          return;
+        case FAILURE:
+          throw new CommitFailedException(
+              "Failed to update table %s from catalog %s", tableIdentifier, catalogName);
+        default:
+          throw new CommitStateUnknownException(
+              new CommitFailedException(
+                  "Cannot tell whether table %s was updated in catalog %s",
+                  tableIdentifier, catalogName));
+      }
     }
   }
 
-  private void createTable(String newMetadataLocation) throws SQLException, InterruptedException {
+  /**
+   * Returns if the table names {@code newMetadataLocation} after the connection failed while its
+   * commit's statement ran ({@code cause}), and throws CommitStateUnknownException if it does not
+   * or cannot be read: a statement whose connection failed may still have committed.
+   */
+  private void checkCommitted(
+      String newMetadataLocation, TableMetadata metadata, SQLException cause) {
+    if (checkCommitStatus(newMetadataLocation, metadata) != CommitStatus.SUCCESS) {
+      throw new CommitStateUnknownException(cause);
+    }
+
+    LOG.info(
+        "Committed to table {} although the connection failed while committing",
+        tableIdentifier,
+        cause);
+  }
+
+  private void createTable(String newMetadataLocation, TableMetadata metadata)
+      throws SQLException, InterruptedException {
     Namespace namespace = tableIdentifier.namespace();
     if (PropertyUtil.propertyAsBoolean(catalogProperties, JdbcUtil.STRICT_MODE_PROPERTY, false)
         && !JdbcUtil.namespaceExists(catalogName, connections, namespace)) {
@@ -180,14 +229,26 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
       throw new AlreadyExistsException("Table already exists: %s", tableIdentifier);
     }
 
-    int insertRecord =
-        JdbcUtil.doCommitCreateTable(
-            schemaVersion,
-            connections,
-            catalogName,
-            namespace,
-            tableIdentifier,
-            newMetadataLocation);
+    int insertRecord;
+    try {
+      insertRecord =
+          JdbcUtil.doCommitCreateTable(
+              schemaVersion,
+              connections,
+              catalogName,
+              namespace,
+              tableIdentifier,
+              newMetadataLocation);
+    } catch (SQLException e) {
+      if (connections.isConnectionException(e)) {
+        // the connection failed while the INSERT ran: it may have created the table (the pool runs
+        // it again after a failure, which then fails on the table's key and reports the first)
+        checkCommitted(newMetadataLocation, metadata, e);
+        return;
+      }
+
+      throw e;
+    }
 
     if (insertRecord == 1) {
       LOG.debug("Successfully committed to new table: {}", tableIdentifier);
