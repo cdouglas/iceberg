@@ -46,7 +46,9 @@ import org.apache.iceberg.PositionDeletesScanTask;
 import org.apache.iceberg.PositionDeletesTable;
 import org.apache.iceberg.ScanTask;
 import org.apache.iceberg.SerializableTable;
+import org.apache.iceberg.ShippableSnapshots;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SnapshotParser;
 import org.apache.iceberg.StaticTableOperations;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
@@ -166,6 +168,91 @@ public class TestTableSerialization extends HadoopTableTestBase {
         entries, TestHelpers.roundTripSerialize(SerializableTable.copyOf(entries)));
     TestHelpers.assertSerializedAndLoadedMetadata(
         entries, TestHelpers.KryoHelpers.roundTripSerialize(SerializableTable.copyOf(entries)));
+  }
+
+  /**
+   * A table whose snapshots are not all loaded, with a supplier that has a shippable form
+   * (ShippableSnapshots): a copy holds the snapshots loaded, takes the others from that form where
+   * it is, and never makes the original load them.
+   */
+  @Test
+  public void testSerializableTableShipsTheSupplierOfSnapshotsNotLoaded()
+      throws IOException, ClassNotFoundException {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    table.newAppend().appendFile(FILE_C).commit();
+    TableMetadata current = ((HasTableOperations) table).operations().current();
+    List<String> json =
+        current.snapshots().stream().map(SnapshotParser::toJson).collect(Collectors.toList());
+    ShippedSnapshots.DRIVER_GETS.set(0);
+    TableMetadata lazy =
+        TableMetadata.buildFrom(current)
+            .suppressHistoricalSnapshots()
+            .setSnapshotsSupplier(new ShippedSnapshots(json))
+            .withMetadataLocation("kept://t#4")
+            .discardChanges()
+            .build();
+    Table lazyTable = new BaseTable(new StaticTableOperations(lazy, table.io()), table.name());
+
+    Table javaCopy = TestHelpers.roundTripSerialize(SerializableTable.copyOf(lazyTable));
+    Table kryoCopy =
+        TestHelpers.KryoHelpers.roundTripSerialize(SerializableTable.copyOf(lazyTable));
+    assertThat(ShippedSnapshots.DRIVER_GETS).hasValue(0);
+    for (Table copy : List.of(javaCopy, kryoCopy)) {
+      TableMetadata loaded = ((HasTableOperations) copy).operations().current();
+      assertThat(loaded)
+          .extracting("snapshots")
+          .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.list(Snapshot.class))
+          .extracting(Snapshot::snapshotId)
+          .containsExactly(current.currentSnapshot().snapshotId());
+      assertThat(loaded.snapshots())
+          .extracting(Snapshot::snapshotId)
+          .containsExactlyElementsOf(
+              current.snapshots().stream().map(Snapshot::snapshotId).collect(Collectors.toList()));
+      assertThat(dataFiles(copy)).isEqualTo(dataFiles(table));
+    }
+    assertThat(ShippedSnapshots.DRIVER_GETS).hasValue(0);
+  }
+
+  /** A supplier whose shippable form holds the snapshots as JSON, which both serializers copy. */
+  private static class ShippedSnapshots implements ShippableSnapshots {
+    static final java.util.concurrent.atomic.AtomicInteger DRIVER_GETS =
+        new java.util.concurrent.atomic.AtomicInteger();
+    private final List<String> json;
+
+    ShippedSnapshots(List<String> json) {
+      this.json = json;
+    }
+
+    @Override
+    public List<Snapshot> get() {
+      DRIVER_GETS.incrementAndGet();
+      return parse(json);
+    }
+
+    @Override
+    public org.apache.iceberg.util.SerializableSupplier<List<Snapshot>> shippable() {
+      return new Parsed(new java.util.ArrayList<>(json));
+    }
+
+    private static List<Snapshot> parse(List<String> json) {
+      return json.stream().map(SnapshotParser::fromJson).collect(Collectors.toList());
+    }
+  }
+
+  /** The shipped form: a class, which Kryo copies field by field, where it would not a lambda. */
+  private static class Parsed
+      implements org.apache.iceberg.util.SerializableSupplier<List<Snapshot>> {
+    private final java.util.ArrayList<String> json;
+
+    Parsed(java.util.ArrayList<String> json) {
+      this.json = json;
+    }
+
+    @Override
+    public List<Snapshot> get() {
+      return ShippedSnapshots.parse(json);
+    }
   }
 
   private static List<String> paths(List<ManifestFile> manifests) {
