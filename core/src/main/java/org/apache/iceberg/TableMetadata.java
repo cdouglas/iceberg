@@ -590,6 +590,16 @@ public class TableMetadata implements Serializable {
         .collect(Collectors.toSet());
   }
 
+  /** Whether every snapshot is loaded: no supplier is left to call (SerializableTable). */
+  boolean snapshotsLoaded() {
+    return snapshotsLoaded;
+  }
+
+  /** The supplier of the snapshots not loaded yet, or null (SerializableTable). */
+  SerializableSupplier<List<Snapshot>> snapshotsSupplier() {
+    return snapshotsSupplier;
+  }
+
   public SnapshotRef ref(String name) {
     return refs.get(name);
   }
