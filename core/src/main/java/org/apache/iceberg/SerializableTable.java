@@ -29,6 +29,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.SerializableMap;
+import org.apache.iceberg.util.SerializableSupplier;
 
 /**
  * A read-only serializable table that can be sent to other nodes in a cluster.
@@ -59,6 +60,9 @@ public class SerializableTable implements Table, HasTableOperations, Serializabl
   // manifest lists inline: forms that Java serialization and Kryo both copy
   private final String metadataJson;
   private final Map<Long, List<ManifestFile>> inlineManifests;
+  // With such metadata whose snapshots are not all loaded, a supplier of them that a copy calls
+  // where it is (ShippableSnapshots): the JSON then holds only the snapshots loaded
+  private final SerializableSupplier<List<Snapshot>> snapshotsSupplier;
   private final Map<String, String> properties;
   private final String schemaAsJson;
   private final int defaultSpecId;
@@ -86,8 +90,10 @@ public class SerializableTable implements Table, HasTableOperations, Serializabl
     this.metadataFileLocation = current != null ? current.metadataFileLocation() : null;
     boolean noFile =
         metadataFileLocation != null && !metadataFileLocation.contains(".metadata.json");
-    this.metadataJson = noFile ? TableMetadataParser.toJson(namingLists(current)) : null;
-    this.inlineManifests = noFile ? inlineManifests(current, table.io()) : null;
+    this.snapshotsSupplier = noFile ? shippable(current) : null;
+    TableMetadata sent = snapshotsSupplier != null ? loadedOnly(current) : current;
+    this.metadataJson = noFile ? TableMetadataParser.toJson(namingLists(sent)) : null;
+    this.inlineManifests = noFile ? inlineManifests(sent, table.io()) : null;
     this.properties = SerializableMap.copyOf(table.properties());
     this.schemaAsJson = SchemaParser.toJson(table.schema());
     this.defaultSpecId = table.spec().specId();
@@ -128,6 +134,27 @@ public class SerializableTable implements Table, HasTableOperations, Serializabl
           this.getClass().getName() + " does not have a metadata file location");
     }
     return metadataFileLocation;
+  }
+
+  /**
+   * The form of {@code metadata}'s snapshots supplier that a copy carries, if its snapshots are not
+   * all loaded and its supplier has one ({@link ShippableSnapshots}); else null.
+   */
+  private static SerializableSupplier<List<Snapshot>> shippable(TableMetadata metadata) {
+    if (metadata.snapshotsLoaded()
+        || !(metadata.snapshotsSupplier() instanceof ShippableSnapshots)) {
+      return null;
+    }
+    return ((ShippableSnapshots) metadata.snapshotsSupplier()).shippable();
+  }
+
+  /** {@code metadata} with only the snapshots it has loaded, and no supplier. */
+  private static TableMetadata loadedOnly(TableMetadata metadata) {
+    return TableMetadata.buildFrom(metadata)
+        .setSnapshotsSupplier(null)
+        .withMetadataLocation(metadata.metadataFileLocation())
+        .discardChanges()
+        .build();
   }
 
   private static Map<Long, List<ManifestFile>> inlineManifests(TableMetadata metadata, FileIO io) {
@@ -180,8 +207,25 @@ public class SerializableTable implements Table, HasTableOperations, Serializabl
         .build();
   }
 
-  /** The table's metadata, from its JSON, its inline snapshots holding their manifests again. */
+  /**
+   * The table's metadata, from its JSON, its inline snapshots holding their manifests again, and
+   * the snapshots it does not hold from the supplier shipped with it.
+   */
   private TableMetadata metadataFromJson() {
+    TableMetadata made = withInlineManifests();
+    if (snapshotsSupplier == null) {
+      return made;
+    }
+    // The snapshots the JSON holds, and the others when something asks, where the copy is
+    return TableMetadata.buildFrom(made)
+        .setSnapshotsSupplier(snapshotsSupplier)
+        .withMetadataLocation(metadataFileLocation)
+        .discardChanges()
+        .build();
+  }
+
+  /** The metadata the JSON holds, its inline snapshots holding their manifests again. */
+  private TableMetadata withInlineManifests() {
     TableMetadata parsed = TableMetadataParser.fromJson(metadataFileLocation, metadataJson);
     if (inlineManifests.isEmpty()) {
       return parsed;
