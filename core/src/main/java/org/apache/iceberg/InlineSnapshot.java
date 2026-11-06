@@ -19,13 +19,16 @@
 package org.apache.iceberg;
 
 import java.io.IOException;
+import java.io.ObjectOutputStream;
 import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.base.MoreObjects;
 import org.apache.iceberg.relocated.com.google.common.base.Objects;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 
@@ -70,7 +73,9 @@ public class InlineSnapshot implements Snapshot {
   private final Long firstRowId;
   private final Long addedRows;
   private final String keyId;
-  private final List<ManifestFile> manifests;
+  // the inline list, or null until the supplier below makes it on first use
+  private volatile List<ManifestFile> manifests;
+  private transient Supplier<List<ManifestFile>> manifestsSupplier;
   private final CommitFootprint footprint;
 
   // lazy-computed partitions of the inline list
@@ -111,6 +116,39 @@ public class InlineSnapshot implements Snapshot {
   }
 
   /**
+   * An inline snapshot whose list {@code manifests} makes on first use, once: a catalog that loads
+   * a table makes the list of each snapshot only if something reads it. The snapshot is loaded, so
+   * its footprint is {@link CommitFootprint#OPAQUE}.
+   */
+  public InlineSnapshot(
+      long sequenceNumber,
+      long snapshotId,
+      Long parentId,
+      long timestampMillis,
+      String operation,
+      Map<String, String> summary,
+      Integer schemaId,
+      Long firstRowId,
+      Long addedRows,
+      String keyId,
+      Supplier<List<ManifestFile>> manifests) {
+    this(
+        sequenceNumber,
+        snapshotId,
+        parentId,
+        timestampMillis,
+        operation,
+        summary,
+        schemaId,
+        firstRowId,
+        addedRows,
+        keyId,
+        null,
+        Preconditions.checkNotNull(manifests, "Invalid manifests supplier: null"),
+        CommitFootprint.OPAQUE);
+  }
+
+  /**
    * An inline snapshot that its producer committed with {@code footprint}: what the commit depends
    * on beyond what it writes ({@link CommitFootprint}).
    */
@@ -127,6 +165,37 @@ public class InlineSnapshot implements Snapshot {
       String keyId,
       List<ManifestFile> manifests,
       CommitFootprint footprint) {
+    this(
+        sequenceNumber,
+        snapshotId,
+        parentId,
+        timestampMillis,
+        operation,
+        summary,
+        schemaId,
+        firstRowId,
+        addedRows,
+        keyId,
+        ImmutableList.copyOf(manifests),
+        null,
+        footprint);
+  }
+
+  @SuppressWarnings("checkstyle:ParameterNumber")
+  private InlineSnapshot(
+      long sequenceNumber,
+      long snapshotId,
+      Long parentId,
+      long timestampMillis,
+      String operation,
+      Map<String, String> summary,
+      Integer schemaId,
+      Long firstRowId,
+      Long addedRows,
+      String keyId,
+      List<ManifestFile> manifests,
+      Supplier<List<ManifestFile>> manifestsSupplier,
+      CommitFootprint footprint) {
     this.sequenceNumber = sequenceNumber;
     this.snapshotId = snapshotId;
     this.parentId = parentId;
@@ -137,8 +206,31 @@ public class InlineSnapshot implements Snapshot {
     this.firstRowId = firstRowId;
     this.addedRows = firstRowId != null ? addedRows : null;
     this.keyId = keyId;
-    this.manifests = ImmutableList.copyOf(manifests);
+    this.manifests = manifests;
+    this.manifestsSupplier = manifestsSupplier;
     this.footprint = footprint;
+  }
+
+  /** The inline list, made by the supplier the first time it is asked for. */
+  private List<ManifestFile> manifests() {
+    List<ManifestFile> list = manifests;
+    if (list == null) {
+      synchronized (this) {
+        list = manifests;
+        if (list == null) {
+          list = ImmutableList.copyOf(manifestsSupplier.get());
+          this.manifests = list;
+          this.manifestsSupplier = null;
+        }
+      }
+    }
+    return list;
+  }
+
+  private void writeObject(ObjectOutputStream out) throws IOException {
+    // a copy holds the list itself: the supplier does not serialize
+    manifests();
+    out.defaultWriteObject();
   }
 
   /**
@@ -206,7 +298,7 @@ public class InlineSnapshot implements Snapshot {
 
   @Override
   public List<ManifestFile> allManifests(FileIO io) {
-    return manifests;
+    return manifests();
   }
 
   @Override
@@ -214,7 +306,7 @@ public class InlineSnapshot implements Snapshot {
     if (dataManifestsView == null) {
       this.dataManifestsView =
           ImmutableList.copyOf(
-              Iterables.filter(manifests, m -> m.content() == ManifestContent.DATA));
+              Iterables.filter(manifests(), m -> m.content() == ManifestContent.DATA));
     }
     return dataManifestsView;
   }
@@ -224,7 +316,7 @@ public class InlineSnapshot implements Snapshot {
     if (deleteManifestsView == null) {
       this.deleteManifestsView =
           ImmutableList.copyOf(
-              Iterables.filter(manifests, m -> m.content() == ManifestContent.DELETES));
+              Iterables.filter(manifests(), m -> m.content() == ManifestContent.DELETES));
     }
     return deleteManifestsView;
   }
@@ -363,7 +455,7 @@ public class InlineSnapshot implements Snapshot {
         .add("timestamp_ms", timestampMillis)
         .add("operation", operation)
         .add("summary", summary)
-        .add("manifest-count", manifests.size())
+        .add("manifest-count", manifests != null ? manifests.size() : "not yet made")
         .add("schema-id", schemaId)
         .add("first-row-id", firstRowId)
         .add("added-rows", addedRows)
