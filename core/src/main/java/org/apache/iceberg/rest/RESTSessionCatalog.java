@@ -1400,9 +1400,12 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
         readHeaders,
         mutationHeaderSupplier,
         fileIO,
+        RESTTableOperations.UpdateType.SIMPLE,
+        Lists.newArrayList(),
         current,
         supportedEndpoints,
-        readQueryParams);
+        readQueryParams,
+        snapshotMode);
   }
 
   /**
@@ -1445,7 +1448,8 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
         createChanges,
         current,
         supportedEndpoints,
-        Map.of());
+        Map.of(),
+        snapshotMode);
   }
 
   /**
