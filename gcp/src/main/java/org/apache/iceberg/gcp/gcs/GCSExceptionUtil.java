@@ -22,9 +22,25 @@ import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.StorageException;
 import java.io.IOException;
 import org.apache.iceberg.exceptions.NotFoundException;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 
 final class GCSExceptionUtil {
   private GCSExceptionUtil() {}
+
+  /**
+   * A read that asked for {@code generation} fails as stale if the store no longer serves it: a
+   * precondition failure (another generation is live), or no such generation, which a read the
+   * client library retries after the first response asks for by number.
+   */
+  static void throwStaleIfGone(IOException ioException, BlobId blobId, Long generation) {
+    if (generation != null
+        && ioException.getCause() instanceof StorageException storageException
+        && (storageException.getCode() == 412 || storageException.getCode() == 404)) {
+      throw new SupportsAtomicOperations.StaleReadException(
+          "Generation " + generation + " of " + blobId.toGsUtilUri() + " is no longer the object's",
+          ioException);
+    }
+  }
 
   static void throwNotFoundIfNotPresent(IOException ioException, BlobId blobId) {
     if (ioException.getCause() instanceof StorageException storageException
