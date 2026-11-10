@@ -38,6 +38,7 @@ import org.apache.iceberg.io.FileIOMetricsContext;
 import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.RangeReadable;
 import org.apache.iceberg.io.SeekableInputStream;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.Counter;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.metrics.MetricsContext.Unit;
@@ -169,7 +170,13 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
     Preconditions.checkState(!closed, "Cannot read: already closed");
     positionStream();
 
-    int bytesRead = stream.read();
+    int bytesRead;
+    try {
+      bytesRead = stream.read();
+    } catch (IOException e) {
+      throwStaleIfSuperseded(e);
+      throw e;
+    }
     if (bytesRead == -1) {
       return -1;
     }
@@ -187,7 +194,13 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
     Preconditions.checkState(!closed, "Cannot read: already closed");
     positionStream();
 
-    int bytesRead = stream.read(b, off, len);
+    int bytesRead;
+    try {
+      bytesRead = stream.read(b, off, len);
+    } catch (IOException e) {
+      throwStaleIfSuperseded(e);
+      throw e;
+    }
     if (bytesRead == -1) {
       return -1;
     }
@@ -240,6 +253,9 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       IOUtil.readFully(inputStream, buffer, offset, length);
       readBytes.increment(length);
       readOperations.increment();
+    } catch (IOException e) {
+      throwStaleIfSuperseded(e);
+      throw e;
     }
   }
 
@@ -266,6 +282,9 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
         readOperations.increment();
       }
       return bytesRead;
+    } catch (IOException e) {
+      throwStaleIfSuperseded(e);
+      throw e;
     }
   }
 
@@ -280,6 +299,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       observe(result.getProperties());
       return result;
     } catch (RuntimeException e) {
+      throwStaleIfSuperseded(e);
       throwNotFoundIfNotPresent(e, location);
       LOG.error(
           "Failed to open input stream for file {}, range {}", fileClient.getFilePath(), range, e);
@@ -304,6 +324,30 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
       close(); // releasing resources is more important than printing the warning
       String trace = Joiner.on("\n\t").join(Arrays.copyOfRange(createStack, 1, createStack.length));
       LOG.warn("Unclosed input stream created by:\n\t{}", trace);
+    }
+  }
+
+  /**
+   * A request that asked for a version fails as stale if another is live: the SDK reports the
+   * precondition failure (412) itself on the request that opens a range, and as the cause of an
+   * IOException on one its stream sends for a later block.
+   */
+  private void throwStaleIfSuperseded(Throwable throwable) {
+    DataLakeRequestConditions asked = version();
+    Throwable failure =
+        throwable instanceof IOException && throwable.getCause() != null
+            ? throwable.getCause()
+            : throwable;
+    int status = -1;
+    if (failure instanceof BlobStorageException blobStorageException) {
+      status = blobStorageException.getStatusCode();
+    } else if (failure instanceof DataLakeStorageException dataLakeStorageException) {
+      status = dataLakeStorageException.getStatusCode();
+    }
+    if (asked != null && asked.getIfMatch() != null && status == 412) {
+      throw new SupportsAtomicOperations.StaleReadException(
+          String.format("Version %s of %s is no longer the file's", asked.getIfMatch(), location),
+          throwable instanceof Exception exception ? exception : null);
     }
   }
 

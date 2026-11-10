@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
@@ -83,6 +84,16 @@ public abstract class SupportsAtomicOperationsContractTest {
    */
   protected int segmentLimit() {
     return 0;
+  }
+
+  /**
+   * Whether a read through a file that has seen no version chooses the one it finds, so that the
+   * file's later reads, its length and a CAS from it are of that version (S3, ADLS). GCS's client
+   * library reports no generation a read found, so a GCS file that has seen none reads the live one
+   * at each request, and its subclasses return false.
+   */
+  protected boolean readsRecordTheirVersion() {
+    return true;
   }
 
   /** Best-effort cleanup hook called after each successful test. Subclasses may override. */
@@ -465,6 +476,179 @@ public abstract class SupportsAtomicOperationsContractTest {
     } finally {
       cleanup(io, loc);
     }
+  }
+
+  // ─── Reads ──────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * A file that looked the object up reads the version the lookup found, after a replace too: that
+   * version's bytes, or {@link SupportsAtomicOperations.StaleReadException}; never the
+   * replacement's. The replacement here is longer, so a read of the length the lookup found that
+   * the store does not pin to its version returns the start of the replacement, which looks like
+   * the old version followed by appends.
+   */
+  @Test
+  void aFileThatLookedReadsThatVersionAfterAReplace() throws IOException {
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("read-replaced");
+    try {
+      byte[] first = randomBytes(1, 4 * 1024);
+      createAtomically(io, loc, first);
+      InputFile looked = io.newInputFile(loc);
+      assertThat(looked.getLength()).isEqualTo(first.length);
+
+      byte[] second = randomBytes(2, 8 * 1024);
+      replaceAtomically(io, loc, second);
+
+      assertReadsOnly(looked, first, "a whole read after a replace");
+      assertRangeReadsOnly(looked, first, 1024, "a range read after a replace");
+      assertThat(looked.getLength()).isEqualTo(first.length);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(second);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /**
+   * An append makes a new version: a file that looked the object up before it reads the version
+   * before it, or fails as stale, and its length is that version's. Skipped on providers without
+   * APPEND.
+   */
+  @Test
+  void aFileThatLookedReadsThatVersionAfterAnAppend() throws IOException {
+    Assumptions.assumeTrue(supportsAppend(), "APPEND not supported by this FileIO");
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("read-appended");
+    try {
+      byte[] head = randomBytes(3, 4 * 1024);
+      createAtomically(io, loc, head);
+      InputFile looked = io.newInputFile(loc);
+      assertThat(looked.getLength()).isEqualTo(head.length);
+
+      InputFile other = io.newInputFile(loc);
+      other.getLength();
+      byte[] tail = randomBytes(4, 1024);
+      appendAtomically(io, other, tail);
+
+      assertReadsOnly(looked, head, "a whole read after an append");
+      assertRangeReadsOnly(looked, head, 1024, "a range read after an append");
+      assertThat(looked.getLength()).isEqualTo(head.length);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(concat(head, tail));
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /**
+   * A file whose first request was a read has seen the version that read found, on a store whose
+   * reads record it: every later request of the stream (a backward seek reopens it, a range read
+   * sends its own), a new stream, the file's length and a CAS from it are of that version, after a
+   * replace of the same length too. A CAS from it fails rather than replace a version it did not
+   * read.
+   */
+  @Test
+  void aFileWhoseFirstRequestReadReadsThatVersion() throws IOException {
+    Assumptions.assumeTrue(readsRecordTheirVersion(), "reads do not record their version");
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("read-first");
+    try {
+      byte[] first = randomBytes(5, 64 * 1024);
+      createAtomically(io, loc, first);
+      InputFile reader = io.newInputFile(loc);
+      byte[] second = randomBytes(6, first.length);
+      try (SeekableInputStream in = reader.newStream()) {
+        byte[] start = new byte[16];
+        fill(in, start);
+        assertThat(start).isEqualTo(Arrays.copyOfRange(first, 0, start.length));
+
+        replaceAtomically(io, loc, second);
+
+        in.seek(0);
+        try {
+          byte[] again = new byte[32];
+          fill(in, again);
+          assertThat(again)
+              .as("a reopened stream's bytes")
+              .isEqualTo(Arrays.copyOfRange(first, 0, again.length));
+        } catch (SupportsAtomicOperations.StaleReadException e) {
+          // the store no longer serves the version the stream reads
+        }
+        if (in instanceof RangeReadable range) {
+          try {
+            byte[] middle = new byte[64];
+            range.readFully(32 * 1024, middle);
+            assertThat(middle)
+                .as("a stream's range read")
+                .isEqualTo(Arrays.copyOfRange(first, 32 * 1024, 32 * 1024 + middle.length));
+          } catch (SupportsAtomicOperations.StaleReadException e) {
+            // as above
+          }
+        }
+      }
+
+      assertReadsOnly(reader, first, "a new stream of the file");
+      assertThat(reader.getLength()).isEqualTo(first.length);
+      AtomicOutputFile out = io.newOutputFile(reader);
+      byte[] third = randomBytes(7, 1024);
+      CAS tok = out.prepare(supplier(third), AtomicOutputFile.Strategy.CAS);
+      assertThatThrownBy(() -> out.writeAtomic(tok, supplier(third)))
+          .isInstanceOf(SupportsAtomicOperations.CASException.class);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(second);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /** Reads {@code file} whole: {@code expected}, unless the read fails as stale. */
+  private static void assertReadsOnly(InputFile file, byte[] expected, String what)
+      throws IOException {
+    try {
+      assertThat(read(file)).as(what).isEqualTo(expected);
+    } catch (SupportsAtomicOperations.StaleReadException e) {
+      // the store no longer serves the version the file reads; no other version's bytes came back
+    }
+  }
+
+  /** As {@link #assertReadsOnly}, by a range read at {@code offset}, if the stream offers one. */
+  private static void assertRangeReadsOnly(InputFile file, byte[] expected, int offset, String what)
+      throws IOException {
+    try (SeekableInputStream in = file.newStream()) {
+      if (in instanceof RangeReadable range) {
+        byte[] bytes = new byte[expected.length - offset];
+        range.readFully(offset, bytes);
+        assertThat(bytes).as(what).isEqualTo(Arrays.copyOfRange(expected, offset, expected.length));
+      }
+    } catch (SupportsAtomicOperations.StaleReadException e) {
+      // as above
+    }
+  }
+
+  /** Replaces the object at {@code location}, through a snapshot that looks it up first. */
+  private static InputFile replaceAtomically(
+      SupportsAtomicOperations io, String location, byte[] payload) throws IOException {
+    InputFile live = io.newInputFile(location);
+    live.getLength();
+    AtomicOutputFile out = io.newOutputFile(live);
+    return out.writeAtomic(
+        out.prepare(supplier(payload), AtomicOutputFile.Strategy.CAS), supplier(payload));
+  }
+
+  /** Reads {@code buffer.length} bytes from {@code in}, or fails at its end. */
+  private static void fill(InputStream in, byte[] buffer) throws IOException {
+    int read = 0;
+    while (read < buffer.length) {
+      int count = in.read(buffer, read, buffer.length - read);
+      if (count < 0) {
+        throw new IOException("Stream ended after " + read + " of " + buffer.length + " bytes");
+      }
+      read += count;
+    }
+  }
+
+  private static byte[] randomBytes(long seed, int length) {
+    byte[] bytes = new byte[length];
+    new Random(seed).nextBytes(bytes);
+    return bytes;
   }
 
   // ─── Race helper ────────────────────────────────────────────────────────────────────────────

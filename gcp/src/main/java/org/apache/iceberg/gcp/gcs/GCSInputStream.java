@@ -28,6 +28,7 @@ import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Supplier;
 import org.apache.iceberg.gcp.GCPProperties;
 import org.apache.iceberg.io.FileIOMetricsContext;
 import org.apache.iceberg.io.RangeReadable;
@@ -54,7 +55,14 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
   private Long blobSize;
   private final GCPProperties gcpProperties;
 
+  // The generation of the object this stream reads, or null for the live one: its input file's, as
+  // each channel opens. Each request asks for it (if-generation-match), so a write that lands
+  // between two of them fails the read instead of splicing another generation's bytes into it.
+  private final Supplier<Long> generation;
+
+  // Opened by the first read, so that it asks for the generation a lookup after newStream() found
   private ReadChannel channel;
+  private Long channelGeneration;
   private long pos = 0;
   private boolean closed = false;
   private final ByteBuffer singleByteBuffer = ByteBuffer.wrap(new byte[1]);
@@ -69,25 +77,46 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
       Long blobSize,
       GCPProperties gcpProperties,
       MetricsContext metrics) {
+    this(storage, blobId, blobSize, gcpProperties, metrics, () -> null);
+  }
+
+  /** A stream of the generation {@code generation} names when it first reads, else the live one. */
+  GCSInputStream(
+      Storage storage,
+      BlobId blobId,
+      Long blobSize,
+      GCPProperties gcpProperties,
+      MetricsContext metrics,
+      Supplier<Long> generation) {
     this.storage = storage;
     this.blobId = blobId;
     this.blobSize = blobSize;
     this.gcpProperties = gcpProperties;
+    this.generation = generation;
 
     this.readBytes = metrics.counter(FileIOMetricsContext.READ_BYTES, Unit.BYTES);
     this.readOperations = metrics.counter(FileIOMetricsContext.READ_OPERATIONS);
 
     createStack = Thread.currentThread().getStackTrace();
-
-    openStream();
   }
 
-  private void openStream() {
-    channel = openChannel();
+  /** The stream's channel, opened at its position by the first read. */
+  private ReadChannel channel() throws IOException {
+    if (channel == null) {
+      channelGeneration = generation.get();
+      channel = openChannel(channelGeneration);
+      if (pos > 0) {
+        channel.seek(pos);
+      }
+    }
+    return channel;
   }
 
-  private ReadChannel openChannel() {
+  private ReadChannel openChannel(Long readGeneration) {
     List<BlobSourceOption> sourceOptions = Lists.newArrayList();
+    if (readGeneration != null) {
+      sourceOptions.add(BlobSourceOption.generationMatch(readGeneration));
+    }
 
     gcpProperties
         .decryptionKey()
@@ -114,6 +143,9 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
     Preconditions.checkArgument(newPos >= 0, "position is negative: %s", newPos);
 
     pos = newPos;
+    if (channel == null) {
+      return;
+    }
     try {
       channel.seek(newPos);
     } catch (IOException e) {
@@ -127,7 +159,7 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
     singleByteBuffer.position(0);
 
     try {
-      int bytesRead = channel.read(singleByteBuffer);
+      int bytesRead = channel().read(singleByteBuffer);
       if (bytesRead == -1) {
         return -1;
       }
@@ -138,6 +170,7 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
 
       return singleByteBuffer.array()[0] & 0xFF;
     } catch (IOException e) {
+      GCSExceptionUtil.throwStaleIfGone(e, blobId, channelGeneration);
       GCSExceptionUtil.throwNotFoundIfNotPresent(e, blobId);
       throw e;
     }
@@ -148,7 +181,8 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
     Preconditions.checkState(!closed, "Cannot read: already closed");
     Preconditions.checkPositionIndexes(off, off + len, b.length);
     byteBuffer = byteBuffer != null && byteBuffer.array() == b ? byteBuffer : ByteBuffer.wrap(b);
-    int bytesRead = read(channel, byteBuffer, off, len);
+    ReadChannel opened = channel();
+    int bytesRead = read(opened, byteBuffer, off, len, channelGeneration);
     if (bytesRead == -1) {
       return -1;
     }
@@ -161,10 +195,11 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
 
   @Override
   public void readFully(long position, byte[] buffer, int offset, int length) throws IOException {
-    try (ReadChannel readChannel = openChannel()) {
+    Long readGeneration = generation.get();
+    try (ReadChannel readChannel = openChannel(readGeneration)) {
       readChannel.seek(position);
       readChannel.limit(position + length);
-      int bytesRead = read(readChannel, ByteBuffer.wrap(buffer), offset, length);
+      int bytesRead = read(readChannel, ByteBuffer.wrap(buffer), offset, length, readGeneration);
       if (bytesRead < length) {
         throw new EOFException(
             "Reached the end of stream with " + (length - bytesRead) + " bytes left to read");
@@ -182,9 +217,10 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
       blobSize = storage.get(blobId).getSize();
     }
     long startPosition = Math.max(0, blobSize - length);
-    try (ReadChannel readChannel = openChannel()) {
+    Long readGeneration = generation.get();
+    try (ReadChannel readChannel = openChannel(readGeneration)) {
       readChannel.seek(startPosition);
-      int bytesRead = read(readChannel, ByteBuffer.wrap(buffer), offset, length);
+      int bytesRead = read(readChannel, ByteBuffer.wrap(buffer), offset, length, readGeneration);
       if (bytesRead > 0) {
         readBytes.increment(bytesRead);
         readOperations.increment();
@@ -193,13 +229,15 @@ class GCSInputStream extends SeekableInputStream implements RangeReadable {
     }
   }
 
-  private int read(ReadChannel readChannel, ByteBuffer buffer, int off, int len)
+  private int read(
+      ReadChannel readChannel, ByteBuffer buffer, int off, int len, Long readGeneration)
       throws IOException {
     buffer.position(off);
     buffer.limit(off + len);
     try {
       return readChannel.read(buffer);
     } catch (IOException e) {
+      GCSExceptionUtil.throwStaleIfGone(e, blobId, readGeneration);
       GCSExceptionUtil.throwNotFoundIfNotPresent(e, blobId);
       throw e;
     }

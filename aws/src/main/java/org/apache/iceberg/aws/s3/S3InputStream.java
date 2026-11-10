@@ -27,12 +27,15 @@ import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import javax.net.ssl.SSLException;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.FileIOMetricsContext;
 import org.apache.iceberg.io.IOUtil;
 import org.apache.iceberg.io.RangeReadable;
 import org.apache.iceberg.io.SeekableInputStream;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.Counter;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.metrics.MetricsContext.Unit;
@@ -43,11 +46,14 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.http.Abortable;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 class S3InputStream extends SeekableInputStream implements RangeReadable {
   private static final Logger LOG = LoggerFactory.getLogger(S3InputStream.class);
@@ -59,6 +65,12 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
   private final S3Client s3;
   private final S3URI location;
   private final S3FileIOProperties s3FileIOProperties;
+  // The version this stream reads: its input file's, once that has one, else the one its own first
+  // request found. Every request asks for it (If-Match), so a write that lands between two of them
+  // fails the read instead of splicing another version's bytes into it.
+  private final Supplier<String> fileVersion;
+  private final Consumer<GetObjectResponse> observer;
+  private String version = null;
 
   private InputStream stream;
   private long pos = 0;
@@ -92,9 +104,25 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
 
   S3InputStream(
       S3Client s3, S3URI location, S3FileIOProperties s3FileIOProperties, MetricsContext metrics) {
+    this(s3, location, s3FileIOProperties, metrics, () -> null, response -> {});
+  }
+
+  /**
+   * A stream of the version {@code fileVersion} names, or, while it names none, of the one this
+   * stream's first request finds, which {@code observer} hears of.
+   */
+  S3InputStream(
+      S3Client s3,
+      S3URI location,
+      S3FileIOProperties s3FileIOProperties,
+      MetricsContext metrics,
+      Supplier<String> fileVersion,
+      Consumer<GetObjectResponse> observer) {
     this.s3 = s3;
     this.location = location;
     this.s3FileIOProperties = s3FileIOProperties;
+    this.fileVersion = fileVersion;
+    this.observer = observer;
 
     this.readBytes = metrics.counter(FileIOMetricsContext.READ_BYTES, Unit.BYTES);
     this.readOperations = metrics.counter(FileIOMetricsContext.READ_OPERATIONS);
@@ -121,7 +149,7 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
     Preconditions.checkState(!closed, "Cannot read: already closed");
     positionStream();
     try {
-      int bytesRead = Failsafe.with(retryPolicy).get(() -> stream.read());
+      int bytesRead = Failsafe.with(retryPolicy).get(() -> openedStream().read());
       if (bytesRead == -1) {
         return -1;
       }
@@ -147,7 +175,7 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
     positionStream();
 
     try {
-      int bytesRead = Failsafe.with(retryPolicy).get(() -> stream.read(b, off, len));
+      int bytesRead = Failsafe.with(retryPolicy).get(() -> openedStream().read(b, off, len));
       if (bytesRead == -1) {
         return -1;
       }
@@ -204,7 +232,48 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
 
     S3RequestUtil.configureEncryption(s3FileIOProperties, requestBuilder);
 
-    return s3.getObject(requestBuilder.build(), ResponseTransformer.toInputStream());
+    return get(requestBuilder);
+  }
+
+  /** The version requests ask for, or null while neither the file nor this stream has one. */
+  private String version() {
+    String chosen = fileVersion.get();
+    return chosen != null ? chosen : version;
+  }
+
+  /**
+   * Sends {@code request} for the version this stream reads, and takes the one it found if none.
+   */
+  private InputStream get(GetObjectRequest.Builder request) {
+    String asked = version();
+    if (asked != null) {
+      request.ifMatch(asked);
+    }
+    InputStream response;
+    try {
+      response = s3.getObject(request.build(), ResponseTransformer.toInputStream());
+    } catch (S3Exception e) {
+      if (asked != null && e.statusCode() == BaseS3File.PRECONDITION_FAILED) {
+        throw new SupportsAtomicOperations.StaleReadException(
+            String.format("Version %s of %s is no longer the object's", asked, location), e);
+      }
+      throw e;
+    }
+    if (response instanceof ResponseInputStream<?> withResponse
+        && withResponse.response() instanceof GetObjectResponse found
+        && version == null) {
+      this.version = asked != null ? asked : found.eTag();
+      observer.accept(found);
+    }
+    return response;
+  }
+
+  /** The open stream; a reopen that failed in a retry's listener is tried again here. */
+  private InputStream openedStream() throws IOException {
+    if (stream == null) {
+      openStream();
+    }
+    return stream;
   }
 
   @Override
@@ -258,7 +327,7 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
     closeStream(closeQuietly);
 
     try {
-      stream = s3.getObject(requestBuilder.build(), ResponseTransformer.toInputStream());
+      stream = get(requestBuilder);
     } catch (NoSuchKeyException e) {
       throw new NotFoundException(e, "Location does not exist: %s", location);
     }
