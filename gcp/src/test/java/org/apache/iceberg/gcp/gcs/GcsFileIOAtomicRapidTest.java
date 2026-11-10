@@ -85,6 +85,12 @@ public class GcsFileIOAtomicRapidTest extends SupportsAtomicOperationsContractTe
     return io;
   }
 
+  /** GCS's client library reports no generation a read found: a read chooses none. */
+  @Override
+  protected boolean readsRecordTheirVersion() {
+    return false;
+  }
+
   @Override
   protected String randomLocation(String slug) {
     return String.format("gs://%s/%s/%s-%s", rapidBucket, runId, slug, UUID.randomUUID());
