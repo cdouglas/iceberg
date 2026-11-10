@@ -238,7 +238,7 @@ public class TestGcsInputFile {
         mockConstruction(
             GCSInputStream.class,
             (mock, context) -> {
-              assertThat(context.arguments()).hasSize(5);
+              assertThat(context.arguments()).hasSize(6);
               assertThat(context.arguments().get(0)).isEqualTo(storage);
               assertThat(context.arguments().get(1)).isEqualTo(BlobId.fromGsUtilUri(LOCATION));
               assertThat(context.arguments().get(2)).isEqualTo(FILE_SIZE);
@@ -281,7 +281,7 @@ public class TestGcsInputFile {
           mockConstruction(
               GCSInputStream.class,
               (mock, context) -> {
-                assertThat(context.arguments()).hasSize(5);
+                assertThat(context.arguments()).hasSize(6);
                 assertThat(context.arguments().get(0)).isEqualTo(storage);
                 assertThat(context.arguments().get(1)).isEqualTo(BlobId.fromGsUtilUri(LOCATION));
                 assertThat(context.arguments().get(2)).isEqualTo(null);

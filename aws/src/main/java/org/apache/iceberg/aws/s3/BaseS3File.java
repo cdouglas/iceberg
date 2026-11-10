@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.aws.s3;
 
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
 import software.amazon.awssdk.http.HttpStatusCode;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
@@ -27,6 +28,9 @@ import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 abstract class BaseS3File {
+  /** HTTP 412: a request's If-Match named a version that is no longer the object's. */
+  static final int PRECONDITION_FAILED = 412;
+
   private final S3Client client;
   private final S3AsyncClient asyncClient;
   private final S3URI uri;
@@ -79,6 +83,9 @@ abstract class BaseS3File {
   public boolean exists() {
     try {
       return getObjectMetadata() != null;
+    } catch (SupportsAtomicOperations.StaleReadException e) {
+      // the version this file reads is gone, as a lookup of a GCS generation finds
+      return false;
     } catch (S3Exception e) {
       if (e.statusCode() == HttpStatusCode.NOT_FOUND) {
         return false;
@@ -86,6 +93,14 @@ abstract class BaseS3File {
         throw e; // return null if 404 Not Found, otherwise rethrow
       }
     }
+  }
+
+  /**
+   * The version (ETag) a lookup through this file asks for, or null for the live one: a file that
+   * reads one version looks up only that one.
+   */
+  protected String lookupVersion() {
+    return null;
   }
 
   /** The object's metadata if a lookup fetched it, else null; sends no request. */
@@ -98,7 +113,19 @@ abstract class BaseS3File {
       HeadObjectRequest.Builder requestBuilder =
           HeadObjectRequest.builder().bucket(uri().bucket()).key(uri().key());
       S3RequestUtil.configureEncryption(s3FileIOProperties, requestBuilder);
-      metadata = client().headObject(requestBuilder.build());
+      String version = lookupVersion();
+      if (version != null) {
+        requestBuilder.ifMatch(version);
+      }
+      try {
+        metadata = client().headObject(requestBuilder.build());
+      } catch (S3Exception e) {
+        if (version != null && e.statusCode() == PRECONDITION_FAILED) {
+          throw new SupportsAtomicOperations.StaleReadException(
+              String.format("Version %s of %s is no longer the object's", version, location()), e);
+        }
+        throw e;
+      }
     }
 
     return metadata;

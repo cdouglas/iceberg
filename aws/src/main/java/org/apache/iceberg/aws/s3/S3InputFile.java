@@ -25,6 +25,7 @@ import org.apache.iceberg.io.SeekableInputStream;
 import org.apache.iceberg.metrics.MetricsContext;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 
 public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryptedFile {
   private NativeFileCryptoParameters nativeDecryptionParameters;
@@ -82,11 +83,45 @@ public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryp
    * The ETag of the version this snapshot has seen, without a request: the one a write returned or
    * a lookup found, or null if it has seen none.
    */
-  String seenEtag() {
+  synchronized String seenEtag() {
     if (etag == null && cachedMetadata() != null) {
       this.etag = cachedMetadata().eTag();
     }
     return etag;
+  }
+
+  /** A lookup asks for the version this file reads, once a write or a read has chosen one. */
+  @Override
+  protected synchronized String lookupVersion() {
+    return etag;
+  }
+
+  /**
+   * Chooses the version a GET found, and its length, if the file has no version yet: what a request
+   * first finds is what its later reads, its length and a replace see.
+   */
+  private synchronized void pin(GetObjectResponse response) {
+    if (seenEtag() == null && response.eTag() != null) {
+      this.etag = response.eTag();
+      if (length == null) {
+        this.length = objectLength(response);
+      }
+    }
+  }
+
+  /** The length of the object a GET's response describes, or null if it does not say. */
+  static Long objectLength(GetObjectResponse response) {
+    String range = response.contentRange();
+    if (range == null) {
+      // the whole object
+      return response.contentLength();
+    }
+    String total = range.substring(range.lastIndexOf('/') + 1).trim();
+    try {
+      return "*".equals(total) ? null : Long.parseLong(total);
+    } catch (NumberFormatException e) {
+      return null;
+    }
   }
 
   /** The length this snapshot was given or has seen, without a request; null if neither. */
@@ -116,7 +151,10 @@ public class S3InputFile extends BaseS3File implements InputFile, NativelyEncryp
     if (s3FileIOProperties().isS3AnalyticsAcceleratorEnabled()) {
       return AnalyticsAcceleratorUtil.newStream(this);
     }
-    return new S3InputStream(client(), uri(), s3FileIOProperties(), metrics());
+    // The analytics accelerator's streams read whichever version is live: only S3InputStream
+    // reads one version (SupportsAtomicOperations)
+    return new S3InputStream(
+        client(), uri(), s3FileIOProperties(), metrics(), this::seenEtag, this::pin);
   }
 
   @Override
