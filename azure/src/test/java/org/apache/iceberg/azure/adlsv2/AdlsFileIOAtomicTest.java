@@ -47,6 +47,7 @@ import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.io.SupportsAtomicOperationsContractTest;
+import org.apache.iceberg.relocated.com.google.common.base.Throwables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.junit.jupiter.api.Assertions;
@@ -134,9 +135,10 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
 
   /**
    * ADLS-specific: an {@link InputFile} snapshot pins the etag it observed; subsequent reads
-   * through the same InputFile fail with {@link BlobErrorCode#CONDITION_NOT_MET} once the live
-   * object's etag changes. Verifies a stale-snapshot read is detected even when the snapshot was
-   * taken before a non-atomic {@code createOrOverwrite} replaces the bytes.
+   * through the same InputFile fail as {@link SupportsAtomicOperations.StaleReadException}, from
+   * the service's {@link BlobErrorCode#CONDITION_NOT_MET}, once the live object's etag changes.
+   * Verifies a stale-snapshot read is detected even when the snapshot was taken before a non-atomic
+   * {@code createOrOverwrite} replaces the bytes.
    */
   @Test
   void inputFileSnapshotRejectsReadAfterNonAtomicOverwrite() throws IOException {
@@ -167,15 +169,18 @@ public class AdlsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
       IOUtil.writeFully(os, ByteBuffer.wrap(overbytes));
     }
 
-    BlobStorageException etagFailure =
+    SupportsAtomicOperations.StaleReadException stale =
         Assertions.assertThrows(
-            BlobStorageException.class,
+            SupportsAtomicOperations.StaleReadException.class,
             () -> {
               try (InputStream is = in.newStream()) {
                 IOUtil.readFully(is, actual, 0, actual.length);
               }
             });
-    assertThat(etagFailure.getErrorCode()).isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
+    // the service's 412, directly or through the IOException the SDK's stream wraps it in
+    assertThat(stale).hasRootCauseInstanceOf(BlobStorageException.class);
+    assertThat(((BlobStorageException) Throwables.getRootCause(stale)).getErrorCode())
+        .isEqualTo(BlobErrorCode.CONDITION_NOT_MET);
 
     // A freshly resolved InputFile reads the latest bytes successfully.
     try (InputStream is = io.newInputFile(location).newStream()) {
