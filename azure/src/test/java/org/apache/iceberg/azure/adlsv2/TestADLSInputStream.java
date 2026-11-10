@@ -19,7 +19,10 @@
 package org.apache.iceberg.azure.adlsv2;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -27,8 +30,11 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.azure.core.http.HttpResponse;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.implementation.models.InternalDataLakeFileOpenInputStreamResult;
+import com.azure.storage.file.datalake.models.DataLakeRequestConditions;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 import com.azure.storage.file.datalake.models.FileRange;
 import com.azure.storage.file.datalake.models.PathProperties;
 import com.azure.storage.file.datalake.options.DataLakeFileInputStreamOptions;
@@ -38,6 +44,7 @@ import java.io.InputStream;
 import java.util.Arrays;
 import org.apache.iceberg.io.FileIOMetricsContext;
 import org.apache.iceberg.io.SeekableInputStream;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.CachingMetricsContext;
 import org.apache.iceberg.metrics.Counter;
 import org.apache.iceberg.metrics.MetricsContext;
@@ -232,6 +239,51 @@ class TestADLSInputStream {
     // the read asks for the version the length came from, so a file replaced in between fails it
     assertThat(options.getValue().getRequestConditions().getIfMatch()).isEqualTo("e0");
     assertThat(file.conditions().getIfMatch()).isEqualTo("e0");
+  }
+
+  /**
+   * A request for the version the stream reads that another version superseded fails as stale,
+   * whether the SDK reports it as it opens a range or, for a later block, as an IOException's
+   * cause.
+   */
+  @Test
+  void testAReadOfASupersededVersionFailsAsStale() throws IOException {
+    HttpResponse response = mock(HttpResponse.class);
+    when(response.getStatusCode()).thenReturn(412);
+    DataLakeStorageException conditionNotMet =
+        new DataLakeStorageException("ConditionNotMet", response, null);
+    when(fileClient.openInputStream(any())).thenThrow(conditionNotMet);
+    DataLakeRequestConditions version = new DataLakeRequestConditions().setIfMatch("e1");
+    try (ADLSInputStream in =
+        new ADLSInputStream(
+            "abfs://container@account.dfs.core.windows.net/path/to/file",
+            fileClient,
+            10L,
+            mock(),
+            () -> version,
+            properties -> {},
+            MetricsContext.nullMetrics())) {
+      assertThatThrownBy(in::read).isInstanceOf(SupportsAtomicOperations.StaleReadException.class);
+      assertThatThrownBy(() -> in.readFully(0, new byte[2]))
+          .isInstanceOf(SupportsAtomicOperations.StaleReadException.class);
+    }
+
+    InputStream breaks = mock(InputStream.class);
+    when(breaks.read(any(byte[].class), anyInt(), anyInt()))
+        .thenThrow(new IOException(conditionNotMet));
+    doReturn(result(breaks, 10, "e1")).when(fileClient).openInputStream(any());
+    try (ADLSInputStream in =
+        new ADLSInputStream(
+            "abfs://container@account.dfs.core.windows.net/path/to/file",
+            fileClient,
+            10L,
+            mock(),
+            () -> version,
+            properties -> {},
+            MetricsContext.nullMetrics())) {
+      assertThatThrownBy(() -> in.read(new byte[2], 0, 2))
+          .isInstanceOf(SupportsAtomicOperations.StaleReadException.class);
+    }
   }
 
   private static InternalDataLakeFileOpenInputStreamResult result(

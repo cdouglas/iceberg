@@ -104,7 +104,22 @@ class GCSInputFile extends BaseGCSFile implements InputFile {
       }
     }
 
-    return new GCSInputStream(storage(), blobId(), blobSize, gcpProperties(), metrics());
+    // gcs-analytics-core's streams read whichever generation is live: only GCSInputStream reads
+    // one generation (SupportsAtomicOperations)
+    return new GCSInputStream(
+        storage(), blobId(), blobSize, gcpProperties(), metrics(), this::readGeneration);
+  }
+
+  /**
+   * The generation this file reads: the one it carries, else the one a lookup saw; null, the live
+   * one, if neither. A read does not choose one: the client library reports none it found.
+   */
+  Long readGeneration() {
+    if (blobId().getGeneration() != null) {
+      return blobId().getGeneration();
+    }
+    Blob blob = cachedBlob();
+    return blob == null ? null : blob.getGeneration();
   }
 
   /**
