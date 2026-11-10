@@ -18,6 +18,21 @@
  */
 package org.apache.iceberg.io;
 
+/**
+ * A FileIO whose writes can be conditioned on the version of the object they replace or extend.
+ *
+ * <p>Reads are of one version. An {@link InputFile} from this FileIO reads the version it has seen
+ * (see {@link #newOutputFile(InputFile)}), and a stream from it reads that version, or, if the file
+ * has seen none when the stream first reads, the one the stream's first request finds. Every later
+ * read of the stream, sequential or by range ({@link RangeReadable}), and every request a reopen
+ * sends, asks for that version: it returns that version's bytes or fails with {@link
+ * StaleReadException}, and never returns bytes of another version. A write makes a new version, an
+ * append too: a read of the version before it fails as stale on a store that reads only its live
+ * version (S3, ADLS and GCS ask for it by a precondition), or returns that version's bytes on one
+ * that keeps them. On a store whose reads record the version (S3, ADLS), a file whose first request
+ * was a read has seen the version that read found: its length is that version's, and a CAS from it
+ * replaces only that version.
+ */
 public interface SupportsAtomicOperations extends FileIO {
   /**
    * Create a new atomic output file that will replace the given input file: the version of the
@@ -110,6 +125,18 @@ public interface SupportsAtomicOperations extends FileIO {
 
   class AppendException extends AtomicOperationException {
     public AppendException(String message, Exception cause) {
+      super(message, cause);
+    }
+  }
+
+  /**
+   * A read through an {@link InputFile} asked for the version the file or its stream reads, and the
+   * store no longer serves it: a write replaced it or, on a store that makes a new version with
+   * each append, extended it. The read returned no bytes of another version. A caller that wants
+   * the object's current bytes reads it through a fresh {@link #newInputFile(String)}.
+   */
+  class StaleReadException extends AtomicOperationException {
+    public StaleReadException(String message, Exception cause) {
       super(message, cause);
     }
   }
