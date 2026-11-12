@@ -149,6 +149,15 @@ public class GCSFileIO
     return false;
   }
 
+  /**
+   * The client library reports no generation a read found, so a file that has seen none reads the
+   * live one at each request: a caller that wants one generation looks the file up first.
+   */
+  @Override
+  public boolean readsRecordVersion() {
+    return false;
+  }
+
   @SuppressWarnings("resource")
   @Override
   public void deleteFile(String path) {

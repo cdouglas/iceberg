@@ -86,16 +86,6 @@ public abstract class SupportsAtomicOperationsContractTest {
     return 0;
   }
 
-  /**
-   * Whether a read through a file that has seen no version chooses the one it finds, so that the
-   * file's later reads, its length and a CAS from it are of that version (S3, ADLS). GCS's client
-   * library reports no generation a read found, so a GCS file that has seen none reads the live one
-   * at each request, and its subclasses return false.
-   */
-  protected boolean readsRecordTheirVersion() {
-    return true;
-  }
-
   /** Best-effort cleanup hook called after each successful test. Subclasses may override. */
   protected void cleanup(SupportsAtomicOperations io, String location) {
     try {
@@ -548,8 +538,8 @@ public abstract class SupportsAtomicOperationsContractTest {
    */
   @Test
   void aFileWhoseFirstRequestReadReadsThatVersion() throws IOException {
-    Assumptions.assumeTrue(readsRecordTheirVersion(), "reads do not record their version");
     SupportsAtomicOperations io = newFileIO();
+    Assumptions.assumeTrue(io.readsRecordVersion(), "reads do not record their version");
     String loc = randomLocation("read-first");
     try {
       byte[] first = randomBytes(5, 64 * 1024);
@@ -594,6 +584,83 @@ public abstract class SupportsAtomicOperationsContractTest {
       assertThatThrownBy(() -> out.writeAtomic(tok, supplier(third)))
           .isInstanceOf(SupportsAtomicOperations.CASException.class);
       assertThat(read(io.newInputFile(loc))).isEqualTo(second);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /**
+   * On a store whose reads record their version, a file whose first request reads from an offset to
+   * the end (one GET, with no lookup) has seen the version it read, and the whole object's length:
+   * after a replace of another length, its length is still the version's, and a CAS from it fails
+   * rather than replace a version it did not read.
+   */
+  @Test
+  void aFileWhoseFirstRequestReadsFromAnOffsetHasSeenThatVersion() throws IOException {
+    SupportsAtomicOperations io = newFileIO();
+    Assumptions.assumeTrue(io.readsRecordVersion(), "reads do not record their version");
+    String loc = randomLocation("read-from-offset");
+    try {
+      byte[] first = randomBytes(8, 8 * 1024);
+      createAtomically(io, loc, first);
+      InputFile reader = io.newInputFile(loc);
+      byte[] rest;
+      try (SeekableInputStream in = reader.newStream()) {
+        in.seek(5 * 1024);
+        rest = in.readAllBytes();
+      }
+      assertThat(rest).isEqualTo(Arrays.copyOfRange(first, 5 * 1024, first.length));
+
+      byte[] second = randomBytes(9, 2 * 1024);
+      replaceAtomically(io, loc, second);
+
+      assertThat(reader.getLength()).as("the length of the version read").isEqualTo(first.length);
+      assertReadsOnly(reader, first, "a new stream of the file");
+      AtomicOutputFile out = io.newOutputFile(reader);
+      byte[] third = randomBytes(10, 1024);
+      CAS tok = out.prepare(supplier(third), AtomicOutputFile.Strategy.CAS);
+      assertThatThrownBy(() -> out.writeAtomic(tok, supplier(third)))
+          .isInstanceOf(SupportsAtomicOperations.CASException.class);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(second);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /**
+   * On a store whose reads record their version, a stream's read from the object's end or past it
+   * returns the stream's end, whether its file has seen a version or not, and a read from inside
+   * the object still reads it after.
+   */
+  @Test
+  void aReadFromTheEndOrPastItIsTheStreamsEnd() throws IOException {
+    SupportsAtomicOperations io = newFileIO();
+    Assumptions.assumeTrue(io.readsRecordVersion(), "reads do not record their version");
+    String loc = randomLocation("read-past-end");
+    try {
+      byte[] payload = randomBytes(11, 1024);
+      createAtomically(io, loc, payload);
+      for (long offset : new long[] {payload.length, payload.length + 20, 4 * payload.length}) {
+        InputFile fresh = io.newInputFile(loc);
+        try (SeekableInputStream in = fresh.newStream()) {
+          in.seek(offset);
+          assertThat(in.read()).as("a read from " + offset + " by a fresh file").isEqualTo(-1);
+          assertThat(in.read(new byte[16], 0, 16)).isEqualTo(-1);
+          in.seek(payload.length - 4);
+          byte[] last = new byte[4];
+          fill(in, last);
+          assertThat(last)
+              .isEqualTo(Arrays.copyOfRange(payload, payload.length - 4, payload.length));
+        }
+        InputFile looked = io.newInputFile(loc);
+        assertThat(looked.getLength()).isEqualTo(payload.length);
+        try (SeekableInputStream in = looked.newStream()) {
+          in.seek(offset);
+          assertThat(in.read())
+              .as("a read from " + offset + " by a file that looked")
+              .isEqualTo(-1);
+        }
+      }
     } finally {
       cleanup(io, loc);
     }
