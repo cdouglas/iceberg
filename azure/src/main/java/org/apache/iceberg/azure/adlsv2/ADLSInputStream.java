@@ -51,6 +51,9 @@ import org.slf4j.LoggerFactory;
 class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   private static final Logger LOG = LoggerFactory.getLogger(ADLSInputStream.class);
 
+  /** HTTP 416: a read's range starts at or past the end of the file. */
+  private static final int RANGE_NOT_SATISFIABLE = 416;
+
   // max skip size, if skip is larger, then the stream will be reopened at new position
   private static final int SKIP_SIZE = 1024 * 1024;
 
@@ -112,11 +115,35 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
   }
 
   private void openStream() {
-    DataLakeFileOpenInputStreamResult result = openRange(new FileRange(pos));
+    DataLakeFileOpenInputStreamResult result;
+    try {
+      result = openRange(new FileRange(pos));
+    } catch (RuntimeException e) {
+      if (statusOf(e) != RANGE_NOT_SATISFIABLE) {
+        throw e;
+      }
+      // a read from the file's end or past it: the stream's end (SupportsAtomicOperations)
+      this.stream = InputStream.nullInputStream();
+      return;
+    }
     if (fileSize == null) {
       this.fileSize = result.getProperties().getFileSize();
     }
     this.stream = result.getInputStream();
+  }
+
+  /** The HTTP status of the service's failure {@code throwable} reports, or -1. */
+  private static int statusOf(Throwable throwable) {
+    Throwable failure =
+        throwable instanceof IOException && throwable.getCause() != null
+            ? throwable.getCause()
+            : throwable;
+    if (failure instanceof BlobStorageException blobStorageException) {
+      return blobStorageException.getStatusCode();
+    } else if (failure instanceof DataLakeStorageException dataLakeStorageException) {
+      return dataLakeStorageException.getStatusCode();
+    }
+    return -1;
   }
 
   /** The conditions that select the version this stream reads; null until it has one. */
@@ -301,8 +328,13 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
     } catch (RuntimeException e) {
       throwStaleIfSuperseded(e);
       throwNotFoundIfNotPresent(e, location);
-      LOG.error(
-          "Failed to open input stream for file {}, range {}", fileClient.getFilePath(), range, e);
+      if (statusOf(e) != RANGE_NOT_SATISFIABLE) {
+        LOG.error(
+            "Failed to open input stream for file {}, range {}",
+            fileClient.getFilePath(),
+            range,
+            e);
+      }
       throw e;
     }
   }
@@ -334,17 +366,7 @@ class ADLSInputStream extends SeekableInputStream implements RangeReadable {
    */
   private void throwStaleIfSuperseded(Throwable throwable) {
     DataLakeRequestConditions asked = version();
-    Throwable failure =
-        throwable instanceof IOException && throwable.getCause() != null
-            ? throwable.getCause()
-            : throwable;
-    int status = -1;
-    if (failure instanceof BlobStorageException blobStorageException) {
-      status = blobStorageException.getStatusCode();
-    } else if (failure instanceof DataLakeStorageException dataLakeStorageException) {
-      status = dataLakeStorageException.getStatusCode();
-    }
-    if (asked != null && asked.getIfMatch() != null && status == 412) {
+    if (asked != null && asked.getIfMatch() != null && statusOf(throwable) == 412) {
       throw new SupportsAtomicOperations.StaleReadException(
           String.format("Version %s of %s is no longer the file's", asked.getIfMatch(), location),
           throwable instanceof Exception exception ? exception : null);
