@@ -202,7 +202,11 @@ class RESTTableOperations implements TableOperations {
     return updateCurrentMetadata(
         client.get(
             path,
-            RESTUtil.merge(readQueryParams, snapshotModeToParam(snapshotMode)),
+            // only refs mode names its mode: a refresh in the default mode asks as a load did
+            // before snapshot modes, with the read parameters alone
+            snapshotMode == SnapshotMode.REFS
+                ? RESTUtil.merge(readQueryParams, snapshotModeToParam(snapshotMode))
+                : readQueryParams,
             LoadTableResponse.class,
             readHeaders,
             ErrorHandlers.tableErrorHandler()),
