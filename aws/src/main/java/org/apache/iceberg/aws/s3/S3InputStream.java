@@ -58,6 +58,9 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 class S3InputStream extends SeekableInputStream implements RangeReadable {
   private static final Logger LOG = LoggerFactory.getLogger(S3InputStream.class);
 
+  /** HTTP 416: a GET's range starts at or past the end of the object. */
+  private static final int RANGE_NOT_SATISFIABLE = 416;
+
   private static final List<Class<? extends Throwable>> RETRYABLE_EXCEPTIONS =
       ImmutableList.of(SSLException.class, SocketTimeoutException.class, SocketException.class);
 
@@ -140,7 +143,7 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
     Preconditions.checkState(!closed, "already closed");
     Preconditions.checkArgument(newPos >= 0, "position is negative: %s", newPos);
 
-    // this allows a seek beyond the end of the stream but the next read will fail
+    // this allows a seek beyond the end of the stream: a read there returns -1, as at the end
     next = newPos;
   }
 
@@ -330,6 +333,12 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
       stream = get(requestBuilder);
     } catch (NoSuchKeyException e) {
       throw new NotFoundException(e, "Location does not exist: %s", location);
+    } catch (S3Exception e) {
+      if (e.statusCode() != RANGE_NOT_SATISFIABLE) {
+        throw e;
+      }
+      // a GET from the object's end or past it: the stream's end (SupportsAtomicOperations)
+      stream = InputStream.nullInputStream();
     }
   }
 
