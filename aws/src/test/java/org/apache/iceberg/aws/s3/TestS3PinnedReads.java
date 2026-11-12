@@ -142,6 +142,55 @@ class TestS3PinnedReads {
     assertThat(puts.getValue().ifMatch()).isEqualTo("\"e1\"");
   }
 
+  /**
+   * A file whose first request is a GET from an offset to the end has seen the version it found and
+   * the object's whole length, from the response's {@code Content-Range}: one request, no HEAD.
+   */
+  @Test
+  void aFilesFirstRangedReadChoosesItsVersionAndTheObjectsLength() throws IOException {
+    serve("\"e1\"");
+    InputFile file = io.newInputFile(LOCATION);
+    byte[] rest;
+    try (SeekableInputStream in = file.newStream()) {
+      in.seek(4);
+      rest = in.readAllBytes();
+    }
+
+    assertThat(rest).isEqualTo("456789".getBytes(StandardCharsets.UTF_8));
+    assertThat(file.getLength()).isEqualTo(BYTES.length);
+    verify(s3, never()).headObject(any(HeadObjectRequest.class));
+    assertThat(gets.getValue().range()).isEqualTo("bytes=4-");
+    assertThat(gets.getValue().ifMatch()).isNull();
+    assertThat(io.readsRecordVersion()).isTrue();
+  }
+
+  /**
+   * A GET from the object's end or past it (S3 answers 416) is the stream's end, not an error; a
+   * read from inside the object after it reads the object.
+   */
+  @Test
+  void aReadFromTheEndOrPastItIsTheStreamsEnd() throws IOException {
+    when(s3.getObject(gets.capture(), any(ResponseTransformer.class)))
+        .thenAnswer(
+            call -> {
+              String range = ((GetObjectRequest) call.getArgument(0)).range();
+              long start = Long.parseLong(range.substring("bytes=".length(), range.indexOf('-')));
+              if (start >= BYTES.length) {
+                throw S3Exception.builder().statusCode(416).message("InvalidRange").build();
+              }
+              return found("\"e1\"", range);
+            });
+    InputFile file = io.newInputFile(LOCATION);
+    try (SeekableInputStream in = file.newStream()) {
+      in.seek(BYTES.length);
+      assertThat(in.read()).isEqualTo(-1);
+      in.seek(BYTES.length + 20);
+      assertThat(in.read(new byte[4], 0, 4)).isEqualTo(-1);
+      in.seek(8);
+      assertThat(in.readAllBytes()).isEqualTo("89".getBytes(StandardCharsets.UTF_8));
+    }
+  }
+
   /** A file that looked the object up reads the version the HEAD found. */
   @Test
   void aFileThatLookedReadsTheVersionTheLookupFound() throws IOException {

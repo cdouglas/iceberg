@@ -29,9 +29,14 @@ package org.apache.iceberg.io;
  * StaleReadException}, and never returns bytes of another version. A write makes a new version, an
  * append too: a read of the version before it fails as stale on a store that reads only its live
  * version (S3, ADLS and GCS ask for it by a precondition), or returns that version's bytes on one
- * that keeps them. On a store whose reads record the version (S3, ADLS), a file whose first request
- * was a read has seen the version that read found: its length is that version's, and a CAS from it
- * replaces only that version.
+ * that keeps them. On a store whose reads record the version ({@link #readsRecordVersion()}: S3,
+ * ADLS), a file whose first request was a read has seen the version that read found: its length is
+ * that version's, and a CAS from it replaces only that version.
+ *
+ * <p>On such a store a stream may also seek past the end of the object: a read there returns -1,
+ * the end of the stream, as one at the end does (S3 and ADLS answer a GET from an object's end or
+ * past it with 416, which the stream reports as its end, not as an error). So a reader that does
+ * not know the object's length reads from an offset to the end in one request.
  */
 public interface SupportsAtomicOperations extends FileIO {
   /**
@@ -71,6 +76,21 @@ public interface SupportsAtomicOperations extends FileIO {
    */
   default long maxAppendBytes(String location) {
     return 0L;
+  }
+
+  /**
+   * Whether a read through a file that has seen no version records the version it found: the file
+   * has then seen it, so its length takes no request, its later reads ask for that version, and a
+   * CAS from it replaces only that version. S3 and ADLS do (a GET's response reports the object's
+   * ETag and its length, from {@code Content-Range} for a ranged GET). So a caller that reads such
+   * a file first reads one version in one request, with no lookup before it, from an offset to the
+   * end too, and a read from the end or past it returns the stream's end. Where this is false (GCS:
+   * its client library reports no generation a read found), a file that has seen no version reads
+   * the live one at each request, and a caller that wants one version looks the file up first.
+   * Defaults to {@code false}.
+   */
+  default boolean readsRecordVersion() {
+    return false;
   }
 
   class AtomicOperationException extends RuntimeException {

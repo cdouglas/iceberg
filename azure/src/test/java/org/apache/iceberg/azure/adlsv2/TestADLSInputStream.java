@@ -30,6 +30,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.azure.core.http.HttpHeaders;
 import com.azure.core.http.HttpResponse;
 import com.azure.storage.file.datalake.DataLakeFileClient;
 import com.azure.storage.file.datalake.implementation.models.InternalDataLakeFileOpenInputStreamResult;
@@ -239,6 +240,32 @@ class TestADLSInputStream {
     // the read asks for the version the length came from, so a file replaced in between fails it
     assertThat(options.getValue().getRequestConditions().getIfMatch()).isEqualTo("e0");
     assertThat(file.conditions().getIfMatch()).isEqualTo("e0");
+  }
+
+  /**
+   * A read from the file's end or past it (the service answers 416) is the stream's end, not an
+   * error, for a stream that knows no length.
+   */
+  @Test
+  void testAReadFromTheEndOrPastItIsTheStreamsEnd() throws IOException {
+    HttpResponse response = mock(HttpResponse.class);
+    when(response.getStatusCode()).thenReturn(416);
+    when(response.getHeaders()).thenReturn(new HttpHeaders());
+    when(fileClient.openInputStream(any()))
+        .thenThrow(new DataLakeStorageException("InvalidRange", response, null));
+    try (ADLSInputStream in =
+        new ADLSInputStream(
+            "abfs://container@account.dfs.core.windows.net/path/to/file",
+            fileClient,
+            null,
+            mock(),
+            () -> null,
+            properties -> {},
+            MetricsContext.nullMetrics())) {
+      in.seek(10);
+      assertThat(in.read()).isEqualTo(EOF);
+      assertThat(in.read(new byte[4], 0, 4)).isEqualTo(EOF);
+    }
   }
 
   /**
