@@ -80,12 +80,6 @@ public class GcsFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
     return new GCSFileIO(() -> storage);
   }
 
-  /** GCS's client library reports no generation a read found: a read chooses none. */
-  @Override
-  protected boolean readsRecordTheirVersion() {
-    return false;
-  }
-
   @Override
   protected String randomLocation(String slug) {
     return String.format("gs://%s/%s/%s-%s", TEST_BUCKET, runId, slug, UUID.randomUUID());
