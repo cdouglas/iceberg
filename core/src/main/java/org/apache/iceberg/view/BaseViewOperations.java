@@ -90,7 +90,7 @@ public abstract class BaseViewOperations extends BaseMetastoreOperations impleme
   public ViewMetadata refresh() {
     boolean currentMetadataWasAvailable = currentMetadata != null;
     try {
-      doRefresh();
+      refreshPastMissingMetadata();
       if (dropped && currentMetadata == null) {
         throw new NoSuchViewException("View does not exist: %s", viewName());
       }
@@ -114,6 +114,21 @@ public abstract class BaseViewOperations extends BaseMetastoreOperations impleme
     dropped = false;
 
     return current();
+  }
+
+  /**
+   * Calls {@link #doRefresh()}, and calls it again if the metadata file the catalog named is
+   * missing. A drop that deletes the view's files can land between the catalog's read and the
+   * file's: the second read finds the view dropped, or names the file that holds it now. A file the
+   * catalog still names is missing, and the second read throws {@link NotFoundException} too.
+   */
+  private void refreshPastMissingMetadata() {
+    try {
+      doRefresh();
+    } catch (NotFoundException e) {
+      LOG.info("Metadata file of {} is missing, reading its location again", viewName(), e);
+      doRefresh();
+    }
   }
 
   @Override

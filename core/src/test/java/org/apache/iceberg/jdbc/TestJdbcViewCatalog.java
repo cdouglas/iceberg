@@ -26,6 +26,7 @@ import java.io.File;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.TableProperties;
@@ -34,6 +35,8 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.NoSuchViewException;
+import org.apache.iceberg.hadoop.HadoopFileIO;
+import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.view.BaseView;
 import org.apache.iceberg.view.ViewCatalogTests;
@@ -90,6 +93,53 @@ public class TestJdbcViewCatalog extends ViewCatalogTests<JdbcCatalog> {
   @Override
   protected boolean supportsEmptyNamespace() {
     return true;
+  }
+
+  /**
+   * A load reads the view's metadata location from the catalog, then the metadata file. A drop that
+   * lands between the two and deletes the file (gc.enabled) must be reported as the view dropped,
+   * not as a missing file.
+   */
+  @Test
+  public void testLoadRacingADropFindsTheViewDropped() {
+    AtomicReference<Runnable> beforeMetadataRead = new AtomicReference<>();
+    Map<String, String> properties = Maps.newHashMap();
+    properties.put(
+        CatalogProperties.URI,
+        "jdbc:sqlite:file::memory:?ic" + UUID.randomUUID().toString().replace("-", ""));
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, tableDir.toAbsolutePath().toString());
+    properties.put(JdbcUtil.SCHEMA_VERSION_PROPERTY, JdbcUtil.SchemaVersion.V1.name());
+    JdbcCatalog racing =
+        new JdbcCatalog(
+            props ->
+                new HadoopFileIO(new Configuration()) {
+                  @Override
+                  public InputFile newInputFile(String path) {
+                    if (path.endsWith(".metadata.json")) {
+                      Runnable before = beforeMetadataRead.getAndSet(null);
+                      if (before != null) {
+                        before.run();
+                      }
+                    }
+                    return super.newInputFile(path);
+                  }
+                },
+            null,
+            true);
+    racing.setConf(new Configuration());
+    racing.initialize("racing", properties);
+    TableIdentifier identifier = TableIdentifier.of("namespace1", "view");
+    racing.createNamespace(identifier.namespace());
+    racing
+        .buildView(identifier)
+        .withQuery("spark", "select * from tbl")
+        .withSchema(SCHEMA)
+        .withDefaultNamespace(identifier.namespace())
+        .create();
+
+    beforeMetadataRead.set(() -> racing.dropView(identifier));
+    assertThatThrownBy(() -> racing.loadView(identifier)).isInstanceOf(NoSuchViewException.class);
+    assertThat(beforeMetadataRead.get()).isNull();
   }
 
   @Test

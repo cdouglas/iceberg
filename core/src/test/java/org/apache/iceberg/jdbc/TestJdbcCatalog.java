@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.apache.hadoop.conf.Configuration;
@@ -65,7 +66,9 @@ import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.hadoop.HadoopFileIO;
 import org.apache.iceberg.hadoop.Util;
+import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -609,6 +612,95 @@ public class TestJdbcCatalog extends CatalogTests<JdbcCatalog> {
         .isInstanceOf(NoSuchTableException.class);
     assertThatThrownBy(() -> table.newAppend().commit()).isInstanceOf(NoSuchTableException.class);
     assertThat(catalog.tableExists(tableIdentifier)).isFalse();
+  }
+
+  /**
+   * A load reads the table's metadata location from the catalog, then the metadata file. A drop
+   * with purge, or a commit that deletes old metadata files, that lands between the two deletes the
+   * file: the load must report what the catalog holds now, not a missing file.
+   */
+  @Test
+  public void testLoadRacingADropWithPurgeFindsTheTableDropped() {
+    AtomicReference<Runnable> beforeMetadataRead = new AtomicReference<>();
+    JdbcCatalog racing = catalogReadingMetadataAfter(beforeMetadataRead);
+    TableIdentifier tableIdentifier = TableIdentifier.of("db", "table");
+    racing.createTable(tableIdentifier, SCHEMA, PartitionSpec.unpartitioned());
+
+    beforeMetadataRead.set(() -> racing.dropTable(tableIdentifier, true));
+    assertThatThrownBy(() -> racing.loadTable(tableIdentifier))
+        .isInstanceOf(NoSuchTableException.class);
+    assertThat(beforeMetadataRead.get()).isNull();
+  }
+
+  @Test
+  public void testRefreshRacingADropWithPurgeFindsTheTableDropped() {
+    AtomicReference<Runnable> beforeMetadataRead = new AtomicReference<>();
+    JdbcCatalog racing = catalogReadingMetadataAfter(beforeMetadataRead);
+    TableIdentifier tableIdentifier = TableIdentifier.of("db", "table");
+    racing.createTable(tableIdentifier, SCHEMA, PartitionSpec.unpartitioned());
+    Table table = racing.loadTable(tableIdentifier);
+    racing.loadTable(tableIdentifier).updateProperties().set("k", "v").commit();
+
+    beforeMetadataRead.set(() -> racing.dropTable(tableIdentifier, true));
+    assertThatThrownBy(table::refresh).isInstanceOf(NoSuchTableException.class);
+    assertThat(beforeMetadataRead.get()).isNull();
+  }
+
+  @Test
+  public void testLoadRacingCommitsThatDeleteItsMetadataFileFindsTheNewOne() {
+    AtomicReference<Runnable> beforeMetadataRead = new AtomicReference<>();
+    JdbcCatalog racing = catalogReadingMetadataAfter(beforeMetadataRead);
+    TableIdentifier tableIdentifier = TableIdentifier.of("db", "table");
+    racing.createTable(
+        tableIdentifier,
+        SCHEMA,
+        PartitionSpec.unpartitioned(),
+        ImmutableMap.of(
+            TableProperties.METADATA_DELETE_AFTER_COMMIT_ENABLED, "true",
+            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX, "1"));
+
+    // the second commit deletes the metadata file the load read from the catalog
+    beforeMetadataRead.set(
+        () -> {
+          racing.loadTable(tableIdentifier).updateProperties().set("k", "1").commit();
+          racing.loadTable(tableIdentifier).updateProperties().set("k", "2").commit();
+        });
+    Table table = racing.loadTable(tableIdentifier);
+    assertThat(beforeMetadataRead.get()).isNull();
+    assertThat(table.properties()).containsEntry("k", "2");
+  }
+
+  /**
+   * A catalog whose FileIO runs what {@code beforeMetadataRead} holds before reading a metadata
+   * file.
+   */
+  private JdbcCatalog catalogReadingMetadataAfter(AtomicReference<Runnable> beforeMetadataRead) {
+    Map<String, String> properties = Maps.newHashMap();
+    properties.put(
+        CatalogProperties.URI,
+        "jdbc:sqlite:file::memory:?ic" + UUID.randomUUID().toString().replace("-", ""));
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, this.tableDir.toAbsolutePath().toString());
+    JdbcCatalog jdbcCatalog =
+        new JdbcCatalog(
+            props ->
+                new HadoopFileIO(conf) {
+                  @Override
+                  public InputFile newInputFile(String path) {
+                    if (path.endsWith(".metadata.json")) {
+                      Runnable before = beforeMetadataRead.getAndSet(null);
+                      if (before != null) {
+                        before.run();
+                      }
+                    }
+                    return super.newInputFile(path);
+                  }
+                },
+            null,
+            true);
+    jdbcCatalog.setConf(conf);
+    jdbcCatalog.initialize("racing", properties);
+    jdbcCatalog.createNamespace(Namespace.of("db"));
+    return jdbcCatalog;
   }
 
   /**

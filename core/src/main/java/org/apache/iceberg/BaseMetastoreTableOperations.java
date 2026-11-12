@@ -90,7 +90,7 @@ public abstract class BaseMetastoreTableOperations extends BaseMetastoreOperatio
   public TableMetadata refresh() {
     boolean currentMetadataWasAvailable = currentMetadata != null;
     try {
-      doRefresh();
+      refreshPastMissingMetadata();
       if (dropped && currentMetadata == null) {
         throw new NoSuchTableException("Table does not exist: %s", tableName());
       }
@@ -112,6 +112,22 @@ public abstract class BaseMetastoreTableOperations extends BaseMetastoreOperatio
     }
     dropped = false;
     return current();
+  }
+
+  /**
+   * Calls {@link #doRefresh()}, and calls it again if the metadata file the catalog named is
+   * missing. A drop with purge, or a commit that deletes old metadata files, can land between the
+   * catalog's read and the file's and delete the file: the second read finds the table dropped, or
+   * names the file that holds it now. A file the catalog still names is missing, and the second
+   * read throws {@link NotFoundException} too.
+   */
+  private void refreshPastMissingMetadata() {
+    try {
+      doRefresh();
+    } catch (NotFoundException e) {
+      LOG.info("Metadata file of {} is missing, reading its location again", tableName(), e);
+      doRefresh();
+    }
   }
 
   protected void doRefresh() {
