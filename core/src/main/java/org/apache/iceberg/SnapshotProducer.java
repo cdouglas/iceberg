@@ -581,13 +581,20 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
                   Snapshot newSnapshot = apply();
                   newSnapshotId.set(newSnapshot.snapshotId());
                   TableMetadata.Builder update = TableMetadata.buildFrom(base);
-                  // a snapshot with the id this producer generated is always new; only a snapshot
-                  // returned by apply() with another id can be an existing snapshot, in which case
-                  // looking it up may load all snapshots when they are loaded lazily
+                  // a snapshot with the id this producer generated is new unless this producer
+                  // committed it already (commit() called again): then it is among the loaded
+                  // snapshots when it is a ref's head, or when the table was loaded with all its
+                  // snapshots since, and an unloaded one is left to the catalog's commit, as a
+                  // collision is. A snapshot apply() returned with another id is looked up wherever
+                  // it is, which may load all snapshots when they are loaded lazily
                   Long producedSnapshotId = snapshotId;
                   boolean isProducedSnapshot =
                       producedSnapshotId != null && producedSnapshotId == newSnapshot.snapshotId();
-                  if (!isProducedSnapshot && base.snapshot(newSnapshot.snapshotId()) != null) {
+                  Snapshot existing =
+                      isProducedSnapshot
+                          ? base.snapshotIfKnown(newSnapshot.snapshotId())
+                          : base.snapshot(newSnapshot.snapshotId());
+                  if (existing != null) {
                     // this is a rollback operation
                     update.setBranchSnapshot(newSnapshot.snapshotId(), targetBranch);
                   } else {
