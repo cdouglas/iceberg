@@ -182,6 +182,18 @@ public class S3FileIO
     return S3OutputFile.fromLocation(path, clientForStoragePath(path), metrics);
   }
 
+  /**
+   * A GET's response reports the object's ETag and its length ({@code Content-Range}), which {@link
+   * S3InputStream} gives its file. The analytics accelerator's streams do not: with it on, reads
+   * record nothing.
+   */
+  @Override
+  public boolean readsRecordVersion() {
+    return !clientForStoragePath(ROOT_PREFIX)
+        .s3FileIOProperties()
+        .isS3AnalyticsAcceleratorEnabled();
+  }
+
   @Override
   public void deleteFile(String path) {
     PrefixedS3Client client = clientForStoragePath(path);
