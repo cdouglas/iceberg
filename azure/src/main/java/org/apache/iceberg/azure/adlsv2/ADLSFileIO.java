@@ -120,6 +120,14 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
     return ADLSOutputFile.appendBlob(fileClient(location)).getMaxAppendBlockBytes();
   }
 
+  /**
+   * A read's response reports the file's ETag and its length, which ADLSInputStream gives its file.
+   */
+  @Override
+  public boolean readsRecordVersion() {
+    return true;
+  }
+
   @Override
   public AtomicOutputFile newOutputFile(InputFile replace) {
     final String path = replace.location();
