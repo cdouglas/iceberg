@@ -101,10 +101,10 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       if (!tableCommits.isEmpty()) {
         // TODO: remove this cast once commitTransaction(..) is defined at the Catalog level
         // validateSerializableIsolation checked the read tables before the commit; the catalog
-        // checks them again as the commit takes effect, against the versions read here. The
-        // transaction also conflicts on the whole version of each table it writes, as it first
-        // read it, under either isolation level: a change since, even to a property or another
-        // branch, fails the commit.
+        // checks them again as the commit takes effect, against the versions read here. Each table
+        // the transaction writes goes with the version it first read (a null ref), on which its
+        // updates were staged, so a catalog can judge them where they land: by their requirements,
+        // or by whether a retry of them would commit the same.
         final Map<TableRef, TableMetadata> reads =
             IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()
                 ? Maps.newHashMap(initiallyReadTableMetadataByRef)

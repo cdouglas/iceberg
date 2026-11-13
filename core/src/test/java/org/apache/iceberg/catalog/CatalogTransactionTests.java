@@ -92,10 +92,23 @@ public abstract class CatalogTransactionTests<
 
   /**
    * Whether a transaction conflicts on any change to a table it writes since it first read the
-   * table, rather than only on the changes its commit's requirements name.
+   * table (a catalog that judges commits by the table's whole version), rather than only on the
+   * changes that conflict with its own: those its commit's requirements name, or those after which
+   * a retry of its updates would not commit the same. The cases that expect a failure whatever this
+   * says race a real conflict, which every catalog must reject.
    */
   protected boolean conflictsOnTableVersions() {
     return false;
+  }
+
+  /**
+   * Whether a transaction that changes a table's refs, schema or partition specs conflicts on any
+   * change to the table since it first read it, as Iceberg's own table commits of those changes do,
+   * rather than only on changes its commit's requirements name. True wherever {@link
+   * #conflictsOnTableVersions()} is.
+   */
+  protected boolean conflictsOnTableVersionsForCommitOnceUpdates() {
+    return conflictsOnTableVersions();
   }
 
   @Test
@@ -348,9 +361,10 @@ public abstract class CatalogTransactionTests<
                 "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.c' after it was read");
         break;
       case SNAPSHOT:
+        // the TX deletes FILE_A, which the change outside it added: a retry of the delete would
+        // remove it, so the TX cannot commit as staged
         assertThatThrownBy(catalogTransaction::commitTransaction)
-            .isInstanceOf(CommitFailedException.class)
-            .hasMessageContaining("Requirement failed: branch main was created concurrently");
+            .isInstanceOf(CommitFailedException.class);
         break;
     }
 
@@ -464,9 +478,9 @@ public abstract class CatalogTransactionTests<
     assertThat(Iterables.size(txCatalog.loadTable(identifier).newScan().planFiles())).isEqualTo(1);
     catalog().loadTable(identifier).newDelete().deleteFile(FILE_A).commit();
 
-    // the TX writes the version of the table it read: committing it would undo the delete, or
-    // apply the append to a version the TX never read
-    txCatalog.loadTable(identifier).newFastAppend().appendFile(FILE_B).commit();
+    // the TX rewrites a file the change outside it deleted: a real conflict, which a retry of the
+    // rewrite would fail too, under either isolation level
+    txCatalog.loadTable(identifier).newRewrite().deleteFile(FILE_A).addFile(FILE_B).commit();
     assertThatThrownBy(catalogTransaction::commitTransaction)
         .isInstanceOfAny(CommitFailedException.class, ValidationException.class);
 
@@ -751,8 +765,8 @@ public abstract class CatalogTransactionTests<
 
     table.newFastAppend().appendFile(FILE_B).appendFile(FILE_C).toBranch(branchA).commit();
 
-    if (conflictsOnTableVersions()) {
-      // the commit to branch A changed the table the transaction writes
+    if (conflictsOnTableVersionsForCommitOnceUpdates()) {
+      // the commit to branch A changed the table whose branch B the transaction creates
       assertThatThrownBy(catalogTransaction::commitTransaction)
           .isInstanceOf(CommitFailedException.class);
       assertThat(catalog().loadTable(identifier).refs()).doesNotContainKey(branchB);
