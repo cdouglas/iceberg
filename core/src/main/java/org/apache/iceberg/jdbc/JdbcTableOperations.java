@@ -178,6 +178,30 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
     }
   }
 
+  /**
+   * Writes {@code metadata}, a catalog transaction's change of this table staged on {@code base},
+   * to a new metadata file numbered after {@code base}'s, as a commit on {@code base} numbers its
+   * file, without reading the table ({@link JdbcCatalog#commitTransaction}). The table's row is not
+   * changed.
+   */
+  String writeTransactionMetadata(TableMetadata base, TableMetadata metadata) {
+    return writeNewMetadata(metadata, metadataVersion(base.metadataFileLocation()) + 1);
+  }
+
+  /** The version a metadata file's name starts with, or -1 if it has none. */
+  private static int metadataVersion(String metadataLocation) {
+    int versionStart = metadataLocation.lastIndexOf('/') + 1;
+    int versionEnd = metadataLocation.indexOf('-', versionStart);
+    if (versionEnd < 0) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(metadataLocation.substring(versionStart, versionEnd));
+    } catch (NumberFormatException e) {
+      return -1;
+    }
+  }
+
   private void updateTable(
       String newMetadataLocation, String oldMetadataLocation, TableMetadata metadata)
       throws SQLException, InterruptedException {

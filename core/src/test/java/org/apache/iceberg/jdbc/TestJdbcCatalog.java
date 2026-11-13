@@ -46,6 +46,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.BaseTransaction;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.DataFile;
@@ -60,8 +61,10 @@ import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.Transaction;
 import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.TableCommit;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
@@ -674,6 +677,73 @@ public class TestJdbcCatalog extends CatalogTests<JdbcCatalog> {
    * A catalog whose FileIO runs what {@code beforeMetadataRead} holds before reading a metadata
    * file.
    */
+  /** Each table's changes staged in a transaction of its own, as a multi-table one stages them. */
+  private Map<TableIdentifier, BaseTransaction> stagedAppends(
+      JdbcCatalog jdbcCatalog, DataFile file, TableIdentifier... tables) {
+    Map<TableIdentifier, BaseTransaction> staged = Maps.newLinkedHashMap();
+    for (TableIdentifier table : tables) {
+      BaseTransaction txn = (BaseTransaction) jdbcCatalog.loadTable(table).newTransaction();
+      txn.newFastAppend().appendFile(file).commit();
+      staged.put(table, txn);
+    }
+    return staged;
+  }
+
+  private static void commitTogether(
+      JdbcCatalog jdbcCatalog, Map<TableIdentifier, BaseTransaction> staged) {
+    Map<TableIdentifier, TableMetadata> reads = Maps.newHashMap();
+    List<TableCommit> commits = Lists.newArrayList();
+    staged.forEach(
+        (table, txn) -> {
+          reads.put(table, txn.startMetadata());
+          commits.add(TableCommit.create(table, txn.startMetadata(), txn.currentMetadata()));
+        });
+    jdbcCatalog.commitTransaction(reads, commits);
+  }
+
+  @Test
+  public void commitTransactionCommitsEveryTableTogether() {
+    TableIdentifier one = TableIdentifier.of("db", "one");
+    TableIdentifier two = TableIdentifier.of("db", "two");
+    catalog.createTable(one, SCHEMA);
+    catalog.createTable(two, SCHEMA).newFastAppend().appendFile(FILE_A).commit();
+
+    commitTogether(catalog, stagedAppends(catalog, FILE_B, one, two));
+
+    assertThat(catalog.loadTable(one).newScan().planFiles()).hasSize(1);
+    assertThat(catalog.loadTable(two).newScan().planFiles()).hasSize(2);
+    assertThat(catalog.loadTable(two).currentSnapshot().summary())
+        .containsEntry("added-data-files", "1");
+  }
+
+  /**
+   * A table that changed since the transaction read it fails the whole transaction: no table
+   * commits, and the metadata files it wrote are deleted.
+   */
+  @Test
+  public void commitTransactionFailsWhole() {
+    TableIdentifier one = TableIdentifier.of("db", "one");
+    TableIdentifier two = TableIdentifier.of("db", "two");
+    catalog.createTable(one, SCHEMA);
+    catalog.createTable(two, SCHEMA);
+    String oneLocation =
+        ((BaseTable) catalog.loadTable(one)).operations().current().metadataFileLocation();
+    Map<TableIdentifier, BaseTransaction> staged = stagedAppends(catalog, FILE_B, one, two);
+
+    // another writer changes the second table, which no requirement of an append would name
+    catalog.loadTable(two).updateProperties().set("k", "v").commit();
+
+    assertThatThrownBy(() -> commitTogether(catalog, staged))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Cannot commit transaction: table db.two changed since the transaction read it");
+    assertThat(((BaseTable) catalog.loadTable(one)).operations().current().metadataFileLocation())
+        .isEqualTo(oneLocation);
+    assertThat(catalog.loadTable(one).currentSnapshot()).isNull();
+    assertThat(catalog.loadTable(two).currentSnapshot()).isNull();
+    assertThat(catalog.loadTable(two).properties()).containsEntry("k", "v");
+  }
+
   private JdbcCatalog catalogReadingMetadataAfter(AtomicReference<Runnable> beforeMetadataRead) {
     Map<String, String> properties = Maps.newHashMap();
     properties.put(
