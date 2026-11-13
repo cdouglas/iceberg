@@ -26,6 +26,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.SortedMap;
 import org.apache.iceberg.BaseMetastoreTableOperations;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -576,6 +577,71 @@ final class JdbcUtil {
         tableIdentifier,
         newMetadataLocation,
         oldMetadataLocation);
+  }
+
+  /**
+   * Moves each table of {@code locations} from its metadata location as read (an entry's key) to
+   * its new one (its value), with the conditional UPDATE a table's commit runs, all in one database
+   * transaction: all of them, or none if any table no longer has the location it was read at.
+   * Tables are updated in the order of their names, so that two such transactions take their rows'
+   * locks in the same order. Returns the first table whose UPDATE matched no row, or null if the
+   * transaction committed.
+   */
+  static TableIdentifier updateTables(
+      SchemaVersion schemaVersion,
+      JdbcClientPool connections,
+      String catalogName,
+      SortedMap<TableIdentifier, Map.Entry<String, String>> locations)
+      throws SQLException, InterruptedException {
+    return connections.run(
+        conn -> {
+          boolean autoCommit = conn.getAutoCommit();
+          conn.setAutoCommit(false);
+          try {
+            TableIdentifier missed = null;
+            try (PreparedStatement sql =
+                conn.prepareStatement(
+                    schemaVersion == SchemaVersion.V1
+                        ? V1_DO_COMMIT_TABLE_SQL
+                        : V0_DO_COMMIT_SQL)) {
+              for (Map.Entry<TableIdentifier, Map.Entry<String, String>> table :
+                  locations.entrySet()) {
+                TableIdentifier identifier = table.getKey();
+                // UPDATE
+                sql.setString(1, table.getValue().getValue());
+                sql.setString(2, table.getValue().getKey());
+                // WHERE
+                sql.setString(3, catalogName);
+                sql.setString(4, namespaceToString(identifier.namespace()));
+                sql.setString(5, identifier.name());
+                sql.setString(6, table.getValue().getKey());
+                if (sql.executeUpdate() != 1) {
+                  missed = identifier;
+                  break;
+                }
+              }
+            }
+            if (missed == null) {
+              conn.commit();
+            } else {
+              conn.rollback();
+            }
+            return missed;
+          } catch (SQLException e) {
+            try {
+              conn.rollback();
+            } catch (SQLException rollback) {
+              e.addSuppressed(rollback);
+            }
+            throw e;
+          } finally {
+            try {
+              conn.setAutoCommit(autoCommit);
+            } catch (SQLException ignored) {
+              // a broken connection: the pool discards it
+            }
+          }
+        });
   }
 
   static int updateView(
