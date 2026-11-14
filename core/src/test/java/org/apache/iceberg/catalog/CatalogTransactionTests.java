@@ -29,6 +29,8 @@ import java.util.List;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
+import org.apache.iceberg.GenericStatisticsFile;
+import org.apache.iceberg.ImmutableGenericPartitionStatisticsFile;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
@@ -377,6 +379,54 @@ public abstract class CatalogTransactionTests<
     assertThat(((BaseTable) one).operations().refresh().currentSnapshot()).isNull();
     assertThat(((BaseTable) two).operations().refresh().currentSnapshot()).isNull();
     assertThat(((BaseTable) three).operations().refresh().currentSnapshot()).isEqualTo(snapshot);
+  }
+
+  /**
+   * A transaction's statistics and partition statistics commit with it, as its other updates do:
+   * nothing it staged is in the table until it commits.
+   */
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void statisticsCommitWithTheTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    TableIdentifier identifier = TableIdentifier.of("ns", "statistics-in-tx");
+    catalog().createNamespace(identifier.namespace());
+    catalog().createTable(identifier, SCHEMA, SPEC);
+    catalog().loadTable(identifier).newFastAppend().appendFile(FILE_A).commit();
+    TableMetadata base = ((BaseTable) catalog().loadTable(identifier)).operations().current();
+    long snapshotId = base.currentSnapshot().snapshotId();
+
+    CatalogTransaction catalogTx = catalog().createTransaction(isolationLevel);
+    Table txTable = catalogTx.asCatalog().loadTable(identifier);
+    txTable
+        .updatePartitionStatistics()
+        .setPartitionStatistics(
+            ImmutableGenericPartitionStatisticsFile.builder()
+                .snapshotId(snapshotId)
+                .path(metadataDir.resolve("partition-stats.parquet").toString())
+                .fileSizeInBytes(42L)
+                .build())
+        .commit();
+    txTable
+        .updateStatistics()
+        .setStatistics(
+            new GenericStatisticsFile(
+                snapshotId, metadataDir.resolve("stats.puffin").toString(), 42L, 0L, List.of()))
+        .commit();
+
+    TableMetadata before = ((BaseTable) catalog().loadTable(identifier)).operations().current();
+    assertThat(before.metadataFileLocation()).isEqualTo(base.metadataFileLocation());
+    assertThat(before.partitionStatisticsFiles()).isEmpty();
+    assertThat(before.statisticsFiles()).isEmpty();
+
+    catalogTx.commitTransaction();
+
+    Table committed = catalog().loadTable(identifier);
+    assertThat(committed.partitionStatisticsFiles())
+        .singleElement()
+        .satisfies(file -> assertThat(file.snapshotId()).isEqualTo(snapshotId));
+    assertThat(committed.statisticsFiles())
+        .singleElement()
+        .satisfies(file -> assertThat(file.snapshotId()).isEqualTo(snapshotId));
   }
 
   @ParameterizedTest

@@ -46,6 +46,7 @@ import org.apache.iceberg.Transaction;
 import org.apache.iceberg.Transactions;
 import org.apache.iceberg.UpdateLocation;
 import org.apache.iceberg.UpdatePartitionSpec;
+import org.apache.iceberg.UpdatePartitionStatistics;
 import org.apache.iceberg.UpdateProperties;
 import org.apache.iceberg.UpdateSchema;
 import org.apache.iceberg.UpdateStatistics;
@@ -387,6 +388,11 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     @Override
     public UpdateStatistics updateStatistics() {
       return txForTable(identifier, table).updateStatistics();
+    }
+
+    @Override
+    public UpdatePartitionStatistics updatePartitionStatistics() {
+      return txForTable(identifier, table).updatePartitionStatistics();
     }
 
     @Override
