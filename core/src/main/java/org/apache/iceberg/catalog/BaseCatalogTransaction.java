@@ -729,9 +729,11 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     }
 
     @Override
-    public CloseableIterable<FileScanTask> doPlanFiles() {
+    public CloseableIterable<FileScanTask> planFiles() {
+      // before planning: a scan of a branch with no snapshot plans nothing, and read that it had
+      // none
       recordRead();
-      return super.doPlanFiles();
+      return super.planFiles();
     }
 
     /**
@@ -749,13 +751,16 @@ public class BaseCatalogTransaction implements CatalogTransaction {
         return;
       }
 
-      reads.add(
+      TableRead read =
           TableRead.scan(
               entry.startName,
               entry.base,
               ref != null ? ref : SnapshotRef.MAIN_BRANCH,
               filter(),
-              isCaseSensitive()));
+              isCaseSensitive());
+      if (!reads.contains(read)) {
+        reads.add(read);
+      }
     }
   }
 }
