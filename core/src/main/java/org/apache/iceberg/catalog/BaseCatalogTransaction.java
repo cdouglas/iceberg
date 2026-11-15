@@ -1,0 +1,448 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.iceberg.catalog;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import javax.annotation.Nullable;
+import org.apache.iceberg.AppendFiles;
+import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.BaseTransaction;
+import org.apache.iceberg.DataTableScan;
+import org.apache.iceberg.DeleteFiles;
+import org.apache.iceberg.ExpireSnapshots;
+import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.ManageSnapshots;
+import org.apache.iceberg.OverwriteFiles;
+import org.apache.iceberg.ReplacePartitions;
+import org.apache.iceberg.ReplaceSortOrder;
+import org.apache.iceberg.RewriteFiles;
+import org.apache.iceberg.RewriteManifests;
+import org.apache.iceberg.RowDelta;
+import org.apache.iceberg.SnapshotRef;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableOperations;
+import org.apache.iceberg.TableScan;
+import org.apache.iceberg.Transaction;
+import org.apache.iceberg.Transactions;
+import org.apache.iceberg.UpdateLocation;
+import org.apache.iceberg.UpdatePartitionSpec;
+import org.apache.iceberg.UpdatePartitionStatistics;
+import org.apache.iceberg.UpdateProperties;
+import org.apache.iceberg.UpdateSchema;
+import org.apache.iceberg.UpdateStatistics;
+import org.apache.iceberg.exceptions.CommitStateUnknownException;
+import org.apache.iceberg.exceptions.ValidationException;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.immutables.value.Value;
+
+public class BaseCatalogTransaction implements CatalogTransaction {
+  private final Map<TableIdentifier, Transaction> txByTable;
+  private final Map<TableRef, TableMetadata> initiallyReadTableMetadataByRef;
+  private final Map<TableIdentifier, Table> initiallyReadTables;
+  private final IsolationLevel isolationLevel;
+  private final Catalog origin;
+  private boolean hasCommitted = false;
+
+  public BaseCatalogTransaction(Catalog origin, IsolationLevel isolationLevel) {
+    Preconditions.checkArgument(null != origin, "Invalid origin catalog: null");
+    Preconditions.checkArgument(null != isolationLevel, "Invalid isolation level: null");
+    Preconditions.checkArgument(
+        origin instanceof SupportsCatalogTransactions,
+        "Origin catalog does not support catalog transactions");
+    this.origin = origin;
+    this.isolationLevel = isolationLevel;
+    this.txByTable = Maps.newHashMap();
+    this.initiallyReadTableMetadataByRef = Maps.newHashMap();
+    this.initiallyReadTables = Maps.newHashMap();
+  }
+
+  @Override
+  public void commitTransaction() {
+    Preconditions.checkState(!hasCommitted, "Transaction has already committed changes");
+
+    try {
+      // write skew is not possible in read-only transactions, so only perform that check if there
+      // were any pending updates
+      validateSerializableIsolation();
+
+      List<TableCommit> tableCommits =
+          txByTable.entrySet().stream()
+              .filter(e -> e.getValue() instanceof BaseTransaction)
+              .map(
+                  e ->
+                      TableCommit.create(
+                          e.getKey(),
+                          ((BaseTransaction) e.getValue()).startMetadata(),
+                          ((BaseTransaction) e.getValue()).currentMetadata()))
+              .collect(Collectors.toList());
+
+      // TODO: should this be retryable?
+      // only commit if there were change
+      if (!tableCommits.isEmpty()) {
+        // TODO: remove this cast once commitTransaction(..) is defined at the Catalog level
+        // validateSerializableIsolation checked the read tables before the commit; the catalog
+        // checks them again as the commit takes effect, against the versions read here. Each table
+        // the transaction writes goes with the version it first read (a null ref), on which its
+        // updates were staged, so a catalog can judge them where they land: by their requirements,
+        // or by whether a retry of them would commit the same.
+        final Map<TableRef, TableMetadata> reads =
+            IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()
+                ? Maps.newHashMap(initiallyReadTableMetadataByRef)
+                : Maps.newHashMap();
+        txByTable.forEach(
+            (identifier, tx) -> {
+              if (tx instanceof BaseTransaction
+                  && !((BaseTransaction) tx).currentMetadata().changes().isEmpty()) {
+                reads.put(
+                    ImmutableTableRef.builder().identifier(identifier).build(),
+                    ((BaseTransaction) tx).startMetadata());
+              }
+            });
+        ((SupportsCatalogTransactions) origin).commitTransaction(reads, tableCommits);
+      }
+
+      // TODO: we should probably be refreshing metadata from all affected tables after the TX
+      // committed (alternatively to this approach we could load each affected table from the origin
+      // catalog
+      //      txByTable.values().stream()
+      //          .filter(tx -> tx instanceof BaseTransaction)
+      //          .map(tx -> (BaseTransaction) tx)
+      //          .forEach(tx -> tx.underlyingOps().refresh());
+
+      hasCommitted = true;
+    } catch (CommitStateUnknownException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      rollback();
+      throw e;
+    }
+  }
+
+  private boolean hasUpdates() {
+    return txByTable.values().stream()
+        .filter(tx -> tx instanceof BaseTransaction)
+        .map(tx -> (BaseTransaction) tx)
+        .anyMatch(tx -> !tx.currentMetadata().changes().isEmpty());
+  }
+
+  /**
+   * With SERIALIZABLE isolation we mainly need to check that write skew is not possible. Write skew
+   * happens due to a transaction taking action based on an outdated premise (a fact that was true
+   * when a table was initially loaded but then changed due to a concurrent update to the table
+   * while this TX was in-progress). When this TX wants to commit, the original premise might not
+   * hold anymore, thus we need to check whether the {@link org.apache.iceberg.Snapshot} a branch
+   * was pointing to changed after it was initially read inside this TX. If no information of a
+   * branch's snapshot is available, we check whether {@link TableMetadata} changed after it was
+   * initially read.
+   */
+  protected void validateSerializableIsolation() {
+    if (IsolationLevel.SERIALIZABLE == isolationLevel() && hasUpdates()) {
+      for (TableRef readTable : initiallyReadTableMetadataByRef.keySet()) {
+        // check all read tables to determine whether they changed outside the catalog
+        // TX after they were initially read on a particular branch
+        BaseTable table = (BaseTable) origin.loadTable(readTable.identifier());
+        TableMetadata read = initiallyReadTableMetadataByRef.get(readTable);
+        TableMetadata current = table.operations().current();
+        if (!unchangedSinceRead(readTable.ref(), read, current)) {
+          if (read.ref(readTable.ref()) != null && current.ref(readTable.ref()) != null) {
+            throw new ValidationException(
+                "%s isolation violation: Found table metadata updates to table '%s' after it was read on branch '%s'",
+                isolationLevel(), readTable.identifier().toString(), readTable.ref());
+          }
+          throw new ValidationException(
+              "%s isolation violation: Found table metadata updates to table '%s' after it was read",
+              isolationLevel(), readTable.identifier());
+        }
+      }
+    }
+  }
+
+  /**
+   * Whether branch {@code ref} of a table is as a serializable transaction read it: it points to
+   * the snapshot it did then or, if it pointed to none then or points to none now, the table's
+   * metadata has not changed. A change to another branch does not count. With a null {@code ref},
+   * whether the table's metadata has not changed at all, as for a table the transaction writes.
+   * {@code current} is null if the table no longer exists.
+   */
+  public static boolean unchangedSinceRead(String ref, TableMetadata read, TableMetadata current) {
+    if (current == null || !java.util.Objects.equals(current.uuid(), read.uuid())) {
+      return false;
+    }
+    if (ref == null) {
+      return current.metadataFileLocation().equals(read.metadataFileLocation());
+    }
+    SnapshotRef now = current.ref(ref);
+    SnapshotRef then = read.ref(ref);
+    if (now != null && then != null) {
+      return now.snapshotId() == then.snapshotId();
+    }
+    return current.metadataFileLocation().equals(read.metadataFileLocation());
+  }
+
+  private void rollback() {
+    txByTable.clear();
+    initiallyReadTableMetadataByRef.clear();
+    initiallyReadTables.clear();
+  }
+
+  @Override
+  public Catalog asCatalog() {
+    return new AsTransactionalCatalog();
+  }
+
+  @Override
+  public IsolationLevel isolationLevel() {
+    return isolationLevel;
+  }
+
+  private Optional<Table> txTable(TableIdentifier identifier) {
+    if (txByTable.containsKey(identifier)) {
+      return Optional.ofNullable(txByTable.get(identifier).table());
+    }
+
+    return Optional.empty();
+  }
+
+  /** We need to keep track of the tables that we read inside the TX to prevent read skew */
+  private Optional<Table> initiallyReadTable(TableIdentifier identifier) {
+    if (initiallyReadTables.containsKey(identifier)) {
+      return Optional.ofNullable(initiallyReadTables.get(identifier));
+    }
+
+    return Optional.empty();
+  }
+
+  /**
+   * We're using a {@link Transaction} per table so that we can keep track of pending changes for a
+   * particular table. A table is known by the identifier {@link AsTransactionalCatalog#loadTable}
+   * loaded it by: its name joins the catalog's name to that identifier, and cannot be split back
+   * into the two.
+   */
+  private Transaction txForTable(TableIdentifier identifier, Table table) {
+    // Start from the table as this transaction read it, not as it is now: a change since then is
+    // a conflict, which the commit's requirements catch.
+    TableOperations ops = ((HasTableOperations) table).operations();
+    return txByTable.computeIfAbsent(
+        identifier, k -> Transactions.newTransaction(table.name(), ops, ops.current()));
+  }
+
+  public class AsTransactionalCatalog implements Catalog {
+    @Override
+    public Table loadTable(TableIdentifier identifier) {
+      Table table =
+          BaseCatalogTransaction.this
+              .txTable(identifier)
+              .orElseGet(
+                  () ->
+                      initiallyReadTable(identifier)
+                          .orElseGet(
+                              () -> {
+                                Table loadTable = origin.loadTable(identifier);
+
+                                initiallyReadTables.computeIfAbsent(identifier, ident -> loadTable);
+
+                                // remember the very first version of table metadata that was read
+                                if (IsolationLevel.SERIALIZABLE == isolationLevel()) {
+                                  initiallyReadTableMetadataByRef.computeIfAbsent(
+                                      ImmutableTableRef.builder()
+                                          .identifier(identifier)
+                                          .ref(SnapshotRef.MAIN_BRANCH)
+                                          .build(),
+                                      ident -> opsFromTable(loadTable).current());
+                                }
+
+                                return loadTable;
+                              }));
+
+      return new TransactionalTable(identifier, table, opsFromTable(table));
+    }
+
+    @Override
+    public List<TableIdentifier> listTables(Namespace namespace) {
+      return origin.listTables(namespace);
+    }
+
+    @Override
+    public boolean dropTable(TableIdentifier identifier, boolean purge) {
+      return origin.dropTable(identifier, purge);
+    }
+
+    @Override
+    public void renameTable(TableIdentifier from, TableIdentifier to) {
+      origin.renameTable(from, to);
+    }
+  }
+
+  private static TableOperations opsFromTable(Table table) {
+    return table instanceof BaseTransaction.TransactionTable
+        ? ((BaseTransaction.TransactionTable) table).operations()
+        : ((BaseTable) table).operations();
+  }
+
+  private class TransactionalTable extends BaseTable {
+    private final TableIdentifier identifier;
+    private final Table table;
+
+    private TransactionalTable(TableIdentifier identifier, Table table, TableOperations ops) {
+      super(ops, table.name());
+      this.identifier = identifier;
+      this.table = table;
+    }
+
+    @Override
+    public TableScan newScan() {
+      TableScan tableScan = super.newScan();
+      if (tableScan instanceof DataTableScan) {
+        return new TransactionalTableScan(identifier, (DataTableScan) tableScan);
+      }
+
+      return tableScan;
+    }
+
+    @Override
+    public UpdateSchema updateSchema() {
+      return txForTable(identifier, table).updateSchema();
+    }
+
+    @Override
+    public UpdatePartitionSpec updateSpec() {
+      return txForTable(identifier, table).updateSpec();
+    }
+
+    @Override
+    public UpdateProperties updateProperties() {
+      return txForTable(identifier, table).updateProperties();
+    }
+
+    @Override
+    public ReplaceSortOrder replaceSortOrder() {
+      return txForTable(identifier, table).replaceSortOrder();
+    }
+
+    @Override
+    public UpdateLocation updateLocation() {
+      return txForTable(identifier, table).updateLocation();
+    }
+
+    @Override
+    public AppendFiles newAppend() {
+      return txForTable(identifier, table).newAppend();
+    }
+
+    @Override
+    public AppendFiles newFastAppend() {
+      return txForTable(identifier, table).newFastAppend();
+    }
+
+    @Override
+    public RewriteFiles newRewrite() {
+      return txForTable(identifier, table).newRewrite();
+    }
+
+    @Override
+    public RewriteManifests rewriteManifests() {
+      return txForTable(identifier, table).rewriteManifests();
+    }
+
+    @Override
+    public OverwriteFiles newOverwrite() {
+      return txForTable(identifier, table).newOverwrite();
+    }
+
+    @Override
+    public RowDelta newRowDelta() {
+      return txForTable(identifier, table).newRowDelta();
+    }
+
+    @Override
+    public ReplacePartitions newReplacePartitions() {
+      return txForTable(identifier, table).newReplacePartitions();
+    }
+
+    @Override
+    public DeleteFiles newDelete() {
+      return txForTable(identifier, table).newDelete();
+    }
+
+    @Override
+    public UpdateStatistics updateStatistics() {
+      return txForTable(identifier, table).updateStatistics();
+    }
+
+    @Override
+    public UpdatePartitionStatistics updatePartitionStatistics() {
+      return txForTable(identifier, table).updatePartitionStatistics();
+    }
+
+    @Override
+    public ExpireSnapshots expireSnapshots() {
+      return txForTable(identifier, table).expireSnapshots();
+    }
+
+    @Override
+    public ManageSnapshots manageSnapshots() {
+      return txForTable(identifier, table).manageSnapshots();
+    }
+  }
+
+  private class TransactionalTableScan extends DataTableScan {
+    private final TableIdentifier identifier;
+
+    protected TransactionalTableScan(TableIdentifier identifier, DataTableScan delegate) {
+      super(delegate.table(), delegate.schema(), delegate.context());
+      this.identifier = identifier;
+    }
+
+    @Override
+    public TableScan useRef(String name) {
+      DataTableScan tableScan = (DataTableScan) super.useRef(name);
+
+      if (IsolationLevel.SERIALIZABLE == isolationLevel()) {
+        // store which version of the table on the given branch we read the first time
+        initiallyReadTableMetadataByRef.computeIfAbsent(
+            ImmutableTableRef.builder().identifier(identifier).ref(name).build(),
+            ident -> opsFromTable(table()).current());
+      }
+
+      return tableScan;
+    }
+  }
+
+  /**
+   * A branch or tag of a table, as a serializable transaction read it, or, with a null ref, the
+   * whole table, as a transaction that writes it first read it.
+   */
+  @Value.Immutable
+  public interface TableRef {
+    TableIdentifier identifier();
+
+    @Nullable
+    String ref();
+
+    @Value.Lazy
+    default String name() {
+      return ref() != null ? identifier().toString() + "@" + ref() : identifier().toString();
+    }
+  }
+}
