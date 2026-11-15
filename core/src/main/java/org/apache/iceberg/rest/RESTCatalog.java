@@ -28,11 +28,15 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.Transaction;
+import org.apache.iceberg.catalog.BaseCatalogTransaction;
 import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.CatalogTransaction;
 import org.apache.iceberg.catalog.LoadContext;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SessionCatalog;
+import org.apache.iceberg.catalog.SupportsCatalogTransactions;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableCommit;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -46,7 +50,12 @@ import org.apache.iceberg.view.View;
 import org.apache.iceberg.view.ViewBuilder;
 
 public class RESTCatalog
-    implements Catalog, ViewCatalog, SupportsNamespaces, Configurable<Object>, Closeable {
+    implements Catalog,
+        ViewCatalog,
+        SupportsNamespaces,
+        Configurable<Object>,
+        Closeable,
+        SupportsCatalogTransactions {
   private final RESTSessionCatalog sessionCatalog;
   private final Catalog delegate;
   private final SupportsNamespaces nsDelegate;
@@ -298,13 +307,30 @@ public class RESTCatalog
     sessionCatalog.close();
   }
 
+  @Override
   public void commitTransaction(List<TableCommit> commits) {
     sessionCatalog.commitTransaction(context, commits);
   }
 
+  @Override
   public void commitTransaction(TableCommit... commits) {
     sessionCatalog.commitTransaction(
         context, ImmutableList.<TableCommit>builder().add(commits).build());
+  }
+
+  /**
+   * Commits the table commits atomically. The REST protocol carries no reads, so the server checks
+   * only each table commit's requirements.
+   */
+  @Override
+  public void commitTransaction(
+      Map<BaseCatalogTransaction.TableRef, TableMetadata> ignored, List<TableCommit> commits) {
+    sessionCatalog.commitTransaction(context, commits);
+  }
+
+  @Override
+  public CatalogTransaction createTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    return new BaseCatalogTransaction(this, isolationLevel);
   }
 
   @Override
