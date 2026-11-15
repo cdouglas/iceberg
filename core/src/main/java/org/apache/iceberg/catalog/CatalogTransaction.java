@@ -42,20 +42,13 @@ public interface CatalogTransaction {
     SNAPSHOT,
 
     /**
-     * All reads that are being made will see the last committed values that existed when the table
-     * was loaded first inside the catalog transaction. Subsequent changes to a table that happened
-     * outside the catalog transaction after the table was read will not be seen to prevent <b>read
-     * skew</b>.<br>
-     * <br>
-     * All tables participating in the transaction must be in the same state when committing
-     * compared to when the table was loaded first within the catalog transaction.<br>
-     * <br>
-     *
-     * <p>Note that a <b>write skew anomaly</b> is not possible under SERIALIZABLE isolation, where
-     * two transactions (T1 and T2) concurrently read an overlapping data set (e.g. values V1 and
-     * V2), concurrently make disjoint updates (e.g. T1 updates V1, T2 updates V2). This is because
-     * under SERIALIZABLE isolation either T1 or T2 would have to occur first and be visible to the
-     * other transaction.
+     * As {@link #SNAPSHOT}, and everything the transaction read must read the same where its commit
+     * takes effect, which is then a serial order for the whole transaction: so a <b>write skew
+     * anomaly</b> is not possible. What a transaction reads is what it scanned (the rows of a
+     * branch or tag under the scan's filter, as of the snapshot it named when the transaction first
+     * read the table) and what it declared ({@link CatalogTransaction#declareRead}); loading a
+     * table or listing a namespace reads nothing. A read-only transaction's commit checks its reads
+     * and writes nothing. See {@link TableRead}.
      */
     SERIALIZABLE;
   }
@@ -74,6 +67,17 @@ public interface CatalogTransaction {
    *     this API are participating in this catalog transaction.
    */
   Catalog asCatalog();
+
+  /**
+   * Makes a {@link IsolationLevel#SERIALIZABLE} transaction depend on the whole version of a table
+   * as it first read it, as for a decision made on the table's schema, properties or snapshots
+   * without scanning it: the commit fails if the table changed at all. Does nothing under {@link
+   * IsolationLevel#SNAPSHOT}.
+   *
+   * @param identifier the table, by its name in this transaction
+   * @throws org.apache.iceberg.exceptions.NoSuchTableException if there is no such table
+   */
+  void declareRead(TableIdentifier identifier);
 
   /**
    * Returns the current {@link IsolationLevel} for this transaction.
