@@ -22,6 +22,7 @@ import static org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel.SERIA
 import static org.apache.iceberg.types.Types.NestedField.required;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -38,9 +39,15 @@ import org.apache.iceberg.SnapshotSummary;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TestCatalogUtil;
+import org.apache.iceberg.Transaction;
+import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
+import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.exceptions.ValidationException;
+import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
@@ -113,6 +120,42 @@ public abstract class CatalogTransactionTests<
     return conflictsOnTableVersions();
   }
 
+  /** Whether the catalog commits SERIALIZABLE transactions (REST's protocol carries no reads). */
+  protected boolean supportsSerializable() {
+    return true;
+  }
+
+  /**
+   * Whether the catalog commits a transaction's table creates, drops and renames and its namespace
+   * changes (REST's protocol commits only table updates).
+   */
+  protected boolean supportsCatalogChanges() {
+    return true;
+  }
+
+  /**
+   * Whether a scan read is judged by the ref it read, so a change that leaves the ref alone (a
+   * property change) does not fail it, rather than by the table's whole version.
+   */
+  protected boolean judgesScanReadsByRef() {
+    return false;
+  }
+
+  /**
+   * Whether a scan read is judged by its filter, so an append of rows outside it does not fail it.
+   */
+  protected boolean judgesScanReadsByFilter() {
+    return false;
+  }
+
+  /** A transaction of {@code isolationLevel}, or a skipped test if the catalog lacks it. */
+  protected CatalogTransaction begin(CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(isolationLevel == SERIALIZABLE && !supportsSerializable())
+        .as("the catalog commits %s transactions", isolationLevel)
+        .isFalse();
+    return catalog().createTransaction(isolationLevel);
+  }
+
   @Test
   public void testNulls() {
     assertThatThrownBy(() -> new BaseCatalogTransaction(null, null))
@@ -136,7 +179,7 @@ public abstract class CatalogTransactionTests<
   @ParameterizedTest
   @EnumSource(CatalogTransaction.IsolationLevel.class)
   public void multipleCommits(CatalogTransaction.IsolationLevel isolationLevel) {
-    CatalogTransaction catalogTx = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTx = begin(isolationLevel);
     catalogTx.commitTransaction();
     assertThatThrownBy(catalogTx::commitTransaction)
         .isInstanceOf(IllegalStateException.class)
@@ -160,7 +203,7 @@ public abstract class CatalogTransactionTests<
     Table one = catalog().loadTable(identifier);
     TableMetadata base = ((BaseTable) one).operations().current();
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
     txCatalog.loadTable(identifier).newAppend().appendFile(FILE_A).appendFile(FILE_B).commit();
 
@@ -198,7 +241,7 @@ public abstract class CatalogTransactionTests<
     TableMetadata baseMetadataTwo = ((BaseTable) two).operations().current();
     TableMetadata baseMetadataThree = ((BaseTable) three).operations().current();
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
 
     txCatalog.loadTable(first).newFastAppend().appendFile(FILE_A).appendFile(FILE_B).commit();
@@ -262,7 +305,7 @@ public abstract class CatalogTransactionTests<
     TableMetadata baseMetadataTwo = ((BaseTable) two).operations().current();
     TableMetadata baseMetadataThree = ((BaseTable) three).operations().current();
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
     txCatalog.loadTable(first).newAppend().appendFile(FILE_A).appendFile(FILE_B).commit();
     assertThat(baseMetadataOne).isSameAs(((BaseTable) one).operations().refresh());
@@ -286,19 +329,10 @@ public abstract class CatalogTransactionTests<
     assertThat(baseMetadataThree).isNotSameAs(((BaseTable) three).operations().refresh());
     assertThat(((BaseTable) three).operations().refresh().schema().findField("data")).isNull();
 
-    switch (isolationLevel) {
-      case SERIALIZABLE:
-        assertThatThrownBy(catalogTransaction::commitTransaction)
-            .isInstanceOf(ValidationException.class)
-            .hasMessageContaining(
-                "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.c' after it was read");
-        break;
-      case SNAPSHOT:
-        assertThatThrownBy(catalogTransaction::commitTransaction)
-            .isInstanceOf(CommitFailedException.class)
-            .hasMessageContaining("Requirement failed: current schema changed: expected id 0 != 1");
-        break;
-    }
+    // a load is not a read: under either isolation level the TX fails on its own schema update
+    assertThatThrownBy(catalogTransaction::commitTransaction)
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessageContaining("Requirement failed: current schema changed: expected id 0 != 1");
 
     assertThat(baseMetadataOne).isSameAs(((BaseTable) one).operations().refresh());
     assertThat(baseMetadataTwo).isSameAs(((BaseTable) two).operations().refresh());
@@ -330,7 +364,7 @@ public abstract class CatalogTransactionTests<
     TableMetadata baseMetadataTwo = ((BaseTable) two).operations().current();
     TableMetadata baseMetadataThree = ((BaseTable) three).operations().current();
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
     txCatalog.loadTable(first).newAppend().appendFile(FILE_A).appendFile(FILE_B).commit();
     assertThat(baseMetadataOne).isSameAs(((BaseTable) one).operations().refresh());
@@ -355,20 +389,10 @@ public abstract class CatalogTransactionTests<
     assertThat(baseMetadataTwo).isSameAs(((BaseTable) two).operations().refresh());
     assertThat(baseMetadataThree).isNotSameAs(((BaseTable) three).operations().refresh());
 
-    switch (isolationLevel) {
-      case SERIALIZABLE:
-        assertThatThrownBy(catalogTransaction::commitTransaction)
-            .isInstanceOf(ValidationException.class)
-            .hasMessageContaining(
-                "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.c' after it was read");
-        break;
-      case SNAPSHOT:
-        // the TX deletes FILE_A, which the change outside it added: a retry of the delete would
-        // remove it, so the TX cannot commit as staged
-        assertThatThrownBy(catalogTransaction::commitTransaction)
-            .isInstanceOf(CommitFailedException.class);
-        break;
-    }
+    // the TX deletes FILE_A, which the change outside it added: a retry of the delete would
+    // remove it, so the TX cannot commit as staged, under either isolation level
+    assertThatThrownBy(catalogTransaction::commitTransaction)
+        .isInstanceOf(CommitFailedException.class);
 
     // the third update in the catalog TX fails, so we need to make sure that all changes from the
     // catalog TX are rolled back
@@ -395,7 +419,7 @@ public abstract class CatalogTransactionTests<
     TableMetadata base = ((BaseTable) catalog().loadTable(identifier)).operations().current();
     long snapshotId = base.currentSnapshot().snapshotId();
 
-    CatalogTransaction catalogTx = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTx = begin(isolationLevel);
     Table txTable = catalogTx.asCatalog().loadTable(identifier);
     txTable
         .updatePartitionStatistics()
@@ -439,7 +463,7 @@ public abstract class CatalogTransactionTests<
     catalog().createTable(identifier, SCHEMA);
     assertThat(catalog().tableExists(identifier)).isTrue();
 
-    CatalogTransaction catalogTx = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTx = begin(isolationLevel);
     Catalog txCatalog = catalogTx.asCatalog();
 
     String column = "new_col";
@@ -476,7 +500,7 @@ public abstract class CatalogTransactionTests<
     TableIdentifier second = TableIdentifier.of("ns", "b");
     Table two = catalog().loadTable(second);
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
     txCatalog.loadTable(first).newAppend().appendFile(FILE_A).appendFile(FILE_D).commit();
     assertThat(Iterables.size(txCatalog.loadTable(first).newScan().planFiles())).isEqualTo(2);
@@ -484,7 +508,7 @@ public abstract class CatalogTransactionTests<
 
     two.newFastAppend().appendFile(FILE_B).appendFile(FILE_C).appendFile(FILE_D).commit();
 
-    // this should not be allowed with SERIALIZABLE after the table has been already read
+    // this should not be allowed with SERIALIZABLE after the table has been already scanned
     // within the catalog TX, but is allowed with SNAPSHOT
     // catalog TX should still the version of the table it initially read (with 0 files)
     assertThat(Iterables.size(txCatalog.loadTable(second).newScan().planFiles())).isEqualTo(0);
@@ -492,9 +516,7 @@ public abstract class CatalogTransactionTests<
     switch (isolationLevel) {
       case SERIALIZABLE:
         assertThatThrownBy(catalogTransaction::commitTransaction)
-            .isInstanceOf(ValidationException.class)
-            .hasMessage(
-                "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.b' after it was read");
+            .isInstanceOf(CommitFailedException.class);
 
         assertThat(Iterables.size(catalog().loadTable(first).newScan().planFiles())).isEqualTo(0);
         assertThat(Iterables.size(catalog().loadTable(second).newScan().planFiles())).isEqualTo(3);
@@ -522,7 +544,7 @@ public abstract class CatalogTransactionTests<
         .appendFile(FILE_A)
         .commit();
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
     // the TX reads the table, which then changes outside it
     assertThat(Iterables.size(txCatalog.loadTable(identifier).newScan().planFiles())).isEqualTo(1);
@@ -546,7 +568,7 @@ public abstract class CatalogTransactionTests<
     catalog().buildTable(identifier, SCHEMA).withPartitionSpec(SPEC).create();
     catalog().loadTable(identifier).newFastAppend().appendFile(FILE_A).commit();
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
     txCatalog.loadTable(identifier).newFastAppend().appendFile(FILE_B).commit();
 
@@ -575,7 +597,7 @@ public abstract class CatalogTransactionTests<
     catalog().createTable(identifier, SCHEMA);
     Table one = catalog().loadTable(identifier);
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
 
     // perform updates outside catalog TX but before table has been read inside the catalog TX
@@ -600,7 +622,7 @@ public abstract class CatalogTransactionTests<
   }
 
   @Test
-  public void readOnlyTxWithSerializableShouldNotFail() {
+  public void readOnlyTxWithSerializableFailsWhenItsReadsChanged() {
     catalog().createNamespace(Namespace.of("ns"));
 
     for (String tbl : Arrays.asList("a", "b")) {
@@ -612,7 +634,7 @@ public abstract class CatalogTransactionTests<
     Table one = catalog().loadTable(first);
     Table two = catalog().loadTable(second);
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(SERIALIZABLE);
+    CatalogTransaction catalogTransaction = begin(SERIALIZABLE);
     Catalog txCatalog = catalogTransaction.asCatalog();
 
     assertThat(Iterables.size(txCatalog.loadTable(first).newScan().planFiles())).isEqualTo(0);
@@ -626,15 +648,17 @@ public abstract class CatalogTransactionTests<
     assertThat(Iterables.size(txCatalog.loadTable(first).newScan().planFiles())).isEqualTo(0);
     assertThat(Iterables.size(txCatalog.loadTable(second).newScan().planFiles())).isEqualTo(0);
 
-    // this ends up being a read-only TX, thus no write skew can happen, and it shouldn't fail
-    catalogTransaction.commitTransaction();
+    // a read-only TX is checked at its commit too: the tables it read at different times need not
+    // have been the same at any one moment
+    assertThatThrownBy(catalogTransaction::commitTransaction)
+        .isInstanceOf(CommitFailedException.class);
 
     assertThat(Iterables.size(catalog().loadTable(first).newScan().planFiles())).isEqualTo(2);
     assertThat(Iterables.size(catalog().loadTable(second).newScan().planFiles())).isEqualTo(3);
   }
 
   @Test
-  public void readOnlyTxWithSerializableOnBranchShouldNotFail() {
+  public void readOnlyTxWithSerializableOnBranchFailsWhenItsReadsChanged() {
     catalog().createNamespace(Namespace.of("ns"));
 
     String branch = "branch";
@@ -649,7 +673,7 @@ public abstract class CatalogTransactionTests<
     Table one = catalog().loadTable(first);
     Table two = catalog().loadTable(second);
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(SERIALIZABLE);
+    CatalogTransaction catalogTransaction = begin(SERIALIZABLE);
     Catalog txCatalog = catalogTransaction.asCatalog();
 
     assertThat(Iterables.size(txCatalog.loadTable(first).newScan().useRef(branch).planFiles()))
@@ -672,8 +696,8 @@ public abstract class CatalogTransactionTests<
     assertThat(Iterables.size(txCatalog.loadTable(second).newScan().useRef(branch).planFiles()))
         .isEqualTo(1);
 
-    // this ends up being a read-only TX, thus no write skew can happen, and it shouldn't fail
-    catalogTransaction.commitTransaction();
+    assertThatThrownBy(catalogTransaction::commitTransaction)
+        .isInstanceOf(CommitFailedException.class);
 
     assertThat(Iterables.size(catalog().loadTable(first).newScan().useRef(branch).planFiles()))
         .isEqualTo(3);
@@ -693,7 +717,7 @@ public abstract class CatalogTransactionTests<
     one.newFastAppend().appendFile(FILE_A).commit();
     one.manageSnapshots().createBranch(branch, one.currentSnapshot().snapshotId()).commit();
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
 
     // perform updates outside catalog TX but before table has been read inside the catalog TX
@@ -743,7 +767,7 @@ public abstract class CatalogTransactionTests<
     TableIdentifier second = TableIdentifier.of("ns", "b");
     Table two = catalog().loadTable(second);
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
 
     txCatalog.loadTable(first).newAppend().appendFile(FILE_D).toBranch(branch).commit();
@@ -762,10 +786,10 @@ public abstract class CatalogTransactionTests<
 
     switch (isolationLevel) {
       case SERIALIZABLE:
+        // the TX scanned branch of ns.b, which changed since; its own append to branch of ns.a,
+        // which it also scanned, is not a conflict
         assertThatThrownBy(catalogTransaction::commitTransaction)
-            .isInstanceOf(ValidationException.class)
-            .hasMessage(
-                "SERIALIZABLE isolation violation: Found table metadata updates to table 'ns.a' after it was read on branch 'branch'");
+            .isInstanceOf(CommitFailedException.class);
 
         assertThat(Iterables.size(catalog().loadTable(first).newScan().useRef(branch).planFiles()))
             .isEqualTo(1);
@@ -804,7 +828,7 @@ public abstract class CatalogTransactionTests<
     table.newFastAppend().appendFile(FILE_A).commit();
     table.manageSnapshots().createBranch(branchA, table.currentSnapshot().snapshotId()).commit();
 
-    CatalogTransaction catalogTransaction = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTransaction = begin(isolationLevel);
     Catalog txCatalog = catalogTransaction.asCatalog();
     txCatalog
         .loadTable(identifier)
@@ -859,7 +883,7 @@ public abstract class CatalogTransactionTests<
       catalog().createTable(identifier, SCHEMA, SPEC);
     }
 
-    CatalogTransaction catalogTx = catalog().createTransaction(isolationLevel);
+    CatalogTransaction catalogTx = begin(isolationLevel);
     Catalog txCatalog = catalogTx.asCatalog();
     for (int i = 0; i < identifiers.size(); i++) {
       txCatalog.loadTable(identifiers.get(i)).newFastAppend().appendFile(files.get(i)).commit();
@@ -878,5 +902,395 @@ public abstract class CatalogTransactionTests<
           .extracting(DataFile::location)
           .containsExactly(files.get(i).location());
     }
+  }
+
+  /** Tables ns.a and ns.b, partitioned by identity on id, each with a file in partition id=1. */
+  private void createIdentityTables() {
+    catalog().createNamespace(Namespace.of("ns"));
+    for (String tbl : Arrays.asList("a", "b")) {
+      catalog()
+          .buildTable(TableIdentifier.of("ns", tbl), SCHEMA)
+          .withPartitionSpec(ID_SPEC)
+          .create()
+          .newFastAppend()
+          .appendFile(idFile(tbl + "-1", 1))
+          .commit();
+    }
+  }
+
+  private static final PartitionSpec ID_SPEC =
+      PartitionSpec.builderFor(SCHEMA).identity("id").build();
+
+  private static DataFile idFile(String name, int id) {
+    return DataFiles.builder(ID_SPEC)
+        .withPath("/path/to/data-" + name + ".parquet")
+        .withFileSizeInBytes(10)
+        .withPartitionPath("id=" + id)
+        .withRecordCount(1)
+        .build();
+  }
+
+  private static final TableIdentifier A = TableIdentifier.of("ns", "a");
+  private static final TableIdentifier B = TableIdentifier.of("ns", "b");
+
+  private int snapshots(TableIdentifier identifier) {
+    return Iterables.size(catalog().loadTable(identifier).snapshots());
+  }
+
+  @Test
+  public void aLoadIsNotARead() {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    // the TX loads ns.b and looks at it, but scans nothing of it
+    assertThat(txCatalog.loadTable(B).currentSnapshot()).isNotNull();
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 1)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  @Test
+  public void aScanOfAFixedSnapshotIsNotARead() {
+    createIdentityTables();
+    long first = catalog().loadTable(B).currentSnapshot().snapshotId();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.loadTable(B).newScan().useSnapshot(first).planFiles()).hasSize(1);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 1)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  @Test
+  public void aScanReadFailsOnRowsItRead() {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.loadTable(B).newScan().filter(Expressions.equal("id", 1)).planFiles())
+        .hasSize(1);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // rows the TX's scan would have read
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 1)).commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @Test
+  public void aScanReadOfOtherRows() {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.loadTable(B).newScan().filter(Expressions.equal("id", 1)).planFiles())
+        .hasSize(1);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // rows outside the TX's scan
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 2)).commit();
+
+    if (judgesScanReadsByFilter()) {
+      catalogTx.commitTransaction();
+      assertThat(snapshots(A)).isEqualTo(2);
+    } else {
+      assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+      assertThat(snapshots(A)).isEqualTo(1);
+    }
+  }
+
+  @Test
+  public void aScanReadAndAChangeThatLeavesItsRefAlone() {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.loadTable(B).newScan().planFiles()).hasSize(1);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalog().loadTable(B).updateProperties().set("k", "v").commit();
+
+    if (judgesScanReadsByRef()) {
+      catalogTx.commitTransaction();
+      assertThat(snapshots(A)).isEqualTo(2);
+    } else {
+      assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+      assertThat(snapshots(A)).isEqualTo(1);
+    }
+  }
+
+  @Test
+  public void aDeclaredReadFailsOnAnyChange() {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    catalogTx.declareRead(B);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalog().loadTable(B).updateProperties().set("k", "v").commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @Test
+  public void aScanOfTheTransactionsOwnWritesIsNotAConflict() {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 1)).commit();
+    assertThat(txCatalog.loadTable(A).newScan().planFiles()).hasSize(2);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-3", 2)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(3);
+  }
+
+  @Test
+  public void readOnlyTxWithSerializableCommitsWhenItsReadsHold() {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.loadTable(A).newScan().planFiles()).hasSize(1);
+    assertThat(txCatalog.loadTable(B).newScan().planFiles()).hasSize(1);
+
+    catalogTx.commitTransaction();
+  }
+
+  /**
+   * Commits {@code catalogTx}, which makes catalog changes: or, where the catalog does not commit
+   * them, checks that it refuses and changes nothing. Returns whether it committed.
+   */
+  private boolean commitCatalogChanges(CatalogTransaction catalogTx) {
+    if (supportsCatalogChanges()) {
+      catalogTx.commitTransaction();
+      return true;
+    }
+
+    assertThatThrownBy(catalogTx::commitTransaction)
+        .isInstanceOf(UnsupportedOperationException.class);
+    return false;
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aDropCommitsWithTheTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+    assertThat(txCatalog.dropTable(B, false)).isTrue();
+
+    // the TX sees the drop; the catalog does not until the TX commits
+    assertThatThrownBy(() -> txCatalog.loadTable(B)).isInstanceOf(NoSuchTableException.class);
+    assertThat(txCatalog.tableExists(B)).isFalse();
+    assertThat(txCatalog.listTables(Namespace.of("ns"))).containsExactly(A);
+    assertThat(txCatalog.dropTable(B, false)).isFalse();
+    assertThat(catalog().tableExists(B)).isTrue();
+
+    if (commitCatalogChanges(catalogTx)) {
+      assertThat(catalog().tableExists(B)).isFalse();
+      assertThat(snapshots(A)).isEqualTo(2);
+    } else {
+      assertThat(catalog().tableExists(B)).isTrue();
+      assertThat(snapshots(A)).isEqualTo(1);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aTransactionThatFailsDropsNothing(CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    DataFile first = idFile("a-1", 1);
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.dropTable(B, true)).isTrue();
+    // a real conflict: the TX rewrites a file a change outside it deletes
+    txCatalog.loadTable(A).newRewrite().deleteFile(first).addFile(idFile("a-2", 1)).commit();
+    catalog().loadTable(A).newDelete().deleteFile(first).commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    // neither dropped nor purged
+    assertThat(catalog().loadTable(B).newScan().planFiles()).hasSize(1);
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aRenameCommitsWithTheTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    createIdentityTables();
+    TableIdentifier renamed = TableIdentifier.of("ns", "c");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+    txCatalog.renameTable(A, renamed);
+    assertThatThrownBy(() -> txCatalog.renameTable(B, renamed))
+        .isInstanceOf(AlreadyExistsException.class);
+
+    // the TX sees the table under its new name only, with what it staged
+    assertThatThrownBy(() -> txCatalog.loadTable(A)).isInstanceOf(NoSuchTableException.class);
+    assertThat(txCatalog.loadTable(renamed).newScan().planFiles()).hasSize(2);
+    assertThat(txCatalog.listTables(Namespace.of("ns"))).containsExactlyInAnyOrder(B, renamed);
+    txCatalog.loadTable(renamed).newFastAppend().appendFile(idFile("a-3", 3)).commit();
+    assertThat(catalog().tableExists(renamed)).isFalse();
+
+    if (commitCatalogChanges(catalogTx)) {
+      assertThat(catalog().tableExists(A)).isFalse();
+      assertThat(snapshots(renamed)).isEqualTo(3);
+    } else {
+      assertThat(catalog().tableExists(renamed)).isFalse();
+      assertThat(snapshots(A)).isEqualTo(1);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aCreateCommitsWithTheTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    createIdentityTables();
+    Namespace namespace = Namespace.of("created");
+    TableIdentifier created = TableIdentifier.of(namespace, "t");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    SupportsNamespaces txNamespaces = (SupportsNamespaces) txCatalog;
+    txNamespaces.createNamespace(namespace, ImmutableMap.of("owner", "tx"));
+    Table table = txCatalog.buildTable(created, SCHEMA).withPartitionSpec(ID_SPEC).create();
+    table.newFastAppend().appendFile(idFile("t-1", 1)).commit();
+    txCatalog.loadTable(created).newFastAppend().appendFile(idFile("t-2", 2)).commit();
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    assertThat(txNamespaces.namespaceExists(namespace)).isTrue();
+    assertThat(txNamespaces.loadNamespaceMetadata(namespace)).containsEntry("owner", "tx");
+    assertThat(txCatalog.listTables(namespace)).containsExactly(created);
+    assertThat(txCatalog.loadTable(created).newScan().planFiles()).hasSize(2);
+    assertThat(catalog().namespaceExists(namespace)).isFalse();
+
+    if (commitCatalogChanges(catalogTx)) {
+      assertThat(catalog().loadNamespaceMetadata(namespace)).containsEntry("owner", "tx");
+      assertThat(catalog().loadTable(created).newScan().planFiles()).hasSize(2);
+      assertThat(snapshots(A)).isEqualTo(2);
+    } else {
+      assertThat(catalog().namespaceExists(namespace)).isFalse();
+      assertThat(snapshots(A)).isEqualTo(1);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void namespaceChangesCommitWithTheTransaction(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    createIdentityTables();
+    Namespace empty = Namespace.of("empty");
+    catalog().createNamespace(empty);
+    catalog().setProperties(Namespace.of("ns"), ImmutableMap.of("a", "1", "b", "2"));
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    SupportsNamespaces txNamespaces = (SupportsNamespaces) catalogTx.asCatalog();
+    txNamespaces.setProperties(Namespace.of("ns"), ImmutableMap.of("c", "3"));
+    txNamespaces.removeProperties(Namespace.of("ns"), ImmutableSet.of("a"));
+    assertThatThrownBy(() -> txNamespaces.dropNamespace(Namespace.of("ns")))
+        .isInstanceOf(NamespaceNotEmptyException.class);
+    assertThat(txNamespaces.dropNamespace(empty)).isTrue();
+
+    assertThat(txNamespaces.loadNamespaceMetadata(Namespace.of("ns")))
+        .containsEntry("b", "2")
+        .containsEntry("c", "3")
+        .doesNotContainKey("a");
+    assertThat(txNamespaces.namespaceExists(empty)).isFalse();
+    assertThat(catalog().namespaceExists(empty)).isTrue();
+
+    if (commitCatalogChanges(catalogTx)) {
+      assertThat(catalog().loadNamespaceMetadata(Namespace.of("ns")))
+          .containsEntry("b", "2")
+          .containsEntry("c", "3")
+          .doesNotContainKey("a");
+      assertThat(catalog().namespaceExists(empty)).isFalse();
+    } else {
+      assertThat(catalog().loadNamespaceMetadata(Namespace.of("ns"))).containsEntry("a", "1");
+      assertThat(catalog().namespaceExists(empty)).isTrue();
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aCreateFailsWhereTheTableAppearedSince(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    TableIdentifier created = TableIdentifier.of("ns", "c");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    txCatalog.createTable(created, SCHEMA, ID_SPEC);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalog()
+        .createTable(created, SCHEMA, ID_SPEC)
+        .newFastAppend()
+        .appendFile(idFile("c", 1))
+        .commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction)
+        .isInstanceOfAny(CommitFailedException.class, AlreadyExistsException.class);
+    assertThat(snapshots(created)).isEqualTo(1);
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aDropFailsWhereTheTableWasReplacedSince(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.dropTable(B, false)).isTrue();
+
+    // another table now has the name the TX dropped
+    catalog().dropTable(B, false);
+    catalog().createTable(B, SCHEMA, ID_SPEC);
+
+    assertThatThrownBy(catalogTx::commitTransaction)
+        .isInstanceOfAny(CommitFailedException.class, NoSuchTableException.class);
+    assertThat(catalog().tableExists(B)).isTrue();
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aRenameFailsWhereItsTargetAppearedSince(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    TableIdentifier renamed = TableIdentifier.of("ns", "c");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    catalogTx.asCatalog().renameTable(A, renamed);
+
+    catalog().createTable(renamed, SCHEMA, ID_SPEC);
+
+    assertThatThrownBy(catalogTx::commitTransaction)
+        .isInstanceOfAny(CommitFailedException.class, AlreadyExistsException.class);
+    assertThat(catalog().tableExists(A)).isTrue();
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aTablesOwnTransactionStagesIntoTheCatalogTransaction(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+
+    Transaction committed = txCatalog.loadTable(A).newTransaction();
+    committed.newFastAppend().appendFile(idFile("a-2", 2)).commit();
+    committed.commitTransaction();
+    // a table transaction never committed changes nothing
+    Transaction abandoned = txCatalog.loadTable(A).newTransaction();
+    abandoned.newFastAppend().appendFile(idFile("a-3", 3)).commit();
+    assertThat(snapshots(A)).isEqualTo(1);
+    assertThat(txCatalog.loadTable(A).newScan().planFiles()).hasSize(2);
+
+    catalogTx.commitTransaction();
+    assertThat(catalog().loadTable(A).newScan().planFiles()).hasSize(2);
   }
 }
