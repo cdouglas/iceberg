@@ -30,13 +30,10 @@ import java.sql.SQLTimeoutException;
 import java.sql.SQLTransientConnectionException;
 import java.util.AbstractMap;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.SortedMap;
-import java.util.TreeMap;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -48,8 +45,17 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.Transaction;
+import org.apache.iceberg.UpdateRequirement;
+import org.apache.iceberg.catalog.BaseCatalogTransaction;
+import org.apache.iceberg.catalog.CatalogCommit;
+import org.apache.iceberg.catalog.CatalogTransaction;
+import org.apache.iceberg.catalog.ImmutableCatalogCommit;
+import org.apache.iceberg.catalog.ImmutableTableChange;
 import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.NamespaceChange;
+import org.apache.iceberg.catalog.SupportsCatalogTransactions;
 import org.apache.iceberg.catalog.SupportsNamespaces;
+import org.apache.iceberg.catalog.TableChange;
 import org.apache.iceberg.catalog.TableCommit;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -70,6 +76,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Strings;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.LocationUtil;
 import org.apache.iceberg.util.PropertyUtil;
 import org.apache.iceberg.view.BaseMetastoreViewCatalog;
@@ -79,7 +86,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class JdbcCatalog extends BaseMetastoreViewCatalog
-    implements Configurable<Object>, SupportsNamespaces {
+    implements Configurable<Object>, SupportsNamespaces, SupportsCatalogTransactions {
 
   public static final String PROPERTY_PREFIX = "jdbc.";
   private static final String NAMESPACE_EXISTS_PROPERTY = "exists";
@@ -283,111 +290,304 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
     }
   }
 
+  /** Creates a catalog transaction of either isolation level ({@link BaseCatalogTransaction}). */
+  @Override
+  public CatalogTransaction createTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    return new BaseCatalogTransaction(this, isolationLevel);
+  }
+
   /**
-   * Commits several tables' changes together, as one multi-table transaction: {@code reads} gives
-   * each table's metadata as the transaction read it, and each of {@code commits} the updates it
-   * staged on that version. Each table's new metadata file is written first; then one database
-   * transaction moves every table's metadata location from the one the transaction read to the new
-   * one, each with the conditional UPDATE a table's commit runs. All of them commit, or, if any
-   * table changed since the transaction read it, none does, and the commit fails as a {@link
-   * CommitFailedException}, for its caller to stage again. A table is checked by its whole version,
-   * its metadata location, as a table commit is; the JDBC catalog does not retry a transaction, as
-   * a table commit's producer does.
+   * Commits a catalog transaction in one database transaction: all of it, or none.
    *
-   * @throws CommitStateUnknownException if the database's answer was lost and the tables could not
-   *     be read after
+   * <p>The JDBC catalog judges a table by its whole version, its metadata location: each table the
+   * transaction changes, and under {@link CatalogTransaction.IsolationLevel#SERIALIZABLE} each
+   * table it read, must still have the metadata location the transaction first read, whatever
+   * changed. The commit first writes a metadata file for each table it updates (its updates applied
+   * to the version read) and for each table it creates. Then one database transaction checks every
+   * table it reads or changes, locking their rows where the database supports {@code SELECT ... FOR
+   * UPDATE}, and applies the commit's effects in {@link CatalogCommit}'s order: namespace creates
+   * and property changes, as {@link #createNamespace}, {@link #setProperties} and {@link
+   * #removeProperties} store them; each table's update, rename and drop, each conditioned on the
+   * metadata location read; the tables created, in namespaces that exist then; and the namespace
+   * drops, of namespaces that then hold no tables or namespaces ({@link JdbcCatalogCommit}).
+   *
+   * <p>If a condition fails, the database transaction rolls back, the metadata files the commit
+   * wrote are deleted, and the commit fails with a {@link CommitFailedException}; where a changed
+   * table's own requirements fail against its current version, the exception says which. Once the
+   * database transaction commits, each table the commit drops with purge has its files deleted, as
+   * {@link #dropTable(TableIdentifier, boolean)} deletes them.
+   *
+   * @throws CommitStateUnknownException if the database's answer to the COMMIT was lost and no
+   *     table names a metadata file the commit wrote
+   */
+  @Override
+  public void commitTransaction(CatalogCommit commit) {
+    Preconditions.checkArgument(commit != null, "Invalid catalog commit: null");
+    JdbcCatalogCommit statements = new JdbcCatalogCommit(catalogName, schemaVersion);
+    commit.namespaceChanges().forEach(change -> statements.change(namespaceChange(change)));
+    commit
+        .reads()
+        .forEach(
+            read -> statements.expect(read.identifier(), read.metadata().metadataFileLocation()));
+
+    Map<TableIdentifier, TableCommit> tableCommits = Maps.newHashMap();
+    Map<TableIdentifier, TableMetadata[]> updated = Maps.newHashMap();
+    List<String> written = Lists.newArrayList();
+    try {
+      Set<TableIdentifier> changed = Sets.newHashSet();
+      for (TableChange change : commit.tableChanges()) {
+        Preconditions.checkArgument(
+            changed.add(change.identifier()), "Cannot change %s twice", change.identifier());
+        stage(change, statements, updated, written);
+        if (change.commit() != null) {
+          tableCommits.put(change.identifier(), change.commit());
+        }
+      }
+
+      for (Map.Entry<TableIdentifier, TableMetadata> created : commit.createdTables().entrySet()) {
+        TableIdentifier identifier = created.getKey();
+        String location =
+            new JdbcTableOperations(
+                    connections, io, catalogName, identifier, catalogProperties, schemaVersion)
+                .writeCreatedMetadata(created.getValue());
+        written.add(location);
+        statements.create(identifier, location);
+      }
+    } catch (RuntimeException e) {
+      deleteQuietly(written);
+      throw e;
+    }
+
+    if (!statements.isEmpty()) {
+      run(statements, written, tableCommits);
+      committed(commit, updated);
+    }
+  }
+
+  /**
+   * Adds {@code change} to {@code statements}, after writing the new metadata file of a table it
+   * updates (its updates applied to the version read) to {@code written}. A dropped table's updates
+   * are dropped with it; a change that changes nothing is not a condition.
+   */
+  private void stage(
+      TableChange change,
+      JdbcCatalogCommit statements,
+      Map<TableIdentifier, TableMetadata[]> updated,
+      List<String> written) {
+    TableIdentifier identifier = change.identifier();
+    TableMetadata base = change.base();
+    String location = base.metadataFileLocation();
+    if (change.dropped()) {
+      statements.drop(identifier, location);
+      return;
+    }
+
+    if (change.commit() != null) {
+      TableMetadata.Builder builder = TableMetadata.buildFrom(base);
+      change.commit().updates().forEach(update -> update.applyTo(builder));
+      TableMetadata metadata = builder.build();
+      if (!metadata.changes().isEmpty()) {
+        Preconditions.checkArgument(
+            location != null, "Cannot commit %s: no version of it read", identifier);
+        String newLocation =
+            new JdbcTableOperations(
+                    connections, io, catalogName, identifier, catalogProperties, schemaVersion)
+                .writeTransactionMetadata(base, metadata);
+        written.add(newLocation);
+        statements.update(identifier, location, newLocation);
+        updated.put(identifier, new TableMetadata[] {base, metadata});
+      }
+    }
+
+    TableIdentifier renamedTo = change.renamedTo();
+    if (renamedTo != null && !renamedTo.equals(identifier)) {
+      statements.rename(identifier, location, renamedTo);
+    }
+  }
+
+  /**
+   * Runs {@code statements} in one database transaction. Returns if it committed, or if its
+   * COMMIT's answer was lost and a table names a metadata file it wrote; otherwise deletes the
+   * metadata files it wrote ({@code written}) and throws.
+   */
+  private void run(
+      JdbcCatalogCommit statements,
+      List<String> written,
+      Map<TableIdentifier, TableCommit> tableCommits) {
+    JdbcCatalogCommit.Failure failure;
+    try {
+      failure = connections.run(statements::run);
+    } catch (SQLException e) {
+      if (statements.unanswered() != null) {
+        checkLanded(statements, e);
+        return;
+      }
+
+      deleteQuietly(written);
+      if (JdbcUtil.isConstraintViolation(e) || JdbcUtil.isRollback(e)) {
+        throw new CommitFailedException(e, "Cannot commit transaction: %s", e.getMessage());
+      }
+
+      throw new UncheckedSQLException(e, "Failed to commit transaction");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      if (statements.unanswered() != null) {
+        throw new CommitStateUnknownException(e);
+      }
+
+      deleteQuietly(written);
+      throw new UncheckedInterruptedException(e, "Interrupted during commit");
+    }
+
+    if (failure != null) {
+      if (statements.unanswered() != null) {
+        // a run before this one may have committed, which would fail this run's conditions
+        checkLanded(statements, statements.unanswered());
+      } else {
+        deleteQuietly(written);
+        throw failed(failure, tableCommits);
+      }
+    }
+  }
+
+  /**
+   * Commits several tables' changes together, as {@link #commitTransaction(CatalogCommit)} commits
+   * a {@link CatalogTransaction.IsolationLevel#SNAPSHOT} catalog transaction of table updates:
+   * {@code reads} gives each table's metadata as the transaction read it, and each of {@code
+   * commits} the updates it staged on that version. Each table's new metadata file is written
+   * first; then one database transaction moves every table's metadata location from the one the
+   * transaction read to the new one. All of them commit, or, if any table changed since the
+   * transaction read it, none does, and the commit fails as a {@link CommitFailedException}, for
+   * its caller to stage again. A table is checked by its whole version, its metadata location, as a
+   * table commit is; the JDBC catalog does not retry a transaction, as a table commit's producer
+   * does.
+   *
+   * @throws CommitStateUnknownException if the database's answer to the COMMIT was lost and no
+   *     table names its new metadata file
    */
   public void commitTransaction(
       Map<TableIdentifier, TableMetadata> reads, List<TableCommit> commits) {
-    SortedMap<TableIdentifier, Map.Entry<String, String>> locations =
-        new TreeMap<>(Comparator.comparing(TableIdentifier::toString));
-    Map<TableIdentifier, TableMetadata[]> changed = Maps.newHashMap();
-    for (TableCommit commit : commits) {
-      TableIdentifier identifier = commit.identifier();
+    ImmutableCatalogCommit.Builder commit =
+        ImmutableCatalogCommit.builder().isolationLevel(CatalogTransaction.IsolationLevel.SNAPSHOT);
+    for (TableCommit tableCommit : commits) {
+      TableIdentifier identifier = tableCommit.identifier();
       TableMetadata base = reads.get(identifier);
       Preconditions.checkArgument(
           base != null && base.metadataFileLocation() != null,
           "Cannot commit %s: no version of it read",
           identifier);
-      TableMetadata.Builder builder = TableMetadata.buildFrom(base);
-      commit.updates().forEach(update -> update.applyTo(builder));
-      TableMetadata updated = builder.build();
-      if (updated.changes().isEmpty()) {
-        continue;
-      }
-      String location =
-          new JdbcTableOperations(
-                  connections, io, catalogName, identifier, catalogProperties, schemaVersion)
-              .writeTransactionMetadata(base, updated);
-      locations.put(
-          identifier,
-          new AbstractMap.SimpleImmutableEntry<>(base.metadataFileLocation(), location));
-      changed.put(identifier, new TableMetadata[] {base, updated});
-    }
-    if (locations.isEmpty()) {
-      return;
+      commit.addTableChanges(
+          ImmutableTableChange.builder()
+              .identifier(identifier)
+              .base(base)
+              .commit(tableCommit)
+              .build());
     }
 
-    TableIdentifier missed;
-    try {
-      missed = JdbcUtil.updateTables(schemaVersion, connections, catalogName, locations);
-    } catch (SQLException e) {
-      if (!connections.isConnectionException(e)) {
-        deleteQuietly(locations);
-        throw new UncheckedSQLException(e, "Failed to commit transaction");
-      }
-      // the connection failed while the transaction ran: it may have committed
-      missed = committed(locations, e);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new UncheckedInterruptedException(e, "Interrupted during commit");
+    commitTransaction(commit.build());
+  }
+
+  /** A namespace change as the catalog's rows hold it: a create also marks the namespace. */
+  private static NamespaceChange namespaceChange(NamespaceChange change) {
+    switch (change.kind()) {
+      case CREATE:
+        return NamespaceChange.create(
+            change.namespace(),
+            ImmutableMap.<String, String>builder()
+                .putAll(change.properties())
+                .put(NAMESPACE_EXISTS_PROPERTY, "true")
+                .buildOrThrow());
+      case SET_PROPERTIES:
+        Preconditions.checkArgument(
+            !change.properties().containsKey(NAMESPACE_EXISTS_PROPERTY),
+            "Cannot set reserved property: %s",
+            NAMESPACE_EXISTS_PROPERTY);
+        return change;
+      default:
+        return change;
     }
-    if (missed != null && committed(locations, null) != null) {
-      deleteQuietly(locations);
-      throw new CommitFailedException(
-          "Cannot commit transaction: table %s changed since the transaction read it", missed);
-    }
-    // committed: the pool ran it once, or again after a lost answer, when every UPDATE missed
-    // because every table names its new file
-    changed.values().forEach(m -> CatalogUtil.deleteRemovedMetadataFiles(io, m[0], m[1]));
   }
 
   /**
-   * The first of {@code locations}' tables that does not name its new metadata file now, or null if
-   * all do: a transaction moves all or none. Throws {@link CommitStateUnknownException} if the
-   * tables cannot be read; {@code cause} is why their state is in question.
+   * The failure of {@code failure}'s condition. Where a table changed and a requirement of its
+   * commit fails against its current version, the exception says which.
    */
-  private TableIdentifier committed(
-      Map<TableIdentifier, Map.Entry<String, String>> locations, Exception cause) {
+  private CommitFailedException failed(
+      JdbcCatalogCommit.Failure failure, Map<TableIdentifier, TableCommit> tableCommits) {
+    TableCommit tableCommit = failure.table() != null ? tableCommits.get(failure.table()) : null;
+    if (tableCommit != null && !tableCommit.requirements().isEmpty()) {
+      try {
+        TableMetadata current = newTableOps(failure.table()).current();
+        if (current != null) {
+          for (UpdateRequirement requirement : tableCommit.requirements()) {
+            requirement.validate(current);
+          }
+        }
+      } catch (CommitFailedException e) {
+        return new CommitFailedException(e, "%s: %s", failure.message(), e.getMessage());
+      } catch (RuntimeException e) {
+        LOG.debug(
+            "Cannot check requirements of {} against its current version", failure.table(), e);
+      }
+    }
+
+    return new CommitFailedException("%s", failure.message());
+  }
+
+  /**
+   * Returns if a table names a metadata file only {@code statements} wrote, so that its commit
+   * landed although its COMMIT's answer was lost; throws {@link CommitStateUnknownException}, with
+   * {@code cause}, if none does or the tables cannot be read.
+   */
+  private void checkLanded(JdbcCatalogCommit statements, Exception cause) {
     try {
-      for (Map.Entry<TableIdentifier, Map.Entry<String, String>> table : locations.entrySet()) {
+      for (Map.Entry<TableIdentifier, String> witness : statements.witnesses().entrySet()) {
         Map<String, String> row =
-            JdbcUtil.loadTable(schemaVersion, connections, catalogName, table.getKey());
-        if (!table
-            .getValue()
-            .getValue()
-            .equals(row.get(JdbcTableOperations.METADATA_LOCATION_PROP))) {
-          return table.getKey();
+            JdbcUtil.loadTable(schemaVersion, connections, catalogName, witness.getKey());
+        if (witness.getValue().equals(row.get(JdbcTableOperations.METADATA_LOCATION_PROP))) {
+          LOG.info(
+              "Committed catalog transaction although its COMMIT failed: {} names {}",
+              witness.getKey(),
+              witness.getValue(),
+              cause);
+          return;
         }
       }
-      return null;
     } catch (SQLException | RuntimeException e) {
-      if (cause != null) {
-        e.addSuppressed(cause);
-      }
-      throw new CommitStateUnknownException(e);
+      cause.addSuppressed(e);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new CommitStateUnknownException(e);
+      cause.addSuppressed(e);
+    }
+
+    throw new CommitStateUnknownException(cause);
+  }
+
+  /**
+   * After {@code commit} landed: deletes the metadata files its updates removed from tables'
+   * metadata logs, and purges the tables it dropped with purge, from their metadata as dropped.
+   */
+  private void committed(CatalogCommit commit, Map<TableIdentifier, TableMetadata[]> updated) {
+    updated.values().forEach(m -> CatalogUtil.deleteRemovedMetadataFiles(io, m[0], m[1]));
+    for (TableChange change : commit.tableChanges()) {
+      if (change.dropped() && change.purge()) {
+        try {
+          CatalogUtil.dropTableData(io, change.base());
+          LOG.info("Purged table {}, dropped by a catalog transaction", change.identifier());
+        } catch (RuntimeException e) {
+          // the drop committed: a purge that fails leaves files behind, as a failed delete does
+          LOG.warn("Failed to purge table {}", change.identifier(), e);
+        }
+      }
     }
   }
 
-  private void deleteQuietly(Map<TableIdentifier, Map.Entry<String, String>> locations) {
-    for (Map.Entry<String, String> location : locations.values()) {
+  private void deleteQuietly(List<String> locations) {
+    for (String location : locations) {
       try {
-        io.deleteFile(location.getValue());
+        io.deleteFile(location);
       } catch (RuntimeException e) {
-        LOG.warn("Failed to delete metadata file {}", location.getValue(), e);
+        LOG.warn("Failed to delete metadata file {}", location, e);
       }
     }
   }
