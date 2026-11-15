@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.jdbc;
 
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -26,7 +27,6 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-import java.util.SortedMap;
 import org.apache.iceberg.BaseMetastoreTableOperations;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -63,7 +63,7 @@ final class JdbcUtil {
   static final String TABLE_RECORD_TYPE = "TABLE";
   static final String VIEW_RECORD_TYPE = "VIEW";
 
-  private static final String V1_DO_COMMIT_TABLE_SQL =
+  static final String V1_DO_COMMIT_TABLE_SQL =
       "UPDATE "
           + CATALOG_TABLE_VIEW_NAME
           + " SET "
@@ -109,7 +109,7 @@ final class JdbcUtil {
           + "'"
           + VIEW_RECORD_TYPE
           + "'";
-  private static final String V0_DO_COMMIT_SQL =
+  static final String V0_DO_COMMIT_SQL =
       "UPDATE "
           + CATALOG_TABLE_VIEW_NAME
           + " SET "
@@ -166,7 +166,7 @@ final class JdbcUtil {
           + "'"
           + VIEW_RECORD_TYPE
           + "'";
-  private static final String V1_GET_TABLE_SQL =
+  static final String V1_GET_TABLE_SQL =
       "SELECT * FROM "
           + CATALOG_TABLE_VIEW_NAME
           + " WHERE "
@@ -184,7 +184,7 @@ final class JdbcUtil {
           + " OR "
           + RECORD_TYPE
           + " IS NULL)";
-  private static final String V0_GET_TABLE_SQL =
+  static final String V0_GET_TABLE_SQL =
       "SELECT * FROM "
           + CATALOG_TABLE_VIEW_NAME
           + " WHERE "
@@ -332,7 +332,7 @@ final class JdbcUtil {
           + "  = ? AND "
           + TABLE_NAME
           + " = ?";
-  private static final String GET_NAMESPACE_SQL =
+  static final String GET_NAMESPACE_SQL =
       "SELECT "
           + TABLE_NAMESPACE
           + " FROM "
@@ -364,7 +364,7 @@ final class JdbcUtil {
           + " WHERE "
           + CATALOG_NAME
           + " = ?";
-  private static final String V1_DO_COMMIT_CREATE_SQL =
+  static final String V1_DO_COMMIT_CREATE_SQL =
       "INSERT INTO "
           + CATALOG_TABLE_VIEW_NAME
           + " ("
@@ -381,7 +381,7 @@ final class JdbcUtil {
           + RECORD_TYPE
           + ") "
           + " VALUES (?,?,?,?,null,?)";
-  private static final String V0_DO_COMMIT_CREATE_SQL =
+  static final String V0_DO_COMMIT_CREATE_SQL =
       "INSERT INTO "
           + CATALOG_TABLE_VIEW_NAME
           + " ("
@@ -577,71 +577,6 @@ final class JdbcUtil {
         tableIdentifier,
         newMetadataLocation,
         oldMetadataLocation);
-  }
-
-  /**
-   * Moves each table of {@code locations} from its metadata location as read (an entry's key) to
-   * its new one (its value), with the conditional UPDATE a table's commit runs, all in one database
-   * transaction: all of them, or none if any table no longer has the location it was read at.
-   * Tables are updated in the order of their names, so that two such transactions take their rows'
-   * locks in the same order. Returns the first table whose UPDATE matched no row, or null if the
-   * transaction committed.
-   */
-  static TableIdentifier updateTables(
-      SchemaVersion schemaVersion,
-      JdbcClientPool connections,
-      String catalogName,
-      SortedMap<TableIdentifier, Map.Entry<String, String>> locations)
-      throws SQLException, InterruptedException {
-    return connections.run(
-        conn -> {
-          boolean autoCommit = conn.getAutoCommit();
-          conn.setAutoCommit(false);
-          try {
-            TableIdentifier missed = null;
-            try (PreparedStatement sql =
-                conn.prepareStatement(
-                    schemaVersion == SchemaVersion.V1
-                        ? V1_DO_COMMIT_TABLE_SQL
-                        : V0_DO_COMMIT_SQL)) {
-              for (Map.Entry<TableIdentifier, Map.Entry<String, String>> table :
-                  locations.entrySet()) {
-                TableIdentifier identifier = table.getKey();
-                // UPDATE
-                sql.setString(1, table.getValue().getValue());
-                sql.setString(2, table.getValue().getKey());
-                // WHERE
-                sql.setString(3, catalogName);
-                sql.setString(4, namespaceToString(identifier.namespace()));
-                sql.setString(5, identifier.name());
-                sql.setString(6, table.getValue().getKey());
-                if (sql.executeUpdate() != 1) {
-                  missed = identifier;
-                  break;
-                }
-              }
-            }
-            if (missed == null) {
-              conn.commit();
-            } else {
-              conn.rollback();
-            }
-            return missed;
-          } catch (SQLException e) {
-            try {
-              conn.rollback();
-            } catch (SQLException rollback) {
-              e.addSuppressed(rollback);
-            }
-            throw e;
-          } finally {
-            try {
-              conn.setAutoCommit(autoCommit);
-            } catch (SQLException ignored) {
-              // a broken connection: the pool discards it
-            }
-          }
-        });
   }
 
   static int updateView(
@@ -858,8 +793,7 @@ final class JdbcUtil {
     String namespaceEquals = JdbcUtil.namespaceToString(namespace);
     // when namespace has sub-namespace then additionally checking it with LIKE statement.
     // catalog.db can exists as: catalog.db.ns1 or catalog.db.ns1.ns2
-    String namespaceStartsWith =
-        namespaceEquals.replace("!", "!!").replace("_", "!_").replace("%", "!%") + ".%";
+    String namespaceStartsWith = childNamespacePattern(namespace);
     if (exists(connections, GET_NAMESPACE_SQL, catalogName, namespaceEquals, namespaceStartsWith)) {
       return true;
     }
@@ -872,30 +806,60 @@ final class JdbcUtil {
         namespaceStartsWith);
   }
 
-  @SuppressWarnings("checkstyle:NestedTryDepth")
+  /**
+   * Whether {@code namespace} exists, as {@link #namespaceExists(String, JdbcClientPool,
+   * Namespace)} decides, read on {@code conn}: in its database transaction, if it has one.
+   */
+  static boolean namespaceExists(Connection conn, String catalogName, Namespace namespace)
+      throws SQLException {
+    String namespaceEquals = namespaceToString(namespace);
+    String namespaceStartsWith = childNamespacePattern(namespace);
+    return exists(conn, GET_NAMESPACE_SQL, catalogName, namespaceEquals, namespaceStartsWith)
+        || exists(
+            conn, GET_NAMESPACE_PROPERTIES_SQL, catalogName, namespaceEquals, namespaceStartsWith);
+  }
+
+  /**
+   * A pattern for {@code LIKE ? ESCAPE '!'} that matches the namespaces below {@code namespace}.
+   */
+  static String childNamespacePattern(Namespace namespace) {
+    return namespaceToString(namespace).replace("!", "!!").replace("_", "!_").replace("%", "!%")
+        + ".%";
+  }
+
+  /**
+   * Whether {@code ex} reports contention that leaves its transaction uncommitted: a serialization
+   * failure or deadlock, which roll the transaction back (SQLSTATE class 40), or SQLite's busy or
+   * locked database, which leaves it open to be rolled back.
+   */
+  static boolean isRollback(SQLException ex) {
+    return (ex.getSQLState() != null && ex.getSQLState().startsWith("40"))
+        || (ex.getMessage() != null
+            && (ex.getMessage().contains("SQLITE_BUSY")
+                || ex.getMessage().contains("SQLITE_LOCKED")));
+  }
+
   private static boolean exists(JdbcClientPool connections, String sql, String... args) {
     try {
-      return connections.run(
-          conn -> {
-            try (PreparedStatement preparedStatement = conn.prepareStatement(sql)) {
-              for (int pos = 0; pos < args.length; pos += 1) {
-                preparedStatement.setString(pos + 1, args[pos]);
-              }
-
-              try (ResultSet rs = preparedStatement.executeQuery()) {
-                if (rs.next()) {
-                  return true;
-                }
-              }
-            }
-
-            return false;
-          });
+      return connections.run(conn -> exists(conn, sql, args));
     } catch (SQLException e) {
       throw new UncheckedSQLException(e, "Failed to execute exists query: %s", sql);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new UncheckedInterruptedException(e, "Interrupted in SQL query");
+    }
+  }
+
+  /** Whether {@code sql}, a query, returns a row on {@code conn}. */
+  static boolean exists(Connection conn, String sql, String... args) throws SQLException {
+    try (PreparedStatement preparedStatement = conn.prepareStatement(sql)) {
+      for (int pos = 0; pos < args.length; pos += 1) {
+        preparedStatement.setString(pos + 1, args[pos]);
+      }
+
+      try (ResultSet rs = preparedStatement.executeQuery()) {
+        return rs.next();
+      }
     }
   }
 }

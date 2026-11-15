@@ -188,6 +188,15 @@ class JdbcTableOperations extends BaseMetastoreTableOperations {
     return writeNewMetadata(metadata, metadataVersion(base.metadataFileLocation()) + 1);
   }
 
+  /**
+   * Writes {@code metadata}, a table a catalog transaction creates, to the table's first metadata
+   * file ({@link JdbcCatalog#commitTransaction(org.apache.iceberg.catalog.CatalogCommit)}). The
+   * table's row is not written.
+   */
+  String writeCreatedMetadata(TableMetadata metadata) {
+    return writeNewMetadata(metadata, 0);
+  }
+
   /** The version a metadata file's name starts with, or -1 if it has none. */
   private static int metadataVersion(String metadataLocation) {
     int versionStart = metadataLocation.lastIndexOf('/') + 1;
