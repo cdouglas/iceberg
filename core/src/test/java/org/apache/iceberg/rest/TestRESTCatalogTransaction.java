@@ -18,11 +18,14 @@
  */
 package org.apache.iceberg.rest;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.UUID;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.catalog.CatalogTransaction;
 import org.apache.iceberg.catalog.CatalogTransactionTests;
 import org.apache.iceberg.catalog.SessionCatalog;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
@@ -34,6 +37,7 @@ import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestRESTCatalogTransaction extends CatalogTransactionTests<RESTCatalog> {
   private RESTCatalog catalog;
@@ -43,6 +47,24 @@ public class TestRESTCatalogTransaction extends CatalogTransactionTests<RESTCata
   @Override
   protected RESTCatalog catalog() {
     return catalog;
+  }
+
+  @Override
+  protected boolean supportsSerializable() {
+    return false;
+  }
+
+  @Override
+  protected boolean supportsCatalogChanges() {
+    return false;
+  }
+
+  @Test
+  public void serializableTransactionsAreNotSupported() {
+    assertThatThrownBy(
+            () -> catalog.createTransaction(CatalogTransaction.IsolationLevel.SERIALIZABLE))
+        .isInstanceOf(UnsupportedOperationException.class)
+        .hasMessageContaining("the REST protocol carries no reads");
   }
 
   @BeforeEach
