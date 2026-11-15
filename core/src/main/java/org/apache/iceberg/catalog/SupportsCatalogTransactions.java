@@ -18,13 +18,12 @@
  */
 package org.apache.iceberg.catalog;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 
+/**
+ * A catalog that commits several changes to tables and namespaces atomically: a catalog
+ * transaction.
+ */
 public interface SupportsCatalogTransactions {
 
   /**
@@ -32,28 +31,21 @@ public interface SupportsCatalogTransactions {
    *
    * @param isolationLevel The isolation level to use.
    * @return A new {@link CatalogTransaction}.
+   * @throws UnsupportedOperationException if the catalog does not support the isolation level
    */
   CatalogTransaction createTransaction(IsolationLevel isolationLevel);
 
   /**
-   * Commits {@code commits} atomically.
+   * Commits a catalog transaction: applies everything in {@code commit} where every condition and
+   * read holds, or nothing (see {@link CatalogCommit}). A commit with no changes checks its reads
+   * against the catalog as it is and writes nothing.
    *
-   * @param reads for {@link IsolationLevel#SERIALIZABLE} isolation, every branch of a table the
-   *     transaction read, with the table's metadata as the transaction first read it; and, for
-   *     either isolation level, every table it writes, with a null ref, as it first read it. The
-   *     commit fails if any of them has changed since (see {@link
-   *     BaseCatalogTransaction#unchangedSinceRead}), up to the moment the commit takes effect: a
-   *     table it writes, if its metadata changed at all.
-   * @param commits the changes to each table the transaction updated
+   * @throws org.apache.iceberg.exceptions.CommitFailedException if a condition or read no longer
+   *     holds; the caller may run the transaction again
+   * @throws org.apache.iceberg.exceptions.ValidationException if a table update's own validation
+   *     fails
+   * @throws org.apache.iceberg.exceptions.CommitStateUnknownException if the outcome is unknown
+   * @throws UnsupportedOperationException if the catalog cannot commit some of it
    */
-  void commitTransaction(
-      Map<BaseCatalogTransaction.TableRef, TableMetadata> reads, List<TableCommit> commits);
-
-  default void commitTransaction(List<TableCommit> commits) {
-    commitTransaction(Collections.emptyMap(), commits);
-  }
-
-  default void commitTransaction(TableCommit... commits) {
-    commitTransaction(ImmutableList.<TableCommit>builder().add(commits).build());
-  }
+  void commitTransaction(CatalogCommit commit);
 }

@@ -28,16 +28,17 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.Transaction;
 import org.apache.iceberg.catalog.BaseCatalogTransaction;
 import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.CatalogCommit;
 import org.apache.iceberg.catalog.CatalogTransaction;
 import org.apache.iceberg.catalog.LoadContext;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SessionCatalog;
 import org.apache.iceberg.catalog.SupportsCatalogTransactions;
 import org.apache.iceberg.catalog.SupportsNamespaces;
+import org.apache.iceberg.catalog.TableChange;
 import org.apache.iceberg.catalog.TableCommit;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
@@ -46,6 +47,7 @@ import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.hadoop.Configurable;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.view.View;
 import org.apache.iceberg.view.ViewBuilder;
 
@@ -307,30 +309,56 @@ public class RESTCatalog
     sessionCatalog.close();
   }
 
-  @Override
   public void commitTransaction(List<TableCommit> commits) {
     sessionCatalog.commitTransaction(context, commits);
   }
 
-  @Override
   public void commitTransaction(TableCommit... commits) {
     sessionCatalog.commitTransaction(
         context, ImmutableList.<TableCommit>builder().add(commits).build());
   }
 
   /**
-   * Commits the table commits atomically. The REST protocol carries no reads, so the server checks
-   * only each table commit's requirements.
+   * Creates a {@link CatalogTransaction#isolationLevel() SNAPSHOT} catalog transaction of table
+   * updates. The REST protocol's {@code CommitTransactionRequest} carries only table changes, each
+   * checked by its requirements: no reads, so no {@code SERIALIZABLE} isolation, and no table
+   * creates, drops or renames or namespace changes, whose commit throws.
    */
   @Override
-  public void commitTransaction(
-      Map<BaseCatalogTransaction.TableRef, TableMetadata> ignored, List<TableCommit> commits) {
-    sessionCatalog.commitTransaction(context, commits);
+  public CatalogTransaction createTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
+    if (CatalogTransaction.IsolationLevel.SERIALIZABLE == isolationLevel) {
+      throw new UnsupportedOperationException(
+          "Serializable catalog transactions are not supported: the REST protocol carries no reads");
+    }
+
+    return new BaseCatalogTransaction(this, isolationLevel);
   }
 
   @Override
-  public CatalogTransaction createTransaction(CatalogTransaction.IsolationLevel isolationLevel) {
-    return new BaseCatalogTransaction(this, isolationLevel);
+  public void commitTransaction(CatalogCommit commit) {
+    if (!commit.reads().isEmpty()) {
+      throw new UnsupportedOperationException(
+          "Serializable catalog transactions are not supported: the REST protocol carries no reads");
+    }
+
+    if (!commit.namespaceChanges().isEmpty() || !commit.createdTables().isEmpty()) {
+      throw new UnsupportedOperationException(
+          "Catalog transactions of table creates or namespace changes are not supported: "
+              + "the REST protocol commits only table updates");
+    }
+
+    List<TableCommit> commits = Lists.newArrayList();
+    for (TableChange change : commit.tableChanges()) {
+      if (change.dropped() || change.renamedTo() != null) {
+        throw new UnsupportedOperationException(
+            "Catalog transactions of table drops or renames are not supported: "
+                + "the REST protocol commits only table updates");
+      }
+
+      commits.add(change.commit());
+    }
+
+    sessionCatalog.commitTransaction(context, commits);
   }
 
   @Override
