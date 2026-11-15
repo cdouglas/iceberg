@@ -49,6 +49,7 @@ import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -146,6 +147,14 @@ public abstract class CatalogTransactionTests<
    */
   protected boolean judgesScanReadsByFilter() {
     return false;
+  }
+
+  /**
+   * Whether a namespace level may contain a dot, as {@code Namespace.of("a.b")}, apart from the
+   * nested {@code Namespace.of("a", "b")} (JDBC stores both as {@code a.b}).
+   */
+  protected boolean supportsNamesWithDot() {
+    return true;
   }
 
   /** A transaction of {@code isolationLevel}, or a skipped test if the catalog lacks it. */
@@ -866,11 +875,15 @@ public abstract class CatalogTransactionTests<
     // names repeat the catalog's name, or are each other's. A transaction knows its tables by
     // their identifiers.
     List<TableIdentifier> identifiers =
-        Arrays.asList(
+        Lists.newArrayList(
             TableIdentifier.of(Namespace.of(catalog().name()), "t"),
             TableIdentifier.of(Namespace.of("x" + catalog().name()), "t"),
             TableIdentifier.of(Namespace.of("a.b"), "t"),
             TableIdentifier.of(Namespace.of("a", "b"), "t"));
+    if (!supportsNamesWithDot()) {
+      identifiers.remove(TableIdentifier.of(Namespace.of("a.b"), "t"));
+    }
+
     List<DataFile> files = Arrays.asList(FILE_A, FILE_B, FILE_C, FILE_D);
     for (TableIdentifier identifier : identifiers) {
       String[] levels = identifier.namespace().levels();
