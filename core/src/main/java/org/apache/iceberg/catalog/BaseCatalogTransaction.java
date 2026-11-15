@@ -164,29 +164,11 @@ public class BaseCatalogTransaction implements CatalogTransaction {
         if (!entry.dropped) {
           commit.putCreatedTables(entry.name, ((BaseTransaction) entry.tx).currentMetadata());
         }
-
-        continue;
-      }
-
-      TableCommit updates = null;
-      if (!entry.dropped && entry.tx != null) {
-        TableMetadata updated = ((BaseTransaction) entry.tx).currentMetadata();
-        if (!updated.changes().isEmpty()) {
-          updates = TableCommit.create(entry.startName, entry.base, updated);
+      } else {
+        TableChange change = tableChange(entry);
+        if (change != null) {
+          commit.addTableChanges(change);
         }
-      }
-
-      boolean renamed = !entry.dropped && !entry.name.equals(entry.startName);
-      if (updates != null || renamed || entry.dropped) {
-        commit.addTableChanges(
-            ImmutableTableChange.builder()
-                .identifier(entry.startName)
-                .base(entry.base)
-                .commit(updates)
-                .renamedTo(renamed ? entry.name : null)
-                .dropped(entry.dropped)
-                .purge(entry.purge)
-                .build());
       }
     }
 
@@ -195,6 +177,31 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     }
 
     return commit.build();
+  }
+
+  /** What the transaction did to a table that existed when it started, or null if nothing. */
+  private static TableChange tableChange(Entry entry) {
+    TableCommit updates = null;
+    if (!entry.dropped && entry.tx != null) {
+      TableMetadata updated = ((BaseTransaction) entry.tx).currentMetadata();
+      if (!updated.changes().isEmpty()) {
+        updates = TableCommit.create(entry.startName, entry.base, updated);
+      }
+    }
+
+    boolean renamed = !entry.dropped && !entry.name.equals(entry.startName);
+    if (updates == null && !renamed && !entry.dropped) {
+      return null;
+    }
+
+    return ImmutableTableChange.builder()
+        .identifier(entry.startName)
+        .base(entry.base)
+        .commit(updates)
+        .renamedTo(renamed ? entry.name : null)
+        .dropped(entry.dropped)
+        .purge(entry.purge)
+        .build();
   }
 
   private void rollback() {
