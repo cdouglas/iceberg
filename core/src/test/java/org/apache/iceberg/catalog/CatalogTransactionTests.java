@@ -994,6 +994,11 @@ public abstract class CatalogTransactionTests<
 
     assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
     assertThat(snapshots(A)).isEqualTo(1);
+    // a transaction that failed does not commit later, with or without what it staged
+    assertThatThrownBy(catalogTx::commitTransaction)
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageStartingWith("Transaction failed to commit");
+    assertThat(snapshots(A)).isEqualTo(1);
   }
 
   @Test
