@@ -93,6 +93,7 @@ public class BaseCatalogTransaction implements CatalogTransaction {
   private final Map<Namespace, Map<String, String>> setProperties = Maps.newHashMap();
   private final Map<Namespace, Set<String>> removedProperties = Maps.newHashMap();
   private boolean hasCommitted = false;
+  private boolean hasFailed = false;
 
   public BaseCatalogTransaction(Catalog origin, IsolationLevel isolationLevel) {
     Preconditions.checkArgument(null != origin, "Invalid origin catalog: null");
@@ -137,6 +138,8 @@ public class BaseCatalogTransaction implements CatalogTransaction {
   @Override
   public void commitTransaction() {
     Preconditions.checkState(!hasCommitted, "Transaction has already committed changes");
+    Preconditions.checkState(
+        !hasFailed, "Transaction failed to commit, or its outcome is unknown: start another");
 
     try {
       CatalogCommit commit = toCommit();
@@ -146,8 +149,10 @@ public class BaseCatalogTransaction implements CatalogTransaction {
 
       hasCommitted = true;
     } catch (CommitStateUnknownException e) {
+      hasFailed = true;
       throw e;
     } catch (RuntimeException e) {
+      hasFailed = true;
       rollback();
       throw e;
     }
