@@ -100,8 +100,11 @@ public class AvroIterable<D> extends CloseableGroup implements CloseableIterable
   private DataFileReader<D> newFileReader() {
     SeekableInput stream = null;
     try {
-      stream = AvroIO.stream(file.newStream(), file.getLength());
-      return (DataFileReader<D>) DataFileReader.openReader(stream, reader);
+      // the file's length is asked only if a reader needs it (a split's end): DataFileReader's
+      // openReader would ask it first, to check the file is longer than Avro's magic, which the
+      // reader checks as it reads the header
+      stream = AvroIO.stream(file.newStream(), file::getLength);
+      return new DataFileReader<>(stream, reader);
     } catch (IOException e) {
       if (stream != null) {
         try {
