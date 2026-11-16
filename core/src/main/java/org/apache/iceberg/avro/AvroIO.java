@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import org.apache.avro.InvalidAvroMagicException;
 import org.apache.avro.file.SeekableInput;
@@ -56,13 +57,19 @@ class AvroIO {
               .build()
           : null;
 
-  static SeekableInput stream(SeekableInputStream stream, long length) {
+  /**
+   * An Avro input over {@code stream}, which asks {@code length} for the file's length only when
+   * Avro needs it: a reader that reads the file whole from its start never does, so it costs no
+   * length lookup (a HEAD request on object stores, where the file's length is not known up front,
+   * as a manifest list's is not). Hadoop's input takes the length when it is made.
+   */
+  static SeekableInput stream(SeekableInputStream stream, LongSupplier length) {
     if (stream instanceof DelegatingInputStream) {
       InputStream wrapped = ((DelegatingInputStream) stream).getDelegate();
       if (AVRO_FS_INPUT_CTOR != null
           && FS_DATA_INPUT_STREAM_CLASS != null
           && FS_DATA_INPUT_STREAM_CLASS.isInstance(wrapped)) {
-        return AVRO_FS_INPUT_CTOR.newInstance(wrapped, length);
+        return AVRO_FS_INPUT_CTOR.newInstance(wrapped, length.getAsLong());
       }
     }
     return new AvroInputStreamAdapter(stream, length);
@@ -70,11 +77,12 @@ class AvroIO {
 
   private static class AvroInputStreamAdapter extends SeekableInputStream implements SeekableInput {
     private final SeekableInputStream stream;
-    private final long length;
+    private final LongSupplier lengthSupplier;
+    private Long length = null;
 
-    AvroInputStreamAdapter(SeekableInputStream stream, long length) {
+    AvroInputStreamAdapter(SeekableInputStream stream, LongSupplier length) {
       this.stream = stream;
-      this.length = length;
+      this.lengthSupplier = length;
     }
 
     @Override
@@ -99,6 +107,10 @@ class AvroIO {
 
     @Override
     public long length() throws IOException {
+      if (length == null) {
+        this.length = lengthSupplier.getAsLong();
+      }
+
       return length;
     }
 
