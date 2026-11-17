@@ -1311,4 +1311,42 @@ public abstract class CatalogTransactionTests<
     catalogTx.commitTransaction();
     assertThat(catalog().loadTable(A).newScan().planFiles()).hasSize(2);
   }
+
+  /**
+   * Table A's history for an expiry: a-1 added by the first snapshot and deleted by the second, and
+   * a-2 added by the third. Expiring the first two leaves a-1 unreferenced. Returns the ids of the
+   * first two.
+   */
+  private long[] historyWithADeletedFile() {
+    createIdentityTables();
+    Table table = catalog().loadTable(A);
+    long first = table.currentSnapshot().snapshotId();
+    table.newDelete().deleteFile(idFile("a-1", 1)).commit();
+    long second = catalog().loadTable(A).currentSnapshot().snapshotId();
+    catalog().loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+    assertThat(snapshots(A)).isEqualTo(3);
+    return new long[] {first, second};
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void anExpiryDeletesFilesOnceTheCatalogTransactionCommits(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    long[] expired = historyWithADeletedFile();
+    java.util.Set<String> deleted = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    catalogTx
+        .asCatalog()
+        .loadTable(A)
+        .expireSnapshots()
+        .expireSnapshotId(expired[0])
+        .expireSnapshotId(expired[1])
+        .deleteWith(deleted::add)
+        .commit();
+    assertThat(deleted).isEmpty();
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(1);
+    assertThat(deleted).contains(idFile("a-1", 1).location());
+  }
 }

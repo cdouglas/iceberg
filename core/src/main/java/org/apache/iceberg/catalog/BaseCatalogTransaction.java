@@ -156,6 +156,26 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       rollback();
       throw e;
     }
+
+    cleanUpExpiredSnapshots();
+  }
+
+  /**
+   * Deletes the files of the snapshots the transaction's expiries removed, now that the catalog has
+   * committed their removal: an expiry staged on a table of the transaction only stages, so its
+   * cleanup waits for this commit, and runs not at all if this one fails or is abandoned. Not for a
+   * table the transaction dropped, whose purge, if any, is the catalog's. A cleanup that cannot run
+   * is logged and leaves files behind: the commit stands.
+   */
+  private void cleanUpExpiredSnapshots() {
+    for (Entry entry : entries) {
+      if (entry.dropped) {
+        continue;
+      }
+      if (entry.tx != null) {
+        ((BaseTransaction) entry.tx).cleanUpExpiredSnapshotsOnceCommitted();
+      }
+    }
   }
 
   /** The transaction's net effect on the catalog as it found it, and what it read. */
