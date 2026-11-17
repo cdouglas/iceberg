@@ -1330,6 +1330,41 @@ public abstract class CatalogTransactionTests<
 
   @ParameterizedTest
   @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aNestedExpiryDeletesFilesOnlyOnceTheCatalogTransactionCommits(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    long[] expired = historyWithADeletedFile();
+    java.util.Set<String> deleted = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    // abandoned: the catalog still names what the nested expiry removed
+    CatalogTransaction abandoned = begin(isolationLevel);
+    Transaction nested = abandoned.asCatalog().loadTable(A).newTransaction();
+    nested
+        .expireSnapshots()
+        .expireSnapshotId(expired[0])
+        .expireSnapshotId(expired[1])
+        .deleteWith(deleted::add)
+        .commit();
+    nested.commitTransaction();
+    assertThat(deleted).isEmpty();
+    assertThat(snapshots(A)).isEqualTo(3);
+
+    CatalogTransaction committed = begin(isolationLevel);
+    Transaction again = committed.asCatalog().loadTable(A).newTransaction();
+    again
+        .expireSnapshots()
+        .expireSnapshotId(expired[0])
+        .expireSnapshotId(expired[1])
+        .deleteWith(deleted::add)
+        .commit();
+    again.commitTransaction();
+    assertThat(deleted).isEmpty();
+    committed.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(1);
+    assertThat(deleted).contains(idFile("a-1", 1).location());
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
   public void anExpiryDeletesFilesOnceTheCatalogTransactionCommits(
       CatalogTransaction.IsolationLevel isolationLevel) {
     long[] expired = historyWithADeletedFile();
