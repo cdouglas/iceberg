@@ -542,6 +542,15 @@ public class BaseTransaction implements Transaction {
     }
   }
 
+  /**
+   * Cleans up the files of the snapshots this transaction's expiries removed, once what it holds
+   * has been committed by whatever commits it: a catalog transaction, for a table transaction it
+   * stages. A cleanup that cannot run leaves files behind and is logged.
+   */
+  public void cleanUpExpiredSnapshotsOnceCommitted() {
+    cleanUpExpiredSnapshots();
+  }
+
   // the files of the snapshots that the transaction's expiries removed, now that it has committed
   // their removal
   private void cleanUpExpiredSnapshots() {
