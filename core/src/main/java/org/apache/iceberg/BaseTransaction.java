@@ -82,6 +82,10 @@ public class BaseTransaction implements Transaction {
   private TableMetadata current;
   private boolean hasLastOpCommitted;
   private final MetricsReporter reporter;
+  // whether the files of the snapshots its expiries remove wait for
+  // cleanUpExpiredSnapshotsOnceCommitted: its commit only stages them in another transaction that
+  // has yet to commit (a catalog transaction's nested transaction)
+  private boolean expiryCleanupDeferred = false;
 
   BaseTransaction(
       String tableName, TableOperations ops, TransactionType type, TableMetadata start) {
@@ -295,7 +299,9 @@ public class BaseTransaction implements Transaction {
     // process has created the same table.
     try {
       ops.commit(null, current);
-      cleanUpExpiredSnapshots();
+      if (!expiryCleanupDeferred) {
+        cleanUpExpiredSnapshots();
+      }
 
     } catch (CommitStateUnknownException e) {
       throw e;
@@ -359,7 +365,9 @@ public class BaseTransaction implements Transaction {
     // the commit succeeded. a rebuild may have reused files that an earlier attempt's commit
     // replaced, so delete only those that the committed snapshots don't reference
     cleanUpAfterCommit(snapshotIds(base));
-    cleanUpExpiredSnapshots();
+    if (!expiryCleanupDeferred) {
+      cleanUpExpiredSnapshots();
+    }
   }
 
   /**
@@ -513,7 +521,9 @@ public class BaseTransaction implements Transaction {
 
     // the commit succeeded
     cleanUpAfterCommit(startingSnapshots);
-    cleanUpExpiredSnapshots();
+    if (!expiryCleanupDeferred) {
+      cleanUpExpiredSnapshots();
+    }
   }
 
   private void cleanUpAfterCommit(Set<Long> startingSnapshots) {
@@ -543,9 +553,18 @@ public class BaseTransaction implements Transaction {
   }
 
   /**
+   * Defers the cleanup of the files of the snapshots this transaction's expiries remove to {@link
+   * #cleanUpExpiredSnapshotsOnceCommitted()}: for a transaction whose commit only stages its
+   * changes in another that has yet to commit.
+   */
+  void deferExpiryCleanup() {
+    this.expiryCleanupDeferred = true;
+  }
+
+  /**
    * Cleans up the files of the snapshots this transaction's expiries removed, once what it holds
    * has been committed by whatever commits it: a catalog transaction, for a table transaction it
-   * stages. A cleanup that cannot run leaves files behind and is logged.
+   * stages or one nested in it. A cleanup that cannot run leaves files behind and is logged.
    */
   public void cleanUpExpiredSnapshotsOnceCommitted() {
     cleanUpExpiredSnapshots();

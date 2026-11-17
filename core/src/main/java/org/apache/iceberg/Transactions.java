@@ -94,6 +94,19 @@ public final class Transactions {
     return new BaseTransaction(tableName, ops, TransactionType.SIMPLE, start);
   }
 
+  /**
+   * A transaction that starts from {@code start} and commits into {@code ops}, those of another
+   * transaction that has yet to commit: the files of the snapshots its expiries remove are left
+   * until {@link BaseTransaction#cleanUpExpiredSnapshotsOnceCommitted()}, once that one has.
+   */
+  public static Transaction newNestedTransaction(
+      String tableName, TableOperations ops, TableMetadata start) {
+    BaseTransaction transaction =
+        new BaseTransaction(tableName, ops, TransactionType.SIMPLE, start);
+    transaction.deferExpiryCleanup();
+    return transaction;
+  }
+
   public static Transaction newTransaction(
       String tableName, TableOperations ops, MetricsReporter reporter) {
     return new BaseTransaction(tableName, ops, TransactionType.SIMPLE, ops.refresh(), reporter);
