@@ -115,6 +115,8 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     private TableIdentifier name;
     // its staged updates: on base, or the create of a table the transaction created
     private Transaction tx;
+    // transactions of its own on it, nested in this one: their commits stage here
+    private final List<Transaction> nested = Lists.newArrayList();
     private boolean dropped;
     private boolean purge;
 
@@ -162,15 +164,19 @@ public class BaseCatalogTransaction implements CatalogTransaction {
 
   /**
    * Deletes the files of the snapshots the transaction's expiries removed, now that the catalog has
-   * committed their removal: an expiry staged on a table of the transaction only stages, so its
-   * cleanup waits for this commit, and runs not at all if this one fails or is abandoned. Not for a
-   * table the transaction dropped, whose purge, if any, is the catalog's. A cleanup that cannot run
-   * is logged and leaves files behind: the commit stands.
+   * committed their removal: an expiry staged on a table of the transaction, or in a transaction
+   * nested in it, only stages (a nested transaction's commit stages here), so its cleanup waits for
+   * this commit, and runs not at all if this one fails or is abandoned. Not for a table the
+   * transaction dropped, whose purge, if any, is the catalog's. A cleanup that cannot run is logged
+   * and leaves files behind: the commit stands.
    */
   private void cleanUpExpiredSnapshots() {
     for (Entry entry : entries) {
       if (entry.dropped) {
         continue;
+      }
+      for (Transaction nested : entry.nested) {
+        ((BaseTransaction) nested).cleanUpExpiredSnapshotsOnceCommitted();
       }
       if (entry.tx != null) {
         ((BaseTransaction) entry.tx).cleanUpExpiredSnapshotsOnceCommitted();
@@ -311,7 +317,11 @@ public class BaseCatalogTransaction implements CatalogTransaction {
   private Transaction nestedTransaction(Entry entry) {
     Transaction tx = txForTable(entry);
     TableOperations staging = opsFromTable(tx.table());
-    return Transactions.newTransaction(tx.table().name(), staging, staging.current());
+    // its expiries' files wait for this transaction's commit, which may fail or never come
+    Transaction nested =
+        Transactions.newNestedTransaction(tx.table().name(), staging, staging.current());
+    entry.nested.add(nested);
+    return nested;
   }
 
   private static TableOperations opsFromTable(Table table) {
