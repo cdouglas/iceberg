@@ -2166,6 +2166,44 @@ public class TestTableMetadata {
   }
 
   @Test
+  public void testRemovingMoreSnapshotsThanTheTableHas() {
+    TableMetadata base =
+        TableMetadata.newTableMetadata(
+            TEST_SCHEMA, PartitionSpec.unpartitioned(), "location", ImmutableMap.of());
+    Snapshot s3 =
+        new BaseSnapshot(
+            3,
+            3L,
+            null,
+            System.currentTimeMillis(),
+            null,
+            null,
+            null,
+            "file:/s3.avro",
+            null,
+            null,
+            null);
+    // another writer's expiry already removed snapshots 1 and 2, which this removal also names
+    TableMetadata expired =
+        TableMetadata.buildFrom(base).setBranchSnapshot(s3, SnapshotRef.MAIN_BRANCH).build();
+    MetadataUpdate removal = new MetadataUpdate.RemoveSnapshots(Sets.newHashSet(1L, 2L));
+
+    TableMetadata.Builder builder = TableMetadata.buildFrom(expired);
+    removal.applyTo(builder);
+    TableMetadata applied = builder.build();
+    assertThat(applied.snapshots()).extracting(Snapshot::snapshotId).containsExactly(3L);
+    assertThat(applied.currentSnapshot().snapshotId()).isEqualTo(3L);
+
+    assertThat(
+            TableMetadata.buildFrom(expired)
+                .removeSnapshots(Sets.newHashSet(1L, 2L))
+                .build()
+                .snapshots())
+        .extracting(Snapshot::snapshotId)
+        .containsExactly(3L);
+  }
+
+  @Test
   public void testAddSnapshotWithStaleFirstRowIdIsRetryable() {
     TableMetadata base =
         TableMetadata.newTableMetadata(

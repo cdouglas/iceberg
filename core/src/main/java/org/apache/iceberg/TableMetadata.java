@@ -1462,8 +1462,9 @@ public class TableMetadata implements Serializable {
      * @return this for method chaining
      */
     private Builder rewriteSnapshotsInternal(Collection<Long> idsToRemove, boolean suppress) {
+      // idsToRemove may name snapshots that are already gone: a removal applied to newer metadata
       List<Snapshot> retainedSnapshots =
-          Lists.newArrayListWithExpectedSize(snapshots.size() - idsToRemove.size());
+          Lists.newArrayListWithExpectedSize(Math.max(0, snapshots.size() - idsToRemove.size()));
       for (Snapshot snapshot : snapshots) {
         long snapshotId = snapshot.snapshotId();
         if (idsToRemove.contains(snapshotId)) {
