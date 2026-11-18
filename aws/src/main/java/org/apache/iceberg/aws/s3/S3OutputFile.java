@@ -231,6 +231,9 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       if (412 == e.statusCode() && "PreconditionFailed".equals(e.awsErrorDetails().errorCode())) {
         throw new SupportsAtomicOperations.CASException("Target modified", e);
       }
+      if (throttled(e)) {
+        throw throttle(e);
+      }
       throw e;
     }
   }
@@ -243,7 +246,7 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
     final long objLength;
     if (etag != null) {
       pinned = etag;
-      objLength = length != null ? length : getObjectMetadata().contentLength();
+      objLength = length != null ? length : lookup().contentLength();
     } else {
       HeadObjectResponse current = currentObject();
       pinned = current.eTag();
@@ -283,6 +286,9 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       if (412 == e.statusCode() && "PreconditionFailed".equals(e.awsErrorDetails().errorCode())) {
         throw new SupportsAtomicOperations.AppendException("Target modified", e);
       }
+      if (throttled(e)) {
+        throw throttle(e);
+      }
       throw e;
     }
   }
@@ -290,7 +296,7 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
   /** The object an append to a snapshot that has seen no version extends: its current version. */
   private HeadObjectResponse currentObject() {
     try {
-      return getObjectMetadata();
+      return lookup();
     } catch (S3Exception e) {
       if (e.statusCode() == 404) {
         throw new SupportsAtomicOperations.AppendException(
@@ -298,5 +304,47 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       }
       throw e;
     }
+  }
+
+  /** The lookup an append sends first, if it needs one: a throttled lookup throttles the write. */
+  private HeadObjectResponse lookup() {
+    try {
+      return getObjectMetadata();
+    } catch (S3Exception e) {
+      if (throttled(e)) {
+        throw throttle(e);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Whether S3 refused a request for now: it throttled it (503 SlowDown, or any status or error
+   * code the SDK's retry policy treats as throttling: 429, Throttling, RequestLimitExceeded, ...),
+   * or failed it with a server error it asks the caller to retry (500 InternalError, 503
+   * ServiceUnavailable; 502 and 504 from the path to it). The SDK reports its last attempt, after
+   * any retries of its own. Not 501 NotImplemented, which no retry changes, nor any other 4xx.
+   */
+  static boolean throttled(S3Exception e) {
+    int status = e.statusCode();
+    return e.isThrottlingException()
+        || status == 500
+        || status == 502
+        || status == 503
+        || status == 504;
+  }
+
+  /**
+   * A conditional write, or the lookup before it, that S3 throttled. The write may have landed: a
+   * 5xx can follow a write S3 applied.
+   */
+  private static SupportsAtomicOperations.StorageThrottleException throttle(S3Exception e) {
+    String code = e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : null;
+    return new SupportsAtomicOperations.StorageThrottleException(
+        "Storage applied backpressure (HTTP "
+            + e.statusCode()
+            + (code != null ? " " + code : "")
+            + ")",
+        e);
   }
 }
