@@ -19,6 +19,7 @@
 package org.apache.iceberg.catalog;
 
 import static org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel.SERIALIZABLE;
+import static org.apache.iceberg.catalog.CatalogTransaction.IsolationLevel.SNAPSHOT;
 import static org.apache.iceberg.types.Types.NestedField.required;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -27,15 +28,21 @@ import static org.assertj.core.api.Assumptions.assumeThat;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
+import org.apache.iceberg.BaseMetadataTable;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.GenericStatisticsFile;
 import org.apache.iceberg.ImmutableGenericPartitionStatisticsFile;
+import org.apache.iceberg.IncrementalScan;
+import org.apache.iceberg.MetadataTableType;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.PartitionStatisticsScan;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotSummary;
+import org.apache.iceberg.SupportsDistributedScanPlanning;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TestCatalogUtil;
@@ -54,7 +61,9 @@ import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 public abstract class CatalogTransactionTests<
     C extends SupportsCatalogTransactions & SupportsNamespaces & Catalog> {
@@ -1077,6 +1086,371 @@ public abstract class CatalogTransactionTests<
     assertThat(txCatalog.loadTable(B).newScan().planFiles()).hasSize(1);
 
     catalogTx.commitTransaction();
+  }
+
+  /**
+   * Loads {@code table}'s metadata table of {@code type} through {@code txCatalog} and plans a scan
+   * of it, as an engine reading it would.
+   */
+  private static void scanMetadataTable(
+      Catalog txCatalog, TableIdentifier table, MetadataTableType type) {
+    TableIdentifier identifier =
+        TableIdentifier.of(
+            Namespace.of(table.namespace().level(0), table.name()),
+            type.name().toLowerCase(Locale.ROOT));
+    Table metadataTable = txCatalog.loadTable(identifier);
+    assertThat(metadataTable).isInstanceOf(BaseMetadataTable.class);
+    assertThat(Iterables.size(metadataTable.newBatchScan().planFiles())).isNotNegative();
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = MetadataTableType.class,
+      names = {"SNAPSHOTS", "FILES", "ENTRIES", "MANIFESTS", "PARTITIONS", "POSITION_DELETES"})
+  public void aMetadataTableScanIsAReadOfTheWholeTable(MetadataTableType type) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    scanMetadataTable(txCatalog, B, type);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // a change to none of the table's rows
+    catalog().loadTable(B).updateProperties().set("k", "v").commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @ParameterizedTest
+  @EnumSource(
+      value = MetadataTableType.class,
+      names = {"SNAPSHOTS", "FILES", "ENTRIES", "MANIFESTS", "PARTITIONS", "POSITION_DELETES"})
+  public void aMetadataTableScanHoldsWhileItsTableIsUnchanged(MetadataTableType type) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    scanMetadataTable(txCatalog, B, type);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  // metadata tables whose scans read the table's manifest lists and manifests, not its metadata
+  // file (which REST's test server keeps in its memory)
+  @ParameterizedTest
+  @EnumSource(
+      value = MetadataTableType.class,
+      names = {"FILES", "ENTRIES", "MANIFESTS", "POSITION_DELETES"})
+  public void aSnapshotTransactionRecordsNoMetadataTableScan(MetadataTableType type) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SNAPSHOT);
+    Catalog txCatalog = catalogTx.asCatalog();
+    scanMetadataTable(txCatalog, B, type);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 1)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  @Test
+  public void aMetadataTableOfATableTheTransactionDroppedDoesNotLoad() {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SNAPSHOT);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.dropTable(B, false)).isTrue();
+
+    assertThatThrownBy(() -> scanMetadataTable(txCatalog, B, MetadataTableType.FILES))
+        .isInstanceOf(NoSuchTableException.class)
+        .hasMessage("Table does not exist: ns.b.files");
+  }
+
+  /**
+   * Partition statistics are read from the table's metadata, which another writer may change even
+   * for a snapshot fixed in advance: a scan of them, of any snapshot, reads the whole table.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void aPartitionStatisticsScanIsAReadOfTheWholeTable(boolean ofAFixedSnapshot) {
+    createIdentityTables();
+    long current = catalog().loadTable(B).currentSnapshot().snapshotId();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    PartitionStatisticsScan scan = txCatalog.loadTable(B).newPartitionStatisticsScan();
+    if (ofAFixedSnapshot) {
+      scan = scan.useSnapshot(current);
+    }
+    assertThat(scan.scan()).isEmpty();
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // statistics for the snapshot the scan read
+    catalog()
+        .loadTable(B)
+        .updatePartitionStatistics()
+        .setPartitionStatistics(
+            ImmutableGenericPartitionStatisticsFile.builder()
+                .snapshotId(current)
+                .path(metadataDir.resolve("partition-stats.parquet").toString())
+                .fileSizeInBytes(42L)
+                .build())
+        .commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aPartitionStatisticsScanHoldsWhileItsTableIsUnchanged(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.loadTable(B).newPartitionStatisticsScan().scan()).isEmpty();
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    if (isolationLevel == SNAPSHOT) {
+      catalog().loadTable(B).updateProperties().set("k", "v").commit();
+    }
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  /**
+   * An engine's distributed planner (Spark's) scans a table without its {@code newScan} or {@code
+   * newBatchScan}, so a serializable transaction would not see the read: its tables plan locally.
+   */
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aSerializableTransactionsTablesPlanTheirScansLocally(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Table txTable = catalogTx.asCatalog().loadTable(B);
+
+    assertThat(txTable).isInstanceOf(SupportsDistributedScanPlanning.class);
+    assertThat(((SupportsDistributedScanPlanning) txTable).allowDistributedPlanning())
+        .isEqualTo(isolationLevel != SERIALIZABLE);
+  }
+
+  /**
+   * Plans an incremental scan of {@code table}: of its changelog, or of its appends; from its
+   * oldest snapshot, or from after {@code fromExclusive}; to the current snapshot of {@code branch}
+   * (main if null), else to {@code toTag}, else over the one snapshot {@code fixedSnapshotId}.
+   */
+  private static void planIncrementalScan(
+      Table table,
+      boolean changelog,
+      Long fromExclusive,
+      String branch,
+      String toTag,
+      Long fixedSnapshotId) {
+    IncrementalScan<?, ?, ?> scan =
+        changelog
+            ? range(
+                table.newIncrementalChangelogScan(), fromExclusive, branch, toTag, fixedSnapshotId)
+            : range(
+                table.newIncrementalAppendScan(), fromExclusive, branch, toTag, fixedSnapshotId);
+    assertThat(Iterables.size(scan.planFiles())).isPositive();
+  }
+
+  private static void planIncrementalScan(Table table, boolean changelog) {
+    planIncrementalScan(table, changelog, null, null, null, null);
+  }
+
+  private static <S extends IncrementalScan<S, ?, ?>> S range(
+      S scan, Long fromExclusive, String branch, String toTag, Long fixedSnapshotId) {
+    S ranged = fromExclusive != null ? scan.fromSnapshotExclusive(fromExclusive) : scan;
+    ranged = branch != null ? ranged.useBranch(branch) : ranged;
+    if (toTag != null) {
+      return ranged.toSnapshot(toTag);
+    }
+
+    if (fixedSnapshotId != null) {
+      return ranged.fromSnapshotInclusive(fixedSnapshotId).toSnapshot(fixedSnapshotId);
+    }
+
+    return ranged;
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void anIncrementalScanReadFailsOnRowsItRead(boolean changelog) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    planIncrementalScan(txCatalog.loadTable(B), changelog);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // rows the TX's scan would have read
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 1)).commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void anIncrementalScanOfABranchFailsOnRowsItRead(boolean changelog) {
+    createIdentityTables();
+    Table table = catalog().loadTable(B);
+    table.manageSnapshots().createBranch("br", table.currentSnapshot().snapshotId()).commit();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    planIncrementalScan(txCatalog.loadTable(B), changelog, null, "br", null, null);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // rows the TX's scan of the branch would have read
+    table.newFastAppend().appendFile(idFile("b-2", 1)).toBranch("br").commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void anIncrementalScanReadHoldsWhileItsTableIsUnchanged(boolean changelog) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    planIncrementalScan(txCatalog.loadTable(B), changelog);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  /** A change another writer makes to a table that leaves its main branch alone. */
+  protected enum ChangeLeavingMain {
+    ANOTHER_BRANCH,
+    PROPERTY,
+    EXPIRY
+  }
+
+  /**
+   * An incremental scan to main's current snapshot is judged as a scan of main is: by the rows it
+   * read on a catalog that judges scan reads by their ref, else by the table's version.
+   */
+  @ParameterizedTest
+  @CsvSource({
+    "false, ANOTHER_BRANCH",
+    "false, PROPERTY",
+    "false, EXPIRY",
+    "true, ANOTHER_BRANCH",
+    "true, PROPERTY",
+    "true, EXPIRY"
+  })
+  public void anIncrementalScanReadAndAChangeThatLeavesItsRefAlone(
+      boolean changelog, ChangeLeavingMain change) {
+    createIdentityTables();
+    Table table = catalog().loadTable(B);
+    long first = table.currentSnapshot().snapshotId();
+    table.newFastAppend().appendFile(idFile("b-2", 1)).commit();
+    table.manageSnapshots().createBranch("br", table.currentSnapshot().snapshotId()).commit();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    // the appends after the first snapshot, to main's current snapshot
+    planIncrementalScan(txCatalog.loadTable(B), changelog, first, null, null, null);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    switch (change) {
+      case ANOTHER_BRANCH:
+        table.newFastAppend().appendFile(idFile("b-3", 1)).toBranch("br").commit();
+        break;
+      case PROPERTY:
+        table.updateProperties().set("k", "v").commit();
+        break;
+      case EXPIRY:
+        // a snapshot before the scan's range
+        table.expireSnapshots().expireSnapshotId(first).cleanExpiredFiles(false).commit();
+        break;
+      default:
+        throw new IllegalArgumentException("Unknown change: " + change);
+    }
+
+    if (judgesScanReadsByRef()) {
+      catalogTx.commitTransaction();
+      assertThat(snapshots(A)).isEqualTo(2);
+    } else {
+      assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+      assertThat(snapshots(A)).isEqualTo(1);
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void aSnapshotTransactionRecordsNoIncrementalScan(boolean changelog) {
+    createIdentityTables();
+    CatalogTransaction catalogTx = begin(SNAPSHOT);
+    Catalog txCatalog = catalogTx.asCatalog();
+    planIncrementalScan(txCatalog.loadTable(B), changelog);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 1)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void anIncrementalScanOfAFixedRangeIsNotARead(boolean changelog) {
+    createIdentityTables();
+    long first = catalog().loadTable(B).currentSnapshot().snapshotId();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    planIncrementalScan(txCatalog.loadTable(B), changelog, null, null, null, first);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // rows a scan to main's current snapshot would have read
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 1)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  /**
+   * A range that ends at a tag reads the tag, as a scan of the tag does: another writer may move
+   * it.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void anIncrementalScanToATagFailsWhenTheTagMoves(boolean changelog) {
+    createIdentityTables();
+    long first = catalog().loadTable(B).currentSnapshot().snapshotId();
+    catalog().loadTable(B).manageSnapshots().createTag("t", first).commit();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    planIncrementalScan(txCatalog.loadTable(B), changelog, null, null, "t", null);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    Table table = catalog().loadTable(B);
+    table.newFastAppend().appendFile(idFile("b-2", 1)).commit();
+    table.manageSnapshots().replaceTag("t", table.currentSnapshot().snapshotId()).commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  /** {@code appendsAfter} ends at main's current snapshot, as the incremental scans it precedes. */
+  @Test
+  @SuppressWarnings("deprecation")
+  public void aScanOfAppendsAfterASnapshotFailsOnRowsItRead() {
+    createIdentityTables();
+    long first = catalog().loadTable(B).currentSnapshot().snapshotId();
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-2", 2)).commit();
+    CatalogTransaction catalogTx = begin(SERIALIZABLE);
+    Catalog txCatalog = catalogTx.asCatalog();
+    assertThat(txCatalog.loadTable(B).newScan().appendsAfter(first).planFiles()).hasSize(1);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalog().loadTable(B).newFastAppend().appendFile(idFile("b-3", 1)).commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(snapshots(A)).isEqualTo(1);
   }
 
   /**

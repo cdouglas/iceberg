@@ -18,25 +18,39 @@
  */
 package org.apache.iceberg.catalog;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Supplier;
 import org.apache.iceberg.AppendFiles;
+import org.apache.iceberg.BasePartitionStatisticsScan;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.BaseTransaction;
+import org.apache.iceberg.ChangelogScanTask;
+import org.apache.iceberg.CombinedScanTask;
 import org.apache.iceberg.DataTableScan;
 import org.apache.iceberg.DeleteFiles;
 import org.apache.iceberg.ExpireSnapshots;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.IncrementalAppendScan;
+import org.apache.iceberg.IncrementalChangelogScan;
+import org.apache.iceberg.IncrementalScan;
 import org.apache.iceberg.ManageSnapshots;
+import org.apache.iceberg.MetadataTableUtils;
 import org.apache.iceberg.OverwriteFiles;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.PartitionStatistics;
+import org.apache.iceberg.PartitionStatisticsScan;
 import org.apache.iceberg.ReplacePartitions;
 import org.apache.iceberg.ReplaceSortOrder;
 import org.apache.iceberg.RewriteFiles;
 import org.apache.iceberg.RewriteManifests;
 import org.apache.iceberg.RowDelta;
+import org.apache.iceberg.ScanTask;
+import org.apache.iceberg.ScanTaskGroup;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SnapshotRef;
 import org.apache.iceberg.SortOrder;
@@ -58,7 +72,10 @@ import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.metrics.MetricsReporter;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
@@ -75,8 +92,11 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  * under its new name only, one it created loads and takes updates, and listings include them. Each
  * table it loads is held as it first loaded it, and its updates are staged on that version. Under
  * {@link IsolationLevel#SERIALIZABLE} it records what it reads ({@link TableRead}): each scan's
- * planning, of a branch or tag, and each {@link #declareRead}. Replace transactions, {@code
- * registerTable} and views are not part of a catalog transaction and throw.
+ * planning, of a branch or tag (an incremental scan's, of the branch whose current snapshot it ends
+ * at and of the tags it names), and each {@link #declareRead}; and, as reads of the whole table,
+ * each metadata table it loads of a table it holds and each partition statistics scan's read.
+ * Replace transactions, {@code registerTable} and views are not part of a catalog transaction and
+ * throw.
  */
 public class BaseCatalogTransaction implements CatalogTransaction {
   private final Catalog origin;
@@ -264,8 +284,23 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       throw new NoSuchTableException("Table does not exist: %s", identifier);
     }
 
-    if (IsolationLevel.SERIALIZABLE == isolationLevel && !entry.created()) {
-      reads.add(TableRead.whole(entry.startName, entry.base));
+    recordWholeRead(entry);
+  }
+
+  /**
+   * Records, under SERIALIZABLE, a read of a table's whole version as the transaction first read
+   * it: what {@link #declareRead} records, for what reads the table other than by a scan whose ref
+   * and filter the transaction sees. A table the transaction created is read only as it made it.
+   */
+  private void recordWholeRead(Entry entry) {
+    if (!entry.created()) {
+      addRead(TableRead.whole(entry.startName, entry.base));
+    }
+  }
+
+  private void addRead(TableRead read) {
+    if (IsolationLevel.SERIALIZABLE == isolationLevel && !reads.contains(read)) {
+      reads.add(read);
     }
   }
 
@@ -363,16 +398,43 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     @Override
     public Table loadTable(TableIdentifier identifier) {
       Entry entry = entry(identifier);
-      if (entry == null) {
-        if (!gone.contains(identifier)) {
-          // a metadata table, or a NoSuchTableException
-          return origin.loadTable(identifier);
-        }
+      if (entry != null) {
+        return new TransactionalTable(entry);
+      }
 
+      if (gone.contains(identifier)) {
         throw new NoSuchTableException("Table does not exist: %s", identifier);
       }
 
-      return new TransactionalTable(entry);
+      if (MetadataTableUtils.hasMetadataTableName(identifier)
+          && !identifier.namespace().isEmpty()) {
+        return metadataTable(identifier);
+      }
+
+      // a NoSuchTableException
+      return origin.loadTable(identifier);
+    }
+
+    /**
+     * A metadata table, which the transaction reads as the origin does: of a table the transaction
+     * holds, a read of the whole table, recorded as it is handed out, since its scans read the
+     * table's snapshots, refs, manifests and files without a scan of the table this transaction
+     * sees. The table is held first, so the metadata table reads its version as the transaction
+     * first read it or a later one, which fails the commit.
+     */
+    private Table metadataTable(TableIdentifier identifier) {
+      TableIdentifier tableName = TableIdentifier.of(identifier.namespace().levels());
+      Entry table = entry(tableName);
+      if (table == null && gone.contains(tableName)) {
+        throw new NoSuchTableException("Table does not exist: %s", identifier);
+      }
+
+      Table metadataTable = origin.loadTable(identifier);
+      if (table != null) {
+        recordWholeRead(table);
+      }
+
+      return metadataTable;
     }
 
     @Override
@@ -653,6 +715,43 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       return tableScan;
     }
 
+    /**
+     * Partition statistics are the table's metadata, which another writer may set or remove even
+     * for a snapshot fixed in advance: a scan of them reads the whole table.
+     */
+    @Override
+    public PartitionStatisticsScan newPartitionStatisticsScan() {
+      return new BasePartitionStatisticsScan(this) {
+        @Override
+        public CloseableIterable<PartitionStatistics> scan() {
+          recordWholeRead(entry);
+          return super.scan();
+        }
+      };
+    }
+
+    /**
+     * An engine's distributed planner scans the table without {@link #newScan} or {@link
+     * #newBatchScan}, so the transaction would not see what it read: under SERIALIZABLE, plan
+     * locally.
+     */
+    @Override
+    public boolean allowDistributedPlanning() {
+      return IsolationLevel.SERIALIZABLE != isolationLevel && super.allowDistributedPlanning();
+    }
+
+    @Override
+    public IncrementalAppendScan newIncrementalAppendScan() {
+      return new TransactionalIncrementalAppendScan(
+          entry, super.newIncrementalAppendScan(), IncrementalRange.CURRENT);
+    }
+
+    @Override
+    public IncrementalChangelogScan newIncrementalChangelogScan() {
+      return new TransactionalIncrementalChangelogScan(
+          entry, super.newIncrementalChangelogScan(), IncrementalRange.CURRENT);
+    }
+
     @Override
     public Transaction newTransaction() {
       return nestedTransaction(entry);
@@ -770,6 +869,19 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       return new TransactionalTableScan(entry, name, scan.table(), scan.schema(), scan.context());
     }
 
+    /**
+     * The appends after a snapshot up to main's current snapshot, which it resolves now into a
+     * range of fixed snapshots: recorded now, as an incremental scan to main's current snapshot is
+     * when it plans.
+     */
+    @Override
+    @SuppressWarnings("deprecation")
+    public TableScan appendsAfter(long fromSnapshotId) {
+      TableScan scan = super.appendsAfter(fromSnapshotId);
+      recordIncrementalRead(entry, IncrementalRange.CURRENT.refs(), filter(), isCaseSensitive());
+      return scan;
+    }
+
     @Override
     public CloseableIterable<FileScanTask> planFiles() {
       // before planning: a scan of a branch with no snapshot plans nothing, and read that it had
@@ -793,16 +905,290 @@ public class BaseCatalogTransaction implements CatalogTransaction {
         return;
       }
 
-      TableRead read =
+      addRead(
           TableRead.scan(
               entry.startName,
               entry.base,
               ref != null ? ref : SnapshotRef.MAIN_BRANCH,
               filter(),
-              isCaseSensitive());
-      if (!reads.contains(read)) {
-        reads.add(read);
+              isCaseSensitive()));
+    }
+  }
+
+  /**
+   * Records, under SERIALIZABLE, an incremental scan's read of each ref its range resolved ({@link
+   * IncrementalRange#refs}) as a scan read of the ref, as a table scan of the ref records: a range
+   * that ends at a ref's current snapshot is judged as a scan of that ref is, and a range between
+   * snapshots fixed by their ids reads rows that cannot change, and records nothing. A scan of a
+   * table the transaction created reads only its own.
+   */
+  private void recordIncrementalRead(
+      Entry entry, Set<String> refs, Expression filter, boolean caseSensitive) {
+    if (entry.created()) {
+      return;
+    }
+
+    for (String ref : refs) {
+      addRead(TableRead.scan(entry.startName, entry.base, ref, filter, caseSensitive));
+    }
+  }
+
+  /**
+   * Where an incremental scan's range starts and ends, as far as a ref names it: the tag it starts
+   * at, if any; and the tag it ends at, else a snapshot fixed by its id, else the current snapshot
+   * of a branch (main if it named none).
+   */
+  private static final class IncrementalRange {
+    private static final IncrementalRange CURRENT = new IncrementalRange(null, null, false, null);
+
+    private final String fromTag;
+    private final String toTag;
+    private final boolean toFixed;
+    private final String branch;
+
+    private IncrementalRange(String fromTag, String toTag, boolean toFixed, String branch) {
+      this.fromTag = fromTag;
+      this.toTag = toTag;
+      this.toFixed = toFixed;
+      this.branch = branch;
+    }
+
+    private IncrementalRange from(String tag) {
+      return new IncrementalRange(tag, toTag, toFixed, branch);
+    }
+
+    private IncrementalRange to(String tag) {
+      return new IncrementalRange(fromTag, tag, tag == null, branch);
+    }
+
+    private IncrementalRange onBranch(String name) {
+      return new IncrementalRange(fromTag, toTag, toFixed, name);
+    }
+
+    /**
+     * The refs the range resolved, whose snapshots another writer may move: the branch whose
+     * current snapshot it ends at, unless it ends at a tag or a fixed snapshot; and a tag it starts
+     * or ends at, which it resolves as a scan of the tag does.
+     */
+    private Set<String> refs() {
+      Set<String> refs = Sets.newLinkedHashSet();
+      if (fromTag != null) {
+        refs.add(fromTag);
       }
+
+      if (toTag != null) {
+        refs.add(toTag);
+      } else if (!toFixed) {
+        refs.add(branch != null ? branch : SnapshotRef.MAIN_BRANCH);
+      }
+
+      return refs;
+    }
+  }
+
+  /**
+   * An incremental scan of a table of this transaction, around the scan the table made: under
+   * SERIALIZABLE, its planning records the refs its range resolved.
+   */
+  private abstract class TransactionalIncrementalScan<
+          ThisT extends IncrementalScan<ThisT, T, G>,
+          T extends ScanTask,
+          G extends ScanTaskGroup<T>>
+      implements IncrementalScan<ThisT, T, G> {
+    private final Entry entry;
+    private final ThisT scan;
+    private final IncrementalRange range;
+
+    private TransactionalIncrementalScan(Entry entry, ThisT scan, IncrementalRange range) {
+      this.entry = entry;
+      this.scan = scan;
+      this.range = range;
+    }
+
+    /**
+     * A scan of this transaction around {@code tableScan}, a scan of the table over {@code
+     * ofRange}.
+     */
+    protected abstract ThisT wrap(Entry ofEntry, ThisT tableScan, IncrementalRange ofRange);
+
+    private ThisT wrap(ThisT tableScan, IncrementalRange ofRange) {
+      return wrap(entry, tableScan, ofRange);
+    }
+
+    private ThisT wrap(ThisT tableScan) {
+      return wrap(entry, tableScan, range);
+    }
+
+    private void recordRead() {
+      recordIncrementalRead(entry, range.refs(), scan.filter(), scan.isCaseSensitive());
+    }
+
+    @Override
+    public ThisT fromSnapshotInclusive(long fromSnapshotId) {
+      return wrap(scan.fromSnapshotInclusive(fromSnapshotId), range.from(null));
+    }
+
+    @Override
+    public ThisT fromSnapshotInclusive(String ref) {
+      return wrap(scan.fromSnapshotInclusive(ref), range.from(ref));
+    }
+
+    @Override
+    public ThisT fromSnapshotExclusive(long fromSnapshotId) {
+      return wrap(scan.fromSnapshotExclusive(fromSnapshotId), range.from(null));
+    }
+
+    @Override
+    public ThisT fromSnapshotExclusive(String ref) {
+      return wrap(scan.fromSnapshotExclusive(ref), range.from(ref));
+    }
+
+    @Override
+    public ThisT toSnapshot(long toSnapshotId) {
+      return wrap(scan.toSnapshot(toSnapshotId), range.to(null));
+    }
+
+    @Override
+    public ThisT toSnapshot(String ref) {
+      return wrap(scan.toSnapshot(ref), range.to(ref));
+    }
+
+    @Override
+    public ThisT useBranch(String branch) {
+      return wrap(scan.useBranch(branch), range.onBranch(branch));
+    }
+
+    @Override
+    public ThisT option(String property, String value) {
+      return wrap(scan.option(property, value));
+    }
+
+    @Override
+    public ThisT project(Schema schema) {
+      return wrap(scan.project(schema));
+    }
+
+    @Override
+    public ThisT caseSensitive(boolean caseSensitive) {
+      return wrap(scan.caseSensitive(caseSensitive));
+    }
+
+    @Override
+    public boolean isCaseSensitive() {
+      return scan.isCaseSensitive();
+    }
+
+    @Override
+    public ThisT includeColumnStats() {
+      return wrap(scan.includeColumnStats());
+    }
+
+    @Override
+    public ThisT includeColumnStats(Collection<String> requestedColumns) {
+      return wrap(scan.includeColumnStats(requestedColumns));
+    }
+
+    @Override
+    public ThisT select(Collection<String> columns) {
+      return wrap(scan.select(columns));
+    }
+
+    @Override
+    public ThisT filter(Expression expr) {
+      return wrap(scan.filter(expr));
+    }
+
+    @Override
+    public Expression filter() {
+      return scan.filter();
+    }
+
+    @Override
+    public ThisT ignoreResiduals() {
+      return wrap(scan.ignoreResiduals());
+    }
+
+    @Override
+    public ThisT planWith(ExecutorService executorService) {
+      return wrap(scan.planWith(executorService));
+    }
+
+    @Override
+    public Schema schema() {
+      return scan.schema();
+    }
+
+    @Override
+    public CloseableIterable<T> planFiles() {
+      recordRead();
+      return scan.planFiles();
+    }
+
+    @Override
+    public CloseableIterable<G> planTasks() {
+      recordRead();
+      return scan.planTasks();
+    }
+
+    @Override
+    public long targetSplitSize() {
+      return scan.targetSplitSize();
+    }
+
+    @Override
+    public int splitLookback() {
+      return scan.splitLookback();
+    }
+
+    @Override
+    public long splitOpenFileCost() {
+      return scan.splitOpenFileCost();
+    }
+
+    @Override
+    public ThisT metricsReporter(MetricsReporter reporter) {
+      return wrap(scan.metricsReporter(reporter));
+    }
+
+    @Override
+    public ThisT minRowsRequested(long numRows) {
+      return wrap(scan.minRowsRequested(numRows));
+    }
+
+    @Override
+    public Supplier<FileIO> fileIO() {
+      return scan.fileIO();
+    }
+  }
+
+  private class TransactionalIncrementalAppendScan
+      extends TransactionalIncrementalScan<IncrementalAppendScan, FileScanTask, CombinedScanTask>
+      implements IncrementalAppendScan {
+    private TransactionalIncrementalAppendScan(
+        Entry entry, IncrementalAppendScan scan, IncrementalRange range) {
+      super(entry, scan, range);
+    }
+
+    @Override
+    protected IncrementalAppendScan wrap(
+        Entry ofEntry, IncrementalAppendScan tableScan, IncrementalRange ofRange) {
+      return new TransactionalIncrementalAppendScan(ofEntry, tableScan, ofRange);
+    }
+  }
+
+  private class TransactionalIncrementalChangelogScan
+      extends TransactionalIncrementalScan<
+          IncrementalChangelogScan, ChangelogScanTask, ScanTaskGroup<ChangelogScanTask>>
+      implements IncrementalChangelogScan {
+    private TransactionalIncrementalChangelogScan(
+        Entry entry, IncrementalChangelogScan scan, IncrementalRange range) {
+      super(entry, scan, range);
+    }
+
+    @Override
+    protected IncrementalChangelogScan wrap(
+        Entry ofEntry, IncrementalChangelogScan tableScan, IncrementalRange ofRange) {
+      return new TransactionalIncrementalChangelogScan(ofEntry, tableScan, ofRange);
     }
   }
 }
