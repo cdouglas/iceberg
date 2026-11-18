@@ -40,6 +40,9 @@ class S3URI {
   /** Suffix of S3Express storage bucket names. */
   private static final String S3_DIRECTORY_BUCKET_SUFFIX = "--x-s3";
 
+  /** Suffix of the names of access points for S3Express storage buckets. */
+  private static final String S3_DIRECTORY_ACCESS_POINT_SUFFIX = "--xa-s3";
+
   private final String location;
   private final String scheme;
   private final String bucket;
@@ -136,6 +139,17 @@ class S3URI {
 
   public boolean useS3DirectoryBucket() {
     return isS3DirectoryBucket(this.bucket);
+  }
+
+  /**
+   * Whether the requests to this location address a directory bucket, directly or through one of
+   * its access points (whose names, and so their ARNs, end with {@code --xa-s3}). This method does
+   * not check against the S3 service.
+   *
+   * @return true if the bucket or access point name indicates a directory bucket
+   */
+  boolean addressesS3DirectoryBucket() {
+    return useS3DirectoryBucket() || bucket.endsWith(S3_DIRECTORY_ACCESS_POINT_SUFFIX);
   }
 
   /**
