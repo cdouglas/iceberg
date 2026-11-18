@@ -19,6 +19,7 @@
 package org.apache.iceberg.aws.s3;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -28,6 +29,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import org.apache.iceberg.io.FileIOMetricsContext;
+import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.CachingMetricsContext;
 import org.apache.iceberg.metrics.Counter;
 import org.apache.iceberg.metrics.MetricsContext;
@@ -39,6 +41,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 @ExtendWith(MockitoExtension.class)
 public final class TestS3InputStream {
@@ -149,5 +154,50 @@ public final class TestS3InputStream {
       assertThat(readBytes.value()).isEqualTo(0);
       assertThat(readOperations.value()).isEqualTo(0);
     }
+  }
+
+  /**
+   * A GET pinned to a version (If-Match) from past the end of a shorter object that replaced it: S3
+   * Express answers 416 before it checks the If-Match. A HEAD that asks for the version fails its
+   * precondition, so the read is stale, not at the version's end.
+   */
+  @Test
+  void aPinnedRangePastTheEndOfAShorterReplacementIsStale() throws IOException {
+    when(s3Client.getObject(any(GetObjectRequest.class), any(ResponseTransformer.class)))
+        .thenThrow(S3Exception.builder().statusCode(416).build());
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(S3Exception.builder().statusCode(412).build());
+
+    try (S3InputStream in = pinned()) {
+      in.seek(1024);
+      assertThatThrownBy(in::read).isInstanceOf(SupportsAtomicOperations.StaleReadException.class);
+      assertThatThrownBy(() -> in.readFully(1024, new byte[64]))
+          .isInstanceOf(SupportsAtomicOperations.StaleReadException.class);
+    }
+  }
+
+  /** A pinned GET's 416 where a HEAD finds the version live: the version's end. */
+  @Test
+  void aPinnedRangePastItsVersionsEndIsTheStreamsEnd() throws IOException {
+    when(s3Client.getObject(any(GetObjectRequest.class), any(ResponseTransformer.class)))
+        .thenThrow(S3Exception.builder().statusCode(416).build());
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(HeadObjectResponse.builder().contentLength(1024L).build());
+
+    try (S3InputStream in = pinned()) {
+      in.seek(1024);
+      assertThat(in.read()).isEqualTo(-1);
+    }
+  }
+
+  /** A stream of the version "v1" of an object. */
+  private S3InputStream pinned() {
+    return new S3InputStream(
+        s3Client,
+        mock(),
+        new S3FileIOProperties(),
+        MetricsContext.nullMetrics(),
+        () -> "\"v1\"",
+        response -> {});
   }
 }

@@ -666,6 +666,72 @@ public abstract class SupportsAtomicOperationsContractTest {
     }
   }
 
+  /**
+   * A file that has seen a version reads that version past the end of a shorter replacement, or
+   * fails as stale. A stream that opens there (a new stream, or one that reopens after a connection
+   * reset) sends a GET from that offset pinned to the version, which the store must refuse as a
+   * failed precondition (412) rather than as a range the live object cannot satisfy (416): a stream
+   * reports a 416 as its end, so the read would end inside the version, short of it
+   * (fileio-catalog's errata U4). Both a file that looked the object up and, where reads record
+   * their version, one whose first request was a read; by a stream and by a range read.
+   */
+  @Test
+  void aSeenVersionReadPastTheEndOfAShorterReplacementIsNotCutShort() throws IOException {
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("read-past-replacement");
+    try {
+      byte[] first = randomBytes(12, 64 * 1024);
+      createAtomically(io, loc, first);
+      InputFile looked = io.newInputFile(loc);
+      assertThat(looked.getLength()).isEqualTo(first.length);
+      List<InputFile> seen = new ArrayList<>(List.of(looked));
+      if (io.readsRecordVersion()) {
+        InputFile reader = io.newInputFile(loc);
+        try (SeekableInputStream in = reader.newStream()) {
+          byte[] start = new byte[16];
+          fill(in, start);
+          assertThat(start).isEqualTo(Arrays.copyOfRange(first, 0, start.length));
+        }
+        seen.add(reader);
+      }
+
+      byte[] second = randomBytes(13, 1024);
+      replaceAtomically(io, loc, second);
+
+      for (InputFile file : seen) {
+        String which = file == looked ? "a file that looked" : "a file whose first request read";
+        for (int offset : new int[] {second.length, 32 * 1024, first.length - 64}) {
+          byte[] expected = Arrays.copyOfRange(first, offset, offset + 64);
+          String what = which + ", from " + offset + " (the replacement has " + second.length + ")";
+          try (SeekableInputStream in = file.newStream()) {
+            in.seek(offset);
+            byte[] bytes = new byte[expected.length];
+            fill(in, bytes);
+            assertThat(bytes).as(what).isEqualTo(expected);
+          } catch (SupportsAtomicOperations.StaleReadException e) {
+            // the store no longer serves the version: the precondition failed
+          } catch (IOException e) {
+            throw new AssertionError(what + ": a read of the version ended short of it", e);
+          }
+          try (SeekableInputStream in = file.newStream()) {
+            if (in instanceof RangeReadable range) {
+              byte[] bytes = new byte[expected.length];
+              range.readFully(offset, bytes);
+              assertThat(bytes).as(what + ", a range read").isEqualTo(expected);
+            }
+          } catch (SupportsAtomicOperations.StaleReadException e) {
+            // as above
+          } catch (IOException e) {
+            throw new AssertionError(what + ": a range read of the version ended short of it", e);
+          }
+        }
+      }
+      assertThat(read(io.newInputFile(loc))).isEqualTo(second);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
   /** Reads {@code file} whole: {@code expected}, unless the read fails as stale. */
   private static void assertReadsOnly(InputFile file, byte[] expected, String what)
       throws IOException {
