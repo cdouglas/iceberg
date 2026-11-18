@@ -29,7 +29,10 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -43,6 +46,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Iterators;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.relocated.com.google.common.collect.Streams;
+import org.apache.iceberg.relocated.com.google.common.util.concurrent.MoreExecutors;
 import org.apache.iceberg.types.TypeUtil;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.StructLikeWrapper;
@@ -1375,6 +1379,98 @@ public class TestMetadataTableScans extends MetadataTableScanTestBase {
     assertThat(planThreadsIndex.get())
         .as("Thread should be created in provided pool")
         .isGreaterThan(0);
+  }
+
+  @TestTemplate
+  public void partitionsTableIsTheSameInAnyManifestOrder() {
+    // One snapshot adds a file of one partition under each of two specs that differ only in the
+    // partition field's name: the files are one partition of the table, in two manifests
+    table.updateSpec().renameField("data_bucket", "data_bucket_renamed").commit();
+    DataFile renamed =
+        DataFiles.builder(table.spec())
+            .withPath("/path/to/data-renamed.parquet")
+            .withFileSizeInBytes(10)
+            .withPartitionPath("data_bucket_renamed=0")
+            .withRecordCount(1)
+            .build();
+    table.newFastAppend().appendFile(FILE_A).appendFile(renamed).commit();
+    assertThat(table.currentSnapshot().allManifests(table.io())).hasSize(2);
+
+    List<String> inOrder = partitionRows(MoreExecutors.newDirectExecutorService());
+    List<String> reversed = partitionRows(new ReversingExecutor(2));
+
+    assertThat(inOrder).hasSize(1);
+    assertThat(reversed).as("Rows read with the manifests in reverse").isEqualTo(inOrder);
+  }
+
+  /** The partitions table's rows (partition, spec id, last update), planned on {@code executor}. */
+  private List<String> partitionRows(ExecutorService executor) {
+    Table partitionsTable = new PartitionsTable(table);
+    StaticTableScan scan = (StaticTableScan) partitionsTable.newScan().planWith(executor);
+    List<String> rows = Lists.newArrayList();
+    for (PartitionsTable.Partition partition : PartitionsTable.partitions(table, scan)) {
+      rows.add(
+          String.format(
+              "%s spec_id=%s last_updated_at=%s last_updated_snapshot_id=%s",
+              partition.partitionData(),
+              partition.specId(),
+              partition.lastUpdatedAt(),
+              partition.lastUpdatedSnapshotId()));
+    }
+
+    return rows;
+  }
+
+  /**
+   * An executor that holds the first {@code count} tasks it is given, then runs them in reverse on
+   * one thread: the manifests' reads, which the partitions table submits together, last first.
+   */
+  private static class ReversingExecutor extends AbstractExecutorService {
+    private final int count;
+    private final List<Runnable> held = Lists.newArrayList();
+    private volatile boolean shutdown = false;
+
+    ReversingExecutor(int count) {
+      this.count = count;
+    }
+
+    @Override
+    public synchronized void execute(Runnable task) {
+      held.add(task);
+      if (held.size() == count) {
+        List<Runnable> batch = Lists.reverse(Lists.newArrayList(held));
+        held.clear();
+        Thread runner = new Thread(() -> batch.forEach(Runnable::run), "reversing-executor");
+        runner.setDaemon(true);
+        runner.start();
+      }
+    }
+
+    @Override
+    public void shutdown() {
+      this.shutdown = true;
+    }
+
+    @Override
+    public List<Runnable> shutdownNow() {
+      this.shutdown = true;
+      return List.of();
+    }
+
+    @Override
+    public boolean isShutdown() {
+      return shutdown;
+    }
+
+    @Override
+    public boolean isTerminated() {
+      return shutdown;
+    }
+
+    @Override
+    public boolean awaitTermination(long timeout, TimeUnit unit) {
+      return true;
+    }
   }
 
   @TestTemplate

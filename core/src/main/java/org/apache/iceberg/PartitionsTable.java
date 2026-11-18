@@ -310,6 +310,7 @@ public class PartitionsTable extends BaseMetadataTable {
     private int eqDeleteFileCount;
     private Long lastUpdatedAt;
     private Long lastUpdatedSnapshotId;
+    private long lastUpdatedSequenceNumber;
 
     Partition(StructLike key, PartitionData partitionDataTemplate) {
       this.partitionData = toPartitionData(key, partitionDataTemplate);
@@ -328,15 +329,28 @@ public class PartitionsTable extends BaseMetadataTable {
       return partitionData;
     }
 
-    void update(ContentFile<?> file, Snapshot snapshot) {
-      if (snapshot != null) {
-        long snapshotCommitTime = snapshot.timestampMillis() * 1000;
-        if (this.lastUpdatedAt == null || snapshotCommitTime > this.lastUpdatedAt) {
-          this.specId = file.specId();
+    @VisibleForTesting
+    int specId() {
+      return specId;
+    }
 
-          this.lastUpdatedAt = snapshotCommitTime;
-          this.lastUpdatedSnapshotId = snapshot.snapshotId();
-        }
+    @VisibleForTesting
+    Long lastUpdatedAt() {
+      return lastUpdatedAt;
+    }
+
+    @VisibleForTesting
+    Long lastUpdatedSnapshotId() {
+      return lastUpdatedSnapshotId;
+    }
+
+    void update(ContentFile<?> file, Snapshot snapshot) {
+      if (snapshot != null && updatesLast(file, snapshot)) {
+        this.specId = file.specId();
+
+        this.lastUpdatedAt = snapshot.timestampMillis() * 1000;
+        this.lastUpdatedSnapshotId = snapshot.snapshotId();
+        this.lastUpdatedSequenceNumber = snapshot.sequenceNumber();
       }
 
       switch (file.content()) {
@@ -356,6 +370,29 @@ public class PartitionsTable extends BaseMetadataTable {
         default:
           throw new UnsupportedOperationException(
               "Unsupported file content type: " + file.content());
+      }
+    }
+
+    /**
+     * Whether {@code file}, of {@code snapshot}, is newer than the file the partition's spec id and
+     * last update come from. The manifests are read in parallel, so a partition's files arrive in
+     * no fixed order: a tie on the commit time is broken on the snapshot's sequence number and id,
+     * then on the file's spec id, so that any order of the same files gives the same row.
+     */
+    private boolean updatesLast(ContentFile<?> file, Snapshot snapshot) {
+      if (lastUpdatedAt == null) {
+        return true;
+      }
+
+      long commitTime = snapshot.timestampMillis() * 1000;
+      if (commitTime != lastUpdatedAt) {
+        return commitTime > lastUpdatedAt;
+      } else if (snapshot.sequenceNumber() != lastUpdatedSequenceNumber) {
+        return snapshot.sequenceNumber() > lastUpdatedSequenceNumber;
+      } else if (snapshot.snapshotId() != lastUpdatedSnapshotId) {
+        return snapshot.snapshotId() > lastUpdatedSnapshotId;
+      } else {
+        return file.specId() > specId;
       }
     }
 
