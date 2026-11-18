@@ -207,6 +207,9 @@ public class ADLSFileIO implements DelegateFileIO, SupportsAtomicOperations {
         new DataLakeFileSystemClientBuilder().httpClient(HTTP);
 
     location.container().ifPresent(clientBuilder::fileSystemName);
+    // Counts a conditional write's attempts, so that only a client error on its only attempt
+    // refuses it (ADLSOutputFile)
+    clientBuilder.addPolicy(new ADLSAttempts());
     Optional.ofNullable(vendedAdlsCredentialProvider)
         .map(p -> new VendedAzureSasCredentialPolicy(location.host(), p))
         .ifPresent(clientBuilder::addPolicy);
