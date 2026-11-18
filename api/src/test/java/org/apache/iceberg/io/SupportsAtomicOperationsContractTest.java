@@ -46,11 +46,11 @@ import org.junit.jupiter.api.Test;
  * via {@link SupportsAtomicOperations}, {@link InputFile}, {@link AtomicOutputFile}, and {@link
  * CAS} only — never the concrete provider classes.
  *
- * <p>Capability declaration is the subclass's job: each provider's subclass declares whether the
- * configured backend supports {@link AtomicOutputFile.Strategy#APPEND} by overriding {@link
- * #supportsAppend()}. Tests gated on APPEND skip via {@link Assumptions#assumeTrue} so providers
- * without it (GCS today; standard S3 buckets) report ignored, and providers with it (S3 Express,
- * ADLS) run them.
+ * <p>Whether the configured backend supports {@link AtomicOutputFile.Strategy#APPEND} is the
+ * FileIO's declaration for the suite's locations ({@link #supportsAppend()}), which a subclass may
+ * override. Tests gated on APPEND skip via {@link Assumptions#assumeTrue} so providers without it
+ * (GCS today; standard S3 buckets) report ignored, and providers with it (S3 Express, ADLS) run
+ * them.
  */
 public abstract class SupportsAtomicOperationsContractTest {
 
@@ -66,14 +66,14 @@ public abstract class SupportsAtomicOperationsContractTest {
   protected abstract String randomLocation(String slug);
 
   /**
-   * Whether the backing store supports {@link AtomicOutputFile.Strategy#APPEND}. Defaults to the
-   * FileIO's own {@link SupportsAtomicOperations#supportsAppend()} declaration. Subclasses override
-   * only when the FileIO's coarse capability is wrong for this specific configuration — e.g. S3
-   * standard buckets, where {@code S3FileIO} reports {@code true} (S3 supports {@code
-   * writeOffsetBytes} on directory buckets) but the standard bucket under test rejects append.
+   * Whether the backing store supports {@link AtomicOutputFile.Strategy#APPEND} where this suite
+   * writes. Defaults to the FileIO's own {@link SupportsAtomicOperations#supportsAppend(String)}
+   * declaration for a location of the suite (S3: a directory bucket appends, a general-purpose one
+   * does not). Subclasses override only when the FileIO's capability is wrong for this specific
+   * configuration.
    */
   protected boolean supportsAppend() {
-    return newFileIO().supportsAppend();
+    return newFileIO().supportsAppend(randomLocation("append"));
   }
 
   /**
