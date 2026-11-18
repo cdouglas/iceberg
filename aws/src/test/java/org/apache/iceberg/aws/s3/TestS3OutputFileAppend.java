@@ -79,6 +79,30 @@ class TestS3OutputFileAppend {
     assertThat(puts.getAllValues().get(1).ifMatch()).isEqualTo("\"second\"");
   }
 
+  /**
+   * Only directory buckets append: S3FileIO claims appends by location, for a directory bucket or
+   * an access point of one, and for no location FileIO-wide, since it serves any bucket.
+   */
+  @Test
+  void appendsAreSupportedInDirectoryBucketsOnly() {
+    S3FileIO io = new S3FileIO(() -> mock(S3Client.class));
+    io.initialize(
+        Map.of(
+            S3FileIOProperties.ACCESS_POINTS_PREFIX + "mapped-express",
+            "ap--use1-az4--xa-s3",
+            S3FileIOProperties.ACCESS_POINTS_PREFIX + "mapped-standard",
+            "access-point"));
+
+    assertThat(io.supportsAppend()).isFalse();
+    assertThat(io.supportsAppend("s3://bucket--use1-az4--x-s3/key")).isTrue();
+    assertThat(io.supportsAppend("s3a://bucket--use1-az4--x-s3/a/b")).isTrue();
+    assertThat(io.supportsAppend("s3://ap--use1-az4--xa-s3/key")).isTrue();
+    assertThat(io.supportsAppend("s3://mapped-express/key")).isTrue();
+    assertThat(io.supportsAppend("s3://bucket/key")).isFalse();
+    assertThat(io.supportsAppend("s3://bucket--x-s3-like/key")).isFalse();
+    assertThat(io.supportsAppend("s3://mapped-standard/key")).isFalse();
+  }
+
   private static InputFile append(S3FileIO io, InputFile snapshot) throws IOException {
     AtomicOutputFile out = io.newOutputFile(snapshot);
     CAS token =
