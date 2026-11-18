@@ -20,6 +20,8 @@ package org.apache.iceberg.catalog;
 
 import java.util.Objects;
 import javax.annotation.Nullable;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotRef;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.expressions.Expression;
@@ -34,10 +36,13 @@ import org.immutables.value.Value;
  * as of the snapshot the ref named when the transaction first read the table ({@link
  * #snapshotId()}, null if it named none): what a table scan's planning read. It is unchanged if no
  * data or delete file matching the filter was added to the ref since that snapshot, no data file
- * matching it was removed except by a rewrite that keeps its rows, and the ref was not reset to a
- * snapshot that does not descend from it. A <em>declared read</em> ({@link #ref()} null) is the
- * table's whole version, for a transaction that decided on its schema, properties or snapshots
- * without scanning ({@link CatalogTransaction#declareRead}).
+ * matching it was removed except by a rewrite that keeps its rows, the ref was not reset to a
+ * snapshot that does not descend from it, and the schema the scan reads with is the same: a
+ * branch's (or a missing ref's) is the table's current schema, so a column renamed, dropped and
+ * added again, or promoted changes what the scan read without moving the ref; a tag's is its
+ * snapshot's. A <em>declared read</em> ({@link #ref()} null) is the table's whole version, for a
+ * transaction that decided on its schema, properties or snapshots without scanning ({@link
+ * CatalogTransaction#declareRead}).
  *
  * <p>A catalog may judge a read more coarsely than that and fail more commits, but must never
  * commit one whose read changed: {@link #unchangedIn} is the coarsest judgment, by the table's
@@ -78,8 +83,8 @@ public interface TableRead {
   /**
    * Whether {@code current}, the table where the commit takes effect (null if there is none), reads
    * as this read did, judged by the table's version: a declared read by the whole version, a scan
-   * read by the snapshot its ref names. True only where the read is unchanged; false also where
-   * only rows outside the read changed.
+   * read by the snapshot its ref names and the schema the scan reads with. True only where the read
+   * is unchanged; false also where only rows outside the read changed.
    */
   default boolean unchangedIn(TableMetadata current) {
     if (current == null || !Objects.equals(current.uuid(), metadata().uuid())) {
@@ -89,7 +94,26 @@ public interface TableRead {
       return Objects.equals(current.metadataFileLocation(), metadata().metadataFileLocation());
     }
     SnapshotRef now = current.ref(ref());
-    return Objects.equals(now != null ? now.snapshotId() : null, snapshotId());
+    return Objects.equals(now != null ? now.snapshotId() : null, snapshotId())
+        && scanSchema(current, ref()).asStruct().equals(scanSchema(metadata(), ref()).asStruct());
+  }
+
+  /**
+   * The schema a scan of {@code ref} reads with in {@code metadata}: a tag's snapshot's, else (a
+   * branch, or a ref {@code metadata} lacks) the table's current schema.
+   */
+  private static Schema scanSchema(TableMetadata metadata, String ref) {
+    SnapshotRef named = metadata.ref(ref);
+    if (named == null || named.isBranch()) {
+      return metadata.schema();
+    }
+
+    Snapshot snapshot = metadata.snapshot(named.snapshotId());
+    Schema schema =
+        snapshot != null && snapshot.schemaId() != null
+            ? metadata.schemasById().get(snapshot.schemaId())
+            : null;
+    return schema != null ? schema : metadata.schema();
   }
 
   /** A scan read of {@code ref} of the table as the transaction first read it. */
