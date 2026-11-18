@@ -93,7 +93,7 @@ public class GcsFileIOAtomicRapidTest extends SupportsAtomicOperationsContractTe
   // ─── Regular (non-atomic) writes ────────────────────────────────────────────────────────────
   //
   // Zonal buckets reject resumable uploads, so GCSOutputFile.createOrOverwrite streams through an
-  // appendable upload (GCSAppendableOutputStream) there. These cover what Iceberg writes that way:
+  // appendable upload (GCSZonalOutputStream) there. These cover what Iceberg writes that way:
   // manifests, data files, metadata JSON.
 
   /** A large file written in odd-sized pieces reads back intact, at the length written. */
