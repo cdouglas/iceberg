@@ -29,6 +29,7 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.gcp.GCPProperties;
@@ -42,10 +43,17 @@ import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.metrics.MetricsContext.Unit;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 
 class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
+  // A 403 that asks for fewer requests: transient, no refusal
+  private static final Set<String> RATE_LIMITS =
+      ImmutableSet.of("rateLimitExceeded", "userRateLimitExceeded");
+  // The classes of the comments the client library's retries attach to an error (its
+  // RetryContext's BackoffComment, RetryBudgetExhaustedComment, ...), which are not attempts
+  private static final String RETRY_COMMENTS = "com.google.cloud.storage.RetryContext$";
 
   // Pinned snapshot of the InputFile being replaced (null for vanilla overwrites). The BlobId's
   // generation drives the write precondition: a positive value enforces generationMatch on the
@@ -268,13 +276,64 @@ class GCSOutputFile extends BaseGCSFile implements AtomicOutputFile {
       // https://cloud.google.com/storage/docs/json_api/v1/status-codes#412_Precondition_Failed
       return new SupportsAtomicOperations.StorageInvariantException("Target modified", e);
     }
-    if (code == 429 || (code >= 500 && code < 600)) {
+    if (code == 429 || (code >= 500 && code < 600 && code != 501)) {
       // 429 = per-object mutation rate (about one write per second per object on standard
       // buckets) or quota; 5xx = transient. Both are recoverable by retrying after a backoff.
       return new SupportsAtomicOperations.StorageThrottleException(
           "Storage applied backpressure (HTTP " + code + ")", e);
     }
-    // Other codes (auth, malformed request) propagate as the original StorageException.
+    if (refused(e) && sentOnce(e)) {
+      return new SupportsAtomicOperations.StorageRefusedException(
+          "Storage refused the write (HTTP "
+              + code
+              + (e.getReason() != null ? " " + e.getReason() : "")
+              + ")",
+          e);
+    }
+    // Other codes (404, 408, 409, a rate limit, or a client error after the client library's
+    // retries) propagate as the original StorageException.
     return e;
+  }
+
+  /**
+   * Whether GCS refused a request with a client error the same request gets again: a 4xx (a
+   * malformed request or a body its CRC32C does not match, credentials or permissions, a missing
+   * length, a body too large) or 501 NotImplemented. Not 404, 408, 409, 412, 429 or 499 (the
+   * exception's javadoc says why), nor a 403 that is a rate limit ({@code rateLimitExceeded},
+   * {@code userRateLimitExceeded}).
+   */
+  static boolean refused(StorageException e) {
+    int code = e.getCode();
+    if (code == 501) {
+      return true;
+    }
+    if (code < 400
+        || code >= 500
+        || code == 404
+        || code == 408
+        || code == 409
+        || code == 412
+        || code == 429
+        || code == 499) {
+      return false;
+    }
+    return !RATE_LIMITS.contains(e.getReason());
+  }
+
+  /**
+   * Whether the client library sent the request once. Its retries (of a 408, a 429, a 5xx or an I/O
+   * error; a conditional write is idempotent, so retried) end by attaching each earlier attempt's
+   * failure to the last one's as a suppressed exception, beside comments of their own ({@code
+   * RetryContext}'s): a write with any other suppressed exception was sent again, and an earlier
+   * attempt may have landed, whatever the last one answered. The zonal buckets' XML PUT ({@link
+   * GCSXmlPutWriter}) sends once, and its errors carry nothing suppressed.
+   */
+  static boolean sentOnce(StorageException e) {
+    for (Throwable suppressed : e.getSuppressed()) {
+      if (!suppressed.getClass().getName().startsWith(RETRY_COMMENTS)) {
+        return false;
+      }
+    }
+    return true;
   }
 }
