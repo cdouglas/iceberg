@@ -42,6 +42,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.apache.iceberg.azure.AzureProperties;
@@ -208,6 +209,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
           "Cannot append to " + location() + ": no snapshot of an existing file", null);
     }
     final long appendLen = checksum.contentLength();
+    AtomicInteger attempts = new AtomicInteger();
     try (InputStream src = source.get()) {
       String etag =
           appendBlob(fileClient())
@@ -219,7 +221,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
                   checksum.contentChecksumBytes(),
                   new AppendBlobRequestConditions().setAppendPosition(at).setIfMatch(pinned),
                   null,
-                  Context.NONE)
+                  ADLSAttempts.counting(attempts))
               .getValue()
               .getETag();
       this.length = at + appendLen;
@@ -241,6 +243,9 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       if (throttled(e.getStatusCode())) {
         throw throttle(e, e.getStatusCode(), e.getErrorCode());
       }
+      if (refused(e.getStatusCode()) && attempts.get() == 1) {
+        throw refuse(e, e.getStatusCode(), e.getErrorCode());
+      }
       // 409 InvalidBlobType (written through the Data Lake API; a CAS converts it) propagates as it
       // is: retrying the append cannot succeed.
       throw e;
@@ -258,6 +263,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
     DataLakeFileClient temp = clients.apply(tempLocation());
     AppendBlobClient tempBlob = appendBlob(temp);
     boolean renamed = false;
+    AtomicInteger renames = new AtomicInteger();
     try {
       String etag = stage(tempBlob, checksum, source);
       DataLakeRequestConditions destination = null;
@@ -274,7 +280,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
               new DataLakeRequestConditions().setIfMatch(etag),
               destination,
               null,
-              Context.NONE);
+              ADLSAttempts.counting(renames));
       renamed = true;
       // The rename keeps the temp's ETag; the response carries it too. Never re-read it: a HEAD
       // after the rename could see a later writer's ETag.
@@ -292,11 +298,19 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       if (throttled(e.getStatusCode())) {
         throw throttle(e, e.getStatusCode(), e.getErrorCode());
       }
+      // A 404 is no refusal: a rename the SDK sent again after an attempt that landed finds its
+      // source gone
+      if (refused(e.getStatusCode()) && renames.get() == 1) {
+        throw refuse(e, e.getStatusCode(), e.getErrorCode());
+      }
       throw e;
     } catch (BlobStorageException e) {
-      // staging the temp: nothing reached the target
+      // staging the temp: nothing reached the target, whatever attempt the SDK's retries ended on
       if (throttled(e.getStatusCode())) {
         throw throttle(e, e.getStatusCode(), e.getErrorCode());
+      }
+      if (refused(e.getStatusCode())) {
+        throw refuse(e, e.getStatusCode(), e.getErrorCode());
       }
       throw e;
     } finally {
@@ -373,8 +387,38 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       if (throttled(e.getStatusCode())) {
         throw throttle(e, e.getStatusCode(), e.getErrorCode());
       }
+      // a lookup: the write was not sent, whatever attempt the SDK's retries ended on
+      if (refused(e.getStatusCode())) {
+        throw refuse(e, e.getStatusCode(), e.getErrorCode());
+      }
       throw e;
     }
+  }
+
+  /**
+   * Whether Azure Storage refused a request with a client error the same request gets again: a 4xx
+   * (a malformed request or a block its MD5 does not match, credentials or permissions, a missing
+   * length, a block too large) or 501 NotImplemented. Not 404, 408, 409, 412, 429 or 499 (the
+   * exception's javadoc says why). The SDK reports its last attempt: a write's error proves that
+   * nothing landed only if it sent the write once ({@link ADLSAttempts}).
+   */
+  static boolean refused(int status) {
+    return status == 501
+        || (status >= 400
+            && status < 500
+            && status != 404
+            && status != 408
+            && status != 409
+            && status != 412
+            && status != 429
+            && status != 499);
+  }
+
+  /** A conditional write, or a request of it, that Azure refused: nothing reached the target. */
+  private static SupportsAtomicOperations.StorageRefusedException refuse(
+      HttpResponseException e, int status, Object code) {
+    return new SupportsAtomicOperations.StorageRefusedException(
+        "Storage refused the write (HTTP " + status + (code != null ? " " + code : "") + ")", e);
   }
 
   /**
@@ -382,7 +426,7 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
    * or a partition's request, ingress or egress limit; 429), or failed it with a server error it
    * asks the caller to retry (500 InternalError and OperationTimedOut; 502 and 504 from the path to
    * it). The SDK reports its last attempt, after any retries of its own. Not 501, which no retry
-   * changes, nor any 4xx but 429.
+   * changes ({@link #refused}), nor any 4xx but 429.
    */
   static boolean throttled(int status) {
     return status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
