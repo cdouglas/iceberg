@@ -59,13 +59,25 @@ public interface SupportsAtomicOperations extends FileIO {
 
   /**
    * Whether this FileIO supports the {@link AtomicOutputFile.Strategy#APPEND} strategy on top of an
-   * existing object. Backends that have no append primitive (e.g. GCS objects are immutable --
-   * every write replaces the whole object) return {@code false}; callers that mix CAS and APPEND in
-   * a commit log must fall back to CAS-only on those backends. Defaults to {@code true} since most
-   * backends with conditional writes can also support an offset-pinned append.
+   * existing object at every location it serves. Backends that have no append primitive (e.g. GCS
+   * objects are immutable -- every write replaces the whole object) return {@code false}, and so
+   * does a FileIO whose stores append at some locations only (S3: directory buckets alone), which
+   * answers by location in {@link #supportsAppend(String)}. A caller that writes one object asks by
+   * its location. Defaults to {@code true} since most backends with conditional writes can also
+   * support an offset-pinned append.
    */
   default boolean supportsAppend() {
     return true;
+  }
+
+  /**
+   * Whether an {@link AtomicOutputFile.Strategy#APPEND} to the object at {@code location} can land:
+   * the store that holds it has an append primitive there. Where this is false every APPEND fails,
+   * so callers that mix CAS and APPEND in a commit log must commit by CAS alone. Defaults to {@link
+   * #supportsAppend()}, the FileIO's answer for every location.
+   */
+  default boolean supportsAppend(String location) {
+    return supportsAppend();
   }
 
   /**
