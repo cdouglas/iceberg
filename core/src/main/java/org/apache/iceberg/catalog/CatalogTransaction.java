@@ -46,9 +46,12 @@ public interface CatalogTransaction {
      * takes effect, which is then a serial order for the whole transaction: so a <b>write skew
      * anomaly</b> is not possible. What a transaction reads is what it scanned (the rows of a
      * branch or tag under the scan's filter, as of the snapshot it named when the transaction first
-     * read the table) and what it declared ({@link CatalogTransaction#declareRead}); loading a
-     * table or listing a namespace reads nothing. A read-only transaction's commit checks its reads
-     * and writes nothing. See {@link TableRead}.
+     * read the table; an incremental scan reads the branch whose current snapshot it ends at and
+     * the tags it names, and one between snapshots fixed by their ids reads nothing) and what it
+     * declared ({@link CatalogTransaction#declareRead}); a metadata table it loads and a scan of
+     * partition statistics read the whole table, as a declared read does. Loading a data table or
+     * listing a namespace reads nothing. A read-only transaction's commit checks its reads and
+     * writes nothing. See {@link TableRead}.
      */
     SERIALIZABLE;
   }
