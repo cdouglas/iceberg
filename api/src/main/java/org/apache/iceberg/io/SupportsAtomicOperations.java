@@ -165,6 +165,32 @@ public interface SupportsAtomicOperations extends FileIO {
   }
 
   /**
+   * Storage refused a conditional write, or the lookup it sends first, with a client error that the
+   * same request gets again: HTTP 400 (a malformed request, a checksum the body does not match),
+   * 401 or 403 (credentials or permissions), 405, 411, 413 (a body larger than the store takes), or
+   * 501 (a feature the store does not implement). Nothing was written, and sending the write again
+   * cannot help until whatever the error names is fixed. Thrown for a CAS and an {@link
+   * AtomicOutputFile.Strategy#APPEND} alike. Not a {@link CASException}: no condition failed, and
+   * no wait helps.
+   *
+   * <p>Only an error that proves nothing landed is this. Not 404, which the provider maps where it
+   * says something of the write (an APPEND to an object that does not exist is an {@link
+   * AppendException}) and otherwise lets out as it is: a rename whose earlier attempt landed finds
+   * its source gone. Not 408 or 499 (the request may not have arrived whole, and an SDK retries a
+   * 408), 409 or 412 (conflicts, which are no proof either), nor 429 ({@link
+   * StorageThrottleException}). Not an error the SDK treats as transient (S3's {@code
+   * RequestTimeout} or a clock-skew error, GCS's rate limits). And not a client error that ends an
+   * SDK's retries of the write: an earlier attempt may have landed, its reply lost or failed with a
+   * 5xx, and the last attempt's 4xx (credentials that expired between attempts) says nothing of it.
+   * A provider that cannot tell whether its SDK sent the write once lets the error out as it is.
+   */
+  class StorageRefusedException extends AtomicOperationException {
+    public StorageRefusedException(String message, Exception cause) {
+      super(message, cause);
+    }
+  }
+
+  /**
    * A read through an {@link InputFile} asked for the version the file or its stream reads, and the
    * store no longer serves it: a write replaced it or, on a store that makes a new version with
    * each append, extended it. The read returned no bytes of another version. A caller that wants
