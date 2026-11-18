@@ -84,7 +84,7 @@ ever served CAS. The XML API's resumable upload is rejected too (400
 `ZonalBucketIncompatibleFeature`), and a single XML PUT would hold the
 whole file in memory, so regular writes now stream through an
 appendable upload to the final name, finalized on close
-(`GCSAppendableOutputStream`). The appendable channel's `write()` is
+(`GCSZonalOutputStream`). The appendable channel's `write()` is
 non-blocking and may accept nothing while its queue is full; the stream
 waits on `flush()` (acknowledgement) then. A 20 MiB file written in
 odd-sized pieces round-trips in about 6 s over the WAN.
