@@ -116,6 +116,38 @@ public class TestS3URI {
   }
 
   @Test
+  public void testS3URIAddressesS3DirectoryBucket() {
+    String accessPoint = "ap-usw2-az1--xa-s3";
+    assertThat(
+            new S3URI(String.format("s3://%s/path/to/file", S3_DIRECTORY_BUCKET))
+                .addressesS3DirectoryBucket())
+        .isTrue();
+    assertThat(
+            new S3URI(String.format("s3://%s/path/to/file", accessPoint))
+                .addressesS3DirectoryBucket())
+        .isTrue();
+    assertThat(new S3URI("s3://bucket/path/to/file").addressesS3DirectoryBucket()).isFalse();
+    assertThat(new S3URI("s3://bucket--xa-s3-not/path/to/file").addressesS3DirectoryBucket())
+        .isFalse();
+    assertThat(
+            new S3URI("s3://bucket/path/to/file", ImmutableMap.of("bucket", accessPoint))
+                .addressesS3DirectoryBucket())
+        .isTrue();
+    assertThat(
+            new S3URI(
+                    "s3://bucket/path/to/file",
+                    ImmutableMap.of(
+                        "bucket",
+                        "arn:aws:s3express:us-west-2:123456789012:accesspoint/" + accessPoint))
+                .addressesS3DirectoryBucket())
+        .isTrue();
+    assertThat(
+            new S3URI("s3://bucket/path/to/file", ImmutableMap.of("bucket", "access-point"))
+                .addressesS3DirectoryBucket())
+        .isFalse();
+  }
+
+  @Test
   public void testS3URIToDirectoryPath() {
     assertThat(new S3URI("s3://bucket/path/to/file").toDirectoryPath().location())
         .isEqualTo("s3://bucket/path/to/file/");
