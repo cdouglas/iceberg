@@ -47,6 +47,15 @@ import org.slf4j.LoggerFactory;
  * Streams a regular (non-atomic) write to a zonal/Rapid bucket as an appendable upload, finalized
  * on close.
  *
+ * <p><b>Experimental.</b> It is the only streaming upload a zonal bucket accepts for a plain,
+ * single-writer write: a new object written once, start to end, by the one writer that creates it,
+ * visible unfinalized while it is written. Nothing appends to an existing object through it, and
+ * the name says where it writes, not what: GCS never takes the {@link
+ * org.apache.iceberg.io.AtomicOutputFile.Strategy#APPEND} strategy, on zonal or standard buckets
+ * ({@link GCSFileIO#supportsAppend()} is false; an appendable object takes one writer, so it cannot
+ * be a log many writers extend). Zonal support is untested on the catalog's real-cloud suites; the
+ * fork's {@code GcsFileIOAtomicRapidTest} covers this stream.
+ *
  * <p>Zonal buckets reject the JSON API's resumable and single-request uploads ({@link
  * GCSOutputStream} uses the former) and the XML API's resumable upload; an appendable upload (gRPC
  * {@code BidiWriteObject}) is the only streaming write they accept. (A single XML PUT would need
@@ -59,8 +68,8 @@ import org.slf4j.LoggerFactory;
  * file is an orphan, as a failed write leaves on other stores. {@link #close()} checks that the
  * finalized object holds every byte written.
  */
-class GCSAppendableOutputStream extends PositionOutputStream {
-  private static final Logger LOG = LoggerFactory.getLogger(GCSAppendableOutputStream.class);
+class GCSZonalOutputStream extends PositionOutputStream {
+  private static final Logger LOG = LoggerFactory.getLogger(GCSZonalOutputStream.class);
   private static final int BUFFER_SIZE = 1 << 20;
 
   private final StackTraceElement[] createStack;
@@ -76,7 +85,7 @@ class GCSAppendableOutputStream extends PositionOutputStream {
   private long pos = 0;
   private boolean closed = false;
 
-  GCSAppendableOutputStream(
+  GCSZonalOutputStream(
       Storage grpcStorage, BlobId blobId, GCPProperties gcpProperties, MetricsContext metrics)
       throws IOException {
     this.blobId = blobId;
