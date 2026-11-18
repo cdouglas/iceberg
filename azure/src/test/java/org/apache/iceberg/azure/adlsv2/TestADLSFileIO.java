@@ -99,6 +99,17 @@ public class TestADLSFileIO {
     assertThat(inputFile).isNotNull();
   }
 
+  /** ADLS appends (an AppendBlock to the file's Append Blob) at every location. */
+  @Test
+  public void testAppendsAreSupportedEverywhere() {
+    ADLSFileIO fileIO = new ADLSFileIO(location -> mock(DataLakeFileSystemClient.class));
+    fileIO.initialize(ImmutableMap.of());
+
+    assertThat(fileIO.supportsAppend()).isTrue();
+    assertThat(fileIO.supportsAppend("abfs://container@account.dfs.core.windows.net/path/to/file"))
+        .isTrue();
+  }
+
   @Test
   public void testNoArgConstructor() {
     ADLSFileIO fileIO = new ADLSFileIO();

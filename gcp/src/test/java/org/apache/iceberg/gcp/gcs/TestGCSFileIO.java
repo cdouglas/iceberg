@@ -120,6 +120,13 @@ public class TestGCSFileIO {
     assertThat(io.newInputFile(location).exists()).isFalse();
   }
 
+  /** GCS objects have no append primitive, at any location: every write replaces the object. */
+  @Test
+  public void appendsAreSupportedNowhere() {
+    assertThat(io.supportsAppend()).isFalse();
+    assertThat(io.supportsAppend(gsUri("path/to/file.txt"))).isFalse();
+  }
+
   @Test
   public void testDelete() {
     String path = "delete/path/data.dat";
