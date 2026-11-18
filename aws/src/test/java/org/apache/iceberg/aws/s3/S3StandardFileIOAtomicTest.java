@@ -45,8 +45,8 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 
 /**
  * Standard-bucket S3 implementation of the {@link SupportsAtomicOperationsContractTest}. APPEND is
- * not supported on standard buckets; APPEND-gated tests skip via the assumption baked into the
- * contract.
+ * not supported on standard buckets, and {@link S3FileIO#supportsAppend(String)} says so for their
+ * locations, so APPEND-gated tests skip via the assumption baked into the contract.
  */
 public class S3StandardFileIOAtomicTest extends SupportsAtomicOperationsContractTest {
 
@@ -68,13 +68,6 @@ public class S3StandardFileIOAtomicTest extends SupportsAtomicOperationsContract
   @BeforeEach
   void requireCredentials() {
     Assumptions.assumeTrue(s3 != null, "AWS credentials not available");
-  }
-
-  @Override
-  protected boolean supportsAppend() {
-    // S3FileIO.supportsAppend() reports true (the SDK supports writeOffsetBytes); only directory
-    // buckets accept it server-side, so override to false for this standard-bucket test.
-    return false;
   }
 
   @Override
