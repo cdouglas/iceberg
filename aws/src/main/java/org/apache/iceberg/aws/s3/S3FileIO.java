@@ -183,6 +183,29 @@ public class S3FileIO
   }
 
   /**
+   * S3 appends ({@code writeOffsetBytes}) only to objects in directory buckets (S3 Express One
+   * Zone); a general-purpose bucket refuses every append. This FileIO serves any bucket, so it
+   * answers by location ({@link #supportsAppend(String)}).
+   */
+  @Override
+  public boolean supportsAppend() {
+    return false;
+  }
+
+  /**
+   * Whether the location's requests address a directory bucket, by the naming rule directory
+   * buckets follow ({@code --x-s3}, and {@code --xa-s3} for their access points), after any access
+   * point mapping ({@code s3.access-points.*}).
+   */
+  @Override
+  public boolean supportsAppend(String location) {
+    return new S3URI(
+            location,
+            clientForStoragePath(location).s3FileIOProperties().bucketToAccessPointMapping())
+        .addressesS3DirectoryBucket();
+  }
+
+  /**
    * A GET's response reports the object's ETag and its length ({@code Content-Range}), which {@link
    * S3InputStream} gives its file. The analytics accelerator's streams do not: with it on, reads
    * record nothing.
