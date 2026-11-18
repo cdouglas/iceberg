@@ -81,6 +81,8 @@ class RemoveSnapshots implements ExpireSnapshots {
   private ExecutorService planExecutorService;
   private Boolean incrementalCleanup;
   private boolean specifiedSnapshotId = false;
+  // the snapshots the attempt that committed removed: those of its base its metadata lacks
+  private Set<Long> removedSnapshotIds = Sets.newHashSet();
   private boolean cleanExpiredMetadata = false;
   private boolean cleanExpiredFiles = true;
   private CleanupLevel cleanupLevel = CleanupLevel.ALL;
@@ -387,6 +389,7 @@ class RemoveSnapshots implements ExpireSnapshots {
             item -> {
               TableMetadata updated = internalApply();
               ops.commit(base, updated);
+              this.removedSnapshotIds = removedIds(base, updated);
             });
     LOG.info(
         "Committed snapshot changes and prepare to clean up files at level={}",
@@ -440,27 +443,55 @@ class RemoveSnapshots implements ExpireSnapshots {
       return;
     }
 
-    if (Boolean.TRUE.equals(incrementalCleanup)) {
-      validateCleanupCanBeIncremental(current);
-    } else if (incrementalCleanup == null) {
-      incrementalCleanup =
-          !specifiedSnapshotId
-              && !hasRemovedNonMainAncestors(base, current)
-              && !hasNonMainSnapshots(current);
+    // A snapshot the base has, the table lacks now, and this expiry did not remove, another writer
+    // removed: before this expiry landed, where the catalog applied it to newer metadata (as a REST
+    // server applies a commit's updates to the table as it is), or since. Its files are that
+    // writer's to clean up, which may have kept them; Iceberg's retry on a fresh read would not
+    // have seen it. The cleanup runs on the base without them.
+    Set<Long> removedByOthers = Sets.newHashSet();
+    for (Snapshot snapshot : base.snapshots()) {
+      long snapshotId = snapshot.snapshotId();
+      if (current.snapshot(snapshotId) == null && !removedSnapshotIds.contains(snapshotId)) {
+        removedByOthers.add(snapshotId);
+      }
     }
 
-    LOG.info(
-        "Cleaning up expired files (local, {})", incrementalCleanup ? "incremental" : "reachable");
+    TableMetadata beforeExpiration =
+        removedByOthers.isEmpty()
+            ? base
+            : TableMetadata.buildFrom(base).removeSnapshots(removedByOthers).build();
+
+    boolean incremental;
+    if (!removedByOthers.isEmpty()) {
+      // Incremental cleanup reads main's history from the base: after another writer rolled main
+      // back and removed the snapshot it left, the files that snapshot deleted are live again
+      LOG.info(
+          "Snapshots {} were removed by another commit: cleaning up by reachability",
+          removedByOthers);
+      incremental = false;
+    } else if (Boolean.TRUE.equals(incrementalCleanup)) {
+      validateCleanupCanBeIncremental(current);
+      incremental = true;
+    } else if (incrementalCleanup == null) {
+      incremental =
+          !specifiedSnapshotId
+              && !hasRemovedNonMainAncestors(beforeExpiration, current)
+              && !hasNonMainSnapshots(current);
+    } else {
+      incremental = false;
+    }
+
+    LOG.info("Cleaning up expired files (local, {})", incremental ? "incremental" : "reachable");
 
     FileCleanupStrategy cleanupStrategy =
-        incrementalCleanup
+        incremental
             ? new IncrementalFileCleanup(
                 ops.io(), deleteExecutorService, planExecutorService(), deleteFunc)
             : new ReachableFileCleanup(
                 ops.io(), deleteExecutorService, planExecutorService(), deleteFunc);
 
     try {
-      cleanupStrategy.cleanFiles(base, current, cleanupLevel);
+      cleanupStrategy.cleanFiles(beforeExpiration, current, cleanupLevel);
     } catch (RuntimeException e) {
       LOG.warn("Failed to clean up the files of expired snapshots", e);
     }
@@ -481,6 +512,18 @@ class RemoveSnapshots implements ExpireSnapshots {
       throw new UnsupportedOperationException(
           "Cannot incrementally clean files when there are snapshots outside of main");
     }
+  }
+
+  /** The ids of the snapshots {@code before} has and {@code after} lacks. */
+  private static Set<Long> removedIds(TableMetadata before, TableMetadata after) {
+    Set<Long> removed = Sets.newHashSet();
+    for (Snapshot snapshot : before.snapshots()) {
+      if (after.snapshot(snapshot.snapshotId()) == null) {
+        removed.add(snapshot.snapshotId());
+      }
+    }
+
+    return removed;
   }
 
   private boolean hasRemovedNonMainAncestors(
