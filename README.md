@@ -34,9 +34,10 @@ separate repository: <https://github.com/cdouglas/catalog>.
 - **`SupportsAtomicOperations`** — a `FileIO` extension exposing atomic
   compare-and-swap (CAS) and offset-pinned append (APPEND) writes, with
   structured exceptions distinguishing precondition failures from transient
-  backpressure, and from an object that holds as many appends as its store
-  allows (`SegmentLimitException`); `maxAppendBytes(location)` tells a caller
-  the most one append may write.
+  backpressure, from an object that holds as many appends as its store
+  allows (`SegmentLimitException`), and from a write the store refused with a
+  client error that proves nothing was written (`StorageRefusedException`);
+  `maxAppendBytes(location)` tells a caller the most one append may write.
 - **Cloud-provider implementations** of that interface for AWS S3 (standard +
   Express One Zone), GCS (standard + Rapid Storage zonal buckets), and Azure
   ADLS Gen2.
