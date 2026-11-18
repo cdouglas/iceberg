@@ -177,7 +177,7 @@ public class GcsRapidCanaries {
         .as(
             "The zonal bucket accepted an XML resumable upload. It would stream regular writes "
                 + "over HTTP and publish them only when complete; consider it in place of the "
-                + "gRPC appendable upload in GCSAppendableOutputStream.")
+                + "gRPC appendable upload in GCSZonalOutputStream.")
         .isEqualTo(400);
     assertThat(response.body()).contains("ZonalBucketIncompatibleFeature");
   }
