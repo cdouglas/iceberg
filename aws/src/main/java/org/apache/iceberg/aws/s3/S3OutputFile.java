@@ -21,6 +21,7 @@ package org.apache.iceberg.aws.s3;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.util.Set;
 import java.util.function.Supplier;
 import org.apache.iceberg.encryption.NativeFileCryptoParameters;
 import org.apache.iceberg.encryption.NativelyEncryptedFile;
@@ -32,6 +33,7 @@ import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SupportsAtomicOperations;
 import org.apache.iceberg.metrics.MetricsContext;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.io.ByteStreams;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
@@ -44,6 +46,11 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.TooManyPartsException;
 
 public class S3OutputFile extends BaseS3File implements AtomicOutputFile, NativelyEncryptedFile {
+  // Client errors the SDK's retry policy retries as transient (its retryable error codes, less
+  // InternalError, a 500): no refusal, though nothing landed on the attempt that got one
+  private static final Set<String> TRANSIENT_CODES =
+      ImmutableSet.of("RequestTimeout", "RequestTimeoutException", "PriorRequestNotComplete");
+
   private NativeFileCryptoParameters nativeEncryptionParameters;
   // Atomic-write precondition: when non-null, ifMatch=etag pins the live object; when null and
   // assertAbsent=true, a CAS sends ifNoneMatch=* (the destination must not exist) and an append
@@ -234,6 +241,9 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       if (throttled(e)) {
         throw throttle(e);
       }
+      if (refused(e) && sentOnce(e)) {
+        throw refuse(e);
+      }
       throw e;
     }
   }
@@ -289,6 +299,9 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
       if (throttled(e)) {
         throw throttle(e);
       }
+      if (refused(e) && sentOnce(e)) {
+        throw refuse(e);
+      }
       throw e;
     }
   }
@@ -306,13 +319,19 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
     }
   }
 
-  /** The lookup an append sends first, if it needs one: a throttled lookup throttles the write. */
+  /**
+   * The lookup an append sends first, if it needs one: a throttled lookup throttles the write, and
+   * a refused one refuses it, whatever attempt the SDK's retries ended on: the write was not sent.
+   */
   private HeadObjectResponse lookup() {
     try {
       return getObjectMetadata();
     } catch (S3Exception e) {
       if (throttled(e)) {
         throw throttle(e);
+      }
+      if (refused(e)) {
+        throw refuse(e);
       }
       throw e;
     }
@@ -323,7 +342,8 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
    * code the SDK's retry policy treats as throttling: 429, Throttling, RequestLimitExceeded, ...),
    * or failed it with a server error it asks the caller to retry (500 InternalError, 503
    * ServiceUnavailable; 502 and 504 from the path to it). The SDK reports its last attempt, after
-   * any retries of its own. Not 501 NotImplemented, which no retry changes, nor any other 4xx.
+   * any retries of its own. Not 501 NotImplemented, which no retry changes ({@link #refused}), nor
+   * any other 4xx.
    */
   static boolean throttled(S3Exception e) {
     int status = e.statusCode();
@@ -332,6 +352,56 @@ public class S3OutputFile extends BaseS3File implements AtomicOutputFile, Native
         || status == 502
         || status == 503
         || status == 504;
+  }
+
+  /**
+   * Whether S3 refused a request with a client error the same request gets again: a 4xx (a
+   * malformed request or a body its checksum does not match, credentials or permissions, a missing
+   * length, a body too large) or 501 NotImplemented. Not 404, 408, 409, 412, 429 or 499 (the
+   * exception's javadoc says why), a throttle, a clock-skew error, nor an error the SDK's retry
+   * policy treats as transient ({@link #TRANSIENT_CODES}).
+   */
+  static boolean refused(S3Exception e) {
+    int status = e.statusCode();
+    if (status == 501) {
+      return true;
+    }
+    if (status < 400
+        || status >= 500
+        || status == 404
+        || status == 408
+        || status == 409
+        || status == 412
+        || status == 429
+        || status == 499) {
+      return false;
+    }
+    String code = e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : null;
+    return !e.isThrottlingException()
+        && !e.isClockSkewException()
+        && (code == null || !TRANSIENT_CODES.contains(code));
+  }
+
+  /**
+   * Whether the SDK sent the request once. A write the SDK's retries sent again (after a 5xx, a
+   * throttle, a timeout or a lost connection) may have landed on an earlier attempt, whatever the
+   * last one answered; an exception that does not say how many attempts it ended (none that came
+   * through the SDK's retries) proves nothing either.
+   */
+  static boolean sentOnce(S3Exception e) {
+    Integer attempts = e.numAttempts();
+    return attempts != null && attempts == 1;
+  }
+
+  /** A conditional write, or the lookup before it, that S3 refused: nothing was written. */
+  private static SupportsAtomicOperations.StorageRefusedException refuse(S3Exception e) {
+    String code = e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : null;
+    return new SupportsAtomicOperations.StorageRefusedException(
+        "Storage refused the write (HTTP "
+            + e.statusCode()
+            + (code != null ? " " + code : "")
+            + ")",
+        e);
   }
 
   /**

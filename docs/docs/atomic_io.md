@@ -74,6 +74,15 @@ public interface SupportsAtomicOperations extends FileIO {
      * can succeed; the caller must replace it (CAS) to append again.
      */
     class SegmentLimitException extends AtomicOperationException { ... }
+
+    /**
+     * Storage refused the write, or the lookup an APPEND sends first, with a client error the same
+     * request gets again (400, 401, 403, 405, 411, 413, ...; 501): nothing was written, and a
+     * resend cannot help until whatever the error names is fixed. Only where the error proves it:
+     * not 404, 408, 409, 412, 429 or 499, not an error the SDK treats as transient, and not a
+     * client error that ends an SDK's retries of the write (an earlier attempt may have landed).
+     */
+    class StorageRefusedException extends AtomicOperationException { ... }
 }
 ```
 
@@ -368,6 +377,12 @@ try {
 | Azure ADLS | 412 ConditionNotMet or 409 PathAlreadyExists (rename) → `CASException` | 412 ConditionNotMet / AppendPositionConditionNotMet → `AppendException`; 409 BlockCountExceedsLimit → `SegmentLimitException` |
 
 `CASException` is the base type for atomic-CAS failures; callers that need to distinguish "snapshot is stale, must reconcile" from "transient, retry the same bytes" can catch `StorageInvariantException` and `StorageThrottleException` separately. `AppendException` covers the APPEND-strategy failures a caller retries as an append (another writer appended first); `SegmentLimitException` is a separate type, because only a CAS can follow it.
+
+`StorageRefusedException` (a CAS or an APPEND alike, and neither a `CASException` nor an `AppendException`) is a client error that proves nothing was written: 400, 401, 403, 405, 411, 413 and other 4xx, and 501, but never 404 (mapped where it means something, such as an APPEND to a missing object; a rename retried after an attempt that landed finds its source gone), 408 or 499 (the request may not have arrived whole), 409 or 412 (conflicts) or 429 (a throttle). A 4xx that ends an SDK's retries of the write proves nothing: an earlier attempt may have landed before a 5xx or a lost reply, and the last attempt's error (credentials that expired between attempts) says nothing of it. So each provider maps a write's 4xx only when the SDK sent the write once:
+
+- **S3**: when the exception's `numAttempts()` is 1; not S3's `RequestTimeout`, `RequestTimeoutException` or `PriorRequestNotComplete`, nor a clock-skew error, which the SDK retries as transient. A lookup before an APPEND is refused on any attempt: the write was not sent.
+- **Azure**: `ADLSFileIO`'s clients count each attempt the SDK's retry policy sends (`ADLSAttempts`, a policy after the retry policy), and an `AppendBlock` or the rename that ends a CAS is refused only on its only attempt; a client built elsewhere counts none, and its errors propagate as they are. A CAS's staging of its temp blob, and an APPEND's lookup, are refused on any attempt: nothing reached the target.
+- **GCS**: when the client library's retries attached no earlier attempt's failure to the error (they attach each one as a suppressed exception); not a 403 that is a rate limit (`rateLimitExceeded`, `userRateLimitExceeded`). The zonal buckets' XML PUT sends once. A 501 is a refusal, not a throttle.
 
 ## Limitations
 
