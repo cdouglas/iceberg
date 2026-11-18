@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.azure.adlsv2;
 
+import com.azure.core.exception.HttpResponseException;
 import com.azure.core.http.HttpHeaderName;
 import com.azure.core.http.rest.Response;
 import com.azure.core.util.Context;
@@ -237,6 +238,9 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
         throw new SupportsAtomicOperations.SegmentLimitException(
             "Cannot append to " + location() + ": the blob holds the most blocks Azure allows", e);
       }
+      if (throttled(e.getStatusCode())) {
+        throw throttle(e, e.getStatusCode(), e.getErrorCode());
+      }
       // 409 InvalidBlobType (written through the Data Lake API; a CAS converts it) propagates as it
       // is: retrying the append cannot succeed.
       throw e;
@@ -284,6 +288,15 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
       }
       if (409 == e.getStatusCode() && "PathAlreadyExists".equals(e.getErrorCode())) {
         throw new SupportsAtomicOperations.CASException("Location exists", e);
+      }
+      if (throttled(e.getStatusCode())) {
+        throw throttle(e, e.getStatusCode(), e.getErrorCode());
+      }
+      throw e;
+    } catch (BlobStorageException e) {
+      // staging the temp: nothing reached the target
+      if (throttled(e.getStatusCode())) {
+        throw throttle(e, e.getStatusCode(), e.getErrorCode());
       }
       throw e;
     } finally {
@@ -357,8 +370,32 @@ class ADLSOutputFile extends BaseADLSFile implements AtomicOutputFile {
         throw new SupportsAtomicOperations.AppendException(
             "Cannot append to " + location() + ": no file", e);
       }
+      if (throttled(e.getStatusCode())) {
+        throw throttle(e, e.getStatusCode(), e.getErrorCode());
+      }
       throw e;
     }
+  }
+
+  /**
+   * Whether Azure Storage refused a request for now: it throttled it (503 ServerBusy, the account's
+   * or a partition's request, ingress or egress limit; 429), or failed it with a server error it
+   * asks the caller to retry (500 InternalError and OperationTimedOut; 502 and 504 from the path to
+   * it). The SDK reports its last attempt, after any retries of its own. Not 501, which no retry
+   * changes, nor any 4xx but 429.
+   */
+  static boolean throttled(int status) {
+    return status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
+  }
+
+  /**
+   * A conditional write, or a request of it, that Azure throttled. The write may have landed: a 5xx
+   * can follow a write the service applied (an AppendBlock, or the rename that ends a CAS).
+   */
+  private static SupportsAtomicOperations.StorageThrottleException throttle(
+      HttpResponseException e, int status, Object code) {
+    return new SupportsAtomicOperations.StorageThrottleException(
+        "Storage applied backpressure (HTTP " + status + (code != null ? " " + code : "") + ")", e);
   }
 
   private ADLSInputFile snapshot(long len, String etag) {
