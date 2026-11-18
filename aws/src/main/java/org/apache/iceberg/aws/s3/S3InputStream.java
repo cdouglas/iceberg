@@ -52,6 +52,7 @@ import software.amazon.awssdk.http.Abortable;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
@@ -260,6 +261,17 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
         throw new SupportsAtomicOperations.StaleReadException(
             String.format("Version %s of %s is no longer the object's", asked, location), e);
       }
+      if (asked != null && e.statusCode() == RANGE_NOT_SATISFIABLE && !isLive(asked)) {
+        // A range that starts past the end of a shorter object that replaced the version: S3
+        // Express answers 416 before it checks the If-Match, which a stream would take for the
+        // version's end
+        throw new SupportsAtomicOperations.StaleReadException(
+            String.format(
+                "Version %s of %s is no longer the object's (a range past the end of its"
+                    + " replacement)",
+                asked, location),
+            e);
+      }
       throw e;
     }
     if (response instanceof ResponseInputStream<?> withResponse
@@ -269,6 +281,25 @@ class S3InputStream extends SeekableInputStream implements RangeReadable {
       observer.accept(found);
     }
     return response;
+  }
+
+  /**
+   * Whether {@code asked} is still the object's version, by a HEAD that asks for it (If-Match): a
+   * GET's 416 is the version's end only then. A HEAD has no range for the store to check first.
+   */
+  private boolean isLive(String asked) {
+    HeadObjectRequest.Builder request =
+        HeadObjectRequest.builder().bucket(location.bucket()).key(location.key()).ifMatch(asked);
+    S3RequestUtil.configureEncryption(s3FileIOProperties, request);
+    try {
+      s3.headObject(request.build());
+      return true;
+    } catch (S3Exception e) {
+      if (e.statusCode() == BaseS3File.PRECONDITION_FAILED || e.statusCode() == 404) {
+        return false;
+      }
+      throw e;
+    }
   }
 
   /** The open stream; a reopen that failed in a retry's listener is tried again here. */
