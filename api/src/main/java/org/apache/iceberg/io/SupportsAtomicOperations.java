@@ -140,9 +140,12 @@ public interface SupportsAtomicOperations extends FileIO {
   }
 
   /**
-   * Storage applied backpressure (HTTP 429 rate limit, 5xx transient server error, GCS per-object
-   * update rate). The caller may retry the same write after a backoff: its precondition still
-   * guards it.
+   * Storage applied backpressure, or failed the write with an error it asks callers to retry after
+   * (HTTP 429 rate limit; a transient 5xx server error, such as S3's 503 SlowDown or 500
+   * InternalError and Azure's 503 ServerBusy or 500 OperationTimedOut; GCS per-object update rate).
+   * The caller may retry the same write after a backoff: its precondition still guards it. Thrown
+   * for a CAS and an {@link AtomicOutputFile.Strategy#APPEND} alike (a throttled APPEND is this,
+   * not an {@link AppendException}), and for a lookup the write sends before it.
    *
    * <p>The write may have landed nonetheless. A 5xx can follow a write the service applied, and an
    * SDK that retries internally reports only its last attempt, which a write that landed on an
