@@ -72,6 +72,18 @@ public abstract class BaseMetastoreViewCatalog extends BaseMetastoreCatalog impl
     return new BaseViewBuilder(identifier);
   }
 
+  /**
+   * A builder of view {@code identifier} whose create and replace build the view's metadata as this
+   * catalog does (its default location, its default and enforced view properties) and commit it
+   * through {@code ops}, not the catalog: a catalog transaction stages them so ({@link
+   * org.apache.iceberg.catalog.BaseCatalogTransaction}). {@code ops} decides whether the view
+   * exists, and whether a table has its name.
+   */
+  public ViewBuilder buildView(TableIdentifier identifier, ViewOperations ops) {
+    Preconditions.checkArgument(ops != null, "Invalid view operations: null");
+    return new BaseViewBuilder(identifier, ops);
+  }
+
   protected class BaseViewBuilder implements ViewBuilder {
     private final TableIdentifier identifier;
     private final Map<String, String> properties = Maps.newHashMap();
@@ -80,12 +92,23 @@ public abstract class BaseMetastoreViewCatalog extends BaseMetastoreCatalog impl
     private String defaultCatalog = null;
     private Schema schema = null;
     private String location = null;
+    // the operations a catalog transaction stages through, or null for the catalog's own
+    private final ViewOperations staging;
 
     protected BaseViewBuilder(TableIdentifier identifier) {
+      this(identifier, null);
+    }
+
+    private BaseViewBuilder(TableIdentifier identifier, ViewOperations staging) {
       Preconditions.checkArgument(
           isValidIdentifier(identifier), "Invalid view identifier: %s", identifier);
       this.identifier = identifier;
+      this.staging = staging;
       this.properties.putAll(viewDefaultProperties());
+    }
+
+    private ViewOperations ops() {
+      return staging != null ? staging : newViewOps(identifier);
     }
 
     /**
@@ -161,17 +184,17 @@ public abstract class BaseMetastoreViewCatalog extends BaseMetastoreCatalog impl
 
     @Override
     public View create() {
-      return create(newViewOps(identifier));
+      return create(ops());
     }
 
     @Override
     public View replace() {
-      return replace(newViewOps(identifier));
+      return replace(ops());
     }
 
     @Override
     public View createOrReplace() {
-      ViewOperations ops = newViewOps(identifier);
+      ViewOperations ops = ops();
       if (null == ops.current()) {
         return create(ops);
       } else {
@@ -220,7 +243,8 @@ public abstract class BaseMetastoreViewCatalog extends BaseMetastoreCatalog impl
     }
 
     private View replace(ViewOperations ops) {
-      if (tableExists(identifier)) {
+      // a transaction's staging checks its own names: a table it dropped or renamed is not here
+      if (staging == null && tableExists(identifier)) {
         throw new AlreadyExistsException("Table with same name already exists: %s", identifier);
       }
 

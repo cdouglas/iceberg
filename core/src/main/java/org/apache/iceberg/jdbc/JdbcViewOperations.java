@@ -135,6 +135,16 @@ public class JdbcViewOperations extends BaseViewOperations {
     }
   }
 
+  /**
+   * Writes {@code metadata}, a view's version a catalog transaction staged on {@code base} (null
+   * for a view it creates), to the view's next metadata file ({@link
+   * JdbcCatalog#commitTransaction(org.apache.iceberg.catalog.CatalogCommit)}). The view's row is
+   * not written.
+   */
+  String writeTransactionMetadata(ViewMetadata base, ViewMetadata metadata) {
+    return writeNewMetadataAfter(base, metadata);
+  }
+
   @Override
   protected String viewName() {
     return viewIdentifier.toString();
