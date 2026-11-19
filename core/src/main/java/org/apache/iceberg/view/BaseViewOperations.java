@@ -173,6 +173,16 @@ public abstract class BaseViewOperations extends BaseMetastoreOperations impleme
     return newMetadataLocation.location();
   }
 
+  /**
+   * Writes {@code metadata} to the metadata file after {@code base}'s (the first when {@code base}
+   * is null), for a catalog that commits it itself, as a catalog transaction does; returns its
+   * location.
+   */
+  protected String writeNewMetadataAfter(ViewMetadata base, ViewMetadata metadata) {
+    int baseVersion = base != null ? parseVersion(base.metadataFileLocation()) : -1;
+    return writeNewMetadata(metadata, baseVersion + 1);
+  }
+
   protected String writeNewMetadataIfRequired(ViewMetadata metadata) {
     return null != metadata.metadataFileLocation()
         ? metadata.metadataFileLocation()
