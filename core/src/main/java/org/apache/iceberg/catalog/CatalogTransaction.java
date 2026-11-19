@@ -72,6 +72,18 @@ public interface CatalogTransaction {
   Catalog asCatalog();
 
   /**
+   * Returns this catalog transaction as a {@link ViewCatalog}, whose view changes (creates,
+   * replaces, property and location changes, renames and drops) participate in this catalog
+   * transaction, as {@link #asCatalog()}'s table changes do; it shares their names, as a catalog's
+   * tables and views do.
+   *
+   * @throws UnsupportedOperationException if the catalog has no views
+   */
+  default ViewCatalog asViewCatalog() {
+    throw new UnsupportedOperationException("Views are not part of this catalog's transactions");
+  }
+
+  /**
    * Makes a {@link IsolationLevel#SERIALIZABLE} transaction depend on the whole version of a table
    * as it first read it, as for a decision made on the table's schema, properties or snapshots
    * without scanning it: the commit fails if the table changed at all. Does nothing under {@link

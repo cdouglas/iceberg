@@ -62,7 +62,10 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-/** Catalog transactions on a JdbcCatalog, on a SQLite file. */
+/**
+ * Catalog transactions on a JdbcCatalog, on a SQLite file, on the V1 schema, which holds views
+ * (TestJdbcV0CatalogTransaction: the V0 schema, which has none).
+ */
 public class TestJdbcCatalogTransaction extends CatalogTransactionTests<JdbcCatalog> {
   private static final Namespace NS = Namespace.of("ns");
   private static final TableIdentifier TABLE_A = TableIdentifier.of(NS, "a");
@@ -96,6 +99,16 @@ public class TestJdbcCatalogTransaction extends CatalogTransactionTests<JdbcCata
     return true;
   }
 
+  /** The catalog table's schema version: V1, which has views. */
+  protected JdbcUtil.SchemaVersion schemaVersion() {
+    return JdbcUtil.SchemaVersion.V1;
+  }
+
+  @Override
+  protected boolean supportsViews() {
+    return schemaVersion() == JdbcUtil.SchemaVersion.V1;
+  }
+
   @Override
   protected boolean supportsNamesWithDot() {
     // a namespace level with a dot is stored as two levels, as TestJdbcCatalog says
@@ -112,7 +125,9 @@ public class TestJdbcCatalogTransaction extends CatalogTransactionTests<JdbcCata
             CatalogProperties.URI,
             "jdbc:sqlite:" + dir.resolve("catalog.db"),
             CatalogProperties.WAREHOUSE_LOCATION,
-            dir.resolve("warehouse").toString());
+            dir.resolve("warehouse").toString(),
+            JdbcUtil.SCHEMA_VERSION_PROPERTY,
+            schemaVersion().name());
     JdbcCatalog jdbcCatalog =
         new JdbcCatalog(
             null,

@@ -341,10 +341,12 @@ public class RESTCatalog
           "Serializable catalog transactions are not supported: the REST protocol carries no reads");
     }
 
-    if (!commit.namespaceChanges().isEmpty() || !commit.createdTables().isEmpty()) {
+    if (!commit.namespaceChanges().isEmpty()
+        || !commit.createdTables().isEmpty()
+        || commit.hasViewChanges()) {
       throw new UnsupportedOperationException(
-          "Catalog transactions of table creates or namespace changes are not supported: "
-              + "the REST protocol commits only table updates");
+          "Catalog transactions of table creates, view changes or namespace changes are not "
+              + "supported: the REST protocol commits only table updates");
     }
 
     List<TableCommit> commits = Lists.newArrayList();
