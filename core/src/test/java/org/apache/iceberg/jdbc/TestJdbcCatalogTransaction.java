@@ -43,6 +43,7 @@ import java.util.stream.Stream;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.CatalogTransaction;
@@ -52,6 +53,7 @@ import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
+import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -119,15 +121,18 @@ public class TestJdbcCatalogTransaction extends CatalogTransactionTests<JdbcCata
    * A JdbcCatalog on this test's database file, as another process would open it; with {@code
    * hooked}, its connections run {@link #beforeEnd} and {@link #loseCommitAnswer}.
    */
+  private Map<String, String> properties() {
+    return ImmutableMap.of(
+        CatalogProperties.URI,
+        "jdbc:sqlite:" + dir.resolve("catalog.db"),
+        CatalogProperties.WAREHOUSE_LOCATION,
+        dir.resolve("warehouse").toString(),
+        JdbcUtil.SCHEMA_VERSION_PROPERTY,
+        schemaVersion().name());
+  }
+
   private JdbcCatalog newCatalog(boolean hooked) {
-    Map<String, String> properties =
-        ImmutableMap.of(
-            CatalogProperties.URI,
-            "jdbc:sqlite:" + dir.resolve("catalog.db"),
-            CatalogProperties.WAREHOUSE_LOCATION,
-            dir.resolve("warehouse").toString(),
-            JdbcUtil.SCHEMA_VERSION_PROPERTY,
-            schemaVersion().name());
+    Map<String, String> properties = properties();
     JdbcCatalog jdbcCatalog =
         new JdbcCatalog(
             null,
@@ -137,6 +142,46 @@ public class TestJdbcCatalogTransaction extends CatalogTransactionTests<JdbcCata
     jdbcCatalog.initialize("jdbc_txn", properties);
     catalogs.add(jdbcCatalog);
     return jdbcCatalog;
+  }
+
+  /**
+   * Bug 128 (transaction load returned live table): a transaction's load of a table that did not
+   * exist when it looked, and that another writer created just after, returned the origin's own
+   * table (a second load from the origin, meant only for its NoSuchTableException), whose changes
+   * committed at once, outside the transaction. It loads such a table as any other.
+   */
+  @Test
+  public void aTableCreatedAsTheTransactionLoadsItIsLoadedInTheTransaction() {
+    catalog.createNamespace(NS);
+    JdbcCatalog other = newCatalog(false);
+    AtomicBoolean raced = new AtomicBoolean(false);
+    JdbcCatalog racing =
+        new JdbcCatalog(null, null, true) {
+          @Override
+          public Table loadTable(TableIdentifier identifier) {
+            try {
+              return super.loadTable(identifier);
+            } catch (NoSuchTableException e) {
+              if (identifier.equals(TABLE_A) && raced.compareAndSet(false, true)) {
+                other.createTable(TABLE_A, SCHEMA, SPEC); // another writer, just after the miss
+              }
+              throw e;
+            }
+          }
+        };
+    racing.setConf(new Configuration());
+    racing.initialize("jdbc_txn", properties());
+    catalogs.add(racing);
+
+    CatalogTransaction catalogTx =
+        racing.createTransaction(CatalogTransaction.IsolationLevel.SNAPSHOT);
+    Table table = catalogTx.asCatalog().loadTable(TABLE_A);
+    table.newFastAppend().appendFile(FILE_A).commit();
+    assertThat(raced).isTrue();
+    assertThat(snapshots(TABLE_A)).as("an append staged in the transaction").isZero();
+
+    catalogTx.commitTransaction();
+    assertThat(snapshots(TABLE_A)).isEqualTo(1);
   }
 
   /** Tables ns.a and ns.b, each with one file. */

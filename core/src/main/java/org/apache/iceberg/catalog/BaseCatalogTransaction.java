@@ -634,8 +634,16 @@ public class BaseCatalogTransaction implements CatalogTransaction {
         return metadataTable(identifier);
       }
 
-      // a NoSuchTableException
-      return origin.loadTable(identifier);
+      // the origin's NoSuchTableException; or the table, if another writer created it since
+      // entry() looked, which the transaction then loads as any other: never the origin's own
+      // table, whose changes would commit at once, outside the transaction (Bug 128)
+      origin.loadTable(identifier);
+      Entry created = entry(identifier);
+      if (created == null) {
+        throw new NoSuchTableException("Table does not exist: %s", identifier);
+      }
+
+      return new TransactionalTable(created);
     }
 
     /**
