@@ -58,6 +58,7 @@ import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableChange;
 import org.apache.iceberg.catalog.TableCommit;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.catalog.ViewChange;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
@@ -355,6 +356,26 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
         written.add(location);
         statements.create(identifier, location);
       }
+
+      if (commit.hasViewChanges() && schemaVersion != JdbcUtil.SchemaVersion.V1) {
+        throw new UnsupportedOperationException(VIEW_WARNING_LOG_MESSAGE);
+      }
+
+      Set<TableIdentifier> changedViews = Sets.newHashSet();
+      for (ViewChange change : commit.viewChanges()) {
+        Preconditions.checkArgument(
+            changedViews.add(change.identifier()),
+            "Cannot change view %s twice",
+            change.identifier());
+        stage(change, statements, written);
+      }
+
+      for (Map.Entry<TableIdentifier, ViewMetadata> created : commit.createdViews().entrySet()) {
+        TableIdentifier identifier = created.getKey();
+        String location = viewOps(identifier).writeTransactionMetadata(null, created.getValue());
+        written.add(location);
+        statements.createView(identifier, location);
+      }
     } catch (RuntimeException e) {
       deleteQuietly(written);
       throw e;
@@ -405,6 +426,39 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
     if (renamedTo != null && !renamedTo.equals(identifier)) {
       statements.rename(identifier, location, renamedTo);
     }
+  }
+
+  /**
+   * Adds {@code change}, a view's, to {@code statements}, after writing the view's new metadata
+   * file (its version staged on the one read) to {@code written}. A dropped view's updates are
+   * dropped with it. Every change is conditioned on the view's metadata location as read.
+   */
+  private void stage(ViewChange change, JdbcCatalogCommit statements, List<String> written) {
+    TableIdentifier identifier = change.identifier();
+    ViewMetadata base = change.base();
+    String location = base.metadataFileLocation();
+    Preconditions.checkArgument(
+        location != null, "Cannot commit view %s: no version of it read", identifier);
+    if (change.dropped()) {
+      statements.dropView(identifier, location);
+      return;
+    }
+
+    statements.expectView(identifier, location);
+    if (change.updated() != null) {
+      String newLocation = viewOps(identifier).writeTransactionMetadata(base, change.updated());
+      written.add(newLocation);
+      statements.updateView(identifier, location, newLocation);
+    }
+
+    TableIdentifier renamedTo = change.renamedTo();
+    if (renamedTo != null && !renamedTo.equals(identifier)) {
+      statements.renameView(identifier, location, renamedTo);
+    }
+  }
+
+  private JdbcViewOperations viewOps(TableIdentifier identifier) {
+    return new JdbcViewOperations(connections, io, catalogName, identifier, catalogProperties);
   }
 
   /**
@@ -555,6 +609,19 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
           return;
         }
       }
+
+      for (Map.Entry<TableIdentifier, String> witness : statements.viewWitnesses().entrySet()) {
+        Map<String, String> row =
+            JdbcUtil.loadView(schemaVersion, connections, catalogName, witness.getKey());
+        if (witness.getValue().equals(row.get(JdbcTableOperations.METADATA_LOCATION_PROP))) {
+          LOG.info(
+              "Committed catalog transaction although its COMMIT failed: view {} names {}",
+              witness.getKey(),
+              witness.getValue(),
+              cause);
+          return;
+        }
+      }
     } catch (SQLException | RuntimeException e) {
       cause.addSuppressed(e);
     } catch (InterruptedException e) {
@@ -567,10 +634,21 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
 
   /**
    * After {@code commit} landed: deletes the metadata files its updates removed from tables'
-   * metadata logs, and purges the tables it dropped with purge, from their metadata as dropped.
+   * metadata logs, purges the tables it dropped with purge, from their metadata as dropped, and
+   * deletes the metadata of the views it dropped, as {@link #dropView} does.
    */
   private void committed(CatalogCommit commit, Map<TableIdentifier, TableMetadata[]> updated) {
     updated.values().forEach(m -> CatalogUtil.deleteRemovedMetadataFiles(io, m[0], m[1]));
+    for (ViewChange change : commit.viewChanges()) {
+      if (change.dropped()) {
+        try {
+          CatalogUtil.dropViewMetadata(io, change.base());
+        } catch (RuntimeException e) {
+          LOG.warn("Failed to delete the metadata of view {}", change.identifier(), e);
+        }
+      }
+    }
+
     for (TableChange change : commit.tableChanges()) {
       if (change.dropped() && change.purge()) {
         try {

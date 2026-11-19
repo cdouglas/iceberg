@@ -87,7 +87,7 @@ final class JdbcUtil {
           + " OR "
           + RECORD_TYPE
           + " IS NULL)";
-  private static final String V1_DO_COMMIT_VIEW_SQL =
+  static final String V1_DO_COMMIT_VIEW_SQL =
       "UPDATE "
           + CATALOG_TABLE_VIEW_NAME
           + " SET "
@@ -151,7 +151,7 @@ final class JdbcUtil {
   static final String V1_UPDATE_CATALOG_SQL =
       "ALTER TABLE " + CATALOG_TABLE_VIEW_NAME + " ADD COLUMN " + RECORD_TYPE + " VARCHAR(5)";
 
-  private static final String GET_VIEW_SQL =
+  static final String GET_VIEW_SQL =
       "SELECT * FROM "
           + CATALOG_TABLE_VIEW_NAME
           + " WHERE "
