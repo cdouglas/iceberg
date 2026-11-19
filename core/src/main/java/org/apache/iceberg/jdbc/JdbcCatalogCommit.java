@@ -48,14 +48,16 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
  *
  * <p>It first reads every table the commit reads or changes, by its name when the catalog
  * transaction started and in the order of the names, and checks that each has the metadata location
- * the catalog transaction read. Where the database supports {@code SELECT ... FOR UPDATE}
- * (PostgreSQL) that read locks the table's row until the database transaction ends, so no other
- * commit changes the table before this one does; elsewhere the database's own isolation holds it
- * (SQLite's is serializable: once a transaction has read the database, no other commits a write
- * until it ends). Then it applies the commit's effects in order, each conditioned on the catalog as
- * the catalog transaction found it: the namespace changes other than drops, in order; the table
- * drops, updates and renames; the tables created; and the namespace drops. A condition that fails
- * ends the run with a {@link Failure}, and the database transaction is rolled back.
+ * the catalog transaction read; then each view it changes, likewise. Where the database supports
+ * {@code SELECT ... FOR UPDATE} (PostgreSQL) that read locks the table's row until the database
+ * transaction ends, so no other commit changes the table before this one does; elsewhere the
+ * database's own isolation holds it (SQLite's is serializable: once a transaction has read the
+ * database, no other commits a write until it ends). Then it applies the commit's effects in order,
+ * each conditioned on the catalog as the catalog transaction found it: the namespace changes other
+ * than drops, in order; the table and view drops, then their updates, then their renames; the
+ * tables and views created; and the namespace drops. Views are rows of the catalog table too
+ * ({@link JdbcUtil#VIEW_RECORD_TYPE}), which the V1 schema holds. A condition that fails ends the
+ * run with a {@link Failure}, and the database transaction is rolled back.
  *
  * <p>A table created, or a rename's target, must be absent: the catalog table's primary key, which
  * also covers views, keeps two transactions from both taking a name. A namespace a commit changes,
@@ -113,6 +115,13 @@ final class JdbcCatalogCommit {
   private final SortedMap<TableIdentifier, TableIdentifier> renames = byName();
   // by name: the new metadata location
   private final SortedMap<TableIdentifier, String> creates = byName();
+  // the same of views: each view the commit changes with the metadata location read, its drops,
+  // updates, renames and creates
+  private final SortedMap<TableIdentifier, String> expectedViews = byName();
+  private final SortedMap<TableIdentifier, String> viewDrops = byName();
+  private final SortedMap<TableIdentifier, Map.Entry<String, String>> viewUpdates = byName();
+  private final SortedMap<TableIdentifier, TableIdentifier> viewRenames = byName();
+  private final SortedMap<TableIdentifier, String> viewCreates = byName();
   // a COMMIT that failed in a way that may have committed
   private SQLException unanswered = null;
 
@@ -164,9 +173,47 @@ final class JdbcCatalogCommit {
         creates.putIfAbsent(table, metadataLocation) == null, "Cannot create %s twice", table);
   }
 
+  /** Makes the commit depend on view {@code view} having {@code metadataLocation}. */
+  void expectView(TableIdentifier view, String metadataLocation) {
+    String other = expectedViews.putIfAbsent(view, metadataLocation);
+    Preconditions.checkArgument(
+        other == null || other.equals(metadataLocation),
+        "Cannot commit view %s: read at two versions, %s and %s",
+        view,
+        other,
+        metadataLocation);
+  }
+
+  void dropView(TableIdentifier view, String metadataLocation) {
+    expectView(view, metadataLocation);
+    viewDrops.put(view, metadataLocation);
+  }
+
+  void updateView(TableIdentifier view, String metadataLocation, String newMetadataLocation) {
+    expectView(view, metadataLocation);
+    viewUpdates.put(
+        view, new AbstractMap.SimpleImmutableEntry<>(metadataLocation, newMetadataLocation));
+  }
+
+  void renameView(TableIdentifier from, String metadataLocation, TableIdentifier to) {
+    expectView(from, metadataLocation);
+    viewRenames.put(from, to);
+  }
+
+  void createView(TableIdentifier view, String metadataLocation) {
+    Preconditions.checkArgument(
+        viewCreates.putIfAbsent(view, metadataLocation) == null && !creates.containsKey(view),
+        "Cannot create %s twice",
+        view);
+  }
+
   /** Whether the commit has nothing to check and nothing to change. */
   boolean isEmpty() {
-    return expected.isEmpty() && namespaceChanges.isEmpty() && creates.isEmpty();
+    return expected.isEmpty()
+        && namespaceChanges.isEmpty()
+        && creates.isEmpty()
+        && expectedViews.isEmpty()
+        && viewCreates.isEmpty();
   }
 
   private boolean changes() {
@@ -174,7 +221,11 @@ final class JdbcCatalogCommit {
         || !drops.isEmpty()
         || !updates.isEmpty()
         || !renames.isEmpty()
-        || !creates.isEmpty();
+        || !creates.isEmpty()
+        || !viewDrops.isEmpty()
+        || !viewUpdates.isEmpty()
+        || !viewRenames.isEmpty()
+        || !viewCreates.isEmpty();
   }
 
   /**
@@ -187,6 +238,16 @@ final class JdbcCatalogCommit {
         (table, locations) ->
             witnesses.put(renames.getOrDefault(table, table), locations.getValue()));
     witnesses.putAll(creates);
+    return witnesses;
+  }
+
+  /** As {@link #witnesses()}, of the views the commit updates or creates. */
+  Map<TableIdentifier, String> viewWitnesses() {
+    Map<TableIdentifier, String> witnesses = Maps.newLinkedHashMap();
+    viewUpdates.forEach(
+        (view, locations) ->
+            witnesses.put(viewRenames.getOrDefault(view, view), locations.getValue()));
+    witnesses.putAll(viewCreates);
     return witnesses;
   }
 
@@ -260,6 +321,7 @@ final class JdbcCatalogCommit {
 
     failure = failure != null ? failure : changeTables(conn, lockRows);
     failure = failure != null ? failure : createTables(conn, lockRows);
+    failure = failure != null ? failure : createViews(conn, lockRows);
     for (NamespaceChange change : namespaceChanges) {
       if (failure == null && change.kind() == NamespaceChange.Kind.DROP) {
         failure = dropNamespace(conn, change.namespace(), lockRows);
@@ -281,6 +343,39 @@ final class JdbcCatalogCommit {
             table.getKey(), "Cannot commit transaction: table %s no longer exists", table.getKey());
       } else if (!location.equals(table.getValue())) {
         return changed(table.getKey());
+      }
+    }
+
+    for (Map.Entry<TableIdentifier, String> view : expectedViews.entrySet()) {
+      String location = viewMetadataLocation(conn, view.getKey(), lockRows);
+      if (location == null) {
+        return new Failure(
+            null, "Cannot commit transaction: view %s no longer exists", view.getKey());
+      } else if (!location.equals(view.getValue())) {
+        return viewChanged(view.getKey());
+      }
+    }
+
+    return null;
+  }
+
+  private Failure createViews(Connection conn, boolean lockRows) throws SQLException {
+    for (Map.Entry<TableIdentifier, String> create : viewCreates.entrySet()) {
+      TableIdentifier view = create.getKey();
+      String absent = whyNotCreate(conn, view, lockRows);
+      if (absent != null) {
+        return new Failure(null, "Cannot commit transaction: cannot create %s: %s", view, absent);
+      }
+
+      String[] row = {
+        catalogName,
+        JdbcUtil.namespaceToString(view.namespace()),
+        view.name(),
+        create.getValue(),
+        JdbcUtil.VIEW_RECORD_TYPE
+      };
+      if (execute(conn, JdbcUtil.V1_DO_COMMIT_CREATE_SQL, row) != 1) {
+        return new Failure(null, "Cannot commit transaction: cannot create view %s", view);
       }
     }
 
@@ -315,15 +410,24 @@ final class JdbcCatalogCommit {
   }
 
   /**
-   * Drops, updates and renames tables, each conditioned on the metadata location read. A rename
-   * moves its table to a temporary name first and then to its target, so that renames among the
-   * commit's own tables (a swap) do not collide.
+   * Drops, updates and renames tables and views, each conditioned on the metadata location read:
+   * every drop first, so a rename may take a name a drop frees. A rename moves its table or view to
+   * a temporary name first and then to its target, so that renames among the commit's own tables
+   * and views (a swap) do not collide.
    */
   private Failure changeTables(Connection conn, boolean lockRows) throws SQLException {
     for (Map.Entry<TableIdentifier, String> drop : drops.entrySet()) {
       TableIdentifier table = drop.getKey();
       if (execute(conn, dropSql(), tableArgs(table, drop.getValue())) != 1) {
         return changed(table);
+      }
+    }
+
+    for (Map.Entry<TableIdentifier, String> drop : viewDrops.entrySet()) {
+      TableIdentifier view = drop.getKey();
+      if (execute(conn, JdbcUtil.DROP_VIEW_SQL + AND_AT_LOCATION, tableArgs(view, drop.getValue()))
+          != 1) {
+        return viewChanged(view);
       }
     }
 
@@ -345,6 +449,23 @@ final class JdbcCatalogCommit {
       }
     }
 
+    for (Map.Entry<TableIdentifier, Map.Entry<String, String>> update : viewUpdates.entrySet()) {
+      TableIdentifier view = update.getKey();
+      String location = update.getValue().getKey();
+      if (execute(
+              conn,
+              JdbcUtil.V1_DO_COMMIT_VIEW_SQL,
+              update.getValue().getValue(),
+              location,
+              catalogName,
+              JdbcUtil.namespaceToString(view.namespace()),
+              view.name(),
+              location)
+          != 1) {
+        return viewChanged(view);
+      }
+    }
+
     Map<TableIdentifier, TableIdentifier> temporary = Maps.newLinkedHashMap();
     for (Map.Entry<TableIdentifier, TableIdentifier> rename : renames.entrySet()) {
       TableIdentifier from = rename.getKey();
@@ -359,6 +480,22 @@ final class JdbcCatalogCommit {
       temporary.put(moved, from);
     }
 
+    Map<TableIdentifier, TableIdentifier> temporaryViews = Maps.newLinkedHashMap();
+    for (Map.Entry<TableIdentifier, TableIdentifier> rename : viewRenames.entrySet()) {
+      TableIdentifier from = rename.getKey();
+      TableIdentifier moved =
+          TableIdentifier.of(from.namespace(), TEMPORARY_NAME_PREFIX + UUID.randomUUID());
+      Map.Entry<String, String> update = viewUpdates.get(from);
+      String location = update != null ? update.getValue() : expectedViews.get(from);
+      if (execute(
+              conn, JdbcUtil.RENAME_VIEW_SQL + AND_AT_LOCATION, renameArgs(from, moved, location))
+          != 1) {
+        return viewChanged(from);
+      }
+
+      temporaryViews.put(moved, from);
+    }
+
     for (Map.Entry<TableIdentifier, TableIdentifier> moved : temporary.entrySet()) {
       TableIdentifier from = moved.getValue();
       TableIdentifier to = renames.get(from);
@@ -370,6 +507,21 @@ final class JdbcCatalogCommit {
 
       if (execute(conn, renameSql(), renameArgs(moved.getKey(), to, null)) != 1) {
         return new Failure(null, "Cannot commit transaction: cannot rename %s to %s", from, to);
+      }
+    }
+
+    for (Map.Entry<TableIdentifier, TableIdentifier> moved : temporaryViews.entrySet()) {
+      TableIdentifier from = moved.getValue();
+      TableIdentifier to = viewRenames.get(from);
+      String absent = whyNotCreate(conn, to, lockRows);
+      if (absent != null) {
+        return new Failure(
+            null, "Cannot commit transaction: cannot rename view %s to %s: %s", from, to, absent);
+      }
+
+      if (execute(conn, JdbcUtil.RENAME_VIEW_SQL, renameArgs(moved.getKey(), to, null)) != 1) {
+        return new Failure(
+            null, "Cannot commit transaction: cannot rename view %s to %s", from, to);
       }
     }
 
@@ -519,6 +671,22 @@ final class JdbcCatalogCommit {
     }
   }
 
+  /**
+   * The metadata location of view {@code view} on {@code conn}, or null if there is no such view.
+   */
+  private String viewMetadataLocation(Connection conn, TableIdentifier view, boolean lockRows)
+      throws SQLException {
+    String sql = JdbcUtil.GET_VIEW_SQL + (lockRows ? " FOR UPDATE" : "");
+    try (PreparedStatement statement = conn.prepareStatement(sql)) {
+      statement.setString(1, catalogName);
+      statement.setString(2, JdbcUtil.namespaceToString(view.namespace()));
+      statement.setString(3, view.name());
+      try (ResultSet rs = statement.executeQuery()) {
+        return rs.next() ? rs.getString(BaseMetastoreTableOperations.METADATA_LOCATION_PROP) : null;
+      }
+    }
+  }
+
   private Map<String, String> properties(Connection conn, String namespace) throws SQLException {
     Map<String, String> properties = Maps.newHashMap();
     try (PreparedStatement statement =
@@ -594,6 +762,11 @@ final class JdbcCatalogCommit {
   private static Failure changed(TableIdentifier table) {
     return new Failure(
         table, "Cannot commit transaction: table %s changed since the transaction read it", table);
+  }
+
+  private static Failure viewChanged(TableIdentifier view) {
+    return new Failure(
+        null, "Cannot commit transaction: view %s changed since the transaction read it", view);
   }
 
   private static Failure noSuchNamespace(Namespace namespace) {

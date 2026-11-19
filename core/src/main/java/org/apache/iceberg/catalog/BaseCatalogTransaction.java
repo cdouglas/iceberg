@@ -21,6 +21,7 @@ package org.apache.iceberg.catalog;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Supplier;
@@ -68,10 +69,12 @@ import org.apache.iceberg.UpdateProperties;
 import org.apache.iceberg.UpdateSchema;
 import org.apache.iceberg.UpdateStatistics;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.exceptions.NoSuchViewException;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -82,6 +85,13 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.view.BaseMetastoreViewCatalog;
+import org.apache.iceberg.view.BaseView;
+import org.apache.iceberg.view.View;
+import org.apache.iceberg.view.ViewBuilder;
+import org.apache.iceberg.view.ViewMetadata;
+import org.apache.iceberg.view.ViewOperations;
+import org.apache.iceberg.view.ViewUtil;
 
 /**
  * A catalog transaction staged on the client: {@link #asCatalog()} stages every change to tables
@@ -94,9 +104,13 @@ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  * {@link IsolationLevel#SERIALIZABLE} it records what it reads ({@link TableRead}): each scan's
  * planning, of a branch or tag (an incremental scan's, of the branch whose current snapshot it ends
  * at and of the tags it names), and each {@link #declareRead}; and, as reads of the whole table,
- * each metadata table it loads of a table it holds and each partition statistics scan's read.
- * Replace transactions, {@code registerTable} and views are not part of a catalog transaction and
- * throw.
+ * each metadata table it loads of a table it holds and each partition statistics scan's read. Views
+ * stage as tables do, where the catalog has them ({@link #asViewCatalog()}; {@link #asCatalog()} is
+ * then a {@link ViewCatalog} too): a view's create, replace (or property or location change),
+ * rename and drop, each change staged on the view's version as the transaction first loaded it.
+ * Tables and views share names: a staged table or view keeps a name from the other, and dropping a
+ * namespace counts its views. Replace transactions, {@code registerTable} and {@code registerView}
+ * are not part of a catalog transaction and throw.
  */
 public class BaseCatalogTransaction implements CatalogTransaction {
   private final Catalog origin;
@@ -112,6 +126,11 @@ public class BaseCatalogTransaction implements CatalogTransaction {
   private final Set<Namespace> droppedNamespaces = Sets.newHashSet();
   private final Map<Namespace, Map<String, String>> setProperties = Maps.newHashMap();
   private final Map<Namespace, Set<String>> removedProperties = Maps.newHashMap();
+  // Every view the transaction touched, in the order it did; viewsByName holds those that resolve
+  // by their names in this transaction, viewsGone the names that no longer resolve to the origin's
+  private final List<ViewEntry> viewEntries = Lists.newArrayList();
+  private final Map<TableIdentifier, ViewEntry> viewsByName = Maps.newHashMap();
+  private final Set<TableIdentifier> viewsGone = Sets.newHashSet();
   private boolean hasCommitted = false;
   private boolean hasFailed = false;
 
@@ -154,6 +173,30 @@ public class BaseCatalogTransaction implements CatalogTransaction {
 
     private Table table() {
       return tx != null ? tx.table() : loaded;
+    }
+  }
+
+  /** A view the transaction touched. */
+  private static final class ViewEntry {
+    // its name when the transaction started, and its version as the transaction first read it;
+    // both null for a view the transaction created
+    private final TableIdentifier startName;
+    private final ViewMetadata base;
+    private TableIdentifier name;
+    // its metadata in the transaction: base, or what the transaction staged
+    private ViewMetadata current;
+    private boolean updated;
+    private boolean dropped;
+
+    private ViewEntry(TableIdentifier name, ViewMetadata base, ViewMetadata current) {
+      this.startName = base != null ? name : null;
+      this.base = base;
+      this.name = name;
+      this.current = current;
+    }
+
+    private boolean created() {
+      return startName == null;
     }
   }
 
@@ -223,11 +266,41 @@ public class BaseCatalogTransaction implements CatalogTransaction {
       }
     }
 
+    for (ViewEntry entry : viewEntries) {
+      if (entry.created()) {
+        if (!entry.dropped) {
+          commit.putCreatedViews(entry.name, entry.current);
+        }
+      } else {
+        ViewChange change = viewChange(entry);
+        if (change != null) {
+          commit.addViewChanges(change);
+        }
+      }
+    }
+
     if (IsolationLevel.SERIALIZABLE == isolationLevel) {
       commit.addAllReads(reads);
     }
 
     return commit.build();
+  }
+
+  /** What the transaction did to a view that existed when it started, or null if nothing. */
+  private static ViewChange viewChange(ViewEntry entry) {
+    ViewMetadata updated = !entry.dropped && entry.updated ? entry.current : null;
+    boolean renamed = !entry.dropped && !entry.name.equals(entry.startName);
+    if (updated == null && !renamed && !entry.dropped) {
+      return null;
+    }
+
+    return ImmutableViewChange.builder()
+        .identifier(entry.startName)
+        .base(entry.base)
+        .updated(updated)
+        .renamedTo(renamed ? entry.name : null)
+        .dropped(entry.dropped)
+        .build();
   }
 
   /** What the transaction did to a table that existed when it started, or null if nothing. */
@@ -265,11 +338,25 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     droppedNamespaces.clear();
     setProperties.clear();
     removedProperties.clear();
+    viewEntries.clear();
+    viewsByName.clear();
+    viewsGone.clear();
   }
 
   @Override
   public Catalog asCatalog() {
-    return new AsTransactionalCatalog();
+    return origin instanceof ViewCatalog
+        ? new AsTransactionalViewCatalog()
+        : new AsTransactionalCatalog();
+  }
+
+  @Override
+  public ViewCatalog asViewCatalog() {
+    if (!(origin instanceof ViewCatalog)) {
+      throw new UnsupportedOperationException("Catalog does not support views: " + origin);
+    }
+
+    return new AsTransactionalViewCatalog();
   }
 
   @Override
@@ -330,6 +417,142 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     entries.add(entry);
     byName.put(name, entry);
     return entry;
+  }
+
+  /**
+   * The view {@code name} names in this transaction, loaded from the origin the first time; null if
+   * there is none.
+   */
+  private ViewEntry viewEntry(TableIdentifier name) {
+    ViewEntry entry = viewsByName.get(name);
+    if (entry != null || viewsGone.contains(name)) {
+      return entry;
+    }
+
+    View view;
+    try {
+      view = views().loadView(name);
+    } catch (NoSuchViewException e) {
+      return null;
+    }
+
+    Preconditions.checkState(
+        view instanceof BaseView, "Cannot stage changes to view %s: no operations", name);
+    ViewMetadata base = ((BaseView) view).operations().current();
+    entry = new ViewEntry(name, base, base);
+    viewEntries.add(entry);
+    viewsByName.put(name, entry);
+    return entry;
+  }
+
+  /**
+   * Whether a view staged in this transaction has {@code name}: the transaction keeps a name a view
+   * holds from a table, as the catalog does; one of the origin's views it has not loaded is checked
+   * where the commit takes effect.
+   */
+  private boolean stagedViewHas(TableIdentifier name) {
+    return viewsByName.containsKey(name);
+  }
+
+  private ViewCatalog views() {
+    if (origin instanceof ViewCatalog) {
+      return (ViewCatalog) origin;
+    }
+
+    throw new UnsupportedOperationException("Catalog does not support views: " + origin);
+  }
+
+  /**
+   * Whether {@code namespace} holds a view in this transaction: one it staged there, or one of the
+   * origin's it has not dropped or renamed away. A catalog that cannot list views has none.
+   */
+  private boolean holdsViews(Namespace namespace) {
+    for (ViewEntry entry : viewsByName.values()) {
+      if (entry.name.namespace().equals(namespace)) {
+        return true;
+      }
+    }
+
+    if (!(origin instanceof ViewCatalog) || createdNamespaces.containsKey(namespace)) {
+      return false;
+    }
+
+    try {
+      return ((ViewCatalog) origin)
+          .listViews(namespace).stream().anyMatch(view -> !viewsGone.contains(view));
+    } catch (UnsupportedOperationException e) {
+      // a catalog without views (JdbcCatalog on its V0 schema)
+      return false;
+    }
+  }
+
+  /**
+   * The operations of view {@code name} in this transaction: what it is here, and a commit that
+   * stages a create (where no table or view has its name and its namespace exists) or a change on
+   * the version it read. A view loaded through the transaction keeps its entry across a rename.
+   */
+  private class StagedViewOperations implements ViewOperations {
+    private final TableIdentifier name;
+    private ViewEntry entry;
+
+    private StagedViewOperations(TableIdentifier name, ViewEntry entry) {
+      this.name = name;
+      this.entry = entry;
+    }
+
+    private ViewEntry resolve() {
+      if (entry != null) {
+        return entry.dropped ? null : entry;
+      }
+
+      return viewEntry(name);
+    }
+
+    @Override
+    public ViewMetadata current() {
+      ViewEntry resolved = resolve();
+      return resolved != null ? resolved.current : null;
+    }
+
+    @Override
+    public ViewMetadata refresh() {
+      return current();
+    }
+
+    @Override
+    public void commit(ViewMetadata base, ViewMetadata metadata) {
+      ViewEntry resolved = resolve();
+      if (resolved == null) {
+        if (base != null) {
+          throw new CommitFailedException(
+              "Cannot commit %s: the transaction dropped or renamed it", name);
+        }
+
+        stageCreate(metadata);
+        return;
+      }
+
+      if (!Objects.equals(base, resolved.current)) {
+        throw new CommitFailedException(
+            "Cannot commit %s: its metadata changed in the transaction", resolved.name);
+      }
+
+      resolved.current = metadata;
+      resolved.updated = true;
+    }
+
+    private void stageCreate(ViewMetadata metadata) {
+      checkNamespaceExists(name.namespace());
+      if (entry(name) != null) {
+        throw new AlreadyExistsException("Table with same name already exists: %s", name);
+      }
+
+      ViewEntry created = new ViewEntry(name, null, metadata);
+      viewEntries.add(created);
+      viewsByName.put(name, created);
+      viewsGone.remove(name);
+      this.entry = created;
+    }
   }
 
   /**
@@ -483,6 +706,10 @@ public class BaseCatalogTransaction implements CatalogTransaction {
         throw new AlreadyExistsException("Cannot rename %s to %s. Table already exists", from, to);
       }
 
+      if (stagedViewHas(to)) {
+        throw new AlreadyExistsException("Cannot rename %s to %s. View already exists", from, to);
+      }
+
       checkNamespaceExists(to.namespace());
       byName.remove(from);
       gone.add(from);
@@ -558,7 +785,9 @@ public class BaseCatalogTransaction implements CatalogTransaction {
         return false;
       }
 
-      if (!listTables(namespace).isEmpty() || !listNamespaces(namespace).isEmpty()) {
+      if (!listTables(namespace).isEmpty()
+          || !listNamespaces(namespace).isEmpty()
+          || holdsViews(namespace)) {
         throw new NamespaceNotEmptyException("Namespace %s is not empty", namespace);
       }
 
@@ -607,6 +836,107 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     public boolean namespaceExists(Namespace namespace) {
       namespaces();
       return BaseCatalogTransaction.this.namespaceExists(namespace);
+    }
+  }
+
+  /** The transaction's catalog where the origin has views: its views stage too. */
+  public class AsTransactionalViewCatalog extends AsTransactionalCatalog implements ViewCatalog {
+    @Override
+    public String name() {
+      return origin.name();
+    }
+
+    @Override
+    public void initialize(String name, Map<String, String> properties) {}
+
+    @Override
+    public List<TableIdentifier> listViews(Namespace namespace) {
+      ViewCatalog views = views();
+      checkNamespaceExists(namespace);
+      Set<TableIdentifier> listed = Sets.newLinkedHashSet();
+      if (!createdNamespaces.containsKey(namespace)) {
+        for (TableIdentifier view : views.listViews(namespace)) {
+          if (!viewsGone.contains(view)) {
+            listed.add(view);
+          }
+        }
+      }
+
+      for (ViewEntry entry : viewsByName.values()) {
+        if (entry.name.namespace().equals(namespace)) {
+          listed.add(entry.name);
+        }
+      }
+
+      return Lists.newArrayList(listed);
+    }
+
+    @Override
+    public View loadView(TableIdentifier identifier) {
+      ViewEntry entry = viewEntry(identifier);
+      if (entry == null) {
+        throw new NoSuchViewException("View does not exist: %s", identifier);
+      }
+
+      return new BaseView(
+          new StagedViewOperations(identifier, entry), ViewUtil.fullViewName(name(), identifier));
+    }
+
+    @Override
+    public boolean viewExists(TableIdentifier identifier) {
+      return viewEntry(identifier) != null;
+    }
+
+    @Override
+    public ViewBuilder buildView(TableIdentifier identifier) {
+      ViewCatalog views = views();
+      if (!(views instanceof BaseMetastoreViewCatalog)) {
+        throw new UnsupportedOperationException(
+            "Cannot create or replace a view in a catalog transaction of " + origin);
+      }
+
+      return ((BaseMetastoreViewCatalog) views)
+          .buildView(identifier, new StagedViewOperations(identifier, null));
+    }
+
+    @Override
+    public boolean dropView(TableIdentifier identifier) {
+      ViewEntry entry = viewEntry(identifier);
+      if (entry == null) {
+        return false;
+      }
+
+      entry.dropped = true;
+      viewsByName.remove(identifier);
+      viewsGone.add(identifier);
+      return true;
+    }
+
+    @Override
+    public void renameView(TableIdentifier from, TableIdentifier to) {
+      ViewEntry entry = viewEntry(from);
+      if (entry == null) {
+        throw new NoSuchViewException("Cannot rename %s to %s. View does not exist", from, to);
+      }
+
+      if (entry(to) != null) {
+        throw new AlreadyExistsException("Cannot rename %s to %s. Table already exists", from, to);
+      }
+
+      if (viewEntry(to) != null) {
+        throw new AlreadyExistsException("Cannot rename %s to %s. View already exists", from, to);
+      }
+
+      checkNamespaceExists(to.namespace());
+      viewsByName.remove(from);
+      viewsGone.add(from);
+      viewsByName.put(to, entry);
+      entry.name = to;
+    }
+
+    @Override
+    public View registerView(TableIdentifier identifier, String metadataFileLocation) {
+      throw new UnsupportedOperationException("Cannot register a view in a catalog transaction");
     }
   }
 
@@ -683,6 +1013,10 @@ public class BaseCatalogTransaction implements CatalogTransaction {
     private Entry stage() {
       if (entry(identifier) != null) {
         throw new AlreadyExistsException("Table already exists: %s", identifier);
+      }
+
+      if (stagedViewHas(identifier)) {
+        throw new AlreadyExistsException("View with same name already exists: %s", identifier);
       }
 
       checkNamespaceExists(identifier.namespace());

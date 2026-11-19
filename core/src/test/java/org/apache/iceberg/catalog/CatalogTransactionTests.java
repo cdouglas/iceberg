@@ -58,6 +58,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.view.View;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -164,6 +165,14 @@ public abstract class CatalogTransactionTests<
    */
   protected boolean supportsNamesWithDot() {
     return true;
+  }
+
+  /**
+   * Whether the catalog has views (as a {@link ViewCatalog} that creates them): a transaction then
+   * stages view changes as it stages tables' ({@link CatalogTransaction#asViewCatalog()}).
+   */
+  protected boolean supportsViews() {
+    return catalog() instanceof ViewCatalog;
   }
 
   /** A transaction of {@code isolationLevel}, or a skipped test if the catalog lacks it. */
@@ -1757,5 +1766,250 @@ public abstract class CatalogTransactionTests<
     catalogTx.commitTransaction();
     assertThat(snapshots(A)).isEqualTo(1);
     assertThat(deleted).contains(idFile("a-1", 1).location());
+  }
+
+  /** View {@code identifier} over the tables, as {@code sql} selects. */
+  private View createView(TableIdentifier identifier, String sql) {
+    return ((ViewCatalog) catalog())
+        .buildView(identifier)
+        .withSchema(SCHEMA)
+        .withDefaultNamespace(identifier.namespace())
+        .withQuery("spark", sql)
+        .create();
+  }
+
+  private static String sql(View view) {
+    return view.sqlFor("spark").sql();
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void viewChangesCommitWithTheTransaction(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsViews() && supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    TableIdentifier replaced = TableIdentifier.of("ns", "replaced");
+    TableIdentifier altered = TableIdentifier.of("ns", "altered");
+    TableIdentifier moved = TableIdentifier.of("ns", "moved");
+    TableIdentifier dropped = TableIdentifier.of("ns", "dropped");
+    TableIdentifier created = TableIdentifier.of("ns", "created");
+    TableIdentifier renamed = TableIdentifier.of("ns", "renamed");
+    createView(replaced, "SELECT * FROM a");
+    createView(altered, "SELECT * FROM a");
+    createView(moved, "SELECT * FROM b");
+    createView(dropped, "SELECT * FROM b");
+
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    ViewCatalog txViews = catalogTx.asViewCatalog();
+    assertThat(catalogTx.asCatalog()).isInstanceOf(ViewCatalog.class);
+    txViews
+        .buildView(created)
+        .withSchema(SCHEMA)
+        .withDefaultNamespace(created.namespace())
+        .withQuery("spark", "SELECT id FROM a")
+        .withProperty("owner", "tx")
+        .create();
+    txViews
+        .buildView(replaced)
+        .withSchema(SCHEMA)
+        .withDefaultNamespace(replaced.namespace())
+        .withQuery("spark", "SELECT id FROM b")
+        .replace();
+    txViews.loadView(altered).updateProperties().set("k", "v").commit();
+    txViews.renameView(moved, renamed);
+    assertThat(txViews.dropView(dropped)).isTrue();
+    catalogTx.asCatalog().loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // the TX sees its view changes; the catalog does not until the TX commits
+    assertThat(txViews.listViews(Namespace.of("ns")))
+        .containsExactlyInAnyOrder(created, replaced, altered, renamed);
+    assertThat(sql(txViews.loadView(created))).isEqualTo("SELECT id FROM a");
+    assertThat(sql(txViews.loadView(replaced))).isEqualTo("SELECT id FROM b");
+    assertThat(txViews.loadView(altered).properties()).containsEntry("k", "v");
+    assertThat(txViews.viewExists(moved)).isFalse();
+    assertThat(txViews.viewExists(dropped)).isFalse();
+    assertThat(txViews.dropView(dropped)).isFalse();
+    ViewCatalog views = (ViewCatalog) catalog();
+    assertThat(views.viewExists(created)).isFalse();
+    assertThat(sql(views.loadView(replaced))).isEqualTo("SELECT * FROM a");
+    assertThat(views.viewExists(dropped)).isTrue();
+
+    catalogTx.commitTransaction();
+    assertThat(views.listViews(Namespace.of("ns")))
+        .containsExactlyInAnyOrder(created, replaced, altered, renamed);
+    assertThat(sql(views.loadView(created))).isEqualTo("SELECT id FROM a");
+    assertThat(views.loadView(created).properties()).containsEntry("owner", "tx");
+    assertThat(sql(views.loadView(replaced))).isEqualTo("SELECT id FROM b");
+    assertThat(views.loadView(replaced).versions()).hasSize(2);
+    assertThat(views.loadView(altered).properties()).containsEntry("k", "v");
+    assertThat(sql(views.loadView(renamed))).isEqualTo("SELECT * FROM b");
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aViewChangeFailsWhereTheViewChangedSince(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsViews() && supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    TableIdentifier view = TableIdentifier.of("ns", "v");
+    createView(view, "SELECT * FROM a");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    catalogTx.asViewCatalog().loadView(view).updateProperties().set("k", "tx").commit();
+    catalogTx.asCatalog().loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // a view's metadata is replaced whole: any change since the TX read it is a conflict
+    ((ViewCatalog) catalog()).loadView(view).updateProperties().set("other", "1").commit();
+
+    assertThatThrownBy(catalogTx::commitTransaction).isInstanceOf(CommitFailedException.class);
+    assertThat(((ViewCatalog) catalog()).loadView(view).properties())
+        .doesNotContainKey("k")
+        .containsEntry("other", "1");
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void tablesAndViewsShareNamesInATransaction(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsViews() && supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    TableIdentifier view = TableIdentifier.of("ns", "v");
+    createView(view, "SELECT * FROM a");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    ViewCatalog txViews = catalogTx.asViewCatalog();
+
+    // a name a table or view holds is taken, in the transaction as in the catalog
+    assertThatThrownBy(
+            () ->
+                txViews
+                    .buildView(A)
+                    .withSchema(SCHEMA)
+                    .withDefaultNamespace(A.namespace())
+                    .withQuery("spark", "SELECT 1")
+                    .create())
+        .isInstanceOf(AlreadyExistsException.class);
+    assertThatThrownBy(() -> txViews.renameView(view, B))
+        .isInstanceOf(AlreadyExistsException.class);
+    assertThat(txViews.viewExists(view)).isTrue();
+    assertThatThrownBy(() -> txCatalog.createTable(view, SCHEMA, ID_SPEC))
+        .isInstanceOf(AlreadyExistsException.class);
+    assertThatThrownBy(() -> txCatalog.renameTable(A, view))
+        .isInstanceOf(AlreadyExistsException.class);
+    txCatalog.loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    catalogTx.commitTransaction();
+    assertThat(((ViewCatalog) catalog()).listViews(Namespace.of("ns"))).containsExactly(view);
+    assertThat(catalog().listTables(Namespace.of("ns"))).containsExactlyInAnyOrder(A, B);
+    assertThat(snapshots(A)).isEqualTo(2);
+  }
+
+  /**
+   * Whether a transaction's create or rename may take a name the same transaction frees of the
+   * other kind: a view's where it drops a table, a table's where it drops a view.
+   */
+  protected boolean takesNamesItFreesAcrossKinds() {
+    return true;
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aNameATransactionFreesIsFreeForTheOtherKind(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsViews() && supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    TableIdentifier view = TableIdentifier.of("ns", "v");
+    createView(view, "SELECT * FROM a");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    Catalog txCatalog = catalogTx.asCatalog();
+    ViewCatalog txViews = catalogTx.asViewCatalog();
+    assertThat(txCatalog.dropTable(B, false)).isTrue();
+    txViews
+        .buildView(B)
+        .withSchema(SCHEMA)
+        .withDefaultNamespace(B.namespace())
+        .withQuery("spark", "SELECT * FROM a")
+        .create();
+    assertThat(txViews.dropView(view)).isTrue();
+    txCatalog.renameTable(A, view);
+
+    ViewCatalog views = (ViewCatalog) catalog();
+    if (takesNamesItFreesAcrossKinds()) {
+      catalogTx.commitTransaction();
+      assertThat(views.listViews(Namespace.of("ns"))).containsExactly(B);
+      assertThat(catalog().listTables(Namespace.of("ns"))).containsExactly(view);
+      assertThat(snapshots(view)).isEqualTo(1);
+    } else {
+      // refused as a whole: nothing applies
+      assertThatThrownBy(catalogTx::commitTransaction)
+          .isInstanceOfAny(AlreadyExistsException.class, CommitFailedException.class);
+      assertThat(views.listViews(Namespace.of("ns"))).containsExactly(view);
+      assertThat(catalog().listTables(Namespace.of("ns"))).containsExactlyInAnyOrder(A, B);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aNamespaceDropCountsItsViews(CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsViews() && supportsCatalogChanges()).isTrue();
+    Namespace namespace = Namespace.of("views_only");
+    TableIdentifier view = TableIdentifier.of(namespace, "v");
+    catalog().createNamespace(namespace);
+    createView(view, "SELECT 1");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    SupportsNamespaces txNamespaces = (SupportsNamespaces) catalogTx.asCatalog();
+
+    assertThatThrownBy(() -> txNamespaces.dropNamespace(namespace))
+        .isInstanceOf(NamespaceNotEmptyException.class);
+    assertThat(catalogTx.asViewCatalog().dropView(view)).isTrue();
+    assertThat(txNamespaces.dropNamespace(namespace)).isTrue();
+
+    catalogTx.commitTransaction();
+    assertThat(catalog().namespaceExists(namespace)).isFalse();
+    assertThat(((ViewCatalog) catalog()).viewExists(view)).isFalse();
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void aViewCreateFailsWhereTheNameWasTakenSince(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsViews() && supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    TableIdentifier created = TableIdentifier.of("ns", "c");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    catalogTx
+        .asViewCatalog()
+        .buildView(created)
+        .withSchema(SCHEMA)
+        .withDefaultNamespace(created.namespace())
+        .withQuery("spark", "SELECT * FROM a")
+        .create();
+    catalogTx.asCatalog().loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    // a table now has the name the TX's view takes
+    catalog().createTable(created, SCHEMA, ID_SPEC);
+
+    assertThatThrownBy(catalogTx::commitTransaction)
+        .isInstanceOfAny(CommitFailedException.class, AlreadyExistsException.class);
+    assertThat(((ViewCatalog) catalog()).viewExists(created)).isFalse();
+    assertThat(snapshots(A)).isEqualTo(1);
+  }
+
+  @ParameterizedTest
+  @EnumSource(CatalogTransaction.IsolationLevel.class)
+  public void viewChangesAreRefusedWhereTheCatalogCommitsNone(
+      CatalogTransaction.IsolationLevel isolationLevel) {
+    assumeThat(supportsViews() && !supportsCatalogChanges()).isTrue();
+    createIdentityTables();
+    TableIdentifier view = TableIdentifier.of("ns", "v");
+    createView(view, "SELECT * FROM a");
+    CatalogTransaction catalogTx = begin(isolationLevel);
+    assertThat(catalogTx.asViewCatalog().dropView(view)).isTrue();
+    catalogTx.asCatalog().loadTable(A).newFastAppend().appendFile(idFile("a-2", 2)).commit();
+
+    assertThat(commitCatalogChanges(catalogTx)).isFalse();
+    assertThat(((ViewCatalog) catalog()).viewExists(view)).isTrue();
+    assertThat(snapshots(A)).isEqualTo(1);
   }
 }
