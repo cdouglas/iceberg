@@ -432,6 +432,28 @@ public class TestTransaction extends TestBase {
   }
 
   @TestTemplate
+  public void testTransactionRetryCountsItsDeleteFilesOnce() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(2);
+    // the new delete manifest merges with the table's, so the commit into the transaction cleans
+    // it up and the retry writes it again
+    table.updateProperties().set(TableProperties.MANIFEST_MIN_MERGE_COUNT, "2").commit();
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newRowDelta().addDeletes(FILE_A_EQUALITY_DELETES).commit();
+
+    Transaction txn = table.newTransaction();
+    txn.newRowDelta().addDeletes(FILE_B_EQUALITY_DELETES).commit();
+
+    // cause the transaction commit to retry
+    table.manageSnapshots().createBranch("branch", table.currentSnapshot().snapshotId()).commit();
+
+    txn.commitTransaction();
+
+    assertThat(table.currentSnapshot().summary())
+        .containsEntry(SnapshotSummary.ADDED_DELETE_FILES_PROP, "1")
+        .containsEntry(SnapshotSummary.TOTAL_DELETE_FILES_PROP, "2");
+  }
+
+  @TestTemplate
   public void testMultipleUpdateTransactionRetryMergeCleanup() {
     // use only one retry and aggressively merge manifests
     table
