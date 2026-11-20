@@ -49,6 +49,7 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
@@ -79,6 +80,8 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
   private static final String NAMESPACE_EXISTS_PROPERTY = "exists";
   private static final Logger LOG = LoggerFactory.getLogger(JdbcCatalog.class);
   private static final Joiner SLASH = Joiner.on("/");
+  // as many as a table commit makes by default (commit.retry.num-retries 4, and the first)
+  private static final int SET_PROPERTIES_ATTEMPTS = 5;
   static final String VIEW_WARNING_LOG_MESSAGE =
       "JDBC catalog is initialized without view support. To auto-migrate the database's schema and enable view support, set jdbc.schema-version=V1";
 
@@ -591,30 +594,33 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
         "Cannot set reserved property: %s",
         NAMESPACE_EXISTS_PROPERTY);
 
-    Map<String, String> startingProperties = fetchProperties(namespace);
-    Map<String, String> inserts = Maps.newHashMap();
-    Map<String, String> updates = Maps.newHashMap();
+    // Another writer may insert or remove one of these keys between the read of the namespace's
+    // properties and the statements that set them: the insert of a key it inserted fails on the
+    // table's primary key, and the update of a key it removed matches no row. Both statements run
+    // in one transaction, which is rolled back and tried again on a fresh read when either finds
+    // the keys changed, so a set lands whole, or not at all.
+    for (int attempt = 1; attempt <= SET_PROPERTIES_ATTEMPTS; attempt += 1) {
+      Map<String, String> startingProperties = fetchProperties(namespace);
+      Map<String, String> inserts = Maps.newHashMap();
+      Map<String, String> updates = Maps.newHashMap();
 
-    for (String key : properties.keySet()) {
-      String value = properties.get(key);
-      if (startingProperties.containsKey(key)) {
-        updates.put(key, value);
-      } else {
-        inserts.put(key, value);
+      for (String key : properties.keySet()) {
+        String value = properties.get(key);
+        if (startingProperties.containsKey(key)) {
+          updates.put(key, value);
+        } else {
+          inserts.put(key, value);
+        }
+      }
+
+      if (writeProperties(namespace, inserts, updates)) {
+        return true;
       }
     }
 
-    boolean hadInserts = false;
-    if (!inserts.isEmpty()) {
-      hadInserts = insertProperties(namespace, inserts);
-    }
-
-    boolean hadUpdates = false;
-    if (!updates.isEmpty()) {
-      hadUpdates = updateProperties(namespace, updates);
-    }
-
-    return hadInserts || hadUpdates;
+    throw new CommitFailedException(
+        "Failed to set properties of namespace %s: other writers changed them %d times",
+        namespace, SET_PROPERTIES_ATTEMPTS);
   }
 
   @Override
@@ -838,13 +844,7 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
   }
 
   private boolean insertProperties(Namespace namespace, Map<String, String> properties) {
-    String namespaceName = JdbcUtil.namespaceToString(namespace);
-    String[] args =
-        properties.entrySet().stream()
-            .flatMap(
-                entry -> Stream.of(catalogName, namespaceName, entry.getKey(), entry.getValue()))
-            .toArray(String[]::new);
-
+    String[] args = insertPropertiesArgs(JdbcUtil.namespaceToString(namespace), properties);
     int insertedRecords = execute(JdbcUtil.insertPropertiesStatement(properties.size()), args);
 
     if (insertedRecords == properties.size()) {
@@ -859,28 +859,95 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
             properties.size()));
   }
 
-  private boolean updateProperties(Namespace namespace, Map<String, String> properties) {
+  /**
+   * Inserts and updates a namespace's properties in one transaction. Returns false, having rolled
+   * it back, if another writer inserted one of the keys to insert, or removed one of the keys to
+   * update, since they were read.
+   */
+  private boolean writeProperties(
+      Namespace namespace, Map<String, String> inserts, Map<String, String> updates) {
     String namespaceName = JdbcUtil.namespaceToString(namespace);
+    try {
+      return connections.run(
+          conn -> {
+            boolean autoCommit = conn.getAutoCommit();
+            boolean committed = false;
+            conn.setAutoCommit(false);
+            try {
+              if (!inserts.isEmpty()) {
+                int inserted =
+                    executeUpdate(
+                        conn,
+                        JdbcUtil.insertPropertiesStatement(inserts.size()),
+                        insertPropertiesArgs(namespaceName, inserts));
+                if (inserted != inserts.size()) {
+                  throw new IllegalStateException(
+                      String.format(
+                          Locale.ROOT,
+                          "Failed to insert: %d of %d succeeded",
+                          inserted,
+                          inserts.size()));
+                }
+              }
+
+              if (!updates.isEmpty()
+                  && executeUpdate(
+                          conn,
+                          JdbcUtil.updatePropertiesStatement(updates.size()),
+                          updatePropertiesArgs(namespaceName, updates))
+                      != updates.size()) {
+                return false;
+              }
+
+              conn.commit();
+              committed = true;
+              return true;
+            } catch (SQLException e) {
+              if (JdbcUtil.isConstraintViolation(e)) {
+                return false;
+              }
+
+              throw e;
+            } finally {
+              if (!committed) {
+                conn.rollback();
+              }
+
+              conn.setAutoCommit(autoCommit);
+            }
+          });
+    } catch (SQLException e) {
+      throw new UncheckedSQLException(e, "Failed to set properties of namespace %s", namespace);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new UncheckedInterruptedException(e, "Interrupted in SQL command");
+    }
+  }
+
+  private static int executeUpdate(Connection conn, String sql, String... args)
+      throws SQLException {
+    try (PreparedStatement preparedStatement = conn.prepareStatement(sql)) {
+      for (int pos = 0; pos < args.length; pos += 1) {
+        preparedStatement.setString(pos + 1, args[pos]);
+      }
+
+      return preparedStatement.executeUpdate();
+    }
+  }
+
+  private String[] insertPropertiesArgs(String namespaceName, Map<String, String> properties) {
+    return properties.entrySet().stream()
+        .flatMap(entry -> Stream.of(catalogName, namespaceName, entry.getKey(), entry.getValue()))
+        .toArray(String[]::new);
+  }
+
+  private String[] updatePropertiesArgs(String namespaceName, Map<String, String> properties) {
     Stream<String> caseArgs =
         properties.entrySet().stream()
             .flatMap(entry -> Stream.of(entry.getKey(), entry.getValue()));
     Stream<String> whereArgs =
         Stream.concat(Stream.of(catalogName, namespaceName), properties.keySet().stream());
-
-    String[] args = Stream.concat(caseArgs, whereArgs).toArray(String[]::new);
-
-    int updatedRecords = execute(JdbcUtil.updatePropertiesStatement(properties.size()), args);
-
-    if (updatedRecords == properties.size()) {
-      return true;
-    }
-
-    throw new IllegalStateException(
-        String.format(
-            Locale.ROOT,
-            "Failed to update: %d of %d succeeded",
-            updatedRecords,
-            properties.size()));
+    return Stream.concat(caseArgs, whereArgs).toArray(String[]::new);
   }
 
   private boolean deleteProperties(Namespace namespace, Set<String> properties) {

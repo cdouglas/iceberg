@@ -62,6 +62,7 @@ import org.apache.iceberg.catalog.CatalogTests;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
@@ -1334,6 +1335,128 @@ public class TestJdbcCatalog extends CatalogTests<JdbcCatalog> {
           .as("Value for key " + keyValue.getKey() + " should match")
           .containsEntry(keyValue.getKey(), keyValue.getValue());
     }
+  }
+
+  /**
+   * A set reads the namespace's properties to choose between an INSERT and an UPDATE of each key.
+   * Another writer that inserts one of its new keys in between made its INSERT fail on the primary
+   * key, an UncheckedSQLException.
+   */
+  @Test
+  public void testSetPropertiesRacingAnInsertOfItsKey() throws IOException {
+    AtomicReference<Runnable> beforeWrite = new AtomicReference<>();
+    String url = "jdbc:sqlite:" + Files.createTempFile("iceberg_set_insert", "db").toAbsolutePath();
+    JdbcCatalog racing = catalogWritingPropertiesAfter(url, beforeWrite);
+    JdbcCatalog other = catalogWritingPropertiesAfter(url, new AtomicReference<>());
+    Namespace namespace = Namespace.of("db");
+    racing.createNamespace(namespace);
+
+    beforeWrite.set(() -> other.setProperties(namespace, ImmutableMap.of("k", "theirs")));
+    assertThat(racing.setProperties(namespace, ImmutableMap.of("k", "mine"))).isTrue();
+    assertThat(beforeWrite.get()).isNull();
+    assertThat(other.loadNamespaceMetadata(namespace)).containsEntry("k", "mine");
+  }
+
+  /**
+   * Another writer that removes a key a set updates, after the set read it, made its UPDATE match
+   * no row: an IllegalStateException, after the set's INSERT of its other keys had committed.
+   */
+  @Test
+  public void testSetPropertiesRacingARemovalOfItsKey() throws IOException {
+    AtomicReference<Runnable> beforeWrite = new AtomicReference<>();
+    String url = "jdbc:sqlite:" + Files.createTempFile("iceberg_set_remove", "db").toAbsolutePath();
+    JdbcCatalog racing = catalogWritingPropertiesAfter(url, beforeWrite);
+    JdbcCatalog other = catalogWritingPropertiesAfter(url, new AtomicReference<>());
+    Namespace namespace = Namespace.of("db");
+    racing.createNamespace(namespace, ImmutableMap.of("k", "v0"));
+
+    beforeWrite.set(() -> other.removeProperties(namespace, ImmutableSet.of("k")));
+    assertThat(racing.setProperties(namespace, ImmutableMap.of("k", "mine", "n", "new"))).isTrue();
+    assertThat(beforeWrite.get()).isNull();
+    assertThat(other.loadNamespaceMetadata(namespace))
+        .containsEntry("k", "mine")
+        .containsEntry("n", "new");
+  }
+
+  /** A set that loses its race on every attempt fails, and sets nothing. */
+  @Test
+  public void testSetPropertiesThatLosesEveryRaceSetsNothing() throws IOException {
+    AtomicReference<Runnable> beforeWrite = new AtomicReference<>();
+    String url = "jdbc:sqlite:" + Files.createTempFile("iceberg_set_lost", "db").toAbsolutePath();
+    JdbcCatalog racing = catalogWritingPropertiesAfter(url, beforeWrite);
+    JdbcCatalog other = catalogWritingPropertiesAfter(url, new AtomicReference<>());
+    Namespace namespace = Namespace.of("db");
+    racing.createNamespace(namespace, ImmutableMap.of("k", "v0"));
+
+    // before each write of the set, another writer removes k if it is there and inserts it if not
+    beforeWrite.set(
+        new Runnable() {
+          @Override
+          public void run() {
+            if (other.loadNamespaceMetadata(namespace).containsKey("k")) {
+              other.removeProperties(namespace, ImmutableSet.of("k"));
+            } else {
+              other.setProperties(namespace, ImmutableMap.of("k", "theirs"));
+            }
+
+            beforeWrite.set(this);
+          }
+        });
+    assertThatThrownBy(() -> racing.setProperties(namespace, ImmutableMap.of("k", "mine")))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessageContaining("other writers changed them");
+    beforeWrite.set(null);
+    assertThat(other.loadNamespaceMetadata(namespace)).doesNotContainEntry("k", "mine");
+  }
+
+  /**
+   * A catalog on {@code url} whose connections run what {@code beforeWrite} holds before preparing
+   * each statement that writes namespace properties.
+   */
+  private JdbcCatalog catalogWritingPropertiesAfter(
+      String url, AtomicReference<Runnable> beforeWrite) {
+    Map<String, String> properties = Maps.newHashMap();
+    properties.put(CatalogProperties.URI, url);
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, this.tableDir.toAbsolutePath().toString());
+    JdbcCatalog jdbcCatalog =
+        new JdbcCatalog(
+            null,
+            props ->
+                new JdbcClientPool(props.get(CatalogProperties.URI), props) {
+                  @Override
+                  protected Connection newClient() {
+                    Connection connection = super.newClient();
+                    return (Connection)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                            Connection.class.getClassLoader(),
+                            new Class<?>[] {Connection.class},
+                            (proxy, method, args) -> {
+                              if (method.getName().equals("prepareStatement")
+                                  && args[0] instanceof String
+                                  && writesNamespaceProperties((String) args[0])) {
+                                Runnable before = beforeWrite.getAndSet(null);
+                                if (before != null) {
+                                  before.run();
+                                }
+                              }
+
+                              try {
+                                return method.invoke(connection, args);
+                              } catch (java.lang.reflect.InvocationTargetException e) {
+                                throw e.getCause();
+                              }
+                            });
+                  }
+                },
+            true);
+    jdbcCatalog.setConf(conf);
+    jdbcCatalog.initialize("racing_properties", properties);
+    return jdbcCatalog;
+  }
+
+  private static boolean writesNamespaceProperties(String sql) {
+    return sql.startsWith("INSERT INTO " + JdbcUtil.NAMESPACE_PROPERTIES_TABLE_NAME)
+        || sql.startsWith("UPDATE " + JdbcUtil.NAMESPACE_PROPERTIES_TABLE_NAME);
   }
 
   @Test
