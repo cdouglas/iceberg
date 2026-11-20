@@ -438,8 +438,11 @@ class RemoveSnapshots implements ExpireSnapshots {
     TableMetadata current;
     try {
       current = ops.refresh();
+      // A table read back lazily (a REST catalog's refs mode) reads the snapshots its refs do not
+      // name when asked: read them here, where a failure skips the cleanup as a failed refresh does
+      current.snapshots();
     } catch (RuntimeException e) {
-      LOG.warn("Failed to refresh the table after expiring snapshots, skipping file cleanup", e);
+      LOG.warn("Failed to read the table back after expiring snapshots, skipping file cleanup", e);
       return;
     }
 

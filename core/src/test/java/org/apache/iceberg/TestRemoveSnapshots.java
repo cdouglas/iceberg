@@ -2138,6 +2138,58 @@ public class TestRemoveSnapshots extends TestBase {
   }
 
   @TestTemplate
+  public void testCommittedExpiryWhoseSnapshotsCannotBeReadBack() {
+    table.newAppend().appendFile(FILE_A).commit();
+    table.newAppend().appendFile(FILE_B).commit();
+    long tAfterCommits = waitUntilAfter(table.currentSnapshot().timestampMillis());
+
+    // the table reads back lazily after the expiry commits, as a REST catalog's refs mode loads
+    // it, and its snapshots beyond its refs' cannot be read
+    TestTables.TestTableOperations lazyRefresh =
+        new TestTables.TestTableOperations("test", tableDir) {
+          private boolean committed = false;
+
+          @Override
+          public void commit(TableMetadata base, TableMetadata updated) {
+            super.commit(base, updated);
+            committed = true;
+          }
+
+          @Override
+          public TableMetadata refresh() {
+            TableMetadata loaded = super.refresh();
+            if (!committed) {
+              return loaded;
+            }
+            TableMetadata refs =
+                TableMetadata.buildFrom(loaded)
+                    .withMetadataLocation(loaded.metadataFileLocation())
+                    .suppressHistoricalSnapshots()
+                    .build();
+            return TableMetadata.buildFrom(refs)
+                .withMetadataLocation(refs.metadataFileLocation())
+                .setPreviousFileLocation(null)
+                .setSnapshotsSupplier(
+                    () -> {
+                      throw new RuntimeIOException("injected: snapshots unavailable");
+                    })
+                .discardChanges()
+                .build();
+          }
+        };
+
+    assertThatCode(
+            () ->
+                new RemoveSnapshots(lazyRefresh)
+                    .withIncrementalCleanup(incrementalCleanup)
+                    .expireOlderThan(tAfterCommits)
+                    .commit())
+        .doesNotThrowAnyException();
+    table.refresh();
+    assertThat(table.snapshots()).hasSize(1);
+  }
+
+  @TestTemplate
   public void testCommittedExpiryWhoseCleanupFails() {
     // incremental cleanup suppresses the failures of its reads already
     assumeThat(incrementalCleanup).isFalse();
