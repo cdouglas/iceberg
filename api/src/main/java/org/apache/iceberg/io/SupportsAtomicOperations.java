@@ -52,6 +52,13 @@ public interface SupportsAtomicOperations extends FileIO {
    * an existing object, so an APPEND from a snapshot that has seen no version looks the object up
    * when it writes.
    *
+   * <p>A version is what the store names one by: GCS's generation and ADLS's ETag are new on every
+   * write, but on an S3 general-purpose bucket the ETag of an object written in one part (as a CAS
+   * writes one) is a hash of its bytes. There a CAS from a version also replaces a later version
+   * that holds the same bytes (A-B-A): a caller whose replaces may repeat an earlier version's
+   * bytes cannot tell that the object changed in between, and must make each replace's bytes its
+   * own (fileio-catalog's log draws a fresh incarnation into every replace).
+   *
    * @param replace a snapshot of the object to replace
    * @return a new atomic output file
    */
