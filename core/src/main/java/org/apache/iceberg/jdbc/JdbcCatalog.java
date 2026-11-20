@@ -430,7 +430,21 @@ public class JdbcCatalog extends BaseMetastoreViewCatalog
               .buildOrThrow();
     }
 
-    insertProperties(namespace, createMetadata);
+    try {
+      insertProperties(namespace, createMetadata);
+    } catch (UncheckedSQLException e) {
+      // A concurrent create can pass the check above and insert first, so this insert then fails
+      // on the primary key. Report that as the namespace already existing. A failure that leaves
+      // unclear whether this insert committed, such as a connection lost after it ran, whose run
+      // again by the pool then meets the row it inserted, is reported as it was.
+      if (e.getCause() instanceof SQLException
+          && JdbcUtil.isConstraintViolation((SQLException) e.getCause())
+          && namespaceExists(namespace)) {
+        throw new AlreadyExistsException(e, "Namespace already exists: %s", namespace);
+      }
+
+      throw e;
+    }
   }
 
   @Override

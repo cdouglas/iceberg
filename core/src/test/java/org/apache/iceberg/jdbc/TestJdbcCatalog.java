@@ -768,6 +768,25 @@ public class TestJdbcCatalog extends CatalogTests<JdbcCatalog> {
     assertThat(jdbcCatalog.loadTable(tableIdentifier).properties()).doesNotContainKey("k");
   }
 
+  /**
+   * A namespace create whose INSERT committed but whose reply was lost created the namespace: the
+   * pool's second run of the INSERT meets the row the first inserted, and the create must not
+   * report it as another's, as it does a create that loses to a concurrent one.
+   */
+  @Test
+  public void testCreateNamespaceWhoseInsertReplyIsLostIsNotReportedAsAnothers() throws Exception {
+    Faults faults = new Faults();
+    JdbcCatalog jdbcCatalog = catalogWithFaults("lost_namespace_insert_reply", faults);
+    Namespace namespace = Namespace.of("created");
+
+    faults.next("INSERT INTO " + JdbcUtil.NAMESPACE_PROPERTIES_TABLE_NAME, Fault.LOSE_REPLY);
+    assertThatThrownBy(() -> jdbcCatalog.createNamespace(namespace, ImmutableMap.of("k", "v")))
+        .isInstanceOf(UncheckedSQLException.class)
+        .hasMessageContaining("Failed to execute: INSERT INTO");
+    assertThat(faults.pending()).isZero();
+    assertThat(jdbcCatalog.loadNamespaceMetadata(namespace)).containsEntry("k", "v");
+  }
+
   /** A create whose INSERT committed but whose reply was lost created the table. */
   @Test
   public void testCreateWhoseInsertReplyIsLost() throws Exception {
@@ -1275,6 +1294,22 @@ public class TestJdbcCatalog extends CatalogTests<JdbcCatalog> {
   }
 
   @Test
+  public void testCreateNamespaceLosingConcurrentCreate() {
+    Namespace testNamespace = Namespace.of("testDb", "ns1");
+    catalog.createNamespace(testNamespace, ImmutableMap.of("owner", "winner"));
+
+    // A concurrent create that checked for the namespace before the winner inserted it
+    JdbcCatalog loser = Mockito.spy(catalog);
+    Mockito.doReturn(false).doCallRealMethod().when(loser).namespaceExists(testNamespace);
+
+    assertThatThrownBy(
+            () -> loser.createNamespace(testNamespace, ImmutableMap.of("owner", "loser")))
+        .isInstanceOf(AlreadyExistsException.class)
+        .hasMessage("Namespace already exists: %s", testNamespace);
+    assertThat(catalog.loadNamespaceMetadata(testNamespace)).containsEntry("owner", "winner");
+  }
+
+  @Test
   public void testNamespaceLocation() {
     Namespace testNamespace = Namespace.of("testDb", "ns1", "ns2");
 
@@ -1407,6 +1442,28 @@ public class TestJdbcCatalog extends CatalogTests<JdbcCatalog> {
         .hasMessageContaining("other writers changed them");
     beforeWrite.set(null);
     assertThat(other.loadNamespaceMetadata(namespace)).doesNotContainEntry("k", "mine");
+  }
+
+  /**
+   * Two writers create one namespace: the second checks that it is absent before the first inserts
+   * it, then fails on the primary key, and must report that the namespace exists, as a create that
+   * finds it on its check does, with the winner's properties kept.
+   */
+  @Test
+  public void testCreateNamespaceRacingACreateOfIt() throws IOException {
+    AtomicReference<Runnable> beforeWrite = new AtomicReference<>();
+    String url =
+        "jdbc:sqlite:" + Files.createTempFile("iceberg_create_race", "db").toAbsolutePath();
+    JdbcCatalog racing = catalogWritingPropertiesAfter(url, beforeWrite);
+    JdbcCatalog other = catalogWritingPropertiesAfter(url, new AtomicReference<>());
+    Namespace namespace = Namespace.of("db");
+
+    beforeWrite.set(() -> other.createNamespace(namespace, ImmutableMap.of("owner", "winner")));
+    assertThatThrownBy(() -> racing.createNamespace(namespace, ImmutableMap.of("owner", "loser")))
+        .isInstanceOf(AlreadyExistsException.class)
+        .hasMessage("Namespace already exists: %s", namespace);
+    assertThat(beforeWrite.get()).isNull();
+    assertThat(other.loadNamespaceMetadata(namespace)).containsEntry("owner", "winner");
   }
 
   /**
