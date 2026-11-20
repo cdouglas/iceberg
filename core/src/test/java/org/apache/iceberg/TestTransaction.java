@@ -454,6 +454,58 @@ public class TestTransaction extends TestBase {
   }
 
   @TestTemplate
+  public void testTransactionRetryKeepsTheSequenceNumbersOfItsEarlierCommits() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(2);
+    table.newAppend().appendFile(FILE_A).commit();
+
+    Transaction txn = table.newTransaction();
+    txn.newAppend().appendFile(FILE_B).commit();
+    // keeps the append's manifest, whose partition it does not replace
+    txn.newReplacePartitions().addFile(FILE_C).commit();
+
+    // cause the transaction commit to retry, at sequence numbers one higher
+    table.newAppend().appendFile(FILE_D).commit();
+
+    txn.commitTransaction();
+
+    Snapshot replace = table.currentSnapshot();
+    Snapshot append = table.snapshot(replace.parentId());
+    ManifestFile appended =
+        Iterables.getOnlyElement(
+            append.dataManifests(table.io()).stream()
+                .filter(manifest -> manifest.snapshotId() == append.snapshotId())
+                .collect(Collectors.toList()));
+    assertThat(appended.sequenceNumber()).isEqualTo(append.sequenceNumber());
+    assertThat(replace.dataManifests(table.io()))
+        .filteredOn(manifest -> manifest.path().equals(appended.path()))
+        .singleElement()
+        .extracting(ManifestFile::sequenceNumber)
+        .isEqualTo(append.sequenceNumber());
+  }
+
+  @TestTemplate
+  public void testTransactionRetryKeepsItsRowsFromDeletesCommittedBetweenItsAttempts() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(2);
+    table.newAppend().appendFile(FILE_A).commit();
+
+    Transaction txn = table.newTransaction();
+    txn.newAppend().appendFile(FILE_B).commit();
+    txn.newReplacePartitions().addFile(FILE_C).commit();
+
+    // two commits by another writer, the second an equality delete in FILE_B's partition: the
+    // retry's append comes after it, so the delete does not apply to FILE_B
+    table.newAppend().appendFile(FILE_D).commit();
+    table.newRowDelta().addDeletes(FILE_B_EQUALITY_DELETES).commit();
+
+    txn.commitTransaction();
+
+    assertThat(table.newScan().planFiles())
+        .filteredOn(task -> task.file().location().equals(FILE_B.location()))
+        .singleElement()
+        .satisfies(task -> assertThat(task.deletes()).isEmpty());
+  }
+
+  @TestTemplate
   public void testMultipleUpdateTransactionRetryMergeCleanup() {
     // use only one retry and aggressively merge manifests
     table
