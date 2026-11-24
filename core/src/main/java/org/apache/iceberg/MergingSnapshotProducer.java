@@ -884,10 +884,12 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     // A DV is in the partition of the data file it references, so a concurrent DV for a file this
     // commit adds one for is in a partition of this commit's DVs. The conflict detection filter
     // must not narrow this check: it bounds the rows the operation read, which need not cover the
-    // files it adds DVs for, and two DVs for one data file leave the table unreadable.
+    // files it adds DVs for, and two DVs for one data file leave the table unreadable. Each DV's
+    // spec is one of the table's, unless an expiry removed it since the DV was written.
     PartitionSet partitions = PartitionSet.create(base.specsById());
     for (List<DeleteFile> dvs : dvsByReferencedFile.values()) {
       for (DeleteFile dv : dvs) {
+        specForNewFiles(dv.specId());
         partitions.add(dv.specId(), dv.partition());
       }
     }

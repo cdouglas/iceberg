@@ -2884,4 +2884,42 @@ public class TestRowDelta extends TestBase {
         .isInstanceOf(ValidationException.class)
         .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
   }
+
+  @TestTemplate
+  public void testAddDVAfterConcurrentSpecRemoval() {
+    // a DV for a file a replace left out of the table's history passes the history checks, and
+    // the check of concurrent DVs reads the spec of each DV it adds, which an expiry removed
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
+    assumeThat(branch).isEqualTo(SnapshotRef.MAIN_BRANCH);
+    table.newFastAppend().appendFile(FILE_A).commit();
+    RowDelta rowDelta = table.newRowDelta().addDeletes(fileADeletes());
+
+    // another writer replaces the table with another spec and no data, expires the history that
+    // used the old spec, which removes it, and appends in the new spec
+    Table other = TestTables.load(tableDir, "test");
+    other.updateSpec().addField("id").commit();
+    TestTables.beginReplace(tableDir, "test", other.schema(), other.spec()).commitTransaction();
+    other.refresh();
+    other
+        .expireSnapshots()
+        .expireOlderThan(System.currentTimeMillis() + 1)
+        .retainLast(1)
+        .cleanExpiredMetadata(true)
+        .commit();
+    assertThat(other.specs()).doesNotContainKey(FILE_A.specId());
+    other
+        .newFastAppend()
+        .appendFile(
+            DataFiles.builder(other.spec())
+                .withPath("/path/to/data-new-spec.parquet")
+                .withFileSizeInBytes(10)
+                .withPartitionPath("data_bucket=0/id=1")
+                .withRecordCount(1)
+                .build())
+        .commit();
+
+    assertThatThrownBy(rowDelta::commit)
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Cannot commit files of partition spec 0: the spec was removed concurrently");
+  }
 }
