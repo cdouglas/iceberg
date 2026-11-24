@@ -468,6 +468,118 @@ public abstract class SupportsAtomicOperationsContractTest {
     }
   }
 
+  /**
+   * A CAS from a version that an APPEND has since extended fails, and lands nothing: a replace is
+   * conditioned on the version it saw, whatever moved it since, an append as much as another
+   * replace. A store that let it land would erase a record another writer appended and was told had
+   * landed (a log compacts by replacing the version it read, while writers append to it). Skipped
+   * on providers without APPEND.
+   */
+  @Test
+  void casFromAVersionAnAppendExtendedFails() throws IOException {
+    Assumptions.assumeTrue(supportsAppend(), "APPEND not supported by this FileIO");
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("cas-over-append");
+    try {
+      byte[] first = bytes("first-version");
+      InputFile v1 = createAtomically(io, loc, first);
+
+      // A writer prepares a replace of the version it read
+      AtomicOutputFile stale = io.newOutputFile(v1);
+      byte[] replacement = bytes("replacement");
+      CAS staleTok = stale.prepare(supplier(replacement), AtomicOutputFile.Strategy.CAS);
+
+      // Another extends that version
+      byte[] tail = bytes("appended");
+      InputFile v2 = appendAtomically(io, v1, tail);
+
+      assertThatThrownBy(() -> stale.writeAtomic(staleTok, supplier(replacement)))
+          .isInstanceOf(SupportsAtomicOperations.CASException.class);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(concat(first, tail));
+
+      // A replace of the version the append made replaces it
+      AtomicOutputFile fresh = io.newOutputFile(v2);
+      InputFile v3 =
+          fresh.writeAtomic(
+              fresh.prepare(supplier(replacement), AtomicOutputFile.Strategy.CAS),
+              supplier(replacement));
+      assertThat(read(v3)).isEqualTo(replacement);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /**
+   * True-concurrency race of CASes and APPENDs from one version: exactly one lands, each other
+   * fails as its own strategy's lost race (CASException, AppendException), and the object is the
+   * winner's: its payload for a CAS, the version extended by its payload for an APPEND. Skipped on
+   * providers without APPEND.
+   */
+  @Test
+  void casAndAppendRaceConcurrent() throws Exception {
+    Assumptions.assumeTrue(supportsAppend(), "APPEND not supported by this FileIO");
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("cas-append-race-concurrent");
+    try {
+      createAtomically(io, loc, bytes("baseline"));
+      runConcurrentRace(
+          io,
+          loc,
+          AtomicOutputFile.Strategy.CAS,
+          AtomicOutputFile.Strategy.APPEND,
+          AtomicOutputFile.Strategy.CAS,
+          AtomicOutputFile.Strategy.APPEND);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /**
+   * An APPEND of {@link SupportsAtomicOperations#maxAppendBytes} bytes lands; one of a byte more
+   * fails before it lands, refused ({@link SupportsAtomicOperations.StorageRefusedException}), not
+   * as a lost race, which a caller would send again as it is; and a CAS is not bound by the limit.
+   * Skipped where the store sets no limit. A limit past {@link #LARGE_APPEND_BYTES} writes about
+   * three times that, so the test then runs only with the environment variable {@code
+   * ATOMIC_APPEND_LIMIT_TEST=true}.
+   */
+  @Test
+  void appendPastMaxAppendBytesIsRefusedAndLandsNothing() throws IOException {
+    Assumptions.assumeTrue(supportsAppend(), "APPEND not supported by this FileIO");
+    SupportsAtomicOperations io = newFileIO();
+    String loc = randomLocation("append-limit");
+    long max = io.maxAppendBytes(loc);
+    Assumptions.assumeTrue(max > 0, "no limit on an append's bytes");
+    Assumptions.assumeTrue(
+        max <= LARGE_APPEND_BYTES || "true".equals(System.getenv("ATOMIC_APPEND_LIMIT_TEST")),
+        "writes about three times the limit: run with ATOMIC_APPEND_LIMIT_TEST=true");
+    try {
+      byte[] first = bytes("first-version");
+      InputFile v1 = createAtomically(io, loc, first);
+
+      byte[] atLimit = filled(Math.toIntExact(max), (byte) 'a');
+      InputFile v2 = appendAtomically(io, v1, atLimit);
+      byte[] expected = concat(first, atLimit);
+      assertThat(v2.getLength()).isEqualTo(expected.length);
+
+      byte[] pastLimit = filled(Math.toIntExact(max + 1), (byte) 'b');
+      assertThatThrownBy(() -> appendAtomically(io, v2, pastLimit))
+          .isInstanceOf(SupportsAtomicOperations.StorageRefusedException.class);
+      assertThat(read(io.newInputFile(loc))).isEqualTo(expected);
+
+      // A CAS is not bound by it
+      AtomicOutputFile out = io.newOutputFile(v2);
+      InputFile v3 =
+          out.writeAtomic(
+              out.prepare(supplier(pastLimit), AtomicOutputFile.Strategy.CAS), supplier(pastLimit));
+      assertThat(read(v3)).isEqualTo(pastLimit);
+    } finally {
+      cleanup(io, loc);
+    }
+  }
+
+  /** The largest append limit the suite reaches without {@code ATOMIC_APPEND_LIMIT_TEST}. */
+  protected static final long LARGE_APPEND_BYTES = 16L << 20;
+
   // ─── Reads ──────────────────────────────────────────────────────────────────────────────────
 
   /**
@@ -851,18 +963,24 @@ public abstract class SupportsAtomicOperationsContractTest {
   /**
    * Run {@code writers} writers concurrently against a real executor, rendezvousing at a barrier
    * before each thread invokes {@code writeAtomic}. Exactly one writer must commit; every other
-   * must throw the strategy-appropriate exception; the live object must equal the winner's payload.
-   * Each writer carries a distinct random payload so the suite can verify which one actually
-   * committed.
+   * must throw the strategy-appropriate exception; the live object must be the winner's: its
+   * payload for a CAS, the version it raced on extended by its payload for an APPEND. Each writer
+   * carries a distinct random payload so the suite can verify which one actually committed.
    */
   private void runConcurrentRace(
       SupportsAtomicOperations io, String location, int writers, AtomicOutputFile.Strategy strategy)
       throws Exception {
-    Class<? extends SupportsAtomicOperations.AtomicOperationException> expectedFailure =
-        strategy == AtomicOutputFile.Strategy.APPEND
-            ? SupportsAtomicOperations.AppendException.class
-            : SupportsAtomicOperations.CASException.class;
+    AtomicOutputFile.Strategy[] strategies = new AtomicOutputFile.Strategy[writers];
+    Arrays.fill(strategies, strategy);
+    runConcurrentRace(io, location, strategies);
+  }
 
+  /** As above, writer {@code i} writing with {@code strategies[i]}. */
+  private void runConcurrentRace(
+      SupportsAtomicOperations io, String location, AtomicOutputFile.Strategy... strategies)
+      throws Exception {
+    int writers = strategies.length;
+    byte[] baseline = read(io.newInputFile(location));
     Random random = new Random(0xC0FFEE);
     List<byte[]> payloads = new ArrayList<>(writers);
     for (int i = 0; i < writers; i++) {
@@ -883,6 +1001,11 @@ public abstract class SupportsAtomicOperationsContractTest {
       for (int i = 0; i < writers; i++) {
         final int idx = i;
         final byte[] payload = payloads.get(i);
+        final AtomicOutputFile.Strategy strategy = strategies[i];
+        final Class<? extends SupportsAtomicOperations.AtomicOperationException> expectedFailure =
+            strategy == AtomicOutputFile.Strategy.APPEND
+                ? SupportsAtomicOperations.AppendException.class
+                : SupportsAtomicOperations.CASException.class;
         Callable<Integer> task =
             () -> {
               // Each thread builds its own FileIO (and underlying SDK client) so the race
@@ -921,16 +1044,12 @@ public abstract class SupportsAtomicOperationsContractTest {
       assertThat(winner).isNotEqualTo(-1);
       assertThat(losses).isEqualTo(writers - 1);
 
-      if (strategy == AtomicOutputFile.Strategy.APPEND) {
-        // Live object must be baseline + winner's payload — verify the suffix matches the winner.
-        byte[] live = read(io.newInputFile(location));
-        assertThat(live.length).isGreaterThanOrEqualTo(payloads.get(winner).length);
-        byte[] suffix = new byte[payloads.get(winner).length];
-        System.arraycopy(live, live.length - suffix.length, suffix, 0, suffix.length);
-        assertThat(suffix).isEqualTo(payloads.get(winner));
-      } else {
-        assertThat(read(io.newInputFile(location))).isEqualTo(payloads.get(winner));
-      }
+      // The live object is the winner's: the baseline extended by its payload, or its payload
+      assertThat(read(io.newInputFile(location)))
+          .isEqualTo(
+              strategies[winner] == AtomicOutputFile.Strategy.APPEND
+                  ? concat(baseline, payloads.get(winner))
+                  : payloads.get(winner));
     } finally {
       pool.shutdownNow();
       pool.awaitTermination(5, TimeUnit.SECONDS);
@@ -971,6 +1090,12 @@ public abstract class SupportsAtomicOperationsContractTest {
     byte[] out = new byte[a.length + b.length];
     System.arraycopy(a, 0, out, 0, a.length);
     System.arraycopy(b, 0, out, a.length, b.length);
+    return out;
+  }
+
+  private static byte[] filled(int length, byte value) {
+    byte[] out = new byte[length];
+    Arrays.fill(out, value);
     return out;
   }
 
